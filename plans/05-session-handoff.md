@@ -22,7 +22,8 @@ Status on 2026-09-21: written by session `sentinel-swarm-a8` for the next sessio
    - How much time a `PostToolUse` hook on every tool call adds.
    - Whether concurrent writers are safe for the ledger's SQLite file and for the code graph file.
 3. **Candidates to evaluate**, from "Plugin features found on 2026-09-21" in `04-mcp-and-hooks.md`: `monitors/monitors.json` for the watchdog, `subagentStatusLine` for marking agents, and the plugin `agent` setting for running the session as the Oracle.
-4. **Build the ledger**, then the hooks, then the skills. Follow `/plugin-dev:create-plugin` from Phase 4.
+4. **Build the ledger**, then the hooks, then the skills. Follow `/plugin-dev:create-plugin` from Phase 4. Test each piece on its own as it is built.
+5. **Smoke test.** Alex decided on 2026-09-21: once every piece works, run the swarm with the prompt "Create a hello world file." and confirm that all four agents were created and that the logs, tests, scores, and records are all there. The checklist is in `04-mcp-and-hooks.md` "Build order and the smoke test".
 
 ## How Alex works
 

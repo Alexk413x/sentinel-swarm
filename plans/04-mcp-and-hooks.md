@@ -164,6 +164,38 @@ Run on Windows 11 from a main session. Each result names its check number from t
 
 Not run yet: checks 1, 2, 3, 7, 8, and 9, and the code graph half of check 5.
 
+A rule for the `python3 ... || python ...` form: a hook blocks through its JSON output and exits 0. A hook that exits 2 makes the shell run the second command too, and that second run gets an empty stdin because the first run already read it. **(proposed)**
+
+### Probe hooks for the remaining checks
+
+The probe is local and git-excluded: `.claude/settings.local.json` registers `.claude/probe/probe.py` on every hook event, and the script appends each hook input to `.claude/probe/log.jsonl`. Hooks load at session start, so the probe needs a restarted session. In that session:
+
+1. Check 1: call `kg_search` with the query `probe-original`. The probe rewrites it to `oracle`. Results about the Oracle mean that `updatedInput` works on an MCP tool.
+2. Check 2: create the file `.claude/probe/block_subagent_stop_once`, then run a subagent. The probe blocks its first stop and asks for the word PINEAPPLE. The word in the subagent's final report means that `SubagentStop` can block.
+3. Checks 3 and the registry columns: run a three-layer nested subagent chain, then read the log for `agent_id`, `agent_type`, and `agent_transcript_path` at each layer, and for any `PreCompact` record.
+4. Check 4: compare tool-call timing in the session with the probe on and off.
+5. Delete `.claude/settings.local.json` and `.claude/probe/` when the checks are done.
+
+
+## Build order and the smoke test
+
+Decision from Alex on 2026-09-21:
+
+- Every piece is tested and working on its own first: the prototype checks, the ledger tools, and the hooks.
+- The smoke test comes after that. It is one run with the prompt "Create a hello world file."
+- The smoke test passes when all of the agents were created and all of the logs and recorded information are there: the tests, the scores, and the rest.
+
+What the smoke test checks in the ledger: **(proposed list)**
+
+- The registry has one Oracle, one Manager, one Lead, and one Coder, each with its name, parent, model, start time, end time, and token counts.
+- A brief exists for each child, and each child acknowledged it.
+- The Coder claimed the file and its test file. No other role wrote a project file, and no hook recorded a violation.
+- `tests_run` recorded a passing run for the file, with no empty or skipped tests.
+- The Coder's scores and the Lead's blind scores both exist for every applicable dimension, and `review_compare` ran.
+- The file, the module, and the phase each have a recorded approval, and the claim is released.
+- The code graph is current for the file.
+- `agent_events` holds every lifecycle transition in order, and `report_build` produces the final report.
+
 ## Plugin features found on 2026-09-21
 
 Read from `code.claude.com/docs/en/plugins-reference.md`, through a summarizing fetch. Each is a candidate, not a decision. **(proposed)**
