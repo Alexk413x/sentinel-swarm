@@ -1,6 +1,6 @@
 # sentinel-swarm: session handoff
 
-Status on 2026-09-21: written by session `sentinel-swarm-a8` for the next session. Read `plans/CLAUDE.md` first, then this file.
+Status on 2026-09-21: written by session `sentinel-swarm-a8`, updated by session `sentinel-swarm-d3` for session `sentinel-swarm-75`. Read `plans/CLAUDE.md` first, then this file.
 
 ## Where the work stands
 
@@ -13,14 +13,10 @@ Status on 2026-09-21: written by session `sentinel-swarm-a8` for the next sessio
 ## Next steps, in order
 
 1. **Code graph for this repo.** Done on 2026-09-21. The graph is at `knowledge/code_graph.db`, and `/codebase-kg:setup` installed `.githooks/`. Run `/codebase-kg:refresh` after changes to mapped files.
-2. **Prototype checks.** Run them as small tests inside the skeleton, because they decide several mechanics. The lists are under "To verify with a prototype" in `03-ledger.md` and `04-mcp-and-hooks.md`:
-   - Whether a `PreToolUse` hook can rewrite a tool's input, to stamp an agent's identity onto a ledger call.
-   - Whether `SubagentStop` can block.
-   - Whether `PreCompact` fires inside a subagent, and how a compaction shows in a transcript.
-   - The per-message `usage` fields in a subagent transcript, and whether nested subagents get their own transcripts.
-   - Whether a session started with `--agent` reports `agent_type` to every hook, and whether the agent's `model` field applies.
-   - How much time a `PostToolUse` hook on every tool call adds.
-   - Whether concurrent writers are safe for the ledger's SQLite file and for the code graph file.
+2. **Prototype checks.** Partly done on 2026-09-21. The results are in `04-mcp-and-hooks.md` "Prototype results on 2026-09-21".
+   - Done: nesting depth (three layers, no spare), resume with `SendMessage` (context is kept), trust in a resume message, SQLite concurrent writers (WAL, busy timeout, `BEGIN IMMEDIATE`), and the cost of a Python hook (about 300 ms through Git Bash).
+   - Next: the probe hook checks. A local, git-excluded probe is in place: `.claude/settings.local.json` and `.claude/probe/probe.py`. It needs a session that started after it was written. Follow the steps in `04-mcp-and-hooks.md` "Probe hooks for the remaining checks", then delete the probe.
+   - After the probe: whether `kg_upsert_node` re-baselines a file's hash, concurrent writers on the code graph file, parallel test runs in one working tree, hook 8 attribution, and the `--agent` checks from `03-ledger.md`. The `--agent` checks need Alex to start a session with `claude --agent`.
 3. **Candidates to evaluate**, from "Plugin features found on 2026-09-21" in `04-mcp-and-hooks.md`: `monitors/monitors.json` for the watchdog, `subagentStatusLine` for marking agents, and the plugin `agent` setting for running the session as the Oracle.
 4. **Build the ledger**, then the hooks, then the skills. Follow `/plugin-dev:create-plugin` from Phase 4. Test each piece on its own as it is built.
 5. **Smoke test.** Alex decided on 2026-09-21: once every piece works, run the swarm with the prompt "Create a hello world file." and confirm that all four agents were created and that the logs, tests, scores, and records are all there. The checklist is in `04-mcp-and-hooks.md` "Build order and the smoke test".
@@ -47,6 +43,19 @@ Status on 2026-09-21: written by session `sentinel-swarm-a8` for the next sessio
 - codebase-kg is required. Every agent searches the graph first, then falls back to Grep or Glob.
 - Tracking is local only. The records folder is git-ignored through `.git/info/exclude`.
 - No role has a time limit or a turn limit. The watchdog reports stuck or spinning agents to the Oracle.
+
+## Decisions made on 2026-09-21
+
+All are recorded in `04-mcp-and-hooks.md`.
+
+- The ledger identity is the agent's name, not its `agent_id`. The name is set at start, does not change, and is the message address. How hook 6 binds the name to the `agent_id` is a **(proposed)** item.
+- User directives: a ledger channel that steers the Oracle from any source, without interrupting the agents. It also carries escalation replies and watchdog reports. Every directive carries full authority, whatever its source.
+- Build order: every piece is tested on its own first. The smoke test is one run with the prompt "Create a hello world file."
+
+## Working notes for this repo
+
+- `plans/*.md` are mapped in the code graph. After a plan edit, rebuild or refresh the graph before the commit, or the `pre-push` hook reports drift. The graph's authoring JSON is not kept. Use `/codebase-kg:refresh`.
+- The builder CLI in this repo: `uvx --quiet --from "<codebase-kg plugin cache>/mcp" codebase-kg-build <json> -o knowledge/code_graph.db`.
 
 ## Housekeeping
 
