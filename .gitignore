@@ -1,0 +1,23 @@
+# Python (MCP server + scripts)
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# Per-project local config
+.claude/*.local.md
+
+# codebase-kg working file: a snapshot, not a source.
+.kg-export.json
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
