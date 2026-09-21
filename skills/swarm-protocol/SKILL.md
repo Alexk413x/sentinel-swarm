@@ -51,3 +51,8 @@ The full design lives in the `plans/` folder of this repository: `01-roles.md`,
 
 Not implemented. This skill provides background knowledge only; it triggers no
 tooling and starts no run.
+
+## Finding code
+
+Every role queries the codebase-kg code graph first. Grep and Glob are the fallback
+for when the graph does not have the answer or returns the wrong thing.

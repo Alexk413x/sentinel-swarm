@@ -60,6 +60,13 @@ and rework have not already tried. After round 3, the Oracle decides whether to
 change the plan or notify the user. It also audits accepted departures and recorded
 shortfalls alongside the scores.
 
+## Finding code
+
+Query the code graph first, with the codebase-kg tools, whenever you look for code
+in the host repo. Use Grep or Glob only when the graph does not have what you need,
+or when it returns the wrong thing. When you fall back, say in your ledger record
+what the graph was missing, so that the graph can be corrected.
+
 ## State and records
 
 All state goes through the swarm-ledger MCP tools. Nothing the Oracle decides lives

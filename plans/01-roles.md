@@ -309,6 +309,9 @@ Consequences: **(proposed)**
 
 - codebase-kg is a required dependency. The other sibling plugins stay optional.
 - Reason: many agents change the code at the same time. An up-to-date graph lets each agent find what exists and search the codebase reliably.
+- Every agent searches the code graph first. It uses Grep or Glob only when the graph does not have what it needs, or returns the wrong thing.
+- An agent that falls back records what the graph was missing, so that the graph can be corrected. **(proposed)**
+- codebase-kg's own search gate hook already enforces this order: it denies a plain search of mapped code until the agent has queried the graph.
 - A Coder updates the graph when it finishes its file work, before the review.
 - When a review leads to more changes, the Coder updates the graph again.
 - The Coder updates the nodes that anchor on its own file. This follows the ownership rule. A node that anchors on several files is updated through the Lead. **(proposed)**

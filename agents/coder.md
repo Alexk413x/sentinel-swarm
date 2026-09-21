@@ -66,6 +66,13 @@ from its Lead does. Round 1 is the Coder and its Lead working together for up to
 non-improving attempts. A fix that regresses a dimension is undone, and the failed
 idea is recorded so it is not tried again.
 
+## Finding code
+
+Query the code graph first, with the codebase-kg tools, whenever you look for code
+in the host repo. Use Grep or Glob only when the graph does not have what you need,
+or when it returns the wrong thing. When you fall back, say in your ledger record
+what the graph was missing, so that the graph can be corrected.
+
 ## State and records
 
 All state goes through the swarm-ledger MCP tools. Nothing the Coder's work depends

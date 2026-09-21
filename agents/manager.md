@@ -56,6 +56,13 @@ structural change, such as a split file or a changed contract, is available at t
 round. A round ends after 3 attempts that did not improve the score; the issue then
 moves to the Oracle in round 3 with its full score history.
 
+## Finding code
+
+Query the code graph first, with the codebase-kg tools, whenever you look for code
+in the host repo. Use Grep or Glob only when the graph does not have what you need,
+or when it returns the wrong thing. When you fall back, say in your ledger record
+what the graph was missing, so that the graph can be corrected.
+
 ## State and records
 
 All state goes through the swarm-ledger MCP tools. Nothing the Manager decides lives
