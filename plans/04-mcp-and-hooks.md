@@ -35,6 +35,7 @@ Status on 2026-09-20: first draft for Alex to review. Alex decided the frame: on
 | Overrides | `override_grant` | Oracle only |
 | Versions | `version_save`, `version_restore` | The tooling on handoff. The Coder on a regression |
 | Messages | `message_post`, `message_inbox` | All roles |
+| Directives | `directive_submit`, `directive_inbox`, `directive_resolve` | Any caller submits. The Oracle reads and resolves |
 | Reporting | `status_tree`, `report_build`, `analytics_query` | Oracle, the `status` skill |
 
 `handoff_submit` is the hard check. For a Coder it does four things itself and refuses the handoff when any of them fails:
@@ -107,13 +108,47 @@ All hooks live in the plugin's `hooks/hooks.json`, because plugin agents ignore 
 
 The Oracle starts a plain script at the start of a run. The script reads the registry's heartbeats and states. It wakes the Oracle only when it finds an agent that is stuck, spinning, or over the context threshold.
 
+It reports through the directive channel. See "User directives".
+
+## User directives
+
+From Alex on 2026-09-21:
+
+- The ledger has a tool that sends a user directive to the Oracle. A directive steers the run: the plan, a future phase, the guidelines, or anything else the Oracle owns.
+- A directive can come from any input: the user types it in the Oracle's chat, or an outside agent or session sends it.
+- A directive does not interrupt the agents. Their work continues, and the Oracle applies the directive through the normal path.
+- The same mechanism carries the user's reply to an escalation.
+
+Proposed mechanics: **(proposed)**
+
+- Tools: `directive_submit` (any caller), `directive_inbox` and `directive_resolve` (Oracle only).
+- A directive records its text, its source (`user-chat`, `outside-session`, or `skill`), the sender's name, and an optional `reply_to` that points at a notification or an escalation.
+- The Oracle is the only reader. It never forwards a directive as-is. It turns it into a plan change, a guideline change, a new brief, or a change request, so the lower layers see it through the cycle they already follow.
+- The Oracle resolves each directive with an outcome: applied, scheduled for a later phase, declined with a reason, or needs a question to the user. The final report lists every directive and its outcome.
+- The Oracle reads its inbox at safe points: between reviews, at a join point, and when the watchdog wakes it for a new directive. Work that is already approved is not reopened unless the directive says so.
+- A reply with `reply_to` closes the matching notification and unblocks the work that waited on it.
+
+Decision from Alex on 2026-09-21: every directive carries full authority, whatever its source. The Oracle acts on it without a confirmation step. The reason: the same channel also carries what the watchdog reports, so the Oracle can correct what the watchdog sees when it pokes an idle Oracle.
+
+- The watchdog sends its reports through `directive_submit`, with the source `watchdog`. **(tool wiring proposed)**
+- The source and the sender's name are still recorded, so the final report shows where each directive came from. **(proposed)**
+
 ## To verify with a prototype
 
 1. Whether a `PreToolUse` hook can rewrite a tool's input, which hook 6 uses to stamp the identity. The fallback is that the hook denies a call whose identity argument does not match.
+   - Decision from Alex on 2026-09-21: the identity is the agent's name, not its `agent_id`. The name is set when the agent starts, it does not change, and it is the address that other agents message. Every agent knows its own name, so the fallback works: the agent passes its name, and hook 6 checks it against the registry.
+   - To verify: how hook 6 links the `agent_id` in its input to the name. Hook input carries `agent_id` and `agent_type`, not the name. Candidate: the first `brief_ack` binds the name to the `agent_id`. The ledger refuses the bind when the name has no pending brief under that parent, or when another live agent holds it. **(proposed)**
 2. Whether `SubagentStop` can block.
 3. Whether `PreCompact` fires inside a subagent.
 4. How much time hook 7 adds to every tool call. It must stay small.
 5. Whether concurrent writers are safe for the ledger's SQLite file and for the code graph file.
+6. Whether three nested subagent layers work, and whether a Lead can resume its Coder with `SendMessage`. The hierarchy and step 8 of "One file, start to finish" depend on it. **(proposed)**
+7. Whether `kg_upsert_node` re-baselines the file's hash. If it does not, the graph-current check in `handoff_submit` never passes after a Coder's update. **(proposed)**
+8. Whether `tests_run` for one file stays reliable while other Coders have half-written files in the same working tree. **(proposed)**
+9. How hook 8 attributes a changed file to one agent while other Coders edit at the same time. **(proposed)**
+10. The time that the `python3 ... || python ...` form adds on Windows, where `python3` can resolve to the Store stub. Measure it as part of check 4. **(proposed)**
+
+Design point for hook 11: "waiting on running children" is a valid stop state, next to "waiting on the user". Without it, the Oracle spins while its Managers work. **(proposed)**
 
 ## Plugin features found on 2026-09-21
 

@@ -98,6 +98,7 @@ Each parent and child pair follows the same cycle:
   - Decides the outcome: the run is complete, or it needs a new plan or a new phase.
   - Overrides a rule when the run needs it, and records why. See "Enforcement and overrides".
   - Decides whether a problem needs a notification now or a line in the final report.
+  - Receives user directives and turns each one into a plan change, a guideline change, a brief, or a change request. See `04-mcp-and-hooks.md` "User directives".
   - Writes the final summary report.
 - **Owns:** PRD meaning, acceptance criteria, the high-level guidelines, the phase plan, the final verdict, and all communication with the user.
 - **Arbitrates:** disputes between Managers, including which Manager owns a shared file when they cannot agree. **(proposed)**
