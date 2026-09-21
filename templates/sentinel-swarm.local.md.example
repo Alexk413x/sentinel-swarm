@@ -1,0 +1,67 @@
+---
+# Tracking backend for the ledger. `local` is the only value for now; other
+# trackers (GitHub issues, Jira) may become values later.
+tracking: local
+
+runtime:
+  # The first version keeps the whole swarm in one working tree: the Oracle runs
+  # as a session, and Manager, Lead, and Coder all run as subagents beneath it.
+  oracle: session
+  # Manager runs as a subagent under the Oracle session.
+  manager: subagent
+  # Lead runs as a subagent under its Manager.
+  lead: subagent
+  # Coder runs as a subagent under its Lead.
+  coder: subagent
+
+models:
+  # Approved models for the Oracle. It has no parent, so it runs on the first
+  # entry, fable.
+  oracle: [fable, opus]
+  # Approved models for the Manager.
+  manager: [opus]
+  # Approved models for the Lead.
+  lead: [opus, sonnet]
+  # Approved models for the Coder.
+  coder: [sonnet, haiku]
+
+rubric:
+  # The goal for every scored dimension.
+  target: 90
+  # No file passes with a dimension below this.
+  floor: 70
+  # No file passes with a criterion rated below this.
+  criterion_floor: 5
+  # Two reviews that differ by this much on a dimension are "not agreed".
+  disagreement_gap: 10
+  # A gain smaller than this, on a dimension a fix targeted, is a plateau.
+  plateau: 2
+  # A drop of this much on any dimension makes a fix "significantly worse".
+  regression_tolerance: 5
+
+escalation:
+  # Number of escalation rounds before the Oracle decides to change the plan or
+  # notify the user.
+  rounds: 3
+  # Non-improving attempts per round before the issue moves to the next round.
+  attempts_per_round: 3
+
+# Left empty; the setup skill fills this in from the detected stack.
+test_command:
+# Left empty; the setup skill fills this in from the detected stack.
+build_command:
+# Left empty; the setup skill fills this in from the detected stack.
+lint_command:
+
+# Left empty; no default parallelism cap is set yet.
+parallelism_cap:
+---
+
+# sentinel-swarm local settings
+
+This file goes at `.claude/sentinel-swarm.local.md` in the host repo, the repo the
+swarm builds in. Copy this example to that path and edit the frontmatter above.
+
+The file is not committed. It holds per-project and per-developer settings for the
+ledger, not project source, so the swarm's own tooling keeps it out of the host
+repo's history.

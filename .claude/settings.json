@@ -1,0 +1,15 @@
+{
+  "extraKnownMarketplaces": {
+    "codebase-kg": {
+      "source": {
+        "source": "git",
+        "url": "https://github.com/Alexk413x/codebase-kg.git"
+      },
+      "autoUpdate": true
+    }
+  },
+  "enabledPlugins": {
+    "codebase-kg@codebase-kg": true
+  },
+  "disabledMcpjsonServers": ["swarm-ledger"]
+}

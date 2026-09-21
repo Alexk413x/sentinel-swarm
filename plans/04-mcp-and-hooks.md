@@ -115,6 +115,16 @@ The Oracle starts a plain script at the start of a run. The script reads the reg
 4. How much time hook 7 adds to every tool call. It must stay small.
 5. Whether concurrent writers are safe for the ledger's SQLite file and for the code graph file.
 
+## Plugin features found on 2026-09-21
+
+Read from `code.claude.com/docs/en/plugins-reference.md`, through a summarizing fetch. Each is a candidate, not a decision. **(proposed)**
+
+- **`dependencies` in `plugin.json`.** A required dependency. Claude Code fails the install or the enable when it is missing. The manifest declares codebase-kg this way.
+- **`monitors/monitors.json`.** A plugin can ship background monitors. This is a candidate home for the watchdog, in place of a script that the Oracle starts.
+- **`subagentStatusLine` in the plugin's root `settings.json`.** A status line format for the plugin's agents, such as `[${agent.name}] ${status}`. This is a candidate for marking each agent clearly with its role and name.
+- **`agent` in the plugin's root `settings.json`.** A default agent configuration that applies when the plugin is enabled. This is a candidate for running the session as the Oracle.
+- **`userConfig` in `plugin.json`.** Typed settings that Claude Code prompts for and stores in user settings. Project settings files cannot set them. The per-project `.claude/sentinel-swarm.local.md` file stays the home for per-repo values, such as the test command.
+
 ## Decisions from Alex on 2026-09-20
 
 1. **No shell above the Coder.** Oracle, Manager, and Lead use the MCP servers and the plugin's specific tooling only. They cannot create or write files directly or in free form. The ledger's database tracks their responses.

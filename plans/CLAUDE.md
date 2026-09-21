@@ -27,7 +27,7 @@ Alex settles responsibilities first, then mechanics.
 7. Tracking: decided. Local ledger only, as a setting with one value for now. Records are git-ignored. See `03-ledger.md` "Tracking and storage".
 8. Sibling plugins: decided. codebase-kg is required, the others are optional. See `01-roles.md` "The code graph". Graph writes across sessions and worktrees need a test.
 9. Git: this repo is initialized and `plans/` is committed (2026-09-20). The private remote is `github.com/Alexk413x/sentinel-swarm`, created 2026-09-21. The host-repo git workflow is in `01-roles.md` "Git workflow in the host repo".
-10. Dev tooling for this repo: Python 3.10+, fastmcp, uv, hatchling, pytest, pyright, lint, CI, git hooks.
+10. Dev tooling for this repo: done on 2026-09-21. The plugin skeleton, the ledger server skeleton, pytest, pyright, ruff, and CI exist. Git hooks come from `/codebase-kg:setup`, which still has to run here, after `/codebase-kg:build`.
 11. Confirm the component plan, then implement (`/plugin-dev:create-plugin` Phase 4 onward).
 
 ## Rules for these documents

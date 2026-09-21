@@ -1,0 +1,39 @@
+{
+  "name": "sentinel-swarm",
+  "version": "0.0.1",
+  "description": "A four-role agent swarm, Oracle, Manager, Lead, Coder, that takes a PRD to built, tested, reviewed code. Enforced reviews, a shared ledger, and a scoring rubric hold every role accountable.",
+  "author": {
+    "name": "Alexk413x",
+    "email": "alexk413x@gmail.com"
+  },
+  "homepage": "https://github.com/Alexk413x/sentinel-swarm",
+  "repository": "https://github.com/Alexk413x/sentinel-swarm",
+  "license": "LicenseRef-Proprietary",
+  "keywords": [
+    "agent-swarm",
+    "multi-agent",
+    "orchestration",
+    "code-review",
+    "ledger",
+    "rubric",
+    "prd-to-code",
+    "mcp"
+  ],
+  "dependencies": [
+    {
+      "name": "codebase-kg",
+      "marketplace": "codebase-kg",
+      "version": ">=0.7.0"
+    }
+  ],
+  "optionalDependencies": [
+    {
+      "name": "a11y",
+      "marketplace": "accessibility-tools"
+    },
+    {
+      "name": "cartographer",
+      "marketplace": "cartographer"
+    }
+  ]
+}

@@ -26,9 +26,11 @@ Status on 2026-09-20: first draft. Bullets marked **(proposed)** are Claude's ad
 | Role | `runtime` **(proposed default)** | `models` (approved list, Alex's defaults) |
 |---|---|---|
 | Oracle | session | fable, opus |
-| Manager | session | opus |
+| Manager | subagent | opus |
 | Lead | subagent | opus, sonnet |
 | Coder | subagent | sonnet, haiku |
+
+The first version works in one working tree, so only the Oracle runs as a session. See `01-roles.md` "Git workflow in the host repo".
 
 The parent that spawns an agent picks the model from the child role's list, by the complexity of the task. The brief records the choice. The Oracle has no parent and runs on the first model in its list. **(Oracle rule proposed)**
 

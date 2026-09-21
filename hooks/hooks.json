@@ -1,0 +1,4 @@
+{
+  "description": "No hooks are wired yet. The plan (plans/04-mcp-and-hooks.md) calls for twelve hooks: a SessionStart check that registers the session, reports an unfinished run, and checks codebase-kg and the records exclude; a PreToolUse spawn gate on the Agent tool; a SubagentStart registry write; a PreToolUse role and ownership gate on Write, Edit, MultiEdit, and NotebookEdit; a PreToolUse shell gate on Bash and PowerShell for Coders; a PreToolUse identity-stamp and permission check on the swarm-ledger MCP tools; a PostToolUse heartbeat and staleness marker; a PostToolUse claim-versus-change check on Bash and PowerShell; a PreCompact context-overflow counter; a SubagentStop registry close and missing-handoff flag; a Stop gate that keeps the Oracle session going while work remains; and a SessionEnd registry close. See hooks/README.md for the full table.",
+  "hooks": {}
+}
