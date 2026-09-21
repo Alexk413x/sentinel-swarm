@@ -15,8 +15,10 @@ Status on 2026-09-21: written by session `sentinel-swarm-a8`, updated by session
 1. **Code graph for this repo.** Done on 2026-09-21. The graph is at `knowledge/code_graph.db`, and `/codebase-kg:setup` installed `.githooks/`. Run `/codebase-kg:refresh` after changes to mapped files.
 2. **Prototype checks.** Partly done on 2026-09-21. The results are in `04-mcp-and-hooks.md` "Prototype results on 2026-09-21".
    - Done: nesting depth (three layers, no spare), resume with `SendMessage` (context is kept), trust in a resume message, SQLite concurrent writers (WAL, busy timeout, `BEGIN IMMEDIATE`), and the cost of a Python hook (about 300 ms through Git Bash).
-   - Next: the probe hook checks. A local, git-excluded probe is in place: `.claude/settings.local.json` and `.claude/probe/probe.py`. It needs a session that started after it was written. Follow the steps in `04-mcp-and-hooks.md` "Probe hooks for the remaining checks", then delete the probe.
-   - After the probe: whether `kg_upsert_node` re-baselines a file's hash, concurrent writers on the code graph file, parallel test runs in one working tree, hook 8 attribution, and the `--agent` checks from `03-ledger.md`. The `--agent` checks need Alex to start a session with `claude --agent`.
+   - Done with the probe hooks, which are now deleted: `updatedInput` rewrites an MCP tool's input, `SubagentStop` can block, and hook input carries `agent_id` and `agent_type` at all three layers but never the parent. `SubagentStop` fires more than once for one agent, so it does not mean that the agent ended.
+   - Open from the probe: whether `PreCompact` fires inside a subagent. It needs a subagent that fills its context, so run it during the first long swarm test.
+   - Done: `kg_upsert_node` does not re-baseline a file's hash, and only `codebase-kg-build --rebaseline` does. Alex has to choose how `handoff_submit` checks that the graph is current. The options are in the check 7 row of the results table.
+   - Next: concurrent writers on the code graph file, parallel test runs in one working tree, hook 8 attribution, and the `--agent` checks from `03-ledger.md`. The `--agent` checks need Alex to start a session with `claude --agent`.
 3. **Candidates to evaluate**, from "Plugin features found on 2026-09-21" in `04-mcp-and-hooks.md`: `monitors/monitors.json` for the watchdog, `subagentStatusLine` for marking agents, and the plugin `agent` setting for running the session as the Oracle.
 4. **Build the ledger**, then the hooks, then the skills. Follow `/plugin-dev:create-plugin` from Phase 4. Test each piece on its own as it is built.
 5. **Smoke test.** Alex decided on 2026-09-21: once every piece works, run the swarm with the prompt "Create a hello world file." and confirm that all four agents were created and that the logs, tests, scores, and records are all there. The checklist is in `04-mcp-and-hooks.md` "Build order and the smoke test".
@@ -54,7 +56,8 @@ All are recorded in `04-mcp-and-hooks.md`.
 
 ## Working notes for this repo
 
-- `plans/*.md` are mapped in the code graph. After a plan edit, rebuild or refresh the graph before the commit, or the `pre-push` hook reports drift. The graph's authoring JSON is not kept. Use `/codebase-kg:refresh`.
+- `plans/*.md` are mapped in the code graph. After a plan edit, rebuild or refresh the graph before the commit, or the `pre-push` hook reports drift. The graph's authoring JSON is not kept. Use `/codebase-kg:refresh`. For a plan edit that leaves the node descriptions true, export the graph, then build the export with `--rebaseline`, and only when `kg_validate` lists no stale file that you did not re-read.
+- If the codebase-kg tools are missing in a new session, run `/reload-plugins`.
 - The builder CLI in this repo: `uvx --quiet --from "<codebase-kg plugin cache>/mcp" codebase-kg-build <json> -o knowledge/code_graph.db`.
 
 ## Housekeeping
