@@ -57,6 +57,18 @@ The minimum run is one of each role.
 - Escalation can raise the model. A fresh Coder that the Manager brings in during round 2 or 3 can run on the stronger model in the list. **(proposed)**
 - The registry records the model that each agent ran on, so the run analytics can show whether the cheaper models save money or cause more returns. **(proposed)**
 
+## Names and colors
+
+| Role | Color (Alex) | Name pattern **(proposed)** | Example |
+|---|---|---|---|
+| Oracle | cyan | `oracle` | `oracle` |
+| Manager | green | `mgr-<phase>` | `mgr-p2-api` |
+| Lead | purple | `lead-<phase>-<module>` | `lead-p2-auth` |
+| Coder | orange | `coder-<phase>-<module>-<file>` | `coder-p2-auth-login` |
+
+- Alex asked for dark green for the Manager. The agent `color` field accepts eight values only: red, blue, green, yellow, purple, orange, pink, and cyan. `green` is the closest.
+- A name shows the agent's place in the tree. It is also the address that other agents message, so it is unique within a run. The registry stores it. **(proposed)**
+
 ## The cycle that every layer repeats
 
 Each parent and child pair follows the same cycle:

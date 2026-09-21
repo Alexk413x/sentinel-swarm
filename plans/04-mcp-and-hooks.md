@@ -115,8 +115,8 @@ The Oracle starts a plain script at the start of a run. The script reads the reg
 4. How much time hook 7 adds to every tool call. It must stay small.
 5. Whether concurrent writers are safe for the ledger's SQLite file and for the code graph file.
 
-## Open questions
+## Decisions from Alex on 2026-09-20
 
-1. Oracle, Manager, and Lead get no shell. They run tests and git checks through ledger tools. Is that acceptable?
-2. A Coder's shell is limited to the commands in the project profile, and hook 8 reports any file that changed outside its claim. Is that the right balance, or does a Coder need a free shell?
-3. Hook 11 keeps the Oracle working until the run finishes or waits on the user. Is that wanted?
+1. **No shell above the Coder.** Oracle, Manager, and Lead use the MCP servers and the plugin's specific tooling only. They cannot create or write files directly or in free form. The ledger's database tracks their responses.
+2. **Coder shell and file locks.** A hook checks a Coder's shell use. The ledger's claims are also the file lock: `who_owns` tells any agent which agent holds a file, so it knows whom to ask when it needs to coordinate. The `status_tree` view shows every lock with its owner.
+3. **The Oracle keeps working.** Hook 11 holds the Oracle until every item has a passing score or has reached diminishing returns, on all fronts, or until the run waits on the user.
