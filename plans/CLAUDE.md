@@ -10,6 +10,7 @@ Read this file before you start work. Update the status column when a document c
 | `01-roles.md` | What each role does, owns, and hands off. The plan, models, testing, guidelines, escalation, watchdog | Six open questions resolved 2026-09-20. **(proposed)** items await Alex's review |
 | `02-rubric.md` | The shared scoring rubric: dimensions, scale, pass bar, honesty rules | Third draft on 2026-09-20. No open questions. **(proposed)** items await Alex's review |
 | `03-ledger.md` | Ledger tables, agent registry, per-role settings, lifecycle gates, platform facts for hooks | First draft |
+| `04-mcp-and-hooks.md` | MCP servers, ledger tools, the hook list, the rule-to-enforcement map, one file's flow | First draft, proposed. Three open questions |
 | `notes-agent-view-vs-subagents.md` | Context sharing, customization, and interaction: agent view sessions versus subagents | Notes only |
 | `notes-prompt-cache-costs.md` | Cost notes to discuss during swarm testing | Notes only |
 
