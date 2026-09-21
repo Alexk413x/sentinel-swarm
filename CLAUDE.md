@@ -13,6 +13,9 @@ are the source of truth for every role's responsibilities.
 - `hooks/` — `hooks.json` and the planned hook table.
 - `templates/` — the `.local.md` settings example for a host repo.
 - `mcp/` — the swarm-ledger Python server. A separate project; see `mcp/README.md`.
+- `knowledge/` — `code_graph.db`, the codebase-kg map of this repo. Committed.
+- `.githooks/` — the codebase-kg staleness hooks. Run `sh .githooks/install.sh` once per
+  clone.
 - `plans/` — design documents. Do not treat anything outside `plans/` as settled
   until the matching plan document says so.
 

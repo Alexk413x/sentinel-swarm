@@ -12,7 +12,7 @@ Status on 2026-09-21: written by session `sentinel-swarm-a8` for the next sessio
 
 ## Next steps, in order
 
-1. **Code graph for this repo.** `.claude/settings.json` enables codebase-kg. It loads at session start, so a session that starts after 2026-09-21 has its tools. Run `/codebase-kg:build`, then `/codebase-kg:setup`. The setup command installs `.githooks/`, so this repo has no hand-made git hooks.
+1. **Code graph for this repo.** Done on 2026-09-21. The graph is at `knowledge/code_graph.db`, and `/codebase-kg:setup` installed `.githooks/`. Run `/codebase-kg:refresh` after changes to mapped files.
 2. **Prototype checks.** Run them as small tests inside the skeleton, because they decide several mechanics. The lists are under "To verify with a prototype" in `03-ledger.md` and `04-mcp-and-hooks.md`:
    - Whether a `PreToolUse` hook can rewrite a tool's input, to stamp an agent's identity onto a ledger call.
    - Whether `SubagentStop` can block.
