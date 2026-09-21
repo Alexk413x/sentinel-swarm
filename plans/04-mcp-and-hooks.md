@@ -150,6 +150,20 @@ Decision from Alex on 2026-09-21: every directive carries full authority, whatev
 
 Design point for hook 11: "waiting on running children" is a valid stop state, next to "waiting on the user". Without it, the Oracle spins while its Managers work. **(proposed)**
 
+## Prototype results on 2026-09-21
+
+Run on Windows 11 from a main session. Each result names its check number from the list above.
+
+| Check | Result | Consequence |
+|---|---|---|
+| 6. Nesting depth | Three subagent layers ran below the session. The third layer had no `Agent` tool, so a fourth layer is not possible by default | Oracle as the session, then Manager, Lead, and Coder, fits exactly. There is no spare layer. The relay-session option in `01-roles.md` "Models" would need the depth setting raised |
+| 6. Resume with `SendMessage` | A parent resumed a finished child by its agent id, and the child kept its context: it repeated a number from its first turn | Step 8 of "One file, start to finish" works |
+| 6. Trust in a resume message | A resumed child refused a request that its original prompt had not told it to expect. It treated the message as unverified. A child whose prompt announced the follow-up answered it | Each role's prompt states that its parent resumes it by message. The message only points at the ledger record, such as a `return_work` entry, and the child reads the detail there **(proposed)** |
+| 5. SQLite writers | 12 processes, 300 writes each. WAL mode with a 5 second busy timeout and `BEGIN IMMEDIATE`: 3600 of 3600 writes, no errors, about 2900 writes a second. The default journal with the same timeout: 47 errors, about 60 writes a second. No timeout: most writes fail in both modes | The ledger opens every connection with WAL, a busy timeout, and `BEGIN IMMEDIATE` for writes **(proposed)** |
+| 4 and 10. Hook cost | A Python hook that does nothing costs about 300 ms for each call, measured through Git Bash. `python3` exists on this machine, so the `python3 ... \|\| python ...` form added nothing here. The Store stub case is not measured | 300 ms on every tool call is too much for hook 7 as a plain Python process. Options: limit hook 7 to the tools that matter, or send the heartbeat to a process that is already running. Measure again through the real hook runner before deciding **(proposed)** |
+
+Not run yet: checks 1, 2, 3, 7, 8, and 9, and the code graph half of check 5.
+
 ## Plugin features found on 2026-09-21
 
 Read from `code.claude.com/docs/en/plugins-reference.md`, through a summarizing fetch. Each is a candidate, not a decision. **(proposed)**
