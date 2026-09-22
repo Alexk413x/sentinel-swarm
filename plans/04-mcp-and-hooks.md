@@ -235,6 +235,8 @@ echo "Create a hello world file." | claude -p --agent sentinel-swarm:oracle \
 
 Both `--plugin-dir` flags are needed: sentinel-swarm declares codebase-kg as a dependency, and the plugin does not load when the dependency is absent from the session.
 
+Decision from Alex on 2026-09-22: the smoke test runs inside this repo, in the git-ignored folder `runs/hello/`. `scripts/smoke.sh` deletes the folder, rebuilds the host repo in `runs/hello/host/`, and runs the command above. The transcript goes to `runs/hello/transcript.jsonl`, outside the host repo. The run loads this repo's `CLAUDE.md` as a parent file. Alex accepted that, because a real host repo loads its own `CLAUDE.md` in the same way. `runs/hello/` was seeded with run 4's results.
+
 | Run | Result | What it found |
 |---|---|---|
 | 1 | Stalled after `run_start` | Hook 6 stamped `agent_id` onto `ledger_info`, which has no such parameter. FastMCP runs tool calls on worker threads, and the SQLite connection refused cross-thread use |
@@ -258,7 +260,7 @@ Run 3 against the checklist, read from the ledger rows:
 | Events | 12 lifecycle events in order, from `run_start` to the two `agent_release` calls |
 | Report | `report.md` was written before `run_finish`, so it said `Outcome: active`; `run_finish` now rebuilds it |
 
-Observed but not fixed: the Oracle's final message used the persona from the user's global `CLAUDE.md`, although its prompt says to ignore persona instructions. The Stop hook held the Oracle in the session across six intermediate stops while its children ran, which is hook 11 working as designed. The gates that fired in the run: the shell gate denied a Coder's `cd` command in run 2, and `tests_run(scope="file")` refused the Lead in run 3.
+Observed but not fixed: the Oracle's final message used the persona from the user's global `CLAUDE.md`. The prompts tell each role to ignore persona instructions in the host repo's `CLAUDE.md`, and the global file is not the host repo's file. Decision from Alex on 2026-09-22: this is expected. A persona from the user's own settings may appear in messages to the user. No persona text reached the ledger rows or `report.md` in run 4. The Stop hook held the Oracle in the session across six intermediate stops while its children ran, which is hook 11 working as designed. The gates that fired in the run: the shell gate denied a Coder's `cd` command in run 2, and `tests_run(scope="file")` refused the Lead in run 3.
 
 ## Plugin features found on 2026-09-21
 

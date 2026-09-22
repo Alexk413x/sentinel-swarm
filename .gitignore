@@ -12,6 +12,9 @@ dist/
 # Per-project local config
 .claude/*.local.md
 
+# Smoke-test runs: scripts/smoke.sh rebuilds runs/hello/ on each run.
+runs/
+
 # codebase-kg working file: a snapshot, not a source.
 .kg-export.json
 

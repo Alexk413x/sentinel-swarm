@@ -12,7 +12,7 @@ Status on 2026-09-22: written by session `sentinel-swarm-a8`, updated by `sentin
 
 ## Next steps, in order
 
-1. **Review the smoke-test findings with Alex.** The table in `04-mcp-and-hooks.md` lists what each run found and fixed. Two observations are unfixed: the Oracle's final message picked up the persona from the user's global `CLAUDE.md`, and a headless Oracle is held in the session by the Stop hook while its children run.
+1. **Review the smoke-test findings with Alex.** The table in `04-mcp-and-hooks.md` lists what each run found and fixed. Two observations are unfixed. The Oracle's final message picked up the persona from the user's global `CLAUDE.md`; Alex decided on 2026-09-22 that this is expected, because it is the user's own setting and it did not reach the ledger or the report. A headless Oracle is held in the session by the Stop hook while its children run. Alex has not yet reviewed the hello-world run's output.
 2. **Run the swarm on a real PRD** with two or more files in one module, then two modules, to exercise `return_work`, `attempt_record`, message routing between Coders, and parallel claims. Watch cost: the hello-world run cost about $3.61, mostly the Oracle on fable and the Manager and Lead on opus.
 3. **Build the watchdog** and decide its home: `monitors/monitors.json` or a script the Oracle starts. It reads `agents.last_heartbeat_at` and reports through `directive_submit(source="watchdog")`.
 4. **The missing tools** listed above, as Alex prioritizes them.
@@ -67,7 +67,7 @@ All are recorded in `04-mcp-and-hooks.md`.
 
 ## Working notes for the smoke test
 
-- The scratch host repo lives in the session scratchpad, not in this repo. To rebuild one: a git repo with a README, a `pyproject.toml` that sets `testpaths` and `pythonpath`, `.claude/settings.json` that enables codebase-kg, `.claude/sentinel-swarm.local.md` from the template with `test_command: python -m pytest -q -p no:cacheprovider {target}`, and a one-node graph built from a JSON document with a `covers` list.
+- Run `bash scripts/smoke.sh ["<prompt>"]` from this repo. It deletes `runs/hello/`, rebuilds the host repo in `runs/hello/host/`, runs the Oracle headless, and writes the transcript to `runs/hello/transcript.jsonl`. `runs/` is git-ignored. The host repo has a README, a `pyproject.toml` that sets `testpaths` and `pythonpath`, `.claude/sentinel-swarm.local.md` from the template with `test_command: python -m pytest -q -p no:cacheprovider {target}`, and a one-node graph. Set `KG_PLUGIN_DIR` to pick a codebase-kg version other than the newest in the plugin cache.
 - A headless run needs an explicit `--allowedTools` list. Do not use `--dangerously-skip-permissions`; the session's permission classifier denies it.
 - Judge a run from `.sentinel-swarm/ledger.db`, not from the transcript. The queries used are in the results table's rows.
 
