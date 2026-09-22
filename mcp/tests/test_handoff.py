@@ -668,3 +668,48 @@ def test_graph_upsert_integration_calls_the_real_codebase_kg(ledger: Ledger) -> 
         ],
     )
     assert result.get("ok") is True
+
+
+# -- issue lifecycle ---------------------------------------------------------------
+
+
+def test_lead_review_closes_resolved_issues_and_dedupes_open_ones(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    lead = ctx["lead"]["agent_id"]
+    coder = _spawn_coder(ledger, ctx, "coder-iss", "pkg/good.py", "tests/test_good.py")
+    file_id = _file_id_for(ledger, "pkg/good.py")
+    low = _all_ratings(10, overrides={"performance": 4})
+    ledger.score_record("coder-iss", coder["agent_id"], file_id, low, _all_applicable(), "self")
+    first = ledger.handoff_submit("coder-iss", coder["agent_id"], file_id, [], [])
+    opened = ledger.score_record("lead-1", lead, file_id, low, _all_applicable(), "lead")
+    assert opened["issues"]
+    open_now = [i for i in ledger.issue_list("lead-1", lead, file_id) if i["state"] == "open"]
+    assert len(open_now) == len(opened["issues"])
+    ledger.review_compare("lead-1", lead, first["handoff_id"])
+    ledger.return_work("lead-1", lead, first["handoff_id"], ["slow"], ["performance"])
+
+    ledger.score_record(
+        "coder-iss", coder["agent_id"], file_id, _all_ratings(10), _all_applicable(), "self"
+    )
+    second = ledger.handoff_submit("coder-iss", coder["agent_id"], file_id, [], [])
+    closed = ledger.score_record(
+        "lead-1", lead, file_id, _all_ratings(10), _all_applicable(), "lead"
+    )
+    assert sorted(closed["closed_issues"]) == sorted(opened["issues"])
+    assert closed["issues"] == []
+    ledger.review_compare("lead-1", lead, second["handoff_id"])
+    assert ledger.approve("lead-1", lead, second["handoff_id"])["state"] == "approved"
+
+
+def test_issue_close_is_for_the_lead_manager_or_oracle(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    lead = ctx["lead"]["agent_id"]
+    coder = _spawn_coder(ledger, ctx, "coder-cl", "pkg/good.py", "tests/test_good.py")
+    file_id = _file_id_for(ledger, "pkg/good.py")
+    issue = ledger.issue_open("lead-1", lead, file_id, "Stray", "Found.")
+    with pytest.raises(LedgerError):
+        ledger.issue_close("coder-cl", coder["agent_id"], issue["issue_id"], "fixed")
+    closed = ledger.issue_close("lead-1", lead, issue["issue_id"], "fixed in review")
+    assert closed["state"] == "closed"
+    with pytest.raises(LedgerError, match="already closed"):
+        ledger.issue_close("oracle", ctx["oracle_id"], issue["issue_id"], "again")

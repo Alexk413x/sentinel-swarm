@@ -7,26 +7,52 @@ description: Continues an unfinished sentinel-swarm run from its ledger records.
 
 Continues a run that stopped before the Oracle reported it complete.
 
-## Purpose
+## How a resume works
 
-Picks an unfinished run back up from its ledger records, so a crashed session, a
-replaced agent, or an interrupted run does not lose its plan, briefs, scores, or
-open issues.
+A run is resumed by starting the Oracle session again, in the same working tree:
 
-## Planned steps
+```
+claude --agent sentinel-swarm:oracle
+```
 
-1. Read the ledger for the most recent unfinished run in this working tree, per
-   `plans/03-ledger.md` "Tracking and storage": records live in one folder at the
-   root of the main checkout, so a resume only works on the same machine.
-2. Report the run's last known state: its phase plan, its agent tree, and its open
-   issues, using the same view `status` produces.
-3. Recreate whichever agents the run still needs, from their last recorded brief and
-   state, rather than starting the plan over.
-4. Continue the brief-work-review cycle from where each agent left off.
-5. Flag anything the ledger cannot resolve on its own, such as an agent that
-   stopped mid-handoff, for the Oracle or the user to decide.
+Tell it to resume rather than pasting the PRD again. The run's state is in
+`.sentinel-swarm/ledger.db`, not in any agent's context, so the Oracle continues from
+the records.
 
-## Status
+The records live in one folder at the root of the main checkout, so a resume only
+works on the same machine and the same working tree.
 
-Not implemented. The swarm-ledger MCP server this skill depends on does not exist
-yet, so this skill has no ledger records to resume from today.
+## What the Oracle does
+
+1. `run_status()` instead of `run_start()`. It returns the run, its phases, its
+   modules, its files, and their states.
+2. `status_tree()` and `issue_list()` for the agent tree and what is still open.
+3. `message_inbox()` and `directive_inbox()` for anything that arrived while the
+   session was gone.
+4. For every phase that is unlocked or working but has no live Manager: a fresh
+   `brief_create` from the previous brief's content, then a spawn. The same applies
+   one layer down, inside each Manager and Lead. A child is re-created from its
+   brief, not started over from the plan.
+5. Anything the records cannot settle goes to the user: a Coder that stopped between
+   its last edit and its handoff, a file whose claim is live but whose owner is gone,
+   or an issue in the middle of a round.
+
+## Before re-creating a child
+
+`brief_create` refuses a `child_name` that a live agent still holds, and refuses a
+second unacked brief for the same name. Check the agent's state first. Release an
+agent that is no longer running with `agent_release(target_agent_id)`, then create
+the new brief.
+
+## How the Oracle re-binds
+
+The Oracle calls `run_start` in the new session, as it does for a new run. When a run
+is already active, `run_start` does not start a second one: it ends the old Oracle
+row, binds the Oracle's name to the new session id, moves the live children and briefs
+to the new parent, and returns the existing run with `"resumed": true`. The PRD
+argument is ignored on a resume.
+
+## Check the state first
+
+`/sentinel-swarm:status` reads the same database without changing anything. Run it
+before a resume to see which phase, file, and agent the run stopped on.

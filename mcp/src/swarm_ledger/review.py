@@ -284,17 +284,30 @@ class ReviewMixin:
                     "VALUES (?, ?, ?, ?)",
                     (review_id, rating.dimension, rating.criterion, rating.value),
                 )
+            closed_ids: list[int] = []
+            if kind == "lead":
+                closed_ids = self._close_resolved_issues(conn, c.agent_id, file_id, rating_objs)
             issue_ids = []
             for rating in rubric.issues_from(rating_objs):
+                existing = conn.execute(
+                    "SELECT issue_id FROM issues WHERE file_id = ? AND state = 'open' "
+                    "AND dimension = ? AND criterion = ?",
+                    (file_id, rating.dimension, rating.criterion),
+                ).fetchone()
+                if existing is not None:
+                    issue_ids.append(existing["issue_id"])
+                    continue
                 cur = conn.execute(
                     "INSERT INTO issues (run_id, file_id, opened_by_agent_id, title, body, "
-                    "state) VALUES (?, ?, ?, ?, ?, 'open')",
+                    "state, dimension, criterion) VALUES (?, ?, ?, ?, ?, 'open', ?, ?)",
                     (
                         c.run_id,
                         file_id,
                         c.agent_id,
                         _criterion_text(rating.dimension, rating.criterion),
                         rating.reason or "",
+                        rating.dimension,
+                        rating.criterion,
                     ),
                 )
                 issue_ids.append(cur.lastrowid)
@@ -306,7 +319,54 @@ class ReviewMixin:
             "ok": ok,
             "reasons": reasons,
             "issues": issue_ids,
+            "closed_issues": closed_ids,
         }
+
+    def _close_resolved_issues(
+        self, conn: sqlite3.Connection, closer: str, file_id: int, ratings: list[Rating]
+    ) -> list[int]:
+        resolved = {(r.dimension, r.criterion) for r in ratings if r.value >= 5}
+        open_rows = conn.execute(
+            "SELECT issue_id, dimension, criterion FROM issues "
+            "WHERE file_id = ? AND state = 'open' AND dimension IS NOT NULL",
+            (file_id,),
+        ).fetchall()
+        closed: list[int] = []
+        for row in open_rows:
+            if (row["dimension"], row["criterion"]) in resolved:
+                conn.execute(
+                    f"UPDATE issues SET state = 'closed', closed_by_agent_id = ?, "
+                    f"resolution = 'rated 5 or higher in the Lead review', closed_at = {_NOW} "
+                    "WHERE issue_id = ?",
+                    (closer, row["issue_id"]),
+                )
+                closed.append(row["issue_id"])
+        return closed
+
+    def issue_close(self, caller: str, agent_id: str, issue_id: int, resolution: str) -> dict:
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            row = conn.execute("SELECT * FROM issues WHERE issue_id = ?", (issue_id,)).fetchone()
+            if row is None:
+                raise LedgerError(f"unknown issue_id {issue_id!r}")
+            if row["state"] != "open":
+                raise LedgerError(f"issue {issue_id} is already {row['state']}")
+            if c.role == "lead":
+                file_row = conn.execute(
+                    "SELECT module_id FROM files WHERE file_id = ?", (row["file_id"],)
+                ).fetchone()
+                if file_row is None or file_row["module_id"] != c.module_id:
+                    raise LedgerError(f"{caller!r} is not the Lead of this file's module")
+            else:
+                require_role(c, "oracle", "manager")
+            conn.execute(
+                f"UPDATE issues SET state = 'closed', closed_by_agent_id = ?, resolution = ?, "
+                f"closed_at = {_NOW} WHERE issue_id = ?",
+                (c.agent_id, resolution, issue_id),
+            )
+        return dict(
+            self.conn.execute("SELECT * FROM issues WHERE issue_id = ?", (issue_id,)).fetchone()
+        )
 
     # -- Handoff ----------------------------------------------------------------
 

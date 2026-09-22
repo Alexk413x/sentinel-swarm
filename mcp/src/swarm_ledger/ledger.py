@@ -65,8 +65,9 @@ class Ledger(ReviewMixin):
 
     def run_start(self, prd: str, session_id: str, oracle_name: str = "oracle") -> dict:
         with write_tx(self.conn) as conn:
-            if conn.execute("SELECT 1 FROM runs WHERE state = 'active'").fetchone() is not None:
-                raise LedgerError("a run is already active")
+            active = conn.execute("SELECT * FROM runs WHERE state = 'active'").fetchone()
+            if active is not None:
+                return self._run_resume(conn, active, session_id)
 
             cur = conn.execute(
                 "INSERT INTO runs (prd, state, plugin_version, settings_json) "
@@ -90,7 +91,49 @@ class Ledger(ReviewMixin):
             self._log_event(conn, session_id, None, "working", "run_start")
 
         run = self.conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
-        return {"run": dict(run), "oracle": self._agent_dict(session_id)}
+        return {"run": dict(run), "oracle": self._agent_dict(session_id), "resumed": False}
+
+    def _run_resume(self, conn: sqlite3.Connection, run: sqlite3.Row, session_id: str) -> dict:
+        oracle = conn.execute(
+            "SELECT * FROM agents WHERE run_id = ? AND role = 'oracle' "
+            "ORDER BY started_at DESC LIMIT 1",
+            (run["run_id"],),
+        ).fetchone()
+        if oracle is None:
+            raise LedgerError("the active run has no Oracle row")
+        old_id = oracle["agent_id"]
+        if old_id != session_id:
+            conn.execute(
+                f"UPDATE agents SET ended_at = COALESCE(ended_at, {_NOW}), "
+                "end_reason = COALESCE(end_reason, 'resumed by a new session'), "
+                "state = 'released' WHERE agent_id = ?",
+                (old_id,),
+            )
+            conn.execute(
+                "INSERT INTO agents (agent_id, name, role, runtime, model, effort, "
+                "settings_json, run_id, state, phase_at_start, started_at) "
+                f"VALUES (?, ?, 'oracle', ?, ?, ?, ?, ?, 'working', ?, {_NOW})",
+                (
+                    session_id,
+                    oracle["name"],
+                    oracle["runtime"],
+                    oracle["model"],
+                    oracle["effort"],
+                    oracle["settings_json"],
+                    run["run_id"],
+                    oracle["phase_at_start"],
+                ),
+            )
+            conn.execute(
+                "UPDATE agents SET parent_agent_id = ? WHERE parent_agent_id = ?",
+                (session_id, old_id),
+            )
+            conn.execute(
+                "UPDATE briefs SET parent_agent_id = ? WHERE parent_agent_id = ?",
+                (session_id, old_id),
+            )
+            self._log_event(conn, session_id, oracle["state"], "working", f"resumed from {old_id}")
+        return {"run": dict(run), "oracle": self._agent_dict(session_id), "resumed": True}
 
     def run_status(self, caller: str, agent_id: str) -> dict:
         conn = self.conn
@@ -281,7 +324,11 @@ class Ledger(ReviewMixin):
             raise LedgerError(f"unknown phase state {state!r}")
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
-            require_role(c, "oracle")
+            require_role(c, "oracle", "manager")
+            if c.role == "manager" and (
+                c.phase_id != phase_id or state not in ("working", "handed_up")
+            ):
+                raise LedgerError("a Manager sets only its own phase to working or handed_up")
             if (
                 conn.execute("SELECT 1 FROM phases WHERE phase_id = ?", (phase_id,)).fetchone()
                 is None
@@ -856,6 +903,27 @@ class Ledger(ReviewMixin):
         return dict(
             self.conn.execute("SELECT * FROM issues WHERE issue_id = ?", (issue_id,)).fetchone()
         )
+
+    # -- Hook support ---------------------------------------------------------
+
+    def mark_stale(self, agent_id: str, path: str) -> dict:
+        with write_tx(self.conn) as conn:
+            cur = conn.execute(
+                f"UPDATE files SET stale_since = {_NOW} WHERE released_at IS NULL "
+                "AND file_id = (SELECT file_id FROM agents WHERE agent_id = ?) "
+                "AND (path = ? OR test_path = ?)",
+                (agent_id, path, path),
+            )
+        return {"path": path, "updated": cur.rowcount > 0}
+
+    def agent_compacted(self, agent_id: str) -> dict:
+        with write_tx(self.conn) as conn:
+            conn.execute(
+                "UPDATE agents SET context_overflow_count = "
+                "COALESCE(context_overflow_count, 0) + 1 WHERE agent_id = ?",
+                (agent_id,),
+            )
+        return self._agent_dict(agent_id)
 
     # -- Events -------------------------------------------------------------
 

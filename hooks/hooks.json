@@ -1,4 +1,136 @@
 {
-  "description": "No hooks are wired yet. The plan (plans/04-mcp-and-hooks.md) calls for twelve hooks: a SessionStart check that registers the session, reports an unfinished run, and checks codebase-kg and the records exclude; a PreToolUse spawn gate on the Agent tool; a SubagentStart registry write; a PreToolUse role and ownership gate on Write, Edit, MultiEdit, and NotebookEdit; a PreToolUse shell gate on Bash and PowerShell for Coders; a PreToolUse identity-stamp and permission check on the swarm-ledger MCP tools; a PostToolUse heartbeat and staleness marker; a PostToolUse claim-versus-change check on Bash and PowerShell; a PreCompact context-overflow counter; a SubagentStop registry close and missing-handoff flag; a Stop gate that keeps the Oracle session going while work remains; and a SessionEnd registry close. See hooks/README.md for the full table.",
-  "hooks": {}
+  "description": "Ledger-backed enforcement: gates spawns, writes, and shell use; stamps agent identity on ledger calls; tracks the agent registry; and keeps the Oracle session going while work remains.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --project \"${CLAUDE_PLUGIN_ROOT}/mcp\" --frozen --no-dev python -m swarm_ledger.hooks session_start",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --project \"${CLAUDE_PLUGIN_ROOT}/mcp\" --frozen --no-dev python -m swarm_ledger.hooks pre_agent",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --project \"${CLAUDE_PLUGIN_ROOT}/mcp\" --frozen --no-dev python -m swarm_ledger.hooks pre_write",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --project \"${CLAUDE_PLUGIN_ROOT}/mcp\" --frozen --no-dev python -m swarm_ledger.hooks pre_shell",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__plugin_sentinel-swarm_swarm-ledger__.*|mcp__swarm-ledger__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --project \"${CLAUDE_PLUGIN_ROOT}/mcp\" --frozen --no-dev python -m swarm_ledger.hooks pre_ledger",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "sentinel-swarm:oracle|sentinel-swarm:manager|sentinel-swarm:lead|sentinel-swarm:coder|oracle|manager|lead|coder",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --project \"${CLAUDE_PLUGIN_ROOT}/mcp\" --frozen --no-dev python -m swarm_ledger.hooks subagent_start",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --project \"${CLAUDE_PLUGIN_ROOT}/mcp\" --frozen --no-dev python -m swarm_ledger.hooks post_any",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --project \"${CLAUDE_PLUGIN_ROOT}/mcp\" --frozen --no-dev python -m swarm_ledger.hooks post_shell",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --project \"${CLAUDE_PLUGIN_ROOT}/mcp\" --frozen --no-dev python -m swarm_ledger.hooks pre_compact",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "sentinel-swarm:oracle|sentinel-swarm:manager|sentinel-swarm:lead|sentinel-swarm:coder|oracle|manager|lead|coder",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --project \"${CLAUDE_PLUGIN_ROOT}/mcp\" --frozen --no-dev python -m swarm_ledger.hooks subagent_stop",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --project \"${CLAUDE_PLUGIN_ROOT}/mcp\" --frozen --no-dev python -m swarm_ledger.hooks stop",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --project \"${CLAUDE_PLUGIN_ROOT}/mcp\" --frozen --no-dev python -m swarm_ledger.hooks session_end",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
 }

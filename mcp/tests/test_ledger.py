@@ -139,12 +139,18 @@ def test_run_start_binds_the_oracle(ledger: Ledger) -> None:
     assert oracle["runtime"] == "session"
 
 
-def test_run_start_once_and_refused_twice(ledger: Ledger) -> None:
-    ledger.run_start(prd="Build X", session_id="sess-1")
-    with pytest.raises(LedgerError):
-        ledger.run_start(prd="Build Y", session_id="sess-2")
-    with pytest.raises(LedgerError):
-        ledger.run_start(prd="Build Z", session_id="sess-3")
+def test_run_start_twice_keeps_one_active_run(ledger: Ledger) -> None:
+    first = ledger.run_start(prd="Build X", session_id="sess-1")
+    second = ledger.run_start(prd="Build Y", session_id="sess-2")
+    assert second["resumed"] is True
+    assert second["run"]["run_id"] == first["run"]["run_id"]
+    assert second["run"]["prd"] == "Build X"
+    active = ledger.conn.execute("SELECT COUNT(*) AS n FROM runs WHERE state = 'active'")
+    assert active.fetchone()["n"] == 1
+    live_oracles = ledger.conn.execute(
+        "SELECT agent_id FROM agents WHERE role = 'oracle' AND ended_at IS NULL"
+    ).fetchall()
+    assert [r["agent_id"] for r in live_oracles] == ["sess-2"]
 
 
 def test_run_status_reports_phases_agents_and_open_items(ledger: Ledger) -> None:
@@ -539,3 +545,37 @@ def test_every_lifecycle_transition_writes_an_agent_event(ledger: Ledger) -> Non
     ledger.agent_release("manager-1", ctx["manager"]["agent_id"], ctx["lead"]["agent_id"])
     lead_events = ledger.events(agent_id=ctx["lead"]["agent_id"])
     assert any(e["to_state"] == "released" for e in lead_events)
+
+
+# -- resume and phase updates by a Manager ------------------------------------------
+
+
+def test_run_start_resumes_the_active_run_for_a_new_session(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    ledger.agent_stop("sess-1", end_reason="exit")
+    resumed = ledger.run_start(prd="ignored", session_id="sess-2")
+    assert resumed["resumed"] is True
+    assert resumed["oracle"]["agent_id"] == "sess-2"
+    assert resumed["oracle"]["state"] == "working"
+    status = ledger.run_status("oracle", "sess-2")
+    assert status["run"]["run_id"] == resumed["run"]["run_id"]
+    manager = ledger.conn.execute(
+        "SELECT parent_agent_id FROM agents WHERE agent_id = ?", (ctx["manager"]["agent_id"],)
+    ).fetchone()
+    assert manager["parent_agent_id"] == "sess-2"
+    with pytest.raises(LedgerError):
+        ledger.run_status("oracle", "sess-1")
+
+
+def test_manager_sets_its_own_phase_to_working_and_handed_up_only(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    mgr = ctx["manager"]["agent_id"]
+    assert ledger.phase_update("manager-1", mgr, ctx["phase_id"], "working")["state"] == "working"
+    assert (
+        ledger.phase_update("manager-1", mgr, ctx["phase_id"], "handed_up")["state"] == "handed_up"
+    )
+    with pytest.raises(LedgerError):
+        ledger.phase_update("manager-1", mgr, ctx["phase_id"], "approved")
+    other = ledger.phase_add("oracle", ctx["oracle_id"], "phase-2")
+    with pytest.raises(LedgerError):
+        ledger.phase_update("manager-1", mgr, other["phase_id"], "working")
