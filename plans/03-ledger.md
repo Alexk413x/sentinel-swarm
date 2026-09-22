@@ -19,6 +19,8 @@ Status on 2026-09-20: first draft. Bullets marked **(proposed)** are Claude's ad
 - The plugin ignores them through `.git/info/exclude`, not through the host's `.gitignore`. The exclude file is local and uncommitted, so the plugin leaves no trace in the host repo, and it applies to every worktree of the repo. **(proposed)**
 - The records live in one folder at the root of the main checkout, outside any worktree, so that every session and subagent reads the same ledger. **(proposed)**
 - The final report lives in the same folder and is ignored too. The user copies it out when they want to keep it. **(proposed)**
+- The folder is `.sentinel-swarm/` at the root of the main checkout, and the ledger is `.sentinel-swarm/ledger.db`. A worktree's `.git` file points to the main checkout, and the ledger resolves it. **(proposed)**
+- Every connection opens with WAL, `synchronous=NORMAL`, a 5 second busy timeout, and foreign keys on. Writes run inside `BEGIN IMMEDIATE`. See check 5 in `04-mcp-and-hooks.md`. **(proposed)**
 - Consequence: a run can resume on the same machine only. A fresh clone has no records. A later setting can allow committed records. **(proposed)**
 
 ## Per-role settings
