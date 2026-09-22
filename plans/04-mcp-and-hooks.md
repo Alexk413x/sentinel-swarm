@@ -107,6 +107,8 @@ All hooks live in the plugin's `hooks/hooks.json`, because plugin agents ignore 
 
 Decision from Alex on 2026-09-22: each role keeps its fixed `tools` allowlist in the frontmatter. A denylist was considered so that agents would inherit a host project's plugins, skills, and language servers, and the probe below shows that it works. Alex chose the allowlist after the probe showed what a denylist also lets in: personal-account connectors, GitHub and Jira under any server name, and session tools that bypass the ledger. A host project's plugin tools are not available to the swarm.
 
+Later decision from Alex on 2026-09-22, which extends the one above: the allowlist defaults to every plugin enabled at the host project's scope, and the user can remove entries or add others in the project. User-level plugins, user MCP servers, and claude.ai connectors are never included. The mechanism is open. Alex prefers per-agent settings that a project can override to a hook, if the platform offers one.
+
 Probe on 2026-09-22, with a throwaway plugin on haiku, run in both a `--agent` session and as plugin subagents:
 
 - A plugin agent's `disallowedTools` works in both places. With no `tools` key, the agent inherits every other tool in the session: other plugins' MCP tools (a11y, the drivers) and `Skill`.
@@ -115,6 +117,18 @@ Probe on 2026-09-22, with a throwaway plugin on haiku, run in both a `--agent` s
 - GitHub and Jira reach a session through five servers on this machine: `plugin_github_github`, the user server `github`, `plugin_atlassian_atlassian`, the claude.ai connector `claude_ai_Atlassian_Rovo`, and the user server `atlassian-attachments`. A denylist catches only the names it lists, so another user's GitHub or Jira server under a different name is not caught.
 - A session also inherits the claude.ai connectors (Gmail, Google Calendar, Google Drive, Claude Docs) and session tools such as `EnterWorktree`, `Workflow`, `CronCreate`, and `RemoteTrigger`.
 - No language server tool appeared, because no installed plugin provides one. That case is not verified.
+
+Per-project agent configuration, researched on 2026-09-22 from `code.claude.com/docs/en/sub-agents.md`, `plugins.md`, and `plugins-reference.md`, then probed:
+
+- No setting edits a plugin agent's frontmatter. A plugin's own `settings.json` supports only `agent` and `subagentStatusLine`. `userConfig` values substitute into an agent's body text, not its `tools` line.
+- A `tools` line accepts a whole server: `mcp__<server>` or `mcp__<server>__*`.
+- A project agent in `.claude/agents/` honors `hooks`, `mcpServers`, and `permissionMode`, which plugin agents ignore.
+- The docs say a project agent with the same name takes precedence over a plugin agent. The probe showed that this does not apply to a namespaced plugin agent: a project `control` and the plugin's `probe:control` both exist, and each name spawns its own file. A project agent replaces the plugin's agent only when the swarm spawns the project agent's name.
+- The project copy, on haiku, answered in the persona from the user's global `CLAUDE.md` instead of following its own one-line prompt. Subagents load the user's `CLAUDE.md`.
+- A session loads its agents once, at startup. An agent file written during the session, even by a `SessionStart` hook, is not found: `Agent type 'late' not found`. A new agent file takes effect in the next session only.
+- The Write tool cannot write into `.claude/`, even with `acceptEdits`. The files must be written by the ledger or a hook, in Python.
+
+Decision from Alex on 2026-09-22: each host project gets its own agent files in `.claude/agents/`, generated from the plugin's templates. Each file's `tools` line holds the core set plus the plugins the project enables, and the user edits it. When a run starts and the files are missing, the run performs the setup and writes them, then tells the user plainly to type `/reload-plugins`. No tool, skill, or hook can issue that command; only the user or a script driving the session can. Verified on 2026-09-22 in an interactive session: after `/reload-plugins`, a new file in the project's `.claude/agents/` is listed as an agent type and spawns. In both probes, a haiku agent with a one-line prompt answered in the user's persona instead of following its prompt. The swarm's prompts are long and run on sonnet or larger, and the smoke test followed them, but a run should check that project agents follow their prompts.
 
 ## Watchdog
 
