@@ -8,7 +8,7 @@ from typing import Any, Literal, TypeVar
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
-from . import __version__, env
+from . import __version__, env, rubric
 from .identity import LedgerError
 from .ledger import Ledger
 
@@ -463,7 +463,10 @@ def graph_upsert(
 # -- Scoring ----------------------------------------------------------------------------------
 
 
-@mcp.tool
+@mcp.tool(
+    description="Records a self or lead review; a Coder records self, a Lead records lead. "
+    "Ratings cover every criterion of every applicable dimension. " + rubric.schema_help()
+)
 def score_record(
     caller: str,
     file_id: int,
@@ -473,7 +476,6 @@ def score_record(
     targeted: list[str] | None = None,
     agent_id: str | None = None,
 ) -> dict[str, Any]:
-    """Records a self or lead review's ratings; a Coder records self, a Lead records lead."""
     return _call(
         _ledger().score_record,
         caller=caller,

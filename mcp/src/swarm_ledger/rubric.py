@@ -101,6 +101,17 @@ _CRITERIA_BY_DIMENSION: dict[str, tuple[str, ...]] = {
     key: tuple(criterion_key for criterion_key, _ in criteria) for key, _, criteria in DIMENSIONS
 }
 
+RATING_SHAPE = (
+    'each rating is {"dimension": <key>, "criterion": <key>, "value": 1..10, '
+    '"reason": <text, required below 9>, "ref": <file:line or null>}; '
+    "applicable maps every dimension key to null or a one-line reason it does not apply"
+)
+
+
+def schema_help() -> str:
+    parts = [f"{key}: {', '.join(criteria)}" for key, criteria in _CRITERIA_BY_DIMENSION.items()]
+    return RATING_SHAPE + ". Keys: " + "; ".join(parts)
+
 
 @dataclass
 class Thresholds:
@@ -125,10 +136,11 @@ def validate_ratings(ratings: list[Rating], applicable: dict[str, str | None]) -
     rated: dict[str, set[str]] = {}
     for rating in ratings:
         if rating.dimension not in _CRITERIA_BY_DIMENSION:
-            raise ValueError(f"unknown dimension {rating.dimension!r}")
+            raise ValueError(f"unknown dimension {rating.dimension!r}. {schema_help()}")
         if rating.criterion not in _CRITERIA_BY_DIMENSION[rating.dimension]:
             raise ValueError(
-                f"unknown criterion {rating.criterion!r} for dimension {rating.dimension!r}"
+                f"unknown criterion {rating.criterion!r} for dimension {rating.dimension!r}; "
+                f"its criteria are {list(_CRITERIA_BY_DIMENSION[rating.dimension])}"
             )
         if not 1 <= rating.value <= 10:
             raise ValueError(
@@ -142,7 +154,7 @@ def validate_ratings(ratings: list[Rating], applicable: dict[str, str | None]) -
 
     for dimension, reason in applicable.items():
         if dimension not in _CRITERIA_BY_DIMENSION:
-            raise ValueError(f"unknown dimension {dimension!r} in applicable")
+            raise ValueError(f"unknown dimension {dimension!r} in applicable. {schema_help()}")
         if reason is None:
             rated_for_dimension = rated.get(dimension, set())
             missing = [

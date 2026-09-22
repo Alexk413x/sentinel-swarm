@@ -61,6 +61,23 @@ def codebase_kg_root() -> Path:
     return mcp_dir
 
 
+def _check_edges(graph_path: Path, nodes: list[dict]) -> None:
+    known = {str(n.get("id")) for n in nodes}
+    if graph_path.is_file():
+        conn = sqlite3.connect(f"file:{graph_path.as_posix()}?mode=ro", uri=True)
+        try:
+            known.update(row[0] for row in conn.execute("SELECT id FROM node"))
+        finally:
+            conn.close()
+    for node in nodes:
+        for target in node.get("edges") or []:
+            if target not in known:
+                raise LedgerError(
+                    f"node {node.get('id')!r} has an edge to {target!r}, which is not in the "
+                    "graph; drop the edge or name an existing node id"
+                )
+
+
 def _tail(text: str, lines: int = 20) -> str:
     return "\n".join(text.splitlines()[-lines:])
 
@@ -68,6 +85,9 @@ def _tail(text: str, lines: int = 20) -> str:
 def graph_upsert(repo_root: Path, nodes: list[dict]) -> dict:
     kg_root = codebase_kg_root()
     graph_path = repo_root / "knowledge" / "code_graph.db"
+    _check_edges(graph_path, nodes)
+    # The ledger's own venv leaks through VIRTUAL_ENV and makes uv refuse the kg project.
+    env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
 
     with KG_LOCK:
         try:
@@ -85,6 +105,7 @@ def graph_upsert(repo_root: Path, nodes: list[dict]) -> dict:
                     str(graph_path),
                 ],
                 cwd=repo_root,
+                env=env,
                 input=json.dumps(nodes),
                 capture_output=True,
                 text=True,

@@ -713,3 +713,48 @@ def test_issue_close_is_for_the_lead_manager_or_oracle(ledger: Ledger) -> None:
     assert closed["state"] == "closed"
     with pytest.raises(LedgerError, match="already closed"):
         ledger.issue_close("oracle", ctx["oracle_id"], issue["issue_id"], "again")
+
+
+# -- readable refusals -------------------------------------------------------------
+
+
+def test_score_record_names_the_shape_on_a_malformed_rating(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    coder = _spawn_coder(ledger, ctx, "coder-shape", "pkg/good.py", "tests/test_good.py")
+    file_id = _file_id_for(ledger, "pkg/good.py")
+    with pytest.raises(LedgerError, match=r"missing \['criterion', 'value'\].*meets_the_brief"):
+        ledger.score_record(
+            "coder-shape",
+            coder["agent_id"],
+            file_id,
+            [{"dimension": "Functionality", "score": 10}],
+            _all_applicable(),
+            "self",
+        )
+    with pytest.raises(LedgerError, match="unknown dimension 'Functionality'.*Keys: "):
+        ledger.score_record(
+            "coder-shape",
+            coder["agent_id"],
+            file_id,
+            [{"dimension": "Functionality", "criterion": "x", "value": 10}],
+            _all_applicable(),
+            "self",
+        )
+
+
+def test_graph_upsert_refuses_an_edge_to_an_unknown_node(ledger: Ledger, host: Path) -> None:
+    from swarm_ledger import graph
+
+    with pytest.raises(LedgerError, match="edge to 'nowhere'"):
+        graph.graph_upsert(
+            host,
+            [
+                {
+                    "id": "x",
+                    "kind": "python module",
+                    "description": "d",
+                    "anchors": ["pkg/good.py"],
+                    "edges": ["nowhere"],
+                }
+            ],
+        )

@@ -35,7 +35,9 @@ uses the short name.
    specific error types plus a catch-all.
 6. `tests_run(scope="file", target=<your test path>)` and fix until it is green. The
    ledger records every run; do not judge the result from your own reading of the
-   output.
+   output. Use this tool, not the shell, to run tests: the shell gate denies a
+   command that changes directory, chains commands, or differs from the profile's
+   test command.
 7. `graph_upsert(nodes=[...])` for your file's node or nodes. The node shape is
    codebase-kg's: `{"id", "kind", "section", "description", "anchors": [...],
    "edges": [...]}`.
@@ -46,13 +48,18 @@ uses the short name.
      not what changed.
    - `anchors`: `"<path>#<Symbol>"` for every top-level function and class in the
      file.
+   - `edges`: only ids that already exist in the graph. Omit the key when the file
+     depends on nothing mapped.
    The ledger refuses an anchor that points outside the file and its test file, and
    it takes the graph lock for you. Do not call `kg_upsert_node` directly.
-8. `score_record(caller, file_id, ratings, applicable, kind="self")` over all nine
-   dimensions. Rate every criterion of every applicable dimension from 1 to 10. A
-   rating below 9 needs a reason and a file-and-line reference. Mark accessibility
-   not applicable with a one-line reason on a file that is not UI, and do the same
-   for any other dimension the file cannot exercise.
+8. `score_record(caller, file_id, ratings, applicable, kind="self")`. The tool's
+   description lists the exact rating shape and every dimension and criterion key;
+   read it before you call. Use those keys verbatim. Each rating is one object with
+   `dimension`, `criterion`, `value` from 1 to 10, `reason`, and `ref`; a rating
+   below 9 needs a reason and a file-and-line reference. `applicable` names all
+   nine dimension keys, each `null` or a one-line reason the dimension does not
+   apply, such as accessibility on a file that is not UI. A refusal repeats the key
+   list; fix the keys and call again, do not guess.
 9. `handoff_submit(file_id, open_issues=[...], departures=[...])`.
 
 Your own review loop between steps 5 and 8 has no cap. Review, fix, and review again

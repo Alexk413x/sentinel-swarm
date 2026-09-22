@@ -57,7 +57,9 @@ uses the short name.
 
    Run your Leads in the background so independent modules progress at the same
    time. Keep the agent id each spawn returns; that is how you resume that Lead.
-3. Wait for the completion notices.
+3. End your turn with one line that says which Leads are running. Do not poll
+   `message_inbox` or `status_tree` while you wait: each completion notice resumes
+   you on its own.
 
 ## Review what a Lead hands up
 

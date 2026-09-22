@@ -15,6 +15,25 @@ from .testing import run_tests
 
 _NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 
+
+def _parse_rating(raw: object) -> Rating:
+    if not isinstance(raw, dict):
+        raise LedgerError(
+            f"a rating must be an object, got {type(raw).__name__}. {rubric.schema_help()}"
+        )
+    missing = [key for key in ("dimension", "criterion", "value") if key not in raw]
+    if missing:
+        raise LedgerError(
+            f"rating {sorted(raw.keys())} is missing {missing}. {rubric.schema_help()}"
+        )
+    value = raw["value"]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise LedgerError(f"rating value must be an integer 1..10, got {value!r}")
+    return Rating(
+        str(raw["dimension"]), str(raw["criterion"]), value, raw.get("reason"), raw.get("ref")
+    )
+
+
 _SCOPE_ROLE = {"file": "coder", "module": "lead", "phase": "manager", "full": "oracle"}
 _PARENT_ROLE = {"manager": "oracle", "lead": "manager", "coder": "lead"}
 _ROLE_RANK = {"coder": 0, "lead": 1, "manager": 2, "oracle": 3}
@@ -220,10 +239,9 @@ class ReviewMixin:
         if file_row is None:
             raise LedgerError(f"unknown file_id {file_id!r}")
 
-        rating_objs = [
-            Rating(r["dimension"], r["criterion"], r["value"], r.get("reason"), r.get("ref"))
-            for r in ratings
-        ]
+        rating_objs = [_parse_rating(r) for r in ratings]
+        if not isinstance(applicable, dict):
+            raise LedgerError(f"applicable must be an object. {rubric.schema_help()}")
         try:
             rubric.validate_ratings(rating_objs, applicable)
         except ValueError as exc:

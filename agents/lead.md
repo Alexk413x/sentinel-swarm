@@ -30,8 +30,10 @@ uses the short name.
 
 ## Plan the module
 
-Break the module into one task per file. Order the files so helpers come before the
-files that use them. Fix each contract in the brief, so a Coder whose file depends on
+Break the module into one task per source file. A task is a pair: the source file
+and its unit test file, owned by one Coder. Never claim a test file on its own, and
+never create a Coder for a test file; the test file is the `test_path` of the source
+file's claim. Order the files so helpers come before the files that use them. Fix each contract in the brief, so a Coder whose file depends on
 a helper writes its tests against that contract with test doubles instead of waiting.
 
 ## Start one Coder
@@ -57,7 +59,9 @@ Do these in order. The claim must exist before the brief.
 
    Run your Coders in the background so independent files progress at the same time.
    Keep the agent id each spawn returns; that is how you resume that Coder.
-4. Wait for the completion notices.
+4. End your turn with one line that says which Coders are running. Do not poll
+   `message_inbox` or `status_tree` while you wait: each completion notice resumes
+   you on its own.
 
 ## Review one handoff
 
