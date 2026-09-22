@@ -1,0 +1,864 @@
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+from . import __version__
+from .db import connect, ensure_git_exclude, ledger_path, write_tx
+from .identity import ROLES, LedgerError, child_role_of, require_role, resolve
+from .settings import load_settings
+
+_NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
+_PHASE_STATES = ("planned", "unlocked", "working", "handed_up", "approved")
+_DIRECTIVE_SOURCES = ("user-chat", "outside-session", "skill", "watchdog")
+_TOKEN_COLUMNS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "context_pct_peak",
+    "context_pct_at_end",
+    "context_overflow_count",
+    "tool_uses",
+    "duration_ms",
+)
+
+
+def _rows(cursor: sqlite3.Cursor) -> list[dict]:
+    return [dict(row) for row in cursor.fetchall()]
+
+
+class Ledger:
+    def __init__(self, repo_root: Path, *, db_path: Path | None = None) -> None:
+        self.repo_root = repo_root
+        self.settings = load_settings(repo_root)
+        path = db_path if db_path is not None else ledger_path(repo_root)
+        self.conn = connect(path)
+        if (repo_root / ".git").exists():
+            ensure_git_exclude(repo_root)
+
+    def _log_event(
+        self,
+        conn: sqlite3.Connection,
+        agent_id: str,
+        from_state: str | None,
+        to_state: str,
+        reason: str | None = None,
+    ) -> None:
+        conn.execute(
+            "INSERT INTO agent_events (agent_id, from_state, to_state, reason) VALUES (?, ?, ?, ?)",
+            (agent_id, from_state, to_state, reason),
+        )
+
+    def _agent_dict(self, agent_id: str) -> dict:
+        row = self.conn.execute("SELECT * FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
+        return dict(row) if row is not None else {}
+
+    def _active_run(self, conn: sqlite3.Connection) -> sqlite3.Row:
+        row = conn.execute("SELECT * FROM runs WHERE state = 'active'").fetchone()
+        if row is None:
+            raise LedgerError("no active run")
+        return row
+
+    # -- Run and plan -----------------------------------------------------
+
+    def run_start(self, prd: str, session_id: str, oracle_name: str = "oracle") -> dict:
+        with write_tx(self.conn) as conn:
+            if conn.execute("SELECT 1 FROM runs WHERE state = 'active'").fetchone() is not None:
+                raise LedgerError("a run is already active")
+
+            cur = conn.execute(
+                "INSERT INTO runs (prd, state, plugin_version, settings_json) "
+                "VALUES (?, 'active', ?, ?)",
+                (prd, __version__, self.settings.snapshot()),
+            )
+            run_id = cur.lastrowid
+
+            conn.execute(
+                "INSERT INTO agents "
+                "(agent_id, name, role, runtime, model, run_id, state, started_at) "
+                f"VALUES (?, ?, 'oracle', ?, ?, ?, 'working', {_NOW})",
+                (
+                    session_id,
+                    oracle_name,
+                    self.settings.runtime.get("oracle"),
+                    self.settings.models.get("oracle", [None])[0],
+                    run_id,
+                ),
+            )
+            self._log_event(conn, session_id, None, "working", "run_start")
+
+        run = self.conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+        return {"run": dict(run), "oracle": self._agent_dict(session_id)}
+
+    def run_status(self, caller: str, agent_id: str) -> dict:
+        conn = self.conn
+        resolve(conn, caller, agent_id)
+        run = self._active_run(conn)
+        run_id = run["run_id"]
+
+        phases = _rows(
+            conn.execute("SELECT * FROM phases WHERE run_id = ? ORDER BY ordinal", (run_id,))
+        )
+        modules = _rows(
+            conn.execute(
+                "SELECT modules.* FROM modules "
+                "JOIN phases ON phases.phase_id = modules.phase_id "
+                "WHERE phases.run_id = ? ORDER BY modules.module_id",
+                (run_id,),
+            )
+        )
+        files = _rows(
+            conn.execute(
+                "SELECT files.* FROM files "
+                "JOIN modules ON modules.module_id = files.module_id "
+                "JOIN phases ON phases.phase_id = modules.phase_id "
+                "WHERE phases.run_id = ? ORDER BY files.file_id",
+                (run_id,),
+            )
+        )
+        agents = _rows(
+            conn.execute(
+                "SELECT * FROM agents WHERE run_id = ? AND ended_at IS NULL ORDER BY started_at",
+                (run_id,),
+            )
+        )
+        issues = _rows(
+            conn.execute(
+                "SELECT * FROM issues WHERE run_id = ? AND state = 'open' ORDER BY issue_id",
+                (run_id,),
+            )
+        )
+        directives = _rows(
+            conn.execute(
+                "SELECT * FROM directives WHERE run_id = ? AND state = 'open' "
+                "ORDER BY directive_id",
+                (run_id,),
+            )
+        )
+
+        return {
+            "run": dict(run),
+            "phases": phases,
+            "modules": modules,
+            "files": files,
+            "agents": agents,
+            "issues": issues,
+            "directives": directives,
+        }
+
+    def run_finish(self, caller: str, agent_id: str, outcome: str) -> dict:
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            require_role(c, "oracle")
+            run = self._active_run(conn)
+            run_id = run["run_id"]
+
+            unapproved = conn.execute(
+                "SELECT COUNT(*) AS n FROM phases WHERE run_id = ? AND state != 'approved'",
+                (run_id,),
+            ).fetchone()["n"]
+            if unapproved:
+                raise LedgerError(f"{unapproved} phase(s) are not approved")
+
+            live_claims = conn.execute(
+                "SELECT COUNT(*) AS n FROM files "
+                "JOIN modules ON modules.module_id = files.module_id "
+                "JOIN phases ON phases.phase_id = modules.phase_id "
+                "WHERE phases.run_id = ? AND files.released_at IS NULL",
+                (run_id,),
+            ).fetchone()["n"]
+            if live_claims:
+                raise LedgerError(f"{live_claims} file claim(s) are still live")
+
+            open_directives = conn.execute(
+                "SELECT COUNT(*) AS n FROM directives WHERE run_id = ? AND state = 'open'",
+                (run_id,),
+            ).fetchone()["n"]
+            if open_directives:
+                raise LedgerError(f"{open_directives} directive(s) are still open")
+
+            conn.execute(
+                f"UPDATE runs SET state = 'finished', outcome = ?, ended_at = {_NOW} "
+                "WHERE run_id = ?",
+                (outcome, run_id),
+            )
+
+        return dict(conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone())
+
+    def profile_set(
+        self,
+        caller: str,
+        agent_id: str,
+        test_command: str | None = None,
+        build_command: str | None = None,
+        lint_command: str | None = None,
+    ) -> dict:
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            require_role(c, "oracle")
+            if c.run_id is None:
+                raise LedgerError(f"{caller!r} has no run")
+
+            if test_command is not None:
+                self.settings.test_command = test_command
+            if build_command is not None:
+                self.settings.build_command = build_command
+            if lint_command is not None:
+                self.settings.lint_command = lint_command
+
+            conn.execute(
+                "UPDATE runs SET settings_json = ? WHERE run_id = ?",
+                (self.settings.snapshot(), c.run_id),
+            )
+
+        return {
+            "test_command": self.settings.test_command,
+            "build_command": self.settings.build_command,
+            "lint_command": self.settings.lint_command,
+        }
+
+    def guidelines_set(self, caller: str, agent_id: str, body: str) -> dict:
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            require_role(c, "oracle")
+            cur = conn.execute(
+                "INSERT INTO guidelines (run_id, body) VALUES (?, ?)", (c.run_id, body)
+            )
+            guideline_id = cur.lastrowid
+
+        row = self.conn.execute(
+            "SELECT * FROM guidelines WHERE guideline_id = ?", (guideline_id,)
+        ).fetchone()
+        return dict(row)
+
+    def guidelines_get(self, caller: str, agent_id: str) -> dict:
+        c = resolve(self.conn, caller, agent_id)
+        row = self.conn.execute(
+            "SELECT * FROM guidelines WHERE run_id = ? ORDER BY guideline_id DESC LIMIT 1",
+            (c.run_id,),
+        ).fetchone()
+        return dict(row) if row is not None else {}
+
+    def phase_add(
+        self, caller: str, agent_id: str, name: str, depends_on: list[int] | None = None
+    ) -> dict:
+        depends_on = depends_on or []
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            require_role(c, "oracle")
+            ordinal = conn.execute(
+                "SELECT COALESCE(MAX(ordinal), 0) + 1 AS n FROM phases WHERE run_id = ?",
+                (c.run_id,),
+            ).fetchone()["n"]
+            cur = conn.execute(
+                "INSERT INTO phases (run_id, name, ordinal, state) VALUES (?, ?, ?, 'planned')",
+                (c.run_id, name, ordinal),
+            )
+            phase_id = cur.lastrowid
+            for dep_id in depends_on:
+                conn.execute(
+                    "INSERT INTO phase_deps (phase_id, depends_on_phase_id) VALUES (?, ?)",
+                    (phase_id, dep_id),
+                )
+
+        phase = dict(
+            self.conn.execute("SELECT * FROM phases WHERE phase_id = ?", (phase_id,)).fetchone()
+        )
+        phase["depends_on"] = list(depends_on)
+        return phase
+
+    def phase_update(self, caller: str, agent_id: str, phase_id: int, state: str) -> dict:
+        if state not in _PHASE_STATES:
+            raise LedgerError(f"unknown phase state {state!r}")
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            require_role(c, "oracle")
+            if (
+                conn.execute("SELECT 1 FROM phases WHERE phase_id = ?", (phase_id,)).fetchone()
+                is None
+            ):
+                raise LedgerError(f"unknown phase_id {phase_id!r}")
+
+            if state == "approved":
+                conn.execute(
+                    f"UPDATE phases SET state = ?, ended_at = {_NOW} WHERE phase_id = ?",
+                    (state, phase_id),
+                )
+            else:
+                conn.execute("UPDATE phases SET state = ? WHERE phase_id = ?", (state, phase_id))
+
+        return dict(
+            self.conn.execute("SELECT * FROM phases WHERE phase_id = ?", (phase_id,)).fetchone()
+        )
+
+    def plan_unlocked(self, caller: str, agent_id: str) -> list[dict]:
+        conn = self.conn
+        c = resolve(conn, caller, agent_id)
+        rows = conn.execute(
+            "SELECT * FROM phases WHERE run_id = ? AND state != 'approved' ORDER BY ordinal",
+            (c.run_id,),
+        ).fetchall()
+
+        unlocked = []
+        for row in rows:
+            deps = conn.execute(
+                "SELECT depends_on_phase_id FROM phase_deps WHERE phase_id = ?",
+                (row["phase_id"],),
+            ).fetchall()
+            if not deps:
+                unlocked.append(dict(row))
+                continue
+            satisfied = all(
+                conn.execute(
+                    "SELECT state FROM phases WHERE phase_id = ?", (dep["depends_on_phase_id"],)
+                ).fetchone()["state"]
+                == "approved"
+                for dep in deps
+            )
+            if satisfied:
+                unlocked.append(dict(row))
+        return unlocked
+
+    def module_add(self, caller: str, agent_id: str, phase_id: int, name: str) -> dict:
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            require_role(c, "manager")
+            if c.phase_id != phase_id:
+                raise LedgerError("a manager may only add modules to its own phase")
+            cur = conn.execute(
+                "INSERT INTO modules (phase_id, name, state) VALUES (?, ?, 'planned')",
+                (phase_id, name),
+            )
+            module_id = cur.lastrowid
+
+        return dict(
+            self.conn.execute("SELECT * FROM modules WHERE module_id = ?", (module_id,)).fetchone()
+        )
+
+    # -- Briefs -------------------------------------------------------------
+
+    def brief_create(
+        self,
+        caller: str,
+        agent_id: str,
+        child_name: str,
+        child_role: str,
+        model: str,
+        body: str,
+        phase_id: int | None = None,
+        module_id: int | None = None,
+        file_id: int | None = None,
+    ) -> dict:
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            if child_role_of(c.role) != child_role:
+                raise LedgerError(f"a {c.role!r} may not brief a {child_role!r}")
+            if model not in self.settings.models.get(child_role, []):
+                raise LedgerError(f"model {model!r} is not approved for {child_role!r}")
+            if (
+                conn.execute(
+                    "SELECT 1 FROM agents WHERE name = ? AND ended_at IS NULL", (child_name,)
+                ).fetchone()
+                is not None
+            ):
+                raise LedgerError(f"a live agent already holds the name {child_name!r}")
+            if (
+                conn.execute(
+                    "SELECT 1 FROM briefs WHERE child_name = ? AND acked_at IS NULL",
+                    (child_name,),
+                ).fetchone()
+                is not None
+            ):
+                raise LedgerError(f"an unacked brief already exists for {child_name!r}")
+
+            cur = conn.execute(
+                "INSERT INTO briefs "
+                "(run_id, parent_agent_id, child_name, child_role, model, body, "
+                "phase_id, module_id, file_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    c.run_id,
+                    c.agent_id,
+                    child_name,
+                    child_role,
+                    model,
+                    body,
+                    phase_id if phase_id is not None else c.phase_id,
+                    module_id if module_id is not None else c.module_id,
+                    file_id if file_id is not None else c.file_id,
+                ),
+            )
+            brief_id = cur.lastrowid
+
+        return dict(
+            self.conn.execute("SELECT * FROM briefs WHERE brief_id = ?", (brief_id,)).fetchone()
+        )
+
+    def brief_get(self, caller_name: str, child_name: str) -> dict:
+        del caller_name
+        row = self.conn.execute(
+            "SELECT * FROM briefs WHERE child_name = ? "
+            "ORDER BY created_at DESC, brief_id DESC LIMIT 1",
+            (child_name,),
+        ).fetchone()
+        if row is None:
+            raise LedgerError(f"no brief found for {child_name!r}")
+        return dict(row)
+
+    def brief_ack(self, caller: str, agent_id: str, agent_type: str | None = None) -> dict:
+        del agent_type
+        with write_tx(self.conn) as conn:
+            brief_row = conn.execute(
+                "SELECT * FROM briefs WHERE child_name = ? AND acked_at IS NULL "
+                "ORDER BY created_at DESC, brief_id DESC LIMIT 1",
+                (caller,),
+            ).fetchone()
+            if brief_row is None:
+                raise LedgerError(f"no unacked brief for {caller!r}")
+
+            existing = conn.execute(
+                "SELECT * FROM agents WHERE agent_id = ?", (agent_id,)
+            ).fetchone()
+            if existing is not None and existing["state"] != "registered":
+                raise LedgerError(f"agent_id {agent_id!r} is already bound")
+
+            if (
+                conn.execute(
+                    "SELECT 1 FROM agents WHERE name = ? AND ended_at IS NULL AND agent_id != ?",
+                    (caller, agent_id),
+                ).fetchone()
+                is not None
+            ):
+                raise LedgerError(f"a live agent already holds the name {caller!r}")
+
+            role = brief_row["child_role"]
+            runtime = self.settings.runtime.get(role)
+            from_state = existing["state"] if existing is not None else None
+
+            if existing is None:
+                conn.execute(
+                    "INSERT INTO agents "
+                    "(agent_id, name, role, runtime, model, parent_agent_id, "
+                    "run_id, phase_id, module_id, file_id, state, started_at) "
+                    f"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', {_NOW})",
+                    (
+                        agent_id,
+                        caller,
+                        role,
+                        runtime,
+                        brief_row["model"],
+                        brief_row["parent_agent_id"],
+                        brief_row["run_id"],
+                        brief_row["phase_id"],
+                        brief_row["module_id"],
+                        brief_row["file_id"],
+                    ),
+                )
+            else:
+                conn.execute(
+                    "UPDATE agents SET name = ?, role = ?, runtime = ?, model = ?, "
+                    "parent_agent_id = ?, run_id = ?, phase_id = ?, module_id = ?, file_id = ?, "
+                    f"state = 'working', started_at = {_NOW} WHERE agent_id = ?",
+                    (
+                        caller,
+                        role,
+                        runtime,
+                        brief_row["model"],
+                        brief_row["parent_agent_id"],
+                        brief_row["run_id"],
+                        brief_row["phase_id"],
+                        brief_row["module_id"],
+                        brief_row["file_id"],
+                        agent_id,
+                    ),
+                )
+
+            conn.execute(
+                f"UPDATE briefs SET acked_by_agent_id = ?, acked_at = {_NOW} WHERE brief_id = ?",
+                (agent_id, brief_row["brief_id"]),
+            )
+            self._log_event(conn, agent_id, from_state, "working", "brief_ack")
+
+        return self._agent_dict(agent_id)
+
+    # -- Agent lifecycle ------------------------------------------------------
+
+    def agent_heartbeat(self, agent_id: str, activity: str | None = None) -> dict:
+        with write_tx(self.conn) as conn:
+            if (
+                conn.execute("SELECT 1 FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
+                is None
+            ):
+                return {"known": False}
+            conn.execute(
+                f"UPDATE agents SET last_heartbeat_at = {_NOW}, "
+                "current_activity = COALESCE(?, current_activity) WHERE agent_id = ?",
+                (activity, agent_id),
+            )
+
+        return {"known": True, "agent_id": agent_id, "current_activity": activity}
+
+    def agent_register_start(
+        self, agent_id: str, agent_type: str, parent_agent_id: str | None = None
+    ) -> dict:
+        with write_tx(self.conn) as conn:
+            existing = conn.execute(
+                "SELECT * FROM agents WHERE agent_id = ?", (agent_id,)
+            ).fetchone()
+            if existing is not None:
+                return dict(existing)
+
+            role = agent_type if agent_type in ROLES else "unknown"
+            conn.execute(
+                "INSERT INTO agents (agent_id, name, role, parent_agent_id, state, started_at) "
+                f"VALUES (?, ?, ?, ?, 'registered', {_NOW})",
+                (agent_id, agent_id, role, parent_agent_id),
+            )
+            self._log_event(conn, agent_id, None, "registered", "agent_register_start")
+
+        return self._agent_dict(agent_id)
+
+    def agent_stop(
+        self,
+        agent_id: str,
+        transcript_path: str | None = None,
+        tokens: dict | None = None,
+        end_reason: str | None = None,
+    ) -> dict:
+        with write_tx(self.conn) as conn:
+            row = conn.execute("SELECT * FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
+            if row is None:
+                return {"ended": False, "state": "unknown"}
+
+            set_clauses: list[str] = []
+            params: list[object] = []
+            for column in _TOKEN_COLUMNS:
+                value = (tokens or {}).get(column)
+                if value is not None:
+                    set_clauses.append(f"{column} = ?")
+                    params.append(value)
+            if transcript_path is not None:
+                set_clauses.append("transcript_path = ?")
+                params.append(transcript_path)
+
+            if row["state"] == "released":
+                if row["ended_at"] is None:
+                    set_clauses.append(f"ended_at = {_NOW}")
+                    self._log_event(conn, agent_id, row["state"], row["state"], "agent_stop")
+                if end_reason is not None:
+                    set_clauses.append("end_reason = ?")
+                    params.append(end_reason)
+                if set_clauses:
+                    conn.execute(
+                        f"UPDATE agents SET {', '.join(set_clauses)} WHERE agent_id = ?",
+                        (*params, agent_id),
+                    )
+                return self._agent_dict(agent_id) | {"ended": True}
+
+            set_clauses.append(f"last_heartbeat_at = {_NOW}")
+            conn.execute(
+                f"UPDATE agents SET {', '.join(set_clauses)} WHERE agent_id = ?",
+                (*params, agent_id),
+            )
+            return {"ended": False, "state": row["state"]}
+
+    def agent_release(self, caller: str, agent_id: str, target_agent_id: str) -> dict:
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            target = conn.execute(
+                "SELECT * FROM agents WHERE agent_id = ?", (target_agent_id,)
+            ).fetchone()
+            if target is None:
+                raise LedgerError(f"unknown agent_id {target_agent_id!r}")
+            if target["parent_agent_id"] != c.agent_id:
+                raise LedgerError(f"{caller!r} is not the parent of {target_agent_id!r}")
+
+            phase_name = None
+            if target["phase_id"] is not None:
+                phase_row = conn.execute(
+                    "SELECT name FROM phases WHERE phase_id = ?", (target["phase_id"],)
+                ).fetchone()
+                phase_name = phase_row["name"] if phase_row is not None else None
+
+            conn.execute(
+                f"UPDATE agents SET state = 'released', ended_at = {_NOW}, phase_at_end = ? "
+                "WHERE agent_id = ?",
+                (phase_name, target_agent_id),
+            )
+            self._log_event(conn, target_agent_id, target["state"], "released", "agent_release")
+
+        return self._agent_dict(target_agent_id)
+
+    # -- File ownership -------------------------------------------------------
+
+    def claim_file(
+        self, caller: str, agent_id: str, path: str, test_path: str | None, for_name: str
+    ) -> dict:
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            require_role(c, "lead")
+            if (
+                conn.execute(
+                    "SELECT 1 FROM files WHERE path = ? AND released_at IS NULL", (path,)
+                ).fetchone()
+                is not None
+            ):
+                raise LedgerError(f"path {path!r} already has a live claim")
+
+            cur = conn.execute(
+                "INSERT INTO files (module_id, path, test_path, owner_agent_id, state, "
+                f"claimed_at) VALUES (?, ?, ?, ?, 'claimed', {_NOW})",
+                (c.module_id, path, test_path, for_name),
+            )
+            file_id = cur.lastrowid
+
+        return dict(
+            self.conn.execute("SELECT * FROM files WHERE file_id = ?", (file_id,)).fetchone()
+        )
+
+    def release_file(self, caller: str, agent_id: str, path: str) -> dict:
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            require_role(c, "lead")
+            row = conn.execute(
+                "SELECT * FROM files WHERE path = ? AND released_at IS NULL", (path,)
+            ).fetchone()
+            if row is None:
+                raise LedgerError(f"no live claim for {path!r}")
+            conn.execute(
+                f"UPDATE files SET released_at = {_NOW}, state = 'released' WHERE file_id = ?",
+                (row["file_id"],),
+            )
+            file_id = row["file_id"]
+
+        return dict(
+            self.conn.execute("SELECT * FROM files WHERE file_id = ?", (file_id,)).fetchone()
+        )
+
+    def who_owns(self, path: str) -> dict:
+        row = self.conn.execute(
+            "SELECT * FROM files WHERE path = ? AND released_at IS NULL", (path,)
+        ).fetchone()
+        if row is None:
+            return {"path": path, "owner": None}
+        return {"path": path, "owner": row["owner_agent_id"], "file": dict(row)}
+
+    # -- Messages -------------------------------------------------------------
+
+    def message_post(self, caller: str, agent_id: str, to_name: str, body: str) -> dict:
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            cur = conn.execute(
+                "INSERT INTO messages (run_id, from_name, to_name, body) VALUES (?, ?, ?, ?)",
+                (c.run_id, c.name, to_name, body),
+            )
+            message_id = cur.lastrowid
+
+        return dict(
+            self.conn.execute(
+                "SELECT * FROM messages WHERE message_id = ?", (message_id,)
+            ).fetchone()
+        )
+
+    def message_inbox(self, caller: str, agent_id: str) -> list[dict]:
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            rows = conn.execute(
+                "SELECT message_id FROM messages WHERE to_name = ? AND read_at IS NULL "
+                "ORDER BY message_id",
+                (c.name,),
+            ).fetchall()
+            ids = [row["message_id"] for row in rows]
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                conn.execute(
+                    f"UPDATE messages SET read_at = {_NOW} WHERE message_id IN ({placeholders})",
+                    ids,
+                )
+            result = [
+                dict(
+                    conn.execute(
+                        "SELECT * FROM messages WHERE message_id = ?", (message_id,)
+                    ).fetchone()
+                )
+                for message_id in ids
+            ]
+
+        return result
+
+    # -- Directives -------------------------------------------------------------
+
+    def directive_submit(
+        self, source: str, sender_name: str | None, body: str, reply_to: int | None = None
+    ) -> dict:
+        if source not in _DIRECTIVE_SOURCES:
+            raise LedgerError(f"unknown directive source {source!r}")
+        with write_tx(self.conn) as conn:
+            run = self._active_run(conn)
+            cur = conn.execute(
+                "INSERT INTO directives (run_id, source, sender_name, body, reply_to) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (run["run_id"], source, sender_name, body, reply_to),
+            )
+            directive_id = cur.lastrowid
+
+        return dict(
+            self.conn.execute(
+                "SELECT * FROM directives WHERE directive_id = ?", (directive_id,)
+            ).fetchone()
+        )
+
+    def directive_inbox(self, caller: str, agent_id: str) -> list[dict]:
+        c = resolve(self.conn, caller, agent_id)
+        require_role(c, "oracle")
+        return _rows(
+            self.conn.execute(
+                "SELECT * FROM directives WHERE run_id = ? AND state = 'open' "
+                "ORDER BY directive_id",
+                (c.run_id,),
+            )
+        )
+
+    def directive_resolve(
+        self, caller: str, agent_id: str, directive_id: int, outcome: str, resolution: str
+    ) -> dict:
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            require_role(c, "oracle")
+            if (
+                conn.execute(
+                    "SELECT 1 FROM directives WHERE directive_id = ?", (directive_id,)
+                ).fetchone()
+                is None
+            ):
+                raise LedgerError(f"unknown directive_id {directive_id!r}")
+            conn.execute(
+                f"UPDATE directives SET state = 'resolved', outcome = ?, resolution = ?, "
+                f"resolved_at = {_NOW} WHERE directive_id = ?",
+                (outcome, resolution, directive_id),
+            )
+
+        return dict(
+            self.conn.execute(
+                "SELECT * FROM directives WHERE directive_id = ?", (directive_id,)
+            ).fetchone()
+        )
+
+    # -- Overrides -------------------------------------------------------------
+
+    def override_grant(
+        self,
+        caller: str,
+        agent_id: str,
+        rule: str,
+        target_agent_name: str,
+        target: str,
+        reason: str,
+    ) -> dict:
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            require_role(c, "oracle")
+            cur = conn.execute(
+                "INSERT INTO overrides (run_id, rule, target_agent_name, target, reason) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (c.run_id, rule, target_agent_name, target, reason),
+            )
+            override_id = cur.lastrowid
+
+        return dict(
+            self.conn.execute(
+                "SELECT * FROM overrides WHERE override_id = ?", (override_id,)
+            ).fetchone()
+        )
+
+    def override_consume(self, rule: str, agent_name: str, target: str) -> bool:
+        with write_tx(self.conn) as conn:
+            row = conn.execute(
+                "SELECT override_id FROM overrides WHERE rule = ? AND target_agent_name = ? "
+                "AND target = ? AND used_at IS NULL ORDER BY created_at ASC LIMIT 1",
+                (rule, agent_name, target),
+            ).fetchone()
+            if row is None:
+                return False
+            conn.execute(
+                f"UPDATE overrides SET used_at = {_NOW} WHERE override_id = ?",
+                (row["override_id"],),
+            )
+
+        return True
+
+    # -- Issues -------------------------------------------------------------
+
+    def issue_open(self, caller: str, agent_id: str, file_id: int, title: str, body: str) -> dict:
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            cur = conn.execute(
+                "INSERT INTO issues (run_id, file_id, opened_by_agent_id, title, body, state) "
+                "VALUES (?, ?, ?, ?, ?, 'open')",
+                (c.run_id, file_id, c.agent_id, title, body),
+            )
+            issue_id = cur.lastrowid
+
+        return dict(
+            self.conn.execute("SELECT * FROM issues WHERE issue_id = ?", (issue_id,)).fetchone()
+        )
+
+    def issue_list(self, caller: str, agent_id: str, file_id: int | None = None) -> list[dict]:
+        c = resolve(self.conn, caller, agent_id)
+        if file_id is not None:
+            rows = self.conn.execute(
+                "SELECT * FROM issues WHERE run_id = ? AND file_id = ? ORDER BY issue_id",
+                (c.run_id, file_id),
+            )
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM issues WHERE run_id = ? ORDER BY issue_id", (c.run_id,)
+            )
+        return _rows(rows)
+
+    def idea_record(
+        self, caller: str, agent_id: str, issue_id: int, body: str, outcome: str
+    ) -> dict:
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            cur = conn.execute(
+                "INSERT INTO ideas (issue_id, agent_id, body, outcome) VALUES (?, ?, ?, ?)",
+                (issue_id, c.agent_id, body, outcome),
+            )
+            idea_id = cur.lastrowid
+
+        return dict(
+            self.conn.execute("SELECT * FROM ideas WHERE idea_id = ?", (idea_id,)).fetchone()
+        )
+
+    def issue_escalate(self, caller: str, agent_id: str, issue_id: int) -> dict:
+        with write_tx(self.conn) as conn:
+            resolve(conn, caller, agent_id)
+            row = conn.execute("SELECT * FROM issues WHERE issue_id = ?", (issue_id,)).fetchone()
+            if row is None:
+                raise LedgerError(f"unknown issue_id {issue_id!r}")
+            next_round = row["round"] + 1
+            if next_round > self.settings.escalation.rounds:
+                raise LedgerError(f"issue {issue_id!r} is already at the maximum escalation round")
+            conn.execute(
+                "UPDATE issues SET round = ?, attempts = 0 WHERE issue_id = ?",
+                (next_round, issue_id),
+            )
+
+        return dict(
+            self.conn.execute("SELECT * FROM issues WHERE issue_id = ?", (issue_id,)).fetchone()
+        )
+
+    # -- Events -------------------------------------------------------------
+
+    def events(self, agent_id: str | None = None, limit: int = 200) -> list[dict]:
+        if agent_id is not None:
+            rows = self.conn.execute(
+                "SELECT * FROM agent_events WHERE agent_id = ? ORDER BY event_id DESC LIMIT ?",
+                (agent_id, limit),
+            )
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM agent_events ORDER BY event_id DESC LIMIT ?", (limit,)
+            )
+        return _rows(rows)

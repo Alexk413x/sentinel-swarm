@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS runs (
     state TEXT NOT NULL,
     plugin_version TEXT,
     settings_json TEXT,
+    outcome TEXT,
     started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     ended_at TEXT
 );
@@ -16,6 +17,12 @@ CREATE TABLE IF NOT EXISTS phases (
     state TEXT NOT NULL,
     started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     ended_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS phase_deps (
+    phase_id INTEGER NOT NULL REFERENCES phases (phase_id) ON DELETE RESTRICT,
+    depends_on_phase_id INTEGER NOT NULL REFERENCES phases (phase_id) ON DELETE RESTRICT,
+    PRIMARY KEY (phase_id, depends_on_phase_id)
 );
 
 CREATE TABLE IF NOT EXISTS modules (
@@ -31,7 +38,9 @@ CREATE TABLE IF NOT EXISTS files (
     module_id INTEGER NOT NULL REFERENCES modules (module_id) ON DELETE RESTRICT,
     path TEXT NOT NULL,
     test_path TEXT,
-    owner_agent_id TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
+    -- No REFERENCES agents(agent_id): claim_file records the owner's name before
+    -- the owner agent exists. brief_ack binds the name to an agent_id later.
+    owner_agent_id TEXT,
     state TEXT NOT NULL,
     claimed_at TEXT,
     released_at TEXT,
@@ -85,6 +94,9 @@ CREATE TABLE IF NOT EXISTS briefs (
     child_role TEXT NOT NULL,
     model TEXT,
     body TEXT NOT NULL,
+    phase_id INTEGER REFERENCES phases (phase_id) ON DELETE RESTRICT,
+    module_id INTEGER REFERENCES modules (module_id) ON DELETE RESTRICT,
+    file_id INTEGER REFERENCES files (file_id) ON DELETE RESTRICT,
     acked_by_agent_id TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
     acked_at TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -118,6 +130,7 @@ CREATE TABLE IF NOT EXISTS issues (
     file_id INTEGER REFERENCES files (file_id) ON DELETE RESTRICT,
     opened_by_agent_id TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
     title TEXT NOT NULL,
+    body TEXT,
     state TEXT NOT NULL,
     round INTEGER NOT NULL DEFAULT 1,
     attempts INTEGER NOT NULL DEFAULT 0,
@@ -194,9 +207,31 @@ CREATE TABLE IF NOT EXISTS directives (
     source TEXT NOT NULL,
     sender_name TEXT,
     body TEXT NOT NULL,
+    reply_to INTEGER REFERENCES directives (directive_id) ON DELETE RESTRICT,
     state TEXT NOT NULL DEFAULT 'open',
+    outcome TEXT,
     resolved_at TEXT,
     resolution TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS overrides (
+    override_id INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL REFERENCES runs (run_id) ON DELETE RESTRICT,
+    rule TEXT NOT NULL,
+    target_agent_name TEXT NOT NULL,
+    target TEXT,
+    reason TEXT NOT NULL,
+    used_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS ideas (
+    idea_id INTEGER PRIMARY KEY,
+    issue_id INTEGER NOT NULL REFERENCES issues (issue_id) ON DELETE RESTRICT,
+    agent_id TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
+    body TEXT NOT NULL,
+    outcome TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
