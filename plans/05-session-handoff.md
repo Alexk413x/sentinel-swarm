@@ -19,7 +19,7 @@ Status on 2026-09-21: written by session `sentinel-swarm-a8`, updated by session
    - Open from the probe: whether `PreCompact` fires inside a subagent. It needs a subagent that fills its context, so run it during the first long swarm test.
    - Done: `kg_upsert_node` does not re-baseline a file's hash, and only `codebase-kg-build --rebaseline` does. Alex decided on 2026-09-21: `handoff_submit` checks anchors and coverage only, and the hash stays a review signal for the Lead and the git hooks. See the check 7 row of the results table.
    - Done: concurrent writers on the code graph file are unsafe, because `kg_upsert_node` copies, edits, and replaces the file without a lock, and changes are lost silently. Parallel per-file test runs are reliable. Hook 8 gets `agent_id` and `file_path` in one hook input.
-   - Open: Alex decides who makes the graph write: the ledger inside `handoff_submit` (recommended), or Coders behind a ledger lock. See the check 5 row.
+   - Alex decided on 2026-09-21: a ledger tool `graph_upsert` does the lock and the upsert in one call. Fallback: Coders behind a ledger lock. See the check 5 row.
    - Next: the `--agent` checks from `03-ledger.md`, which need Alex to start a session with `claude --agent`.
 3. **Candidates to evaluate**, from "Plugin features found on 2026-09-21" in `04-mcp-and-hooks.md`: `monitors/monitors.json` for the watchdog, `subagentStatusLine` for marking agents, and the plugin `agent` setting for running the session as the Oracle.
 4. **Build the ledger**, then the hooks, then the skills. Follow `/plugin-dev:create-plugin` from Phase 4. Test each piece on its own as it is built.
