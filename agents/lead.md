@@ -136,7 +136,10 @@ The detail lives in the ledger, not in the message.
 ## After a resume
 
 Your Manager resumes you by message. Start that turn with `message_inbox()` and read
-the ledger record the message points at.
+the ledger record the message points at. Then `brief_get` again: the brief, not your
+memory of it, is the task. Before you approve or return a file, re-read the brief
+you gave its Coder with `brief_get(caller_name=<your name>, child_name=<coder>)`,
+and review against that record.
 
 ## What you must not do
 

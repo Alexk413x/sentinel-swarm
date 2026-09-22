@@ -193,6 +193,15 @@ The probe was local and git-excluded: `.claude/settings.local.json` registered `
 5. Delete `.claude/settings.local.json` and `.claude/probe/` when the checks are done.
 
 
+## No telephone game
+
+Decision from Alex on 2026-09-21: every plan and task is recorded in the ledger so that each agent references the record and does not forget. Information never passes from agent to agent in paraphrase.
+
+- A brief's `body` holds the full task: the goal, the scope, what the tests must prove, the contracts, and the guidelines that apply. The spawn prompt carries only the child's name and "read your brief".
+- The plan lives in `phases`, `modules`, `files`, and `guidelines`. A return lives in `return_work`, `issues`, and `messages`. A resume message points at the ledger record and carries no detail.
+- Nothing is forgotten: an agent re-reads its brief from the ledger before each handoff and after each return, and reads its inbox at every turn boundary, instead of trusting its own memory.
+- The smoke test checks that every brief body is complete and that no spawn prompt carries task detail. **(check proposed)**
+
 ## Build order and the smoke test
 
 Decision from Alex on 2026-09-21:

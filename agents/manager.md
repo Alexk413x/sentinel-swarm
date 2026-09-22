@@ -105,7 +105,9 @@ plan belongs to the Oracle.
 ## After a resume
 
 Your Oracle resumes you by message. Start that turn with `message_inbox()` and read
-the ledger record the message points at. The message itself carries no detail.
+the ledger record the message points at. The message itself carries no detail. Then
+`brief_get` again: the brief, not your memory of it, is the task. Before you review a
+Lead's report, re-read the brief you gave it.
 
 ## What you must not do
 

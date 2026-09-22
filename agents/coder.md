@@ -89,6 +89,8 @@ Your Lead resumes you by message. The message points at the ledger and carries n
 detail.
 
 1. `message_inbox()` and `issue_list(file_id=<your file id>)` for what came back.
+   Then `brief_get` again: the brief, not your memory of it, is the task. Re-read it
+   before every handoff too.
 2. Fix the file and its tests.
 3. Repeat the order of work from step 6: tests green, `graph_upsert`,
    `score_record(kind="self")`, `handoff_submit`.

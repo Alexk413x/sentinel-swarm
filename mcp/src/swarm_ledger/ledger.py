@@ -747,7 +747,10 @@ class Ledger(ReviewMixin):
         self, source: str, sender_name: str | None, body: str, reply_to: int | None = None
     ) -> dict:
         if source not in _DIRECTIVE_SOURCES:
-            raise LedgerError(f"unknown directive source {source!r}")
+            raise LedgerError(
+                f"unknown directive source {source!r}; use one of {sorted(_DIRECTIVE_SOURCES)}. "
+                "An agent that needs the Oracle uses message_post"
+            )
         with write_tx(self.conn) as conn:
             run = self._active_run(conn)
             cur = conn.execute(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal, TypeVar
@@ -17,6 +18,7 @@ T = TypeVar("T")
 
 _instance: Ledger | None = None
 _root: Path | None = None
+_CALL_LOCK = threading.RLock()
 
 _TOOL_NAMES: tuple[str, ...] = (
     "run_start",
@@ -82,7 +84,8 @@ def _ledger() -> Ledger:
 
 def _call(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
     try:
-        return fn(*args, **kwargs)
+        with _CALL_LOCK:
+            return fn(*args, **kwargs)
     except LedgerError as exc:
         raise ToolError(str(exc)) from exc
     except Exception as exc:

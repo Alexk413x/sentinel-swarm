@@ -15,6 +15,7 @@ _RECORDS_DIR = ".sentinel-swarm"
 _WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 _READONLY_GIT = frozenset({"status", "diff", "log", "show", "ls-files", "branch"})
 _POSIX = os.name != "nt"
+_UNSTAMPED_TOOLS = frozenset({"ledger_info", "brief_get", "who_owns", "directive_submit", "events"})
 _SHELL_OPERATORS = re.compile(r"[;&|<>`\n]|\$\(")
 
 
@@ -297,7 +298,10 @@ def handle_pre_ledger(ledger: Ledger, data: dict) -> dict:
             return _deny("override_grant is for the Oracle only")
 
     tool_input = dict(data.get("tool_input") or {})
-    tool_input["agent_id"] = caller_id
+    if method in _UNSTAMPED_TOOLS:
+        tool_input.pop("agent_id", None)
+    else:
+        tool_input["agent_id"] = caller_id
     return {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",

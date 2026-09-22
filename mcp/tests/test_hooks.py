@@ -515,3 +515,13 @@ def test_hooks_json_names_only_dispatchable_events(repo_root: Path) -> None:
                 assert event in _KNOWN_EVENTS, hook["command"]
                 seen.add(event)
     assert seen == _KNOWN_EVENTS
+
+
+def test_pre_ledger_does_not_stamp_tools_without_an_agent_id(ledger: Ledger) -> None:
+    data = {
+        "session_id": "sess-1",
+        "tool_name": "mcp__plugin_sentinel-swarm_swarm-ledger__ledger_info",
+        "tool_input": {"agent_id": "forged"},
+    }
+    result = events.handle_pre_ledger(ledger, data)
+    assert "agent_id" not in result["hookSpecificOutput"]["updatedInput"]
