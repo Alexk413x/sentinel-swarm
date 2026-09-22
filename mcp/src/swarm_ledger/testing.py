@@ -52,7 +52,7 @@ def _quote_target(target: str) -> str:
 
 def _build_command(command_template: str, target: str | None) -> str:
     if target is None:
-        return command_template
+        return " ".join(command_template.replace("{target}", "").split())
     return command_template.replace("{target}", _quote_target(target))
 
 

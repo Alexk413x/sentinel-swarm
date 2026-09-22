@@ -221,6 +221,45 @@ What the smoke test checks in the ledger: **(proposed list)**
 - The code graph is current for the file.
 - `agent_events` holds every lifecycle transition in order, and `report_build` produces the final report.
 
+### Smoke test results on 2026-09-22
+
+The run: a scratch host repo with a README, a `pyproject.toml`, a one-node code graph, and `.claude/sentinel-swarm.local.md` with `test_command: python -m pytest -q -p no:cacheprovider {target}`. The Oracle ran as a headless session:
+
+```
+echo "Create a hello world file." | claude -p --agent sentinel-swarm:oracle \
+  --plugin-dir <sentinel-swarm> --plugin-dir <codebase-kg cache folder> \
+  --permission-mode acceptEdits \
+  --allowedTools "mcp__plugin_sentinel-swarm_swarm-ledger,mcp__plugin_codebase-kg_codebase-kg,Agent,Read,Grep,Glob,Write,Edit,MultiEdit,SendMessage,ToolSearch,Bash(python -m pytest:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*)" \
+  --output-format stream-json --verbose
+```
+
+Both `--plugin-dir` flags are needed: sentinel-swarm declares codebase-kg as a dependency, and the plugin does not load when the dependency is absent from the session.
+
+| Run | Result | What it found |
+|---|---|---|
+| 1 | Stalled after `run_start` | Hook 6 stamped `agent_id` onto `ledger_info`, which has no such parameter. FastMCP runs tool calls on worker threads, and the SQLite connection refused cross-thread use |
+| 2 | Stalled at the Coders | The Coders invented rating names and looped on a raw `KeyError`. `graph_upsert` failed on an edge to a missing node, and the ledger's `VIRTUAL_ENV` leaked into the codebase-kg subprocess. The Lead claimed the test file as a second file and created two Coders. The Manager polled `message_inbox` on every turn |
+| 3 | **Passed** in 5 minutes 46 seconds, 16 Oracle turns, about $3.61 | See the checklist below |
+| 4 | **Passed** in 5 minutes 16 seconds, 20 Oracle turns, about $3.28, on the code that fixes run 3's findings | Same checklist, every row clean: the full run without a target passed, the module is `approved`, the Oracle row closed at `run_finish`, and the report says `Outcome: success`. The Coder wrote `greeting()` and `main()` with two tests; the Lead's first score call omitted a dimension from `applicable`, the ledger refused it with the reason, and the retry passed |
+
+Every finding has a fix and a test. The fixes: hook 6 skips the tools without `agent_id`; the connection opens with `check_same_thread=False` and every tool call runs under one lock; `score_record` refuses a malformed rating with the full key list, and the tool description carries that list; `graph_upsert` checks edge targets first and drops `VIRTUAL_ENV`; the Lead prompt says one Coder owns the source and test pair; the parent prompts say to end the turn after a spawn instead of polling.
+
+Run 3 against the checklist, read from the ledger rows:
+
+| Check | Result |
+|---|---|
+| Registry | `oracle` (fable), `mgr-hello` (opus), `lead-hello-hello` (opus), `coder-hello-hello-hello` (sonnet), each with its parent, start and end time, tokens, and tool count. The Oracle row had no end time or tokens, because the session's own transcript is not read; `run_finish` now closes it |
+| Briefs | Three briefs, 1313 to 2885 characters each, all acknowledged |
+| Claim | `hello.py` with `test_hello.py`, owned by the Coder, released on approval. No violation event |
+| Tests | Six `test_runs` rows: file twice, module, phase, full twice. All passed except one full run with no target, where `{target}` stayed in the command; the runner now drops the placeholder |
+| Scores | A self review and a lead review, 27 ratings each over the seven applicable dimensions, accessibility and error handling marked not applicable. `review_compare` ran |
+| Approvals | The handoff is `approved` with two saved versions. The phase is `approved`. The module stayed `planned`, so `approve` now marks a module approved when its last file is |
+| Graph | The Coder's `hello_module` node anchors on `hello.py#main` and `test_hello.py#test_main_prints_hello_world` |
+| Events | 12 lifecycle events in order, from `run_start` to the two `agent_release` calls |
+| Report | `report.md` was written before `run_finish`, so it said `Outcome: active`; `run_finish` now rebuilds it |
+
+Observed but not fixed: the Oracle's final message used the persona from the user's global `CLAUDE.md`, although its prompt says to ignore persona instructions. The Stop hook held the Oracle in the session across six intermediate stops while its children ran, which is hook 11 working as designed. The gates that fired in the run: the shell gate denied a Coder's `cd` command in run 2, and `tests_run(scope="file")` refused the Lead in run 3.
+
 ## Plugin features found on 2026-09-21
 
 Read from `code.claude.com/docs/en/plugins-reference.md`, through a summarizing fetch. Each is a candidate, not a decision. **(proposed)**

@@ -587,6 +587,16 @@ class ReviewMixin:
                 (file_row["file_id"],),
             )
             self._release_agent(conn, handoff_row["agent_id"], "approve")
+            pending = conn.execute(
+                "SELECT COUNT(*) AS n FROM files WHERE module_id = ? "
+                "AND state NOT IN ('approved', 'incomplete')",
+                (file_row["module_id"],),
+            ).fetchone()["n"]
+            if pending == 0:
+                conn.execute(
+                    "UPDATE modules SET state = 'approved' WHERE module_id = ?",
+                    (file_row["module_id"],),
+                )
 
         return dict(
             self.conn.execute(
@@ -1031,11 +1041,18 @@ class ReviewMixin:
         lines.append("")
 
         lines.append("## Agents")
-        for a in _rows(conn.execute("SELECT * FROM agents WHERE run_id = ?", (c.run_id,))):
+        agent_rows = conn.execute(
+            "SELECT *, CAST((julianday(COALESCE(ended_at, strftime('%Y-%m-%dT%H:%M:%fZ', "
+            "'now'))) - julianday(started_at)) * 86400000 AS INTEGER) AS elapsed_ms "
+            "FROM agents WHERE run_id = ?",
+            (c.run_id,),
+        )
+        for a in _rows(agent_rows):
             lines.append(
                 f"- {a['name']} ({a['role']}, {a['model']}): "
-                f"tokens in={a['input_tokens']} out={a['output_tokens']}, "
-                f"duration_ms={a['duration_ms']}, "
+                f"tokens in={a['input_tokens']} out={a['output_tokens']} "
+                f"cache_read={a['cache_read_tokens']}, "
+                f"elapsed_ms={a['elapsed_ms']}, tool_uses={a['tool_uses']}, "
                 f"context_overflow_count={a['context_overflow_count']}"
             )
 

@@ -1,29 +1,35 @@
 # sentinel-swarm: session handoff
 
-Status on 2026-09-21: written by session `sentinel-swarm-a8`, updated by session `sentinel-swarm-d3` for session `sentinel-swarm-75`. Read `plans/CLAUDE.md` first, then this file.
+Status on 2026-09-22: written by session `sentinel-swarm-a8`, updated by `sentinel-swarm-d3` and `sentinel-swarm-75`. Read `plans/CLAUDE.md` first, then this file.
 
 ## Where the work stands
 
 - The design is drafted in `01-roles.md`, `02-rubric.md`, `03-ledger.md`, and `04-mcp-and-hooks.md`. Alex settled every open question in them. Items marked **(proposed)** are Claude's additions, and Alex has not reviewed them one by one.
 - The repo is on `main`, pushed to the private remote `github.com/Alexk413x/sentinel-swarm`. CI passes on Windows, macOS, and Ubuntu, with Python 3.10 and 3.12.
-- The plugin skeleton exists: the manifest, four role agents, six skeleton skills, an empty `hooks/hooks.json`, a settings template, and the `swarm-ledger` Python project with one tool, `ledger_info`.
-- `mcp/tests/test_plugin_surface.py` guards the agent frontmatter, colors, models, and tool grants. Run `uv run pytest`, `uv run pyright`, and `uv run ruff check` from `mcp/` before each commit.
-- Nothing runs yet. No ledger tables, no hooks, and no skill logic exist.
+- **The swarm runs.** The smoke test "Create a hello world file." passed on 2026-09-22: four agents, a claim, six test runs, two reviews, an approved handoff, an approved phase, a finished run, and a report. The results and the headless command are in `04-mcp-and-hooks.md` "Smoke test results on 2026-09-22".
+- What exists: the `swarm-ledger` server with 45 tools (`mcp/src/swarm_ledger/`, layout in `mcp/ARCHITECTURE.md`), the twelve hooks behind `python -m swarm_ledger.hooks`, the four role prompts, and the six skills. 209 tests. Run `uv run pytest`, `uv run pyright`, `uv run ruff check`, and `uv run ruff format --check` from `mcp/` before each commit.
+- Not built: the watchdog, the change-request tools (`cr_*`), `repo_check` and `repo_branch_create`, `departure_record` and `shortfall_record` as separate tools, and a Manager-level or Oracle-level review gate. The prompts route those through `message_post` and the handoff's `departures` list for now.
 
 ## Next steps, in order
 
+1. **Review the smoke-test findings with Alex.** The table in `04-mcp-and-hooks.md` lists what each run found and fixed. Two observations are unfixed: the Oracle's final message picked up the persona from the user's global `CLAUDE.md`, and a headless Oracle is held in the session by the Stop hook while its children run.
+2. **Run the swarm on a real PRD** with two or more files in one module, then two modules, to exercise `return_work`, `attempt_record`, message routing between Coders, and parallel claims. Watch cost: the hello-world run cost about $3.61, mostly the Oracle on fable and the Manager and Lead on opus.
+3. **Build the watchdog** and decide its home: `monitors/monitors.json` or a script the Oracle starts. It reads `agents.last_heartbeat_at` and reports through `directive_submit(source="watchdog")`.
+4. **The missing tools** listed above, as Alex prioritizes them.
+5. **Prototype checks still open.** `PreCompact` inside a subagent, and the `--agent` checks from `03-ledger.md`, which need Alex to start a session with `claude --agent`.
+
+## Earlier steps, done
+
 1. **Code graph for this repo.** Done on 2026-09-21. The graph is at `knowledge/code_graph.db`, and `/codebase-kg:setup` installed `.githooks/`. Run `/codebase-kg:refresh` after changes to mapped files.
-2. **Prototype checks.** Partly done on 2026-09-21. The results are in `04-mcp-and-hooks.md` "Prototype results on 2026-09-21".
+2. **Prototype checks.** Done on 2026-09-21. The results are in `04-mcp-and-hooks.md` "Prototype results on 2026-09-21".
    - Done: nesting depth (three layers, no spare), resume with `SendMessage` (context is kept), trust in a resume message, SQLite concurrent writers (WAL, busy timeout, `BEGIN IMMEDIATE`), and the cost of a Python hook (about 300 ms through Git Bash).
    - Done with the probe hooks, which are now deleted: `updatedInput` rewrites an MCP tool's input, `SubagentStop` can block, and hook input carries `agent_id` and `agent_type` at all three layers but never the parent. `SubagentStop` fires more than once for one agent, so it does not mean that the agent ended.
    - Open from the probe: whether `PreCompact` fires inside a subagent. It needs a subagent that fills its context, so run it during the first long swarm test.
    - Done: `kg_upsert_node` does not re-baseline a file's hash, and only `codebase-kg-build --rebaseline` does. Alex decided on 2026-09-21: `handoff_submit` checks anchors and coverage only, and the hash stays a review signal for the Lead and the git hooks. See the check 7 row of the results table.
    - Done: concurrent writers on the code graph file are unsafe, because `kg_upsert_node` copies, edits, and replaces the file without a lock, and changes are lost silently. Parallel per-file test runs are reliable. Hook 8 gets `agent_id` and `file_path` in one hook input.
    - Alex decided on 2026-09-21: a ledger tool `graph_upsert` does the lock and the upsert in one call. Fallback: Coders behind a ledger lock. See the check 5 row.
-   - Next: the `--agent` checks from `03-ledger.md`, which need Alex to start a session with `claude --agent`.
-3. **Candidates to evaluate**, from "Plugin features found on 2026-09-21" in `04-mcp-and-hooks.md`: `monitors/monitors.json` for the watchdog, `subagentStatusLine` for marking agents, and the plugin `agent` setting for running the session as the Oracle.
-4. **Build the ledger**, then the hooks, then the skills. Follow `/plugin-dev:create-plugin` from Phase 4. Test each piece on its own as it is built.
-5. **Smoke test.** Alex decided on 2026-09-21: once every piece works, run the swarm with the prompt "Create a hello world file." and confirm that all four agents were created and that the logs, tests, scores, and records are all there. The checklist is in `04-mcp-and-hooks.md` "Build order and the smoke test".
+3. **Build the ledger, the hooks, the prompts, and the skills.** Done on 2026-09-22, in five delegated steps, each verified in the main session.
+4. **Smoke test.** Passed on 2026-09-22 on the third run. Alex's checklist is in `04-mcp-and-hooks.md` "Build order and the smoke test", and the results follow it there.
 
 ## How Alex works
 
@@ -55,6 +61,15 @@ All are recorded in `04-mcp-and-hooks.md`.
 - The ledger identity is the agent's name, not its `agent_id`. The name is set at start, does not change, and is the message address. How hook 6 binds the name to the `agent_id` is a **(proposed)** item.
 - User directives: a ledger channel that steers the Oracle from any source, without interrupting the agents. It also carries escalation replies and watchdog reports. Every directive carries full authority, whatever its source.
 - Build order: every piece is tested on its own first. The smoke test is one run with the prompt "Create a hello world file."
+- The code graph hash is a review signal, not a gate. `handoff_submit` checks anchors and coverage only.
+- `graph_upsert` is a ledger tool that takes the lock and applies the upsert in one call.
+- No telephone game: every plan and task is a ledger record, and an agent re-reads its brief instead of trusting its memory. See `04-mcp-and-hooks.md` "No telephone game".
+
+## Working notes for the smoke test
+
+- The scratch host repo lives in the session scratchpad, not in this repo. To rebuild one: a git repo with a README, a `pyproject.toml` that sets `testpaths` and `pythonpath`, `.claude/settings.json` that enables codebase-kg, `.claude/sentinel-swarm.local.md` from the template with `test_command: python -m pytest -q -p no:cacheprovider {target}`, and a one-node graph built from a JSON document with a `covers` list.
+- A headless run needs an explicit `--allowedTools` list. Do not use `--dangerously-skip-permissions`; the session's permission classifier denies it.
+- Judge a run from `.sentinel-swarm/ledger.db`, not from the transcript. The queries used are in the results table's rows.
 
 ## Working notes for this repo
 

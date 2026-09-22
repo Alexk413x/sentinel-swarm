@@ -235,7 +235,18 @@ class Ledger(ReviewMixin):
                 (outcome, run_id),
             )
 
-        return dict(conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone())
+        report = self.report_build(caller, agent_id)
+        with write_tx(self.conn) as conn:
+            conn.execute(
+                f"UPDATE agents SET state = 'released', ended_at = {_NOW}, "
+                "end_reason = 'run_finish' WHERE agent_id = ?",
+                (c.agent_id,),
+            )
+            self._log_event(conn, c.agent_id, "working", "released", "run_finish")
+
+        run_row = dict(conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone())
+        run_row["report_path"] = report["path"]
+        return run_row
 
     def profile_set(
         self,

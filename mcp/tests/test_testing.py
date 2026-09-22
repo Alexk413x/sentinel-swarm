@@ -145,3 +145,10 @@ def test_run_tests_caps_output_at_twenty_thousand_characters(tmp_path: Path) -> 
     assert len(result.output) <= 20000
     assert result.output.rstrip().endswith("1 passed")
     assert result.ok is True
+
+
+def test_run_tests_drops_the_placeholder_when_no_target_is_given(tmp_path: Path) -> None:
+    command_template = _python_command("import sys; print(sys.argv[1:]); print('1 passed')")
+    result = run_tests(command_template + " {target}", None, tmp_path)
+    assert "{target}" not in result.command
+    assert result.ok is True
