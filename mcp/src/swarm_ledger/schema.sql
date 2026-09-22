@@ -44,6 +44,9 @@ CREATE TABLE IF NOT EXISTS files (
     state TEXT NOT NULL,
     claimed_at TEXT,
     released_at TEXT,
+    -- Set by hook 7 after a Coder's edit. handoff_submit refuses a self review
+    -- older than this, so a stale review can never wave through a later edit.
+    stale_since TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -112,6 +115,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     kind TEXT NOT NULL,
     outcome TEXT,
     notes TEXT,
+    applicable_json TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -188,7 +192,52 @@ CREATE TABLE IF NOT EXISTS versions (
     agent_id TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
     content BLOB NOT NULL,
     sha256 TEXT NOT NULL,
+    -- Path to the human-readable file copy, relative to the records folder.
+    -- The BLOB above is authoritative; this is what version_restore reads.
+    stored_path TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS handoffs (
+    handoff_id INTEGER PRIMARY KEY,
+    file_id INTEGER NOT NULL REFERENCES files (file_id) ON DELETE RESTRICT,
+    agent_id TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
+    test_run_id INTEGER REFERENCES test_runs (test_run_id) ON DELETE RESTRICT,
+    version_id INTEGER REFERENCES versions (version_id) ON DELETE RESTRICT,
+    test_version_id INTEGER REFERENCES versions (version_id) ON DELETE RESTRICT,
+    self_review_id INTEGER REFERENCES reviews (review_id) ON DELETE RESTRICT,
+    open_issues_json TEXT,
+    departures_json TEXT,
+    state TEXT NOT NULL,
+    compared_at TEXT,
+    decided_notes TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    decided_at TEXT,
+    decided_by TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS attempts (
+    attempt_id INTEGER PRIMARY KEY,
+    file_id INTEGER NOT NULL REFERENCES files (file_id) ON DELETE RESTRICT,
+    handoff_id INTEGER REFERENCES handoffs (handoff_id) ON DELETE RESTRICT,
+    issue_ids_json TEXT,
+    targeted_json TEXT,
+    outcome TEXT,
+    round INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS deferrals (
+    deferral_id INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL REFERENCES runs (run_id) ON DELETE RESTRICT,
+    file_id INTEGER REFERENCES files (file_id) ON DELETE RESTRICT,
+    proposed_by TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
+    reason TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'open',
+    decided_by TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
+    decision_reason TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    decided_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (

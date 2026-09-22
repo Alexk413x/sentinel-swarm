@@ -6,6 +6,7 @@ from pathlib import Path
 from . import __version__
 from .db import connect, ensure_git_exclude, ledger_path, write_tx
 from .identity import ROLES, LedgerError, child_role_of, require_role, resolve
+from .review import ReviewMixin
 from .settings import load_settings
 
 _NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
@@ -28,7 +29,7 @@ def _rows(cursor: sqlite3.Cursor) -> list[dict]:
     return [dict(row) for row in cursor.fetchall()]
 
 
-class Ledger:
+class Ledger(ReviewMixin):
     def __init__(self, repo_root: Path, *, db_path: Path | None = None) -> None:
         self.repo_root = repo_root
         self.settings = load_settings(repo_root)
@@ -177,6 +178,13 @@ class Ledger:
             ).fetchone()["n"]
             if open_directives:
                 raise LedgerError(f"{open_directives} directive(s) are still open")
+
+            open_deferrals = conn.execute(
+                "SELECT COUNT(*) AS n FROM deferrals WHERE run_id = ? AND state = 'open'",
+                (run_id,),
+            ).fetchone()["n"]
+            if open_deferrals:
+                raise LedgerError(f"{open_deferrals} deferral(s) are still open")
 
             conn.execute(
                 f"UPDATE runs SET state = 'finished', outcome = ?, ended_at = {_NOW} "

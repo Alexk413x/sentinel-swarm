@@ -31,6 +31,7 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = ["integration: slower tests that call an external tool (deselect with -m 'not integration')"]
 
 [tool.pyright]
 include = ["src", "tests"]
