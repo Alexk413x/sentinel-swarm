@@ -21,6 +21,7 @@ Status on 2026-09-20: first draft. Bullets marked **(proposed)** are Claude's ad
 - The final report lives in the same folder and is ignored too. The user copies it out when they want to keep it. **(proposed)**
 - The folder is `.sentinel-swarm/` at the root of the main checkout, and the ledger is `.sentinel-swarm/ledger.db`. A worktree's `.git` file points to the main checkout, and the ledger resolves it. **(proposed)**
 - Every connection opens with WAL, `synchronous=NORMAL`, a 5 second busy timeout, and foreign keys on. Writes run inside `BEGIN IMMEDIATE`. See check 5 in `04-mcp-and-hooks.md`. **(proposed)**
+- Decision from Alex on 2026-09-22: each run's records go in their own timestamped folder, `.sentinel-swarm/runs/<timestamp>/`, in every host repo. The swarm writes the project's code in the host repo itself. How resume finds a run's folder, and whether one ledger spans all runs or each run gets its own, are open.
 - Consequence: a run can resume on the same machine only. A fresh clone has no records. A later setting can allow committed records. **(proposed)**
 
 ## Per-role settings

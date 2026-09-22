@@ -105,6 +105,17 @@ All hooks live in the plugin's `hooks/hooks.json`, because plugin agents ignore 
 | Lead | Ledger, code graph read tools, Read, Grep, Glob, Agent, SendMessage, web research |
 | Coder | Ledger, code graph read and write tools, Read, Grep, Glob, Write, Edit, the gated shell, web research, accessibility tools when installed. No Agent tool |
 
+Decision from Alex on 2026-09-22: each role keeps its fixed `tools` allowlist in the frontmatter. A denylist was considered so that agents would inherit a host project's plugins, skills, and language servers, and the probe below shows that it works. Alex chose the allowlist after the probe showed what a denylist also lets in: personal-account connectors, GitHub and Jira under any server name, and session tools that bypass the ledger. A host project's plugin tools are not available to the swarm.
+
+Probe on 2026-09-22, with a throwaway plugin on haiku, run in both a `--agent` session and as plugin subagents:
+
+- A plugin agent's `disallowedTools` works in both places. With no `tools` key, the agent inherits every other tool in the session: other plugins' MCP tools (a11y, the drivers) and `Skill`.
+- An MCP server name without a tool suffix, such as `mcp__plugin_github_github`, denies every tool of that server. The `__*` form works too.
+- The shell has two names. Denying `Bash` leaves `PowerShell`, so both are denied.
+- GitHub and Jira reach a session through five servers on this machine: `plugin_github_github`, the user server `github`, `plugin_atlassian_atlassian`, the claude.ai connector `claude_ai_Atlassian_Rovo`, and the user server `atlassian-attachments`. A denylist catches only the names it lists, so another user's GitHub or Jira server under a different name is not caught.
+- A session also inherits the claude.ai connectors (Gmail, Google Calendar, Google Drive, Claude Docs) and session tools such as `EnterWorktree`, `Workflow`, `CronCreate`, and `RemoteTrigger`.
+- No language server tool appeared, because no installed plugin provides one. That case is not verified.
+
 ## Watchdog
 
 The Oracle starts a plain script at the start of a run. The script reads the registry's heartbeats and states. It wakes the Oracle only when it finds an agent that is stuck, spinning, or over the context threshold.
