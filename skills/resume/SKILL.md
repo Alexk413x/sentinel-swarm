@@ -52,6 +52,10 @@ row, binds the Oracle's name to the new session id, moves the live children and 
 to the new parent, and returns the existing run with `"resumed": true`. The PRD
 argument is ignored on a resume.
 
+A paused run resumes the same way. The Oracle calls `run_pause(reason)` when the run
+is blocked on something only the user can fix. Once the user fixes it, `run_start`
+sets the run back to active and returns `"resumed": true`.
+
 ## Check the state first
 
 `/sentinel-swarm:status` reads the same database without changing anything. Run it

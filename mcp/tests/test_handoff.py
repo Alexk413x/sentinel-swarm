@@ -435,6 +435,10 @@ def _round_trip(
     )
     ledger.review_compare("lead-1", ctx["lead"]["agent_id"], handoff1["handoff_id"])
     ledger.return_work("lead-1", ctx["lead"]["agent_id"], handoff1["handoff_id"], [], targeted)
+    returned = ledger.conn.execute(
+        "SELECT state FROM agents WHERE agent_id = ?", (coder["agent_id"],)
+    ).fetchone()
+    assert returned["state"] == "idle"
 
     _touch_module(ledger.repo_root, name, "revised")
     ledger.score_record(

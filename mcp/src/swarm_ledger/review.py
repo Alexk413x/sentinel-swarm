@@ -88,6 +88,8 @@ class ReviewMixin:
 
     def _active_run(self, conn: sqlite3.Connection) -> sqlite3.Row: ...
 
+    def pause_reason(self, run_id: int) -> str | None: ...
+
     # -- Shared helpers ---------------------------------------------------
 
     def _thresholds(self) -> rubric.Thresholds:
@@ -637,13 +639,15 @@ class ReviewMixin:
             coder_row = conn.execute(
                 "SELECT state FROM agents WHERE agent_id = ?", (handoff_row["agent_id"],)
             ).fetchone()
+            # 'idle', not 'working': the Coder's turn ended at its handoff, and the Stop
+            # hook reads 'working' as a turn in progress. Its next tool use marks it working.
             if coder_row is not None:
                 conn.execute(
-                    "UPDATE agents SET state = 'working' WHERE agent_id = ?",
+                    "UPDATE agents SET state = 'idle' WHERE agent_id = ?",
                     (handoff_row["agent_id"],),
                 )
                 self._log_event(
-                    conn, handoff_row["agent_id"], coder_row["state"], "working", "return_work"
+                    conn, handoff_row["agent_id"], coder_row["state"], "idle", "return_work"
                 )
             cur = conn.execute(
                 "INSERT INTO attempts (file_id, handoff_id, issue_ids_json, targeted_json, "
@@ -986,7 +990,10 @@ class ReviewMixin:
             raise LedgerError(f"{caller!r} has no run")
         run = conn.execute("SELECT * FROM runs WHERE run_id = ?", (c.run_id,)).fetchone()
 
-        lines = ["# Run report", "", f"Outcome: {run['outcome'] or run['state']}", ""]
+        lines = ["# Run report", "", f"Outcome: {run['outcome'] or run['state']}"]
+        if run["state"] == "paused":
+            lines.append(f"Paused: {self.pause_reason(c.run_id)}")
+        lines.append("")
 
         for phase in conn.execute(
             "SELECT * FROM phases WHERE run_id = ? ORDER BY ordinal", (c.run_id,)
@@ -1047,14 +1054,29 @@ class ReviewMixin:
             "FROM agents WHERE run_id = ?",
             (c.run_id,),
         )
-        for a in _rows(agent_rows):
+        agents = _rows(agent_rows)
+        for a in agents:
             lines.append(
                 f"- {a['name']} ({a['role']}, {a['model']}): "
                 f"tokens in={a['input_tokens']} out={a['output_tokens']} "
-                f"cache_read={a['cache_read_tokens']}, "
+                f"cache_read={a['cache_read_tokens']} cache_write={a['cache_write_tokens']}, "
                 f"elapsed_ms={a['elapsed_ms']}, tool_uses={a['tool_uses']}, "
                 f"context_overflow_count={a['context_overflow_count']}"
             )
+        totals = {
+            column: sum(a[column] or 0 for a in agents)
+            for column in (
+                "input_tokens",
+                "output_tokens",
+                "cache_read_tokens",
+                "cache_write_tokens",
+            )
+        }
+        lines.append(
+            f"- Run total: tokens in={totals['input_tokens']} out={totals['output_tokens']} "
+            f"cache_read={totals['cache_read_tokens']} "
+            f"cache_write={totals['cache_write_tokens']}"
+        )
 
         text = "\n".join(lines) + "\n"
         records_dir = ledger_path(self.repo_root).parent

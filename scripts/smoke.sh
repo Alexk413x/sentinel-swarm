@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-prompt="${1:-Create a hello world file.}"
+prompt="${1:-Create hello.py. When it runs, it writes the text Hello, world! to hello_world.txt in the current folder.}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 run_dir="$root/runs/hello"
 host="$run_dir/host"
@@ -75,6 +75,15 @@ echo "$prompt" | "${CLAUDE_BIN:-claude}" -p --agent sentinel-swarm:oracle \
   --allowedTools "mcp__plugin_sentinel-swarm_swarm-ledger,mcp__plugin_codebase-kg_codebase-kg,Agent,Read,Grep,Glob,Write,Edit,MultiEdit,SendMessage,ToolSearch,Bash(python -m pytest:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*)" \
   --output-format stream-json --verbose \
   > "$run_dir/transcript.jsonl" 2> "$run_dir/stderr.txt" || echo "claude exited with status $?" >&2
+
+if [ -f "$host/hello.py" ]; then
+  (cd "$host" && python hello.py) || echo "python hello.py exited with status $?" >&2
+fi
+if [ -f "$host/hello_world.txt" ]; then
+  echo "hello_world.txt: $(cat "$host/hello_world.txt")"
+else
+  echo "hello_world.txt: missing"
+fi
 
 echo "Results: $run_dir"
 echo "Report:  $host/.sentinel-swarm/report.md"

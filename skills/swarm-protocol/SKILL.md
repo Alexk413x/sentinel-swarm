@@ -51,12 +51,15 @@ Ledger tools are named `mcp__plugin_sentinel-swarm_swarm-ledger__<name>`.
 
 | Role | Order |
 |---|---|
-| Oracle | `ledger_info` → `run_start` → `profile_set` → `guidelines_set` → `phase_add` per phase → `phase_update(unlocked)` → per phase: `brief_create` + spawn → review: `status_tree`, `run_status`, `issue_list` → `phase_update(approved)` → `plan_unlocked` → `tests_run(full)` at join points → `directive_inbox` at safe points → `report_build` → `run_finish` |
+| Oracle | `ledger_info` → `run_start` → `profile_set` → `guidelines_set` → `phase_add` per phase → `phase_update(unlocked)` → per phase: `brief_create` + spawn → review: `status_tree`, `run_status`, `issue_list` → `phase_update(approved)` → `plan_unlocked` → `tests_run(full)` at join points → `directive_inbox` at safe points → `run_pause(reason)` when only the user can unblock the run → `report_build` → `run_finish` |
 | Manager | `brief_get` → `brief_ack` → `guidelines_get` → `module_add` per module → per Lead: `brief_create` + spawn → review the Lead reports → `tests_run(phase)` → `phase_update(handed_up)` (a Manager sets only its own phase, to `working` or `handed_up`) → `message_post` to the Oracle |
 | Lead | `brief_get` → `brief_ack` → `guidelines_get` → per file: `claim_file` then `brief_create` then spawn → on a handoff: `score_record(kind="lead")` then `review_compare` then `approve` / `return_work` / `accept_incomplete` → after a return: `score_record(lead)`, `review_compare`, `attempt_record`, decide → `tests_run(module)` → `message_post` to the Manager |
 | Coder | `brief_get` → `brief_ack` → `kg_search` → write the test file → write the source file → `tests_run(scope="file")` until green → `graph_upsert` → `score_record(kind="self")` → `handoff_submit` |
 
 Every role calls `message_inbox` at the start of each turn after a resume.
+
+`run_start` on a paused run resumes it: the run goes back to active. A paused run
+keeps every gate.
 
 ## The gates the ledger enforces
 

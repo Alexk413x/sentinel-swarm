@@ -426,6 +426,8 @@ def test_stop_blocks_the_oracle_while_a_handoff_is_submitted(ledger: Ledger) -> 
     ctx = _bootstrap(ledger)
     coder = _spawn_coder(ledger, ctx, "coder-stop", "src/mine.py", "tests/test_mine.py")
     _submit_handoff_row(ledger, coder, "src/mine.py")
+    for agent_id in (coder["agent_id"], ctx["lead"]["agent_id"], ctx["manager"]["agent_id"]):
+        _go_idle(ledger, agent_id)
 
     result = events.handle_stop(ledger, {"agent_id": ctx["oracle_id"]})
     assert result is not None
@@ -525,3 +527,156 @@ def test_pre_ledger_does_not_stamp_tools_without_an_agent_id(ledger: Ledger) -> 
     }
     result = events.handle_pre_ledger(ledger, data)
     assert "agent_id" not in result["hookSpecificOutput"]["updatedInput"]
+
+
+# -- paused runs, idle tracking, and wake-ups ---------------------------------------------
+
+
+def _go_idle(ledger: Ledger, agent_id: str) -> None:
+    events.handle_subagent_stop(ledger, {"agent_id": agent_id, "stop_hook_active": True})
+
+
+def _state(ledger: Ledger, agent_id: str) -> str:
+    row = ledger.conn.execute("SELECT state FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
+    return row["state"]
+
+
+def test_gates_still_apply_while_the_run_is_paused(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    ledger.run_pause("oracle", ctx["oracle_id"], "waiting on the user")
+    data = {
+        "agent_id": ctx["lead"]["agent_id"],
+        "tool_input": {"file_path": str(ledger.repo_root / "src" / "a.py")},
+    }
+    result = events.handle_pre_write(ledger, data)
+    assert result is not None
+    assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_session_start_reports_a_paused_run_and_its_reason(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    ledger.run_pause("oracle", ctx["oracle_id"], "the API key is missing")
+    result = events.handle_session_start(ledger, {})
+    assert result is not None
+    context = result["hookSpecificOutput"]["additionalContext"]
+    assert "paused run" in context
+    assert "the API key is missing" in context
+
+
+def test_subagent_stop_marks_idle_and_post_tool_use_marks_working(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    lead_id = ctx["lead"]["agent_id"]
+
+    assert events.handle_subagent_stop(ledger, {"agent_id": lead_id}) is None
+    assert _state(ledger, lead_id) == "idle"
+    assert events.handle_subagent_stop(ledger, {"agent_id": lead_id}) is None
+    idle_events = [e for e in ledger.events(agent_id=lead_id) if e["to_state"] == "idle"]
+    assert len(idle_events) == 1
+    assert idle_events[0]["from_state"] == "working"
+    assert idle_events[0]["reason"] == "subagent_stop"
+
+    events.handle_post_any(ledger, {"agent_id": lead_id, "tool_name": "Read", "tool_input": {}})
+    assert _state(ledger, lead_id) == "working"
+    assert any(
+        e["from_state"] == "idle" and e["to_state"] == "working"
+        for e in ledger.events(agent_id=lead_id)
+    )
+
+
+def test_subagent_start_on_resume_marks_an_idle_agent_working(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    lead_id = ctx["lead"]["agent_id"]
+    _go_idle(ledger, lead_id)
+    events.handle_subagent_start(ledger, {"agent_id": lead_id, "agent_type": "lead"})
+    assert _state(ledger, lead_id) == "working"
+
+
+def test_subagent_stop_blocks_a_coder_before_marking_it_idle(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    coder = _spawn_coder(ledger, ctx, "coder-idle", "src/mine.py", "tests/test_mine.py")
+    data = {"agent_id": coder["agent_id"]}
+
+    first = events.handle_subagent_stop(ledger, data)
+    assert first is not None
+    assert first["decision"] == "block"
+    assert _state(ledger, coder["agent_id"]) == "working"
+
+    assert events.handle_subagent_stop(ledger, data) is None
+    assert _state(ledger, coder["agent_id"]) == "idle"
+
+
+def test_stop_allows_when_the_run_is_paused(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    coder = _spawn_coder(ledger, ctx, "coder-paused", "src/mine.py", "tests/test_mine.py")
+    _submit_handoff_row(ledger, coder, "src/mine.py")
+    for agent_id in (coder["agent_id"], ctx["lead"]["agent_id"], ctx["manager"]["agent_id"]):
+        _go_idle(ledger, agent_id)
+    ledger.run_pause("oracle", ctx["oracle_id"], "waiting on the user")
+    assert events.handle_stop(ledger, {"agent_id": ctx["oracle_id"]}) is None
+
+
+def test_stop_allows_while_an_agent_is_working(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    coder = _spawn_coder(ledger, ctx, "coder-busy", "src/mine.py", "tests/test_mine.py")
+    _submit_handoff_row(ledger, coder, "src/mine.py")
+    _go_idle(ledger, ctx["manager"]["agent_id"])
+    assert _state(ledger, ctx["lead"]["agent_id"]) == "working"
+    assert events.handle_stop(ledger, {"agent_id": ctx["oracle_id"]}) is None
+
+
+def test_stop_names_the_idle_lead_that_owes_a_handoff_review(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    coder = _spawn_coder(ledger, ctx, "coder-wait", "src/mine.py", "tests/test_mine.py")
+    _submit_handoff_row(ledger, coder, "src/mine.py")
+    for agent_id in (coder["agent_id"], ctx["lead"]["agent_id"], ctx["manager"]["agent_id"]):
+        _go_idle(ledger, agent_id)
+
+    result = events.handle_stop(ledger, {"agent_id": ctx["oracle_id"]})
+    assert result is not None
+    assert result["decision"] == "block"
+    reason = result["reason"]
+    assert "for src/mine.py waits on lead-1, which is idle" in reason
+    assert f"SendMessage(to={ctx['lead']['agent_id']!r})" in reason
+    assert "manager-1 is idle" not in reason
+    assert reason.endswith(
+        "If the run is blocked on something only the user can fix, call run_pause(reason)."
+    )
+
+
+def test_stop_names_an_idle_agent_with_unread_messages(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    ledger.message_post("lead-1", ctx["lead"]["agent_id"], "manager-1", "module-1 is done")
+    _go_idle(ledger, ctx["lead"]["agent_id"])
+    _go_idle(ledger, ctx["manager"]["agent_id"])
+
+    result = events.handle_stop(ledger, {"agent_id": ctx["oracle_id"]})
+    assert result is not None
+    reason = result["reason"]
+    assert "manager-1 has 1 unread message(s)" in reason
+    assert f"SendMessage(to={ctx['manager']['agent_id']!r})" in reason
+
+
+def test_stop_stores_the_oracle_tokens_from_its_transcript(ledger: Ledger, tmp_path: Path) -> None:
+    ctx = _bootstrap(ledger)
+    transcript = tmp_path / "oracle.jsonl"
+    record = {
+        "message": {
+            "usage": {
+                "input_tokens": 40,
+                "output_tokens": 8,
+                "cache_read_input_tokens": 900,
+                "cache_creation_input_tokens": 60,
+            }
+        }
+    }
+    transcript.write_text(json.dumps(record), encoding="utf-8")
+
+    events.handle_stop(ledger, {"agent_id": ctx["oracle_id"], "transcript_path": str(transcript)})
+
+    row = ledger.conn.execute(
+        "SELECT * FROM agents WHERE agent_id = ?", (ctx["oracle_id"],)
+    ).fetchone()
+    assert row["input_tokens"] == 40
+    assert row["cache_read_tokens"] == 900
+    assert row["cache_write_tokens"] == 60
+    assert row["ended_at"] is None

@@ -24,6 +24,7 @@ _TOOL_NAMES: tuple[str, ...] = (
     "run_start",
     "run_status",
     "run_finish",
+    "run_pause",
     "profile_set",
     "guidelines_set",
     "guidelines_get",
@@ -116,6 +117,12 @@ def run_status(caller: str, agent_id: str | None = None) -> dict[str, Any]:
 def run_finish(caller: str, outcome: str, agent_id: str | None = None) -> dict[str, Any]:
     """Finishes the active run once every phase is approved; the Oracle calls this."""
     return _call(_ledger().run_finish, caller=caller, agent_id=agent_id, outcome=outcome)
+
+
+@mcp.tool
+def run_pause(caller: str, reason: str, agent_id: str | None = None) -> dict[str, Any]:
+    """Pauses the run on a blocker only the user can fix; the Oracle calls this."""
+    return _call(_ledger().run_pause, caller=caller, agent_id=agent_id, reason=reason)
 
 
 @mcp.tool

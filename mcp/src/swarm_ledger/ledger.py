@@ -12,6 +12,7 @@ from .settings import load_settings
 _NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 _PHASE_STATES = ("planned", "unlocked", "working", "handed_up", "approved")
 _DIRECTIVE_SOURCES = ("user-chat", "outside-session", "skill", "watchdog")
+_LIVE_RUN = "state IN ('active', 'paused')"
 _TOKEN_COLUMNS = (
     "input_tokens",
     "output_tokens",
@@ -56,16 +57,24 @@ class Ledger(ReviewMixin):
         return dict(row) if row is not None else {}
 
     def _active_run(self, conn: sqlite3.Connection) -> sqlite3.Row:
-        row = conn.execute("SELECT * FROM runs WHERE state = 'active'").fetchone()
+        row = conn.execute(f"SELECT * FROM runs WHERE {_LIVE_RUN}").fetchone()
         if row is None:
             raise LedgerError("no active run")
         return row
+
+    def pause_reason(self, run_id: int) -> str | None:
+        row = self.conn.execute(
+            "SELECT e.reason FROM agent_events e JOIN agents a ON a.agent_id = e.agent_id "
+            "WHERE a.run_id = ? AND e.to_state = 'paused' ORDER BY e.event_id DESC LIMIT 1",
+            (run_id,),
+        ).fetchone()
+        return row["reason"] if row is not None else None
 
     # -- Run and plan -----------------------------------------------------
 
     def run_start(self, prd: str, session_id: str, oracle_name: str = "oracle") -> dict:
         with write_tx(self.conn) as conn:
-            active = conn.execute("SELECT * FROM runs WHERE state = 'active'").fetchone()
+            active = conn.execute(f"SELECT * FROM runs WHERE {_LIVE_RUN}").fetchone()
             if active is not None:
                 return self._run_resume(conn, active, session_id)
 
@@ -133,7 +142,28 @@ class Ledger(ReviewMixin):
                 (session_id, old_id),
             )
             self._log_event(conn, session_id, oracle["state"], "working", f"resumed from {old_id}")
-        return {"run": dict(run), "oracle": self._agent_dict(session_id), "resumed": True}
+        if run["state"] == "paused":
+            conn.execute("UPDATE runs SET state = 'active' WHERE run_id = ?", (run["run_id"],))
+            self._log_event(conn, session_id, "paused", "active", "resumed from pause")
+        current = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run["run_id"],)).fetchone()
+        return {"run": dict(current), "oracle": self._agent_dict(session_id), "resumed": True}
+
+    def run_pause(self, caller: str, agent_id: str, reason: str) -> dict:
+        if not reason.strip():
+            raise LedgerError("run_pause needs a reason the user can act on")
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            require_role(c, "oracle")
+            run = self._active_run(conn)
+            if run["state"] == "paused":
+                raise LedgerError("the run is already paused; run_start resumes it")
+            conn.execute("UPDATE runs SET state = 'paused' WHERE run_id = ?", (run["run_id"],))
+            self._log_event(conn, c.agent_id, "active", "paused", reason)
+
+        run_row = self.conn.execute(
+            "SELECT * FROM runs WHERE run_id = ?", (run["run_id"],)
+        ).fetchone()
+        return dict(run_row) | {"reason": reason}
 
     def run_status(self, caller: str, agent_id: str) -> dict:
         conn = self.conn
@@ -979,6 +1009,23 @@ class Ledger(ReviewMixin):
                 (agent_id, path, path),
             )
         return {"path": path, "updated": cur.rowcount > 0}
+
+    def agent_idle(self, agent_id: str, reason: str) -> bool:
+        return self._agent_transition(agent_id, "working", "idle", reason)
+
+    def agent_active(self, agent_id: str, reason: str) -> bool:
+        return self._agent_transition(agent_id, "idle", "working", reason)
+
+    def _agent_transition(self, agent_id: str, from_state: str, to_state: str, reason: str) -> bool:
+        with write_tx(self.conn) as conn:
+            cur = conn.execute(
+                "UPDATE agents SET state = ? WHERE agent_id = ? AND state = ? AND ended_at IS NULL",
+                (to_state, agent_id, from_state),
+            )
+            if cur.rowcount == 0:
+                return False
+            self._log_event(conn, agent_id, from_state, to_state, reason)
+        return True
 
     def agent_compacted(self, agent_id: str) -> dict:
         with write_tx(self.conn) as conn:

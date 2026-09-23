@@ -17,6 +17,8 @@ _READONLY_GIT = frozenset({"status", "diff", "log", "show", "ls-files", "branch"
 _POSIX = os.name != "nt"
 _UNSTAMPED_TOOLS = frozenset({"ledger_info", "brief_get", "who_owns", "directive_submit", "events"})
 _SHELL_OPERATORS = re.compile(r"[;&|<>`\n]|\$\(")
+_LIVE_RUN = "state IN ('active', 'paused')"
+_PAUSE_HINT = "If the run is blocked on something only the user can fix, call run_pause(reason)."
 
 
 # -- Shared helpers -----------------------------------------------------------
@@ -27,7 +29,7 @@ def _caller_id(data: dict) -> str | None:
 
 
 def _active_run_row(ledger: Ledger) -> dict | None:
-    row = ledger.conn.execute("SELECT * FROM runs WHERE state = 'active'").fetchone()
+    row = ledger.conn.execute(f"SELECT * FROM runs WHERE {_LIVE_RUN}").fetchone()
     return dict(row) if row is not None else None
 
 
@@ -72,7 +74,7 @@ def handle_session_start(ledger: Ledger, data: dict) -> dict | None:
     del data
     parts: list[str] = []
 
-    run = ledger.conn.execute("SELECT * FROM runs WHERE state = 'active'").fetchone()
+    run = _active_run_row(ledger)
     if run is not None:
         oracle = ledger.conn.execute(
             "SELECT name FROM agents WHERE run_id = ? AND role = 'oracle' "
@@ -80,10 +82,17 @@ def handle_session_start(ledger: Ledger, data: dict) -> dict | None:
             (run["run_id"],),
         ).fetchone()
         oracle_name = oracle["name"] if oracle is not None else "oracle"
-        parts.append(
-            f"An active run exists (run_id {run['run_id']}, Oracle {oracle_name!r}). "
-            "The resume skill continues it."
-        )
+        if run["state"] == "paused":
+            reason = ledger.pause_reason(run["run_id"])
+            parts.append(
+                f"A paused run exists (run_id {run['run_id']}, Oracle {oracle_name!r}), "
+                f"paused because: {reason}. The resume skill continues it."
+            )
+        else:
+            parts.append(
+                f"An active run exists (run_id {run['run_id']}, Oracle {oracle_name!r}). "
+                "The resume skill continues it."
+            )
 
     if not (ledger.repo_root / "knowledge" / "code_graph.db").is_file():
         parts.append("knowledge/code_graph.db is missing; codebase-kg has not mapped this repo.")
@@ -172,7 +181,9 @@ def handle_pre_agent(ledger: Ledger, data: dict) -> dict | None:
 def handle_subagent_start(ledger: Ledger, data: dict) -> None:
     agent_id = data.get("agent_id") or data.get("session_id")
     if agent_id:
-        ledger.agent_register_start(agent_id, str(data.get("agent_type") or ""))
+        row = ledger.agent_register_start(agent_id, str(data.get("agent_type") or ""))
+        if row.get("state") == "idle":
+            ledger.agent_active(agent_id, "subagent_start")
     return None
 
 
@@ -324,6 +335,8 @@ def handle_post_any(ledger: Ledger, data: dict) -> None:
 
     tool_name = str(data.get("tool_name") or "")
     ledger.agent_heartbeat(caller["agent_id"], tool_name)
+    if caller["state"] == "idle":
+        ledger.agent_active(caller["agent_id"], "post_tool_use")
 
     if tool_name in _WRITE_TOOLS and caller["role"] == "coder":
         raw_path = str((data.get("tool_input") or {}).get("file_path") or "")
@@ -473,7 +486,18 @@ def handle_subagent_stop(ledger: Ledger, data: dict) -> dict | None:
     tokens = _sum_tokens(transcript_path)
     ledger.agent_stop(caller["agent_id"], transcript_path=transcript_path, tokens=tokens)
 
-    if caller["role"] != "coder" or caller["state"] != "working" or data.get("stop_hook_active"):
+    if caller["state"] != "working":
+        return None
+
+    blocked = _block_coder_stop_once(ledger, caller, data)
+    if blocked is not None:
+        return blocked
+    ledger.agent_idle(caller["agent_id"], "subagent_stop")
+    return None
+
+
+def _block_coder_stop_once(ledger: Ledger, caller: dict, data: dict) -> dict | None:
+    if caller["role"] != "coder" or data.get("stop_hook_active"):
         return None
 
     already_blocked = ledger.conn.execute(
@@ -501,6 +525,67 @@ def handle_subagent_stop(ledger: Ledger, data: dict) -> dict | None:
 # -- 11. Stop -------------------------------------------------------------------------
 
 
+def _resume_hint(agent: dict) -> str:
+    return f"resume it with SendMessage(to={agent['agent_id']!r})"
+
+
+def _wake_lines(ledger: Ledger, run_id: int, live: list[dict]) -> list[str]:
+    by_id = {a["agent_id"]: a for a in live}
+    waiting = {a["agent_id"]: a for a in live if a["state"] != "working"}
+    lines: list[str] = []
+    named: set[str] = set()
+
+    handoffs = ledger.conn.execute(
+        "SELECT h.handoff_id, f.path, coder.parent_agent_id AS reviewer_id FROM handoffs h "
+        "JOIN files f ON f.file_id = h.file_id "
+        "JOIN modules m ON m.module_id = f.module_id "
+        "JOIN phases p ON p.phase_id = m.phase_id "
+        "LEFT JOIN agents coder ON coder.agent_id = h.agent_id "
+        "WHERE p.run_id = ? AND h.state = 'submitted' ORDER BY h.handoff_id",
+        (run_id,),
+    ).fetchall()
+    for handoff in handoffs:
+        reviewer = waiting.get(handoff["reviewer_id"])
+        if reviewer is None:
+            continue
+        lines.append(
+            f"handoff {handoff['handoff_id']} for {handoff['path']} waits on "
+            f"{reviewer['name']}, which is {reviewer['state']}; {_resume_hint(reviewer)}"
+        )
+        named.add(reviewer["agent_id"])
+
+    for agent in waiting.values():
+        unread = ledger.conn.execute(
+            "SELECT COUNT(*) AS n FROM messages WHERE run_id = ? AND to_name = ? "
+            "AND read_at IS NULL",
+            (run_id, agent["name"]),
+        ).fetchone()["n"]
+        if unread:
+            lines.append(f"{agent['name']} has {unread} unread message(s); {_resume_hint(agent)}")
+            named.add(agent["agent_id"])
+
+    def ancestors(agent_id: str) -> set[str]:
+        found: set[str] = set()
+        parent_id = by_id[agent_id]["parent_agent_id"]
+        while parent_id in by_id and parent_id not in found:
+            found.add(parent_id)
+            parent_id = by_id[parent_id]["parent_agent_id"]
+        return found
+
+    covered: set[str] = set()
+    for agent_id in named:
+        covered |= ancestors(agent_id)
+    idle = [a for a in waiting.values() if a["state"] == "idle" and a["agent_id"] not in named]
+    for agent in sorted(idle, key=lambda a: len(ancestors(a["agent_id"])), reverse=True):
+        if agent["agent_id"] in covered:
+            continue
+        lines.append(
+            f"{agent['name']} is idle and none of its children is working; {_resume_hint(agent)}"
+        )
+        covered |= ancestors(agent["agent_id"])
+    return lines
+
+
 def handle_stop(ledger: Ledger, data: dict) -> dict | None:
     if data.get("stop_hook_active"):
         return None
@@ -517,40 +602,82 @@ def handle_stop(ledger: Ledger, data: dict) -> dict | None:
     if oracle is None or oracle["agent_id"] != caller_id:
         return None
 
+    transcript_path = data.get("transcript_path")
+    if transcript_path:
+        ledger.agent_stop(
+            oracle["agent_id"],
+            transcript_path=transcript_path,
+            tokens=_sum_tokens(transcript_path),
+        )
+
+    if run["state"] == "paused":
+        return None
+
+    needs_user = ledger.conn.execute(
+        "SELECT 1 FROM directives WHERE run_id = ? AND state = 'open' AND outcome = 'needs_user'",
+        (run["run_id"],),
+    ).fetchone()
+    if needs_user is not None:
+        return None
+
+    live = [
+        dict(row)
+        for row in ledger.conn.execute(
+            "SELECT * FROM agents WHERE run_id = ? AND ended_at IS NULL AND state != 'released' "
+            "AND role IN ('manager', 'lead', 'coder') ORDER BY started_at",
+            (run["run_id"],),
+        )
+    ]
+    if any(a["state"] == "working" for a in live):
+        return None
+
     plan_unlocked = ledger.plan_unlocked(oracle["name"], oracle["agent_id"])
-    submitted_handoff = ledger.conn.execute(
-        "SELECT 1 FROM handoffs h "
+    submitted_handoffs = ledger.conn.execute(
+        "SELECT COUNT(*) AS n FROM handoffs h "
         "JOIN files f ON f.file_id = h.file_id "
         "JOIN modules m ON m.module_id = f.module_id "
         "JOIN phases p ON p.phase_id = m.phase_id "
         "WHERE p.run_id = ? AND h.state = 'submitted'",
         (run["run_id"],),
-    ).fetchone()
-    live_manager = ledger.conn.execute(
-        "SELECT 1 FROM agents WHERE run_id = ? AND role = 'manager' AND ended_at IS NULL",
+    ).fetchone()["n"]
+    live_claims = ledger.conn.execute(
+        "SELECT COUNT(*) AS n FROM files f "
+        "JOIN modules m ON m.module_id = f.module_id "
+        "JOIN phases p ON p.phase_id = m.phase_id "
+        "WHERE p.run_id = ? AND f.released_at IS NULL",
         (run["run_id"],),
-    ).fetchone()
-    needs_user = ledger.conn.execute(
-        "SELECT 1 FROM directives WHERE run_id = ? AND state = 'open' AND outcome = 'needs_user'",
-        (run["run_id"],),
-    ).fetchone()
+    ).fetchone()["n"]
 
     reasons = []
     if plan_unlocked:
         reasons.append(f"{len(plan_unlocked)} unlocked phase(s)")
-    if submitted_handoff is not None:
-        reasons.append("a handoff awaiting review")
-    if live_manager is not None:
-        reasons.append("a live Manager")
+    if submitted_handoffs:
+        reasons.append(f"{submitted_handoffs} handoff(s) awaiting review")
+    if live_claims:
+        reasons.append(f"{live_claims} live file claim(s)")
+    if live:
+        reasons.append(f"{len(live)} live agent(s), none working")
+    if not reasons:
+        return None
 
-    if reasons and needs_user is None:
-        return {
-            "decision": "block",
-            "reason": (
-                f"The run still has work: {', '.join(reasons)}. Continue, or call run_finish."
-            ),
-        }
-    return None
+    lines = _wake_lines(ledger, run["run_id"], live)
+    if lines:
+        lines.insert(0, "No agent is working, so no completion notice will wake you.")
+    elif live:
+        listed = ", ".join(f"{a['name']} ({a['agent_id']}, {a['state']})" for a in live)
+        lines = [
+            f"Live agents: {listed}. Resume the one with pending work with "
+            "SendMessage(to=<agent_id>), or call run_pause."
+        ]
+    else:
+        lines = ["Continue the plan, or call run_finish."]
+
+    return {
+        "decision": "block",
+        "reason": "\n".join(
+            [f"The run still has work: {', '.join(reasons)}.", *lines, _PAUSE_HINT]
+        ),
+    }
 
 
 # -- 12. SessionEnd -----------------------------------------------------------------
@@ -559,5 +686,11 @@ def handle_stop(ledger: Ledger, data: dict) -> dict | None:
 def handle_session_end(ledger: Ledger, data: dict) -> None:
     session_id = data.get("session_id")
     if session_id:
-        ledger.agent_stop(session_id, end_reason=data.get("reason"))
+        transcript_path = data.get("transcript_path")
+        ledger.agent_stop(
+            session_id,
+            transcript_path=transcript_path,
+            tokens=_sum_tokens(transcript_path),
+            end_reason=data.get("reason"),
+        )
     return None

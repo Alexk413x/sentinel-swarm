@@ -617,3 +617,64 @@ def test_manager_sets_its_own_phase_to_working_and_handed_up_only(ledger: Ledger
     other = ledger.phase_add("oracle", ctx["oracle_id"], "phase-2")
     with pytest.raises(LedgerError):
         ledger.phase_update("manager-1", mgr, other["phase_id"], "working")
+
+
+# -- run_pause ----------------------------------------------------------------------
+
+
+def test_run_pause_is_oracle_only_and_sets_the_run_paused(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    with pytest.raises(LedgerError):
+        ledger.run_pause("manager-1", ctx["manager"]["agent_id"], "needs a token")
+    with pytest.raises(LedgerError, match="reason"):
+        ledger.run_pause("oracle", ctx["oracle_id"], "  ")
+
+    paused = ledger.run_pause("oracle", ctx["oracle_id"], "the API key is missing")
+    assert paused["state"] == "paused"
+    assert ledger.pause_reason(paused["run_id"]) == "the API key is missing"
+    assert ledger.run_status("oracle", ctx["oracle_id"])["run"]["state"] == "paused"
+    with pytest.raises(LedgerError, match="already paused"):
+        ledger.run_pause("oracle", ctx["oracle_id"], "again")
+
+
+def test_run_start_resumes_a_paused_run_to_active(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    ledger.run_pause("oracle", ctx["oracle_id"], "the API key is missing")
+    ledger.agent_stop("sess-1", end_reason="exit")
+
+    resumed = ledger.run_start(prd="ignored", session_id="sess-2")
+    assert resumed["resumed"] is True
+    assert resumed["run"]["state"] == "active"
+    assert resumed["oracle"]["agent_id"] == "sess-2"
+    assert any(e["reason"] == "resumed from pause" for e in ledger.events(agent_id="sess-2"))
+
+
+def test_run_finish_works_while_paused(ledger: Ledger) -> None:
+    ledger.run_start(prd="Build X", session_id="sess-1")
+    ledger.run_pause("oracle", "sess-1", "waiting on the user")
+    finished = ledger.run_finish("oracle", "sess-1", "done")
+    assert finished["state"] == "finished"
+
+
+def test_report_build_shows_the_pause_reason_and_the_run_total(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    ledger.agent_stop(
+        ctx["oracle_id"],
+        tokens={
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cache_read_tokens": 100,
+            "cache_write_tokens": 7,
+        },
+    )
+    ledger.agent_stop(
+        ctx["manager"]["agent_id"],
+        tokens={"input_tokens": 1, "output_tokens": 2, "cache_write_tokens": 3},
+    )
+    ledger.run_pause("oracle", ctx["oracle_id"], "the API key is missing")
+
+    text = ledger.report_build("oracle", ctx["oracle_id"])["text"]
+    assert "Outcome: paused" in text
+    assert "Paused: the API key is missing" in text
+    assert "cache_write=7" in text
+    assert "Run total: tokens in=11 out=7 cache_read=100 cache_write=10" in text
