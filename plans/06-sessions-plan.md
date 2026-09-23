@@ -9,7 +9,7 @@ Decided by Alex on 2026-09-23:
 - The Oracle, every Manager, every Lead, and every Coder runs as its own Claude Code session. The swarm no longer spawns subagents.
 - Each session is a row in agent view, with its role's name and color. The user can open, watch, and type into any of them.
 - A session that locks up or crashes is resumed on its own, without restarting the run. Nothing is lost: the session keeps its conversation, and the ledger keeps the run's plan, progress, and evidence.
-- Hooks should live in the agent definitions where the platform allows it. See "Hooks" below.
+- Hooks live in the agent definitions. Decided by Alex on 2026-09-23: the generated agent files in the host's `.claude/agents/` come first, and each role's hooks go in its own file's frontmatter. Users edit those files directly to control each role.
 
 This replaces the earlier rule "Only the Oracle runs as a session. Manager, Lead, and Coder run as nested subagents."
 
@@ -17,7 +17,7 @@ This replaces the earlier rule "Only the Oracle runs as a session. Manager, Lead
 
 | Area | Today: subagents | Plan: sessions **(proposed)** |
 |---|---|---|
-| Starting a child | The parent calls the `Agent` tool | The parent calls a ledger tool, `agent_spawn(child_name)`, which runs `claude --bg --agent sentinel-swarm:<role> --name <child_name> ...` in the host repo |
+| Starting a child | The parent calls the `Agent` tool | The parent calls a ledger tool, `agent_spawn(child_name)`, which runs `claude --bg --agent <the role's project agent> --name <child_name> ...` in the host repo |
 | The spawn gate | Hook 2 checks role, model, and brief | `agent_spawn` checks role, model, brief, and the parallelism cap, and refuses. A ledger gate, not a hook |
 | Identity | Hook input `agent_id` | The session's `session_id`, bound to the name by `brief_ack` |
 | Finished child | A completion notice to the parent, which skips a parent that ended its turn | The ledger wakes the parent: `claude --resume <session_id> --bg "<one-line pointer>"` |
@@ -27,14 +27,26 @@ This replaces the earlier rule "Only the Oracle runs as a session. Manager, Lead
 | Nesting | Three layers, the Coder at the limit | No nesting. Every session is a top-level row |
 | Permission prompts | A background subagent's prompt is denied | A session shows its prompt in its agent-view row |
 
+## The project agent files
+
+Decided by Alex on 2026-09-22 and 2026-09-23: the plugin's four agent files are templates. Each host project gets its own copies in `.claude/agents/`, and the user edits them to control each role. **(the details below are proposed)**
+
+- The `setup` skill, or a run that finds the files missing, writes `swarm-oracle.md`, `swarm-manager.md`, `swarm-lead.md`, and `swarm-coder.md` from the templates. The files are kept out of git through `.git/info/exclude` unless the user commits them.
+- Project agent files honor every frontmatter key, including `hooks`, `mcpServers`, and `permissionMode`, which plugin agents ignore.
+- What the user controls in each file: `model`, `color`, `tools`, `permissionMode`, `mcpServers`, and `hooks`, plus the prompt body.
+- The default `tools` line is the core set plus each plugin the project enables at project scope. Decided 2026-09-22.
+- A new session loads agent files when it starts. The Oracle's file must exist before the Oracle starts, so the launcher (`/sentinel-swarm:run`, or `scripts/smoke.sh`) writes the files first. Every child starts as a new session, so it always sees the current files.
+- Updating after a plugin upgrade: `setup` replaces the prompt body from the new template and keeps the user's frontmatter. It reports any key the new template adds.
+- The hooks in a role's file are the user's to edit. A user can weaken a hook-based gate in their own project. The ledger tools' gates, such as `handoff_submit`, `approve`, and `agent_spawn`, still apply whatever the files say.
+
 ## Starting a session
 
-- `agent_spawn(child_name)` reads the child's brief for its role and model, checks the gates, and starts the session. It records the background id and the `session_id` on the child's `agents` row, so the ledger can wake, stop, and resume it.
+- `agent_spawn(child_name)` reads the child's brief for its role and model, checks the gates, and starts the session with the role's project agent file. It records the background id and the `session_id` on the child's `agents` row, so the ledger can wake, stop, and resume it.
 - The prompt is one line: "You are `<name>`. Read your brief from the swarm ledger and follow it." The no-telephone-game rule is unchanged.
 - The session runs in the host repo root, in the one shared working tree. `worktree.bgIsolation` is `"none"`; the `setup` skill writes it to the host's `.claude/settings.local.json`.
-- The plugin is installed at project scope, so the launcher resolves `sentinel-swarm:<role>` and agent view shows the role's color. `--plugin-dir` does not work for this (verified 2026-09-23).
+- The plugin is installed at project scope, which gives the sessions the ledger server and the skills. `--plugin-dir` is not enough: the launcher does not resolve its agents (verified 2026-09-23).
 - The host folder is trusted once. `setup` tells the user to do this; a background session will not start in an untrusted folder with project plugins (verified 2026-09-23).
-- No role keeps the `Agent` tool, so no role can start a subagent. Hook 2 denies an `Agent` call from any swarm session, as a second line of defense.
+- No role keeps the `Agent` tool, so no role can start a subagent. A hook denies an `Agent` call from any swarm session, as a second line of defense.
 
 ## Waking a parent, and messages
 
@@ -52,15 +64,15 @@ This replaces the earlier rule "Only the Oracle runs as a session. Manager, Lead
 
 ## Hooks
 
-- Plugin agents ignore the `hooks`, `mcpServers`, and `permissionMode` frontmatter keys (this repo's CLAUDE.md, and the docs). Only project-level agent files in the host's `.claude/agents/` honor them.
-- Alex decided on 2026-09-22 that each host project gets generated agent files in `.claude/agents/`. Those files can carry per-role hooks in their frontmatter.
-- Until the generated files exist, the hooks stay in `hooks/hooks.json`. Every hook looks up its caller's role in the ledger by `session_id`, so the same hooks already apply per role.
+- Each role's hooks live in its project agent file's frontmatter. Decided by Alex on 2026-09-23.
+- Plugin-wide `hooks/hooks.json` keeps only what is not tied to one role, if anything. A hook in both places would run twice, so each hook lives in exactly one place.
 - Hook changes for sessions:
   - `SessionStart` registers or re-binds the session, and marks a resumed session working.
   - `Stop` marks the session idle, wakes the parent through the ledger when needed, keeps the Coder's once-only "no handoff yet" block, and keeps the Oracle's stop gate.
   - `SessionEnd` closes the row and records tokens from `transcript_path`.
   - `SubagentStart` and `SubagentStop` are removed. They do not fire for sessions.
-  - `PreToolUse`, `PostToolUse`, and `PreCompact` are unchanged.
+  - `PreToolUse`, `PostToolUse`, and `PreCompact` are unchanged in what they check.
+- Which events an agent file's `hooks` block supports when the agent runs as a session through `--agent` must be verified. See prototype check 4.
 
 ## Memory and the parallelism cap
 
@@ -76,21 +88,23 @@ Each one is a cheap haiku probe, like the checks on 2026-09-21.
 1. The ledger's MCP server process can run `claude --bg` and read back the background id and the `session_id`.
 2. `claude --resume <id> --bg "<message>"` delivers the message to an idle session and keeps the same id.
 3. The `Stop` and `SessionEnd` hook input in a background `--agent` session carries `session_id` and `transcript_path`.
-4. A project-level agent file started with `--agent` runs its frontmatter hooks.
-5. A permission prompt in a background session appears in its agent-view row and waits for the user.
-6. Two sessions write different files in one working tree at the same time without trouble.
+4. A project-level agent file started with `--agent` in a background session runs its frontmatter hooks, and which events work there: `PreToolUse`, `PostToolUse`, `Stop`, `SessionStart`, `SessionEnd`, `PreCompact`.
+5. A frontmatter hook command can reach the ledger code: the plugin root must be known inside a project agent file, where `${CLAUDE_PLUGIN_ROOT}` may not be set.
+6. A permission prompt in a background session appears in its agent-view row and waits for the user.
+7. Two sessions write different files in one working tree at the same time without trouble.
 
 ## Build order
 
 1. The prototype checks.
-2. The ledger: `agent_spawn`, the session columns on `agents` with a small migration, the wake call, stop on release, and the cap.
-3. The hooks: move the subagent logic to the session hooks, and remove `SubagentStart` and `SubagentStop`.
-4. The four prompts and the six skills: `agent_spawn` instead of `Agent`, end the turn after a spawn and let the ledger wake you, and the `Agent` tool removed from every allowlist.
-5. The smoke test in `--bg` mode: four rows in agent view, each with its role's color, plus the ledger checks from `04-mcp-and-hooks.md`.
-6. A crash test: stop a Coder's session in the middle of its work, then confirm the watchdog or `resume` brings it back and the run finishes.
+2. The project agent files: the templates, the generator in `setup` and in the launchers, and the per-role hooks in frontmatter.
+3. The ledger: `agent_spawn`, the session columns on `agents` with a small migration, the wake call, stop on release, and the cap.
+4. The hooks: move the subagent logic to the session hooks, and remove `SubagentStart` and `SubagentStop`.
+5. The four prompts and the six skills: `agent_spawn` instead of `Agent`, end the turn after a spawn and let the ledger wake you, and the `Agent` tool removed from every allowlist.
+6. The smoke test in `--bg` mode: four rows in agent view, each with its role's color, plus the ledger checks from `04-mcp-and-hooks.md`.
+7. A crash test: stop a Coder's session in the middle of its work, then confirm the watchdog or `resume` brings it back and the run finishes.
 
 ## Open questions
 
-1. Hooks: keep them in `hooks/hooks.json` for now, or build the generated project agent files first so the hooks can live in each role's definition.
-2. Waking: the ledger resumes idle sessions through the CLI, or sessions message each other with cross-session `SendMessage`.
-3. The default parallelism cap.
+1. Waking: the ledger resumes idle sessions through the CLI, or sessions message each other with cross-session `SendMessage`.
+2. The default parallelism cap.
+3. Where the model settings live: the `models` lists in `.claude/sentinel-swarm.local.md`, the `model` key in each agent file, or both.
