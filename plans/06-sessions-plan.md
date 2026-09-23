@@ -98,7 +98,7 @@ Checked on 2026-09-23. Swarms in different repos keep separate ledgers, graphs, 
 
 | Gap | Fix |
 |---|---|
-| A second `run_start` in the same repo resumes the active run and releases the first Oracle, even while it is working | `run_start` refuses while another Oracle of the repo is live. Separate runs in one repo would need separate claims and are out of scope |
+| A second `run_start` in the same repo resumes the active run and releases the first Oracle, even while it is working | Decided by Alex on 2026-09-23: one swarm per repo. `run_start` refuses while another run's Oracle holds the repo. A swarm that works in several repos holds every one of them, so no other swarm starts in any of them until it finishes. Mechanism **(proposed)**: a lock record in each repo's records folder names the run and its Oracle's `session_id`; `run_start` takes the lock on every repo of the run or refuses; `run_finish` releases them; a lock whose Oracle session no longer exists in `claude agents --json` is stale and can be taken over. Runs span one repo today, so the multi-repo case applies once multi-repo runs exist |
 | Every swarm names its roles the same way, and cross-session `SendMessage` can address a session by name | Sessions are addressed by `session_id`. A hook refuses a `SendMessage` to a session outside the caller's run |
 | One ledger process per session breaks the `graph_upsert` lock | The shared ledger server above |
 | Each run counts only its own sessions against the cap | `agent_spawn` also counts every live swarm session on the machine, from `claude agents --json`, against a machine-wide cap |
