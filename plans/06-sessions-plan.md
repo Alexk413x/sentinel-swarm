@@ -20,7 +20,7 @@ This replaces the earlier rule "Only the Oracle runs as a session. Manager, Lead
 | Starting a child | The parent calls the `Agent` tool | The parent calls a ledger tool, `agent_spawn(child_name)`, which runs `claude --bg --agent <the role's project agent> --name <child_name> ...` in the host repo |
 | The spawn gate | Hook 2 checks role, model, and brief | `agent_spawn` checks role, model, brief, and the parallelism cap, and refuses. A ledger gate, not a hook |
 | Identity | Hook input `agent_id` | The session's `session_id`, bound to the name by `brief_ack` |
-| Finished child | A completion notice to the parent, which skips a parent that ended its turn | The ledger wakes the parent: `claude --resume <session_id> --bg "<one-line pointer>"` |
+| Finished child | A completion notice to the parent, which skips a parent that ended its turn | The child sends its parent a cross-session `SendMessage` with a one-line pointer, and hooks enforce it |
 | Turn end | `SubagentStop` marks the agent idle | The `Stop` hook marks the session idle |
 | Release | The ledger marks the row released | The ledger also stops the session with `claude stop <id>`, which frees its memory |
 | Crash | The subagent dies with its parent | A watchdog compares `claude agents --json` with the ledger and resumes a crashed session with `claude --resume <id> --bg` |
@@ -50,10 +50,13 @@ Decided by Alex on 2026-09-22 and 2026-09-23: the plugin's four agent files are 
 
 ## Waking a parent, and messages
 
-- The ledger knows when a session's turn ends (the `Stop` hook) and when work arrives for it: a handoff to review, a module or phase handed up, a message, a returned file.
-- When work arrives for an idle session, the ledger resumes it with `claude --resume <session_id> --bg "<pointer to the ledger record>"`.
-- A session that is working reads its inbox at the next turn boundary, as today.
-- The Oracle's Stop-hook wake list stays as a backstop.
+Decided by Alex on 2026-09-23: the child wakes its parent with a cross-session `SendMessage`, and hooks enforce it.
+
+- The ledger cannot send the message itself: `SendMessage` is a tool only a session can call, and the CLI has no command that sends to a session (checked 2026-09-23). An idle session wakes when a cross-session message arrives.
+- The ledger tool that finishes a step returns the next step. For example, `handoff_submit` returns "Next: SendMessage(to=<the parent's session>, message=\"Handoff 1 for hello.py is waiting in the ledger.\")". **(proposed)**
+- A `PostToolUse` hook on `SendMessage` records in the ledger who the child messaged. The child's `Stop` hook blocks the child from ending its turn until it has messaged its parent after the step. **(proposed)**
+- The same rule covers every upward step: a Coder's handoff, a Lead's module report, a Manager's phase hand-up, and a returned file going down to a Coder. **(proposed)**
+- A parent whose session has crashed or exited cannot receive a message. The watchdog restarts it with `claude --resume <session_id> --bg "<pointer>"`, which continues the same session and conversation. `--resume` on a session that is still running starts a copy, so it is never used on a live session. **(proposed)**
 
 ## Crashes and resume
 
@@ -68,7 +71,8 @@ Decided by Alex on 2026-09-22 and 2026-09-23: the plugin's four agent files are 
 - Plugin-wide `hooks/hooks.json` keeps only what is not tied to one role, if anything. A hook in both places would run twice, so each hook lives in exactly one place.
 - Hook changes for sessions:
   - `SessionStart` registers or re-binds the session, and marks a resumed session working.
-  - `Stop` marks the session idle, wakes the parent through the ledger when needed, keeps the Coder's once-only "no handoff yet" block, and keeps the Oracle's stop gate.
+  - `Stop` marks the session idle, blocks a child that has not messaged its parent after a step, keeps the Coder's once-only "no handoff yet" block, and keeps the Oracle's stop gate.
+  - `PostToolUse` on `SendMessage` records who the session messaged.
   - `SessionEnd` closes the row and records tokens from `transcript_path`.
   - `SubagentStart` and `SubagentStop` are removed. They do not fire for sessions.
   - `PreToolUse`, `PostToolUse`, and `PreCompact` are unchanged in what they check.
@@ -86,7 +90,7 @@ Decided by Alex on 2026-09-22 and 2026-09-23: the plugin's four agent files are 
 Each one is a cheap haiku probe, like the checks on 2026-09-21.
 
 1. The ledger's MCP server process can run `claude --bg` and read back the background id and the `session_id`.
-2. `claude --resume <id> --bg "<message>"` delivers the message to an idle session and keeps the same id.
+2. A cross-session `SendMessage` from one background session wakes another, idle background session, and a hook sees the call and its target. Separately, `claude --resume <id> --bg "<message>"` restarts a stopped session under the same id.
 3. The `Stop` and `SessionEnd` hook input in a background `--agent` session carries `session_id` and `transcript_path`.
 4. A project-level agent file started with `--agent` in a background session runs its frontmatter hooks, and which events work there: `PreToolUse`, `PostToolUse`, `Stop`, `SessionStart`, `SessionEnd`, `PreCompact`.
 5. A frontmatter hook command can reach the ledger code: the plugin root must be known inside a project agent file, where `${CLAUDE_PLUGIN_ROOT}` may not be set.
@@ -105,6 +109,5 @@ Each one is a cheap haiku probe, like the checks on 2026-09-21.
 
 ## Open questions
 
-1. Waking: the ledger resumes idle sessions through the CLI, or sessions message each other with cross-session `SendMessage`.
-2. The default parallelism cap.
-3. Where the model settings live: the `models` lists in `.claude/sentinel-swarm.local.md`, the `model` key in each agent file, or both.
+1. The default parallelism cap.
+2. Where the model settings live: the `models` lists in `.claude/sentinel-swarm.local.md`, the `model` key in each agent file, or both.
