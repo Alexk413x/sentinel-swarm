@@ -12,6 +12,7 @@ Read this file before you start work. Update the status column when a document c
 | `03-ledger.md` | Ledger tables, agent registry, per-role settings, lifecycle gates, platform facts for hooks | First draft |
 | `04-mcp-and-hooks.md` | MCP servers, ledger tools, the hook list, the rule-to-enforcement map, one file's flow, user directives, prototype results, the no-telephone-game rule, build order, smoke test results | Prototype checks and the smoke test are done as of 2026-09-22. **(proposed)** items await review |
 | `05-session-handoff.md` | State of the work, next steps in order, how Alex works, key decisions | Current as of 2026-09-22 |
+| `06-sessions-plan.md` | Every role runs as its own session: spawning, waking, crashes and resume, hooks, memory, prototype checks, build order | Decision by Alex on 2026-09-23. The plan is **(proposed)**, three open questions |
 | `notes-agent-view-vs-subagents.md` | Context sharing, customization, and interaction: agent view sessions versus subagents | Notes only |
 | `notes-prompt-cache-costs.md` | Cost notes to discuss during swarm testing | Notes only |
 

@@ -68,3 +68,21 @@ Plugin agents ignore `hooks`, `mcpServers`, and `permissionMode`.
 - `experimental.cacheTtl` lets a role that waits a long time choose the 1-hour cache. See `notes-prompt-cache-costs.md`.
 - Worktree isolation in agent view sessions separates parallel work, but it adds a merge step that some role must own.
 - The ledger cannot live inside a worktree, or each session gets its own copy. It must live at one shared path.
+
+## Added on 2026-09-23, from the docs and the smoke runs
+
+Verified in the smoke runs:
+
+- A background subagent cannot answer a permission prompt; the tool call is denied (`asyncAgent`). A background session shows its prompt in its agent-view row.
+- A child's completion notice skips a parent that ended its turn and goes to the main session.
+- Subagents run inside the parent's process. Each session is its own process: the Oracle's process held about 600 MB, and the memory reaper stopped background shells twice while runs were going.
+- Agent view labels a session with its agent, and its color, only when the launcher resolves the agent. It does not see `--plugin-dir`; an installed plugin works. A folder with project-scope plugins must be trusted once before `claude --bg` runs there.
+- Nesting: the prototype found three subagent layers with no spare, so the Coder sits at the limit.
+
+From the docs, through a summarizing agent; verify before the design depends on them:
+
+- `SubagentStart` and `SubagentStop` fire for Agent-tool subagents, not for `--agent` sessions. A session's hooks identify it by `session_id`.
+- Background sessions survive sleep, stop on shutdown, and restart on the next interaction within 48 hours; `Ctrl+T` pins one (`agent-view.md`).
+- Sessions talk through `SendMessage` across sessions (`cross-session-messaging.md`).
+- Agent teams are a third option: teammates with their own context that message each other, with permission prompts in the lead session. "No nested teams: teammates cannot spawn their own teammates" (`agent-teams.md`), so a team cannot hold four levels.
+- `subagentPromptCacheTtl` sets a subagent's cache lifetime; the default is five minutes (`agent-teams.md`).
