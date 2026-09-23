@@ -80,9 +80,10 @@ Decided by Alex on 2026-09-23: the child wakes its parent with a cross-session `
 
 ## Memory and the parallelism cap
 
-- Each session is its own process, about 600 MB (measured 2026-09-22). Subagents shared their parent's process.
+- Each session uses about 530 to 980 MB of physical memory (measured 2026-09-23 across five sessions): 260 to 430 MB for the Claude Code process, and 250 to 610 MB for its helper processes. The helpers are the MCP servers of every plugin enabled for the user, about 14 Python processes, which each session starts for itself. Subagents shared their parent's process and its servers.
+- A swarm session needs only the ledger and codebase-kg servers. Starting only those may cut a session to roughly 300 to 450 MB; see prototype check 8.
 - `agent_spawn` refuses to start a session when the live sessions reach `parallelism_cap`. The parent tries again after a release frees a slot.
-- Default cap: 6 sessions, about 3.6 GB. The user raises it in `.claude/sentinel-swarm.local.md`.
+- Default cap: 6 sessions, about 3 to 6 GB at the measured sizes. The user raises it in `.claude/sentinel-swarm.local.md`.
 - Release stops the session, so a finished Lead or Coder frees its memory at once.
 
 ## Prototype checks before the build
@@ -96,6 +97,7 @@ Each one is a cheap haiku probe, like the checks on 2026-09-21.
 5. A frontmatter hook command can reach the ledger code: the plugin root must be known inside a project agent file, where `${CLAUDE_PLUGIN_ROOT}` may not be set.
 6. A permission prompt in a background session appears in its agent-view row and waits for the user.
 7. Two sessions write different files in one working tree at the same time without trouble.
+8. A swarm session can start with only the MCP servers its role needs, not every user-level plugin's servers, and how much memory that saves.
 
 ## Build order
 

@@ -75,7 +75,7 @@ Verified in the smoke runs:
 
 - A background subagent cannot answer a permission prompt; the tool call is denied (`asyncAgent`). A background session shows its prompt in its agent-view row.
 - A child's completion notice skips a parent that ended its turn and goes to the main session.
-- Subagents run inside the parent's process. Each session is its own process: the Oracle's process held about 600 MB, and the memory reaper stopped background shells twice while runs were going.
+- Subagents run inside the parent's process. Each session is its own process tree: about 530 to 980 MB of physical memory per session on 2026-09-23, split between the Claude Code process (260 to 430 MB) and the MCP servers of every enabled plugin (250 to 610 MB). Claude Code stopped this session's background shell commands twice on 2026-09-22 and 2026-09-23 because free memory was low.
 - Agent view labels a session with its agent, and its color, only when the launcher resolves the agent. It does not see `--plugin-dir`; an installed plugin works. A folder with project-scope plugins must be trusted once before `claude --bg` runs there.
 - Nesting: the prototype found three subagent layers with no spare, so the Coder sits at the limit.
 
