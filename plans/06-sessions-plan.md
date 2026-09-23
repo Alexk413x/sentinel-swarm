@@ -118,6 +118,36 @@ Each one is a cheap haiku probe, like the checks on 2026-09-21.
 8. A swarm session can start with only the MCP servers its role needs, not every user-level plugin's servers, and how much memory that saves.
 9. The ledger as a FastMCP HTTP server: two sessions connect to one process, hooks still stamp identity, and the plugin's `.mcp.json` points at a URL that differs per repo.
 
+## Prototype results on 2026-09-23
+
+Each check ran as short haiku sessions in scratch folders. Results:
+
+| # | Check | Result |
+|---|---|---|
+| 1 | An MCP server starts a background session | **Works.** A tool inside a FastMCP server ran `claude --bg`; `claude agents --json` returned the short id and the full `sessionId` |
+| 2 | A cross-session message wakes an idle session; a hook sees it | **Works.** `SendMessage` to an idle background session returned `success`, and the session woke and did the task. `PreToolUse` and `PostToolUse` saw `tool_input.to` and the message. Tested by session name, not by `session_id` |
+| 3 | Hook input in a background `--agent` session | **Works.** `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, and `SessionEnd` fired, each with `session_id`, `transcript_path`, and `agent_type` set to the agent's name. `agent_id` is empty. `SessionEnd` fired on `claude stop` with `reason: other` |
+| 4 | Frontmatter hooks in a project agent file | **Works in a trusted folder**, for the same six events, both headless and in the background. In an untrusted folder the frontmatter hooks did not run, while plugin hooks did |
+| 5 | A frontmatter hook finds the plugin's code | **No.** `CLAUDE_PLUGIN_ROOT` inside an agent-file hook pointed at an unrelated plugin. The generator must write the plugin's install path into each hook command. `CLAUDE_PROJECT_DIR` is correct |
+| 6 | A permission prompt in a background session | **Works.** The session showed `status: waiting`, `waitingFor: "permission prompt"`, and held |
+| 7 | Two sessions write in one working tree | **Works** with `worktree.bgIsolation: "none"`. Without it, a background session made its own worktree and branch before writing |
+| 8 | A session starts only the MCP servers it needs | **Works.** `--strict-mcp-config` with `--mcp-config` starts only the listed servers: 0 instead of 15. An idle session used 289 MB instead of 1,222 MB (306 MB plus 916 MB in 31 helper processes) |
+| 9 | One ledger over HTTP for two sessions | **Works.** `swarm_ledger.server` ran with FastMCP's HTTP transport; two sessions with only that URL in `--mcp-config` shared one run. Not tested: the identity hook on the HTTP tools |
+
+Also found:
+
+- A background session refuses to start in an untrusted folder, and trust does not pass down from a trusted parent folder. Every host repo needs the user's one-time trust step. The exact rule is unclear: one untrusted folder with no project files was refused, while an earlier smoke run in an untrusted folder started.
+- Hooks receive `CLAUDE_CODE_MESSAGING_SOCKET` and `CLAUDE_CODE_MESSAGING_TOKEN`, the cross-session messaging channel. It is undocumented; a lead only.
+- Check 9 reproduced the same-repo takeover: the second session's `run_start` released the first Oracle. The per-repo lock fixes it.
+
+Needs more research before the build:
+
+1. Whether `SendMessage` accepts a `session_id` as its target, so messages never reach another swarm's session with the same name.
+2. The trust rule for background sessions, and what `setup` should tell the user.
+3. The HTTP ledger's port per repo, who starts and stops it, and the identity hook on its tools.
+4. Whether `--strict-mcp-config` leaves the installed plugin's hooks, skills, and agents working, since it drops the plugin's own MCP server.
+5. How the hook commands in the generated agent files find the plugin after an upgrade changes its install path.
+
 ## Build order
 
 1. The prototype checks.
