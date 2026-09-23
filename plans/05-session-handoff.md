@@ -12,7 +12,7 @@ Status on 2026-09-23: written by session `sentinel-swarm-a8`, updated by `sentin
 
 ## Next steps, in order
 
-1. **Watch a run interactively.** `bash scripts/smoke.sh` now opens the Oracle as an interactive session in `runs/hello/host`, so Alex can watch the Manager, Lead, and Coder in the agent tree. Alex has not tried it yet. From PowerShell, use Git Bash explicitly: `& "C:\Program Files\Gitinash.exe" scripts/smoke.sh`, because `bash` on Windows can resolve to WSL.
+1. **Watch a run interactively.** `bash scripts/smoke.sh` now opens the Oracle as an interactive session in `runs/hello/host`, so Alex can watch the Manager, Lead, and Coder in the agent tree. Alex has not tried it yet. From PowerShell, use Git Bash explicitly: `& "C:\Program Files\Git\bin\bash.exe" scripts/smoke.sh`, because `bash` on Windows can resolve to WSL.
 2. **Run the swarm on a real PRD** with two modules and several files, to exercise parallel Leads and Coders, release freeing slots, `return_work`, escalation, and messages between Coders. Draft a small PRD for Alex to review first. Expect about $10 to $20.
 3. **Build the watchdog** and decide its home: `monitors/monitors.json` or a script the Oracle starts. It reads `agents.last_heartbeat_at` and the new `idle` state, and reports through `directive_submit(source="watchdog")`.
 4. **The missing tools** listed above, as Alex prioritizes them.
