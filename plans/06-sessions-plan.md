@@ -140,13 +140,17 @@ Also found:
 - Hooks receive `CLAUDE_CODE_MESSAGING_SOCKET` and `CLAUDE_CODE_MESSAGING_TOKEN`, the cross-session messaging channel. It is undocumented; a lead only.
 - Check 9 reproduced the same-repo takeover: the second session's `run_start` released the first Oracle. The per-repo lock fixes it.
 
-Needs more research before the build:
+## Research results on 2026-09-23
 
-1. Whether `SendMessage` accepts a `session_id` as its target, so messages never reach another swarm's session with the same name.
-2. The trust rule for background sessions, and what `setup` should tell the user.
-3. The HTTP ledger's port per repo, who starts and stops it, and the identity hook on its tools.
-4. Whether `--strict-mcp-config` leaves the installed plugin's hooks, skills, and agents working, since it drops the plugin's own MCP server.
-5. How the hook commands in the generated agent files find the plugin after an upgrade changes its install path.
+Alex's direction first, then what the probes found, then the resulting design **(proposed)**.
+
+| # | Question | Alex's direction | Found | Resulting design |
+|---|---|---|---|---|
+| 1 | Address a session by id | Session ids are unique; use them | `SendMessage` accepts only a session's name. A short id, a full `sessionId`, and an unknown id all returned "No agent named ... is reachable". Sending by name works. `ListAgents` shows a `[ref]` per row, which is not the `sessionId` and which the ledger cannot see | `agent_spawn` gives every session a name that is unique on the machine, such as `<repo>-r<run>-mgr-hello`, and checks `claude agents --json` before it starts the session. Messages go by that name. The ledger maps the name to the agent row |
+| 2 | Trust | Claude Code asks for trust on its own; a refusal means the agents are in the wrong folder | A background session refuses to start in an untrusted folder; trust does not pass down from a trusted parent. Claude Code stores trust per folder path | `scripts/smoke.sh --bg` checks the test folder's trust first and, when it is missing, prints the one command to fix it and stops. The test folder's path never changes, so the user trusts it once. Interactive runs show Claude Code's own trust prompt |
+| 3 | The HTTP ledger's limits | Find out whether repos share it and whether there is a limit | Two repos ran two servers on ports the OS picked, with no conflict. 100 and 400 concurrent clients across both servers had 0 errors (2.2 s and 9.7 s). Each repo's ledger held only its own records. Each server used about 126 MB | One ledger server per repo. It binds a free port and writes its URL to `.sentinel-swarm/server.json`. The launcher starts it before the Oracle; `agent_spawn` reads the URL for each child; `run_finish` stops it |
+| 4 | Is `--strict-mcp-config` needed | Asked whether it is needed at all | Turning off unneeded servers for one session means tracking plugins, user MCP servers in `~/.claude.json`, and the claude.ai connectors, which change whenever the user adds one. Strict mode is one flag. It drops only MCP servers: the plugin's agents, skills, and hooks still loaded and fired. An agent file's `mcpServers` key did not load when that agent ran as the session, strict or not | Every swarm session starts with `--strict-mcp-config`. `agent_spawn` reads the role's agent file, takes its `mcpServers` list, adds the ledger's URL, and passes the result through `--mcp-config`. The agent file stays the one place the user edits |
+| 5 | Hook commands find the plugin | Paths relative to the project root, with error handling | A hook command `python <relative path>/hook.py <event>` in an agent file ran from the project root. `~/.claude/plugins/installed_plugins.json` records each install's `installPath`, per project for project scope, and Claude Code updates it on install and upgrade. A shim that looks up that record ran the real ledger hooks from the installed copy. With the plugin missing, the shim blocked the gating hook with "sentinel-swarm cannot check this call: ... is not installed for ...; run /sentinel-swarm:setup" and reported the other events | `setup` writes a small shim to `.sentinel-swarm/hook.py`. Agent-file hook commands call it by a project-relative path. It finds the install from the registry, so upgrades need no change to the agent files. When the plugin or its files are missing, or the ledger hook fails, it blocks a gating hook with the reason and reports the rest |
 
 ## Build order
 

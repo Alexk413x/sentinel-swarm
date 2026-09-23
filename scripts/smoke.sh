@@ -125,6 +125,13 @@ case "$mode" in
     report_results
     ;;
   bg)
+    trusted=$(python -c "import json,os,sys; p=json.load(open(os.path.expanduser('~/.claude.json'),encoding='utf-8')).get('projects',{}); print(p.get(sys.argv[1],{}).get('hasTrustDialogAccepted',False))" \
+      "$(cygpath -m "$host" 2>/dev/null || printf '%s' "$host")")
+    if [ "$trusted" != True ]; then
+      echo "The test folder is not trusted yet. Run this once, accept the trust prompt, then exit:" >&2
+      echo "  cd \"$(win "$host")\" && claude" >&2
+      exit 1
+    fi
     "${CLAUDE_BIN:-claude}" --bg --name "swarm-hello" "$prompt" "${claude_args[@]}"
     echo "The run is in the background. Watch it in agent view or with: claude agents"
     echo "When it finishes: bash scripts/smoke.sh --results"
