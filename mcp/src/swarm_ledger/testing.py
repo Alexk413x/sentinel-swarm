@@ -4,6 +4,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -122,6 +123,19 @@ def _cap_output(output: str) -> str:
     return output[-_MAX_OUTPUT_CHARS:]
 
 
+def _host_env() -> dict[str, str]:
+    # The ledger runs in its own venv; without this, `python` in the host's test command
+    # resolves to the ledger's interpreter, which has no pytest.
+    env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+    if sys.prefix != sys.base_prefix:
+        venv = os.path.normcase(os.path.abspath(sys.prefix))
+        entries = env.get("PATH", "").split(os.pathsep)
+        env["PATH"] = os.pathsep.join(
+            e for e in entries if not e or not os.path.normcase(os.path.abspath(e)).startswith(venv)
+        )
+    return env
+
+
 def run_tests(
     command_template: str, target: str | None, cwd: Path, timeout_s: int = 600
 ) -> TestResult:
@@ -134,6 +148,7 @@ def run_tests(
             capture_output=True,
             text=True,
             cwd=cwd,
+            env=_host_env(),
             timeout=timeout_s,
         )
     except subprocess.TimeoutExpired as exc:

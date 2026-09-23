@@ -83,6 +83,8 @@ All hooks live in the plugin's `hooks/hooks.json`, because plugin agents ignore 
 | A rule gives way only to the Oracle | `override_grant`, checked by hooks 2, 4, 5, and 6 |
 | Nobody edits the records by hand | Hook 4 |
 | Look in the graph before writing | codebase-kg's own search gate hook |
+| A message goes to an agent that exists in the run | `message_post` refuses an unregistered name and lists the registered ones. Any agent may message any other. Added 2026-09-22 at Alex's request |
+| Only the owner's parent chain escalates an issue | `issue_escalate` refuses anyone outside the file owner's chain. It records the receiver in `issues.escalated_to`: the Manager for round 2, the Oracle for round 3. It also messages the receiver. Added 2026-09-22 at Alex's request |
 
 ## One file, start to finish
 
@@ -262,12 +264,17 @@ Both `--plugin-dir` flags are needed: sentinel-swarm declares codebase-kg as a d
 
 Decision from Alex on 2026-09-22: the smoke test runs inside this repo, in the git-ignored folder `runs/hello/`. `scripts/smoke.sh` deletes the folder, rebuilds the host repo in `runs/hello/host/`, and runs the command above. The transcript goes to `runs/hello/transcript.jsonl`, outside the host repo. The run loads this repo's `CLAUDE.md` as a parent file. Alex accepted that, because a real host repo loads its own `CLAUDE.md` in the same way. `runs/hello/` was seeded with run 4's results.
 
+Runs 5 to 7 on 2026-09-22 failed: every Coder `Write` was denied with `asyncAgent: Permission prompts are not available in this context`. Cause, isolated with haiku probes: Claude Code asks before any write inside a loaded plugin's own folder, and a background subagent cannot answer a prompt, so the write is denied. The host repo sat in `runs/hello/host/`, inside the folder that `--plugin-dir` loaded. The Claude Code version (2.1.278 and 2.1.280), the user's `defaultMode: auto`, nesting depth, and the swarm's hooks were each ruled out. Fix: `scripts/smoke.sh` loads a copy of the plugin from a temp folder, which also matches an installed plugin. The swarm could not pause cleanly while blocked: the Stop hook holds the Oracle, and `run_finish` refuses an unapproved phase. That gap is open.
+
 | Run | Result | What it found |
 |---|---|---|
 | 1 | Stalled after `run_start` | Hook 6 stamped `agent_id` onto `ledger_info`, which has no such parameter. FastMCP runs tool calls on worker threads, and the SQLite connection refused cross-thread use |
 | 2 | Stalled at the Coders | The Coders invented rating names and looped on a raw `KeyError`. `graph_upsert` failed on an edge to a missing node, and the ledger's `VIRTUAL_ENV` leaked into the codebase-kg subprocess. The Lead claimed the test file as a second file and created two Coders. The Manager polled `message_inbox` on every turn |
 | 3 | **Passed** in 5 minutes 46 seconds, 16 Oracle turns, about $3.61 | See the checklist below |
 | 4 | **Passed** in 5 minutes 16 seconds, 20 Oracle turns, about $3.28, on the code that fixes run 3's findings | Same checklist, every row clean: the full run without a target passed, the module is `approved`, the Oracle row closed at `run_finish`, and the report says `Outcome: success`. The Coder wrote `greeting()` and `main()` with two tests; the Lead's first score call omitted a dimension from `applicable`, the ledger refused it with the reason, and the retry passed |
+| 5 to 7 | Failed: no file written | Every Coder `Write` was denied. The host repo sat inside the loaded plugin's folder. See the note below the command |
+| 8 | Stopped after 3 Oracle turns, about $0.59 | The plugin copy had no venv yet, so the ledger server was still pending when the Oracle checked. `scripts/smoke.sh` now runs `uv sync` on the copy first |
+| 9 | **Passed** in 9 minutes, about $3.97, on 2026-09-22 | Run finished with `success`; phase, module, and file approved; self and Lead reviews with 21 ratings each; handoff compared and approved; two versions. The ledger's test runner resolved `python` to its own venv, which has no pytest. The Coder escalated the issue, `issue_escalate` routed it to the Manager, and the Oracle switched the test command to `uvx pytest`. Fixed: `run_tests` drops the ledger's venv from `PATH` and `VIRTUAL_ENV` |
 
 Every finding has a fix and a test. The fixes: hook 6 skips the tools without `agent_id`; the connection opens with `check_same_thread=False` and every tool call runs under one lock; `score_record` refuses a malformed rating with the full key list, and the tool description carries that list; `graph_upsert` checks edge targets first and drops `VIRTUAL_ENV`; the Lead prompt says one Coder owns the source and test pair; the parent prompts say to end the turn after a spawn instead of polling.
 

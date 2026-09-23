@@ -443,6 +443,13 @@ def test_message_post_and_inbox_marks_messages_read(ledger: Ledger) -> None:
     assert ledger.message_inbox("lead-1", ctx["lead"]["agent_id"]) == []
 
 
+def test_message_post_refuses_a_name_not_registered_in_the_run(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    with pytest.raises(LedgerError, match="registered names"):
+        ledger.message_post("manager-1", ctx["manager"]["agent_id"], "lead-l", "Typo.")
+    assert ledger.message_inbox("lead-1", ctx["lead"]["agent_id"]) == []
+
+
 # -- directives -----------------------------------------------------------------
 
 
@@ -520,10 +527,41 @@ def test_issue_lifecycle_and_escalation_stops_at_the_configured_round_limit(
 
     escalated = ledger.issue_escalate("lead-1", ctx["lead"]["agent_id"], issue["issue_id"])
     assert escalated["round"] == 2
-    escalated = ledger.issue_escalate("lead-1", ctx["lead"]["agent_id"], issue["issue_id"])
+    assert escalated["escalated_to"] == "manager-1"
+    escalated = ledger.issue_escalate("manager-1", "mgr-agent", issue["issue_id"])
     assert escalated["round"] == 3
+    assert escalated["escalated_to"] == "oracle"
     with pytest.raises(LedgerError):
         ledger.issue_escalate("lead-1", ctx["lead"]["agent_id"], issue["issue_id"])
+
+    manager_inbox = ledger.message_inbox("manager-1", "mgr-agent")
+    assert [(m["from_name"], m["to_name"]) for m in manager_inbox] == [("lead-1", "manager-1")]
+    oracle_inbox = ledger.message_inbox("oracle", ctx["oracle_id"])
+    assert [(m["from_name"], m["to_name"]) for m in oracle_inbox] == [("manager-1", "oracle")]
+
+
+def test_issue_escalate_refuses_an_agent_outside_the_parent_chain(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    ledger.claim_file("lead-1", ctx["lead"]["agent_id"], "src/a.py", "tests/test_a.py", "coder-1")
+    file_row = ledger.who_owns("src/a.py")["file"]
+    issue = ledger.issue_open(
+        "lead-1", ctx["lead"]["agent_id"], file_row["file_id"], "Flaky test", "Fails 1 in 10."
+    )
+    ledger.brief_create(
+        "manager-1",
+        "mgr-agent",
+        "lead-2",
+        "lead",
+        "sonnet",
+        "Own module-2.",
+        module_id=ctx["module_id"],
+    )
+    ledger.agent_register_start("lead-2-agent", "lead", parent_agent_id="mgr-agent")
+    ledger.brief_ack("lead-2", "lead-2-agent")
+
+    with pytest.raises(LedgerError, match="parent chain"):
+        ledger.issue_escalate("lead-2", "lead-2-agent", issue["issue_id"])
+    assert ledger.issue_list("lead-1", ctx["lead"]["agent_id"])[0]["round"] == 1
 
 
 # -- agent_events audit trail -----------------------------------------------------

@@ -287,7 +287,7 @@ def who_owns(path: str) -> dict[str, Any]:
 def message_post(
     caller: str, to_name: str, body: str, agent_id: str | None = None
 ) -> dict[str, Any]:
-    """Posts a message to another agent by name; any registered agent calls this."""
+    """Posts a message to any agent registered in the run, by name; any agent calls this."""
     return _call(
         _ledger().message_post, caller=caller, agent_id=agent_id, to_name=to_name, body=body
     )
@@ -422,7 +422,8 @@ def idea_record(
 
 @mcp.tool
 def issue_escalate(caller: str, issue_id: int, agent_id: str | None = None) -> dict[str, Any]:
-    """Escalates an issue to its next round, up to the escalation limit; any agent calls it."""
+    """Escalates an issue to its next round and messages the agent that takes it; only the
+    issue's owner and the owner's parent chain call it."""
     return _call(_ledger().issue_escalate, caller=caller, agent_id=agent_id, issue_id=issue_id)
 
 

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+
+import pytest
 
 from swarm_ledger.testing import run_tests
 
@@ -23,6 +26,26 @@ def test_run_tests_ok_on_a_clean_pytest_style_pass(tmp_path: Path) -> None:
     assert result.ok is True
     assert result.reason is None
     assert result.duration_ms >= 0
+
+
+def test_run_tests_hides_the_ledger_venv_from_the_host_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    venv = tmp_path / "ledger-venv"
+    venv_bin = venv / "Scripts"
+    venv_bin.mkdir(parents=True)
+    monkeypatch.setattr(sys, "prefix", str(venv))
+    monkeypatch.setattr(sys, "base_prefix", str(tmp_path / "base"))
+    monkeypatch.setenv("VIRTUAL_ENV", str(venv))
+    monkeypatch.setenv("PATH", os.pathsep.join([str(venv_bin), str(tmp_path / "other")]))
+
+    script = "import os; print(os.environ.get('VIRTUAL_ENV')); print(os.environ['PATH'])"
+    result = run_tests(_python_command(script), None, tmp_path)
+
+    lines = result.output.splitlines()
+    assert lines[0] == "None"
+    assert str(venv_bin) not in lines[1]
+    assert str(tmp_path / "other") in lines[1]
 
 
 def test_run_tests_reports_failures_via_pytest_style_summary(tmp_path: Path) -> None:

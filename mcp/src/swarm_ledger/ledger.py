@@ -714,6 +714,14 @@ class Ledger(ReviewMixin):
     def message_post(self, caller: str, agent_id: str, to_name: str, body: str) -> dict:
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
+            names = {
+                row["name"]
+                for row in conn.execute("SELECT name FROM agents WHERE run_id = ?", (c.run_id,))
+            }
+            if to_name not in names:
+                raise LedgerError(
+                    f"no agent named {to_name!r} in this run; registered names: {sorted(names)}"
+                )
             cur = conn.execute(
                 "INSERT INTO messages (run_id, from_name, to_name, body) VALUES (?, ?, ?, ?)",
                 (c.run_id, c.name, to_name, body),
@@ -900,18 +908,60 @@ class Ledger(ReviewMixin):
             self.conn.execute("SELECT * FROM ideas WHERE idea_id = ?", (idea_id,)).fetchone()
         )
 
+    def _issue_chain(self, conn: sqlite3.Connection, issue: sqlite3.Row) -> list[sqlite3.Row]:
+        anchor = None
+        if issue["file_id"] is not None:
+            owner = conn.execute(
+                "SELECT owner_agent_id FROM files WHERE file_id = ?", (issue["file_id"],)
+            ).fetchone()
+            if owner is not None and owner["owner_agent_id"] is not None:
+                anchor = conn.execute(
+                    "SELECT * FROM agents WHERE run_id = ? AND (agent_id = ? OR name = ?) "
+                    "ORDER BY ended_at IS NOT NULL LIMIT 1",
+                    (issue["run_id"], owner["owner_agent_id"], owner["owner_agent_id"]),
+                ).fetchone()
+        if anchor is None:
+            anchor = conn.execute(
+                "SELECT * FROM agents WHERE agent_id = ?", (issue["opened_by_agent_id"],)
+            ).fetchone()
+        chain = []
+        while anchor is not None:
+            chain.append(anchor)
+            anchor = conn.execute(
+                "SELECT * FROM agents WHERE agent_id = ?", (anchor["parent_agent_id"],)
+            ).fetchone()
+        return chain
+
     def issue_escalate(self, caller: str, agent_id: str, issue_id: int) -> dict:
         with write_tx(self.conn) as conn:
-            resolve(conn, caller, agent_id)
+            c = resolve(conn, caller, agent_id)
             row = conn.execute("SELECT * FROM issues WHERE issue_id = ?", (issue_id,)).fetchone()
             if row is None:
                 raise LedgerError(f"unknown issue_id {issue_id!r}")
+            chain = self._issue_chain(conn, row)
+            if c.agent_id not in {a["agent_id"] for a in chain}:
+                raise LedgerError(
+                    f"{c.name!r} may not escalate issue {issue_id!r}; only its owner and the "
+                    f"owner's parent chain may: {[a['name'] for a in chain]}"
+                )
             next_round = row["round"] + 1
             if next_round > self.settings.escalation.rounds:
                 raise LedgerError(f"issue {issue_id!r} is already at the maximum escalation round")
+            target_role = "manager" if next_round == 2 else "oracle"
+            target = next((a for a in chain if a["role"] == target_role), chain[-1])
             conn.execute(
-                "UPDATE issues SET round = ?, attempts = 0 WHERE issue_id = ?",
-                (next_round, issue_id),
+                "UPDATE issues SET round = ?, attempts = 0, escalated_to = ? WHERE issue_id = ?",
+                (next_round, target["name"], issue_id),
+            )
+            conn.execute(
+                "INSERT INTO messages (run_id, from_name, to_name, body) VALUES (?, ?, ?, ?)",
+                (
+                    row["run_id"],
+                    c.name,
+                    target["name"],
+                    f"Issue {issue_id} is escalated to you for round {next_round}. "
+                    "Read it with issue_list.",
+                ),
             )
 
         return dict(
