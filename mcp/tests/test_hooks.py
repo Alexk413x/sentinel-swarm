@@ -680,3 +680,20 @@ def test_stop_stores_the_oracle_tokens_from_its_transcript(ledger: Ledger, tmp_p
     assert row["cache_read_tokens"] == 900
     assert row["cache_write_tokens"] == 60
     assert row["ended_at"] is None
+
+
+def test_stop_after_run_finish_records_the_oracle_tokens_and_rebuilds_the_report(
+    ledger: Ledger, host: Path, tmp_path: Path
+) -> None:
+    ctx = _bootstrap(ledger)
+    ledger.agent_release("manager-1", "mgr-agent", ctx["lead"]["agent_id"])
+    ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
+    ledger.run_finish("oracle", ctx["oracle_id"], "success")
+    transcript = tmp_path / "oracle.jsonl"
+    usage = {"input_tokens": 7, "output_tokens": 3}
+    transcript.write_text(json.dumps({"message": {"usage": usage}}), encoding="utf-8")
+
+    events.handle_stop(ledger, {"agent_id": ctx["oracle_id"], "transcript_path": str(transcript)})
+
+    report = (host / ".sentinel-swarm" / "report.md").read_text(encoding="utf-8")
+    assert "- oracle (oracle, fable): tokens in=7 out=3" in report

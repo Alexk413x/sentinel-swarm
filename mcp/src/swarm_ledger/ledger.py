@@ -264,6 +264,12 @@ class Ledger(ReviewMixin):
                 "WHERE run_id = ?",
                 (outcome, run_id),
             )
+            for row in conn.execute(
+                "SELECT agent_id FROM agents WHERE run_id = ? AND role != 'oracle' "
+                "AND ended_at IS NULL",
+                (run_id,),
+            ).fetchall():
+                self._release_agent(conn, row["agent_id"], "run_finish")
 
         report = self.report_build(caller, agent_id)
         with write_tx(self.conn) as conn:
@@ -376,11 +382,44 @@ class Ledger(ReviewMixin):
             ):
                 raise LedgerError(f"unknown phase_id {phase_id!r}")
 
+            if state == "handed_up":
+                live_leads = [
+                    row["name"]
+                    for row in conn.execute(
+                        "SELECT a.name FROM agents a JOIN modules m ON m.module_id = a.module_id "
+                        "WHERE m.phase_id = ? AND a.role = 'lead' AND a.ended_at IS NULL",
+                        (phase_id,),
+                    )
+                ]
+                if live_leads:
+                    raise LedgerError(
+                        f"release every Lead of the phase with agent_release first: {live_leads}"
+                    )
+
             if state == "approved":
+                open_deferrals = conn.execute(
+                    "SELECT COUNT(*) AS n FROM deferrals d JOIN files f ON f.file_id = d.file_id "
+                    "JOIN modules m ON m.module_id = f.module_id "
+                    "WHERE m.phase_id = ? AND d.state = 'open'",
+                    (phase_id,),
+                ).fetchone()["n"]
+                if open_deferrals:
+                    raise LedgerError(
+                        f"{open_deferrals} deferral(s) in the phase are still open; the Manager "
+                        "decides them before approval releases it"
+                    )
                 conn.execute(
                     f"UPDATE phases SET state = ?, ended_at = {_NOW} WHERE phase_id = ?",
                     (state, phase_id),
                 )
+                for row in conn.execute(
+                    "SELECT agent_id FROM agents WHERE ended_at IS NULL AND ("
+                    "phase_id = ? OR module_id IN (SELECT module_id FROM modules "
+                    "WHERE phase_id = ?) OR file_id IN (SELECT f.file_id FROM files f "
+                    "JOIN modules m ON m.module_id = f.module_id WHERE m.phase_id = ?))",
+                    (phase_id, phase_id, phase_id),
+                ).fetchall():
+                    self._release_agent(conn, row["agent_id"], "phase approved")
             else:
                 conn.execute("UPDATE phases SET state = ? WHERE phase_id = ?", (state, phase_id))
 

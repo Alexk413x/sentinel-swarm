@@ -988,15 +988,19 @@ class ReviewMixin:
         require_role(c, "oracle")
         if c.run_id is None:
             raise LedgerError(f"{caller!r} has no run")
-        run = conn.execute("SELECT * FROM runs WHERE run_id = ?", (c.run_id,)).fetchone()
+        return self.write_report(c.run_id)
+
+    def write_report(self, run_id: int) -> dict:
+        conn = self.conn
+        run = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
 
         lines = ["# Run report", "", f"Outcome: {run['outcome'] or run['state']}"]
         if run["state"] == "paused":
-            lines.append(f"Paused: {self.pause_reason(c.run_id)}")
+            lines.append(f"Paused: {self.pause_reason(run_id)}")
         lines.append("")
 
         for phase in conn.execute(
-            "SELECT * FROM phases WHERE run_id = ? ORDER BY ordinal", (c.run_id,)
+            "SELECT * FROM phases WHERE run_id = ? ORDER BY ordinal", (run_id,)
         ).fetchall():
             lines.append(f"## Phase: {phase['name']} ({phase['state']})")
             for module in conn.execute(
@@ -1023,12 +1027,12 @@ class ReviewMixin:
 
         lines.append("## Open items")
         for d in _rows(
-            conn.execute("SELECT * FROM deferrals WHERE run_id = ? AND state = 'open'", (c.run_id,))
+            conn.execute("SELECT * FROM deferrals WHERE run_id = ? AND state = 'open'", (run_id,))
         ):
             lines.append(f"- Deferral #{d['deferral_id']}: {d['reason']}")
-        for dep in _rows(conn.execute("SELECT * FROM departures WHERE run_id = ?", (c.run_id,))):
+        for dep in _rows(conn.execute("SELECT * FROM departures WHERE run_id = ?", (run_id,))):
             lines.append(f"- Departure #{dep['departure_id']} ({dep['state']}): {dep['body']}")
-        issues = _rows(conn.execute("SELECT * FROM issues WHERE run_id = ?", (c.run_id,)))
+        issues = _rows(conn.execute("SELECT * FROM issues WHERE run_id = ?", (run_id,)))
         for round_no in sorted({i["round"] for i in issues}):
             lines.append(f"- Round {round_no}:")
             for issue in (i for i in issues if i["round"] == round_no):
@@ -1036,14 +1040,14 @@ class ReviewMixin:
         lines.append("")
 
         lines.append("## Overrides")
-        for o in _rows(conn.execute("SELECT * FROM overrides WHERE run_id = ?", (c.run_id,))):
+        for o in _rows(conn.execute("SELECT * FROM overrides WHERE run_id = ?", (run_id,))):
             lines.append(
                 f"- {o['rule']} for {o['target_agent_name']} on {o['target']}: {o['reason']}"
             )
         lines.append("")
 
         lines.append("## Directives")
-        for d in _rows(conn.execute("SELECT * FROM directives WHERE run_id = ?", (c.run_id,))):
+        for d in _rows(conn.execute("SELECT * FROM directives WHERE run_id = ?", (run_id,))):
             lines.append(f"- [{d['source']}] {d['body']} -> {d['outcome'] or d['state']}")
         lines.append("")
 
@@ -1052,7 +1056,7 @@ class ReviewMixin:
             "SELECT *, CAST((julianday(COALESCE(ended_at, strftime('%Y-%m-%dT%H:%M:%fZ', "
             "'now'))) - julianday(started_at)) * 86400000 AS INTEGER) AS elapsed_ms "
             "FROM agents WHERE run_id = ?",
-            (c.run_id,),
+            (run_id,),
         )
         agents = _rows(agent_rows)
         for a in agents:

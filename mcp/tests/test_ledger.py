@@ -171,8 +171,8 @@ def test_run_finish_refuses_when_a_phase_is_not_approved(ledger: Ledger) -> None
 
 def test_run_finish_refuses_when_a_file_claim_is_live(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
     ledger.claim_file("lead-1", ctx["lead"]["agent_id"], "src/a.py", "tests/test_a.py", "coder-1")
+    ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
     with pytest.raises(LedgerError):
         ledger.run_finish("oracle", ctx["oracle_id"], "success")
 
@@ -183,6 +183,40 @@ def test_run_finish_refuses_when_a_directive_is_open(ledger: Ledger) -> None:
     ledger.directive_submit("watchdog", "watchdog", "Agent X looks stuck.")
     with pytest.raises(LedgerError):
         ledger.run_finish("oracle", ctx["oracle_id"], "success")
+
+
+def test_handed_up_refuses_while_a_lead_of_the_phase_is_live(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    with pytest.raises(LedgerError, match="lead-1"):
+        ledger.phase_update("manager-1", "mgr-agent", ctx["phase_id"], "handed_up")
+
+    ledger.agent_release("manager-1", "mgr-agent", ctx["lead"]["agent_id"])
+    phase = ledger.phase_update("manager-1", "mgr-agent", ctx["phase_id"], "handed_up")
+    assert phase["state"] == "handed_up"
+
+
+def test_phase_approval_releases_the_manager_and_everything_under_it(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
+
+    rows = ledger.conn.execute(
+        "SELECT name, state, ended_at FROM agents WHERE role IN ('manager', 'lead')"
+    ).fetchall()
+    assert {(r["name"], r["state"]) for r in rows} == {
+        ("manager-1", "released"),
+        ("lead-1", "released"),
+    }
+    assert all(r["ended_at"] is not None for r in rows)
+
+
+def test_run_finish_releases_every_agent_left_live(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE phases SET state = 'approved' WHERE phase_id = ?", (ctx["phase_id"],))
+    ledger.run_finish("oracle", ctx["oracle_id"], "success")
+
+    live = ledger.conn.execute("SELECT name FROM agents WHERE ended_at IS NULL").fetchall()
+    assert live == []
 
 
 def test_run_finish_succeeds_once_the_run_is_clear(ledger: Ledger) -> None:
@@ -609,6 +643,7 @@ def test_manager_sets_its_own_phase_to_working_and_handed_up_only(ledger: Ledger
     ctx = _bootstrap(ledger)
     mgr = ctx["manager"]["agent_id"]
     assert ledger.phase_update("manager-1", mgr, ctx["phase_id"], "working")["state"] == "working"
+    ledger.agent_release("manager-1", mgr, ctx["lead"]["agent_id"])
     assert (
         ledger.phase_update("manager-1", mgr, ctx["phase_id"], "handed_up")["state"] == "handed_up"
     )

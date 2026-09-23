@@ -84,6 +84,7 @@ All hooks live in the plugin's `hooks/hooks.json`, because plugin agents ignore 
 | Nobody edits the records by hand | Hook 4 |
 | Look in the graph before writing | codebase-kg's own search gate hook |
 | A message goes to an agent that exists in the run | `message_post` refuses an unregistered name and lists the registered ones. Any agent may message any other. Added 2026-09-22 at Alex's request |
+| A finished Lead or Manager is released so it stops and frees its slot | `phase_update(handed_up)` refuses while a Lead of the phase is live, so the Manager releases each Lead with `agent_release` after it accepts the module. `phase_update(approved)` releases the phase's Manager and every agent still live under it, and refuses while a deferral in the phase is open. `run_finish` releases anything left. Added 2026-09-23 at Alex's request |
 | Only the owner's parent chain escalates an issue | `issue_escalate` refuses anyone outside the file owner's chain. It records the receiver in `issues.escalated_to`: the Manager for round 2, the Oracle for round 3. It also messages the receiver. Added 2026-09-22 at Alex's request |
 
 ## One file, start to finish
@@ -285,6 +286,7 @@ Decisions from Alex on 2026-09-22, after run 9:
 | 10 | Stopped with the handoff unreviewed, about $2.17, on 2026-09-23 | `hello_world.txt` was correct, but the idle Lead was never woken. Fixed by idle tracking and the Stop hook's wake list |
 | 11 | Stopped after 1 Oracle turn, about $0.51 | The ledger server was still connecting, and the Oracle had no `ToolSearch` to wait for it. Fixed: `ToolSearch` is in the Oracle's tools and is its first start step; a probe showed it waits for a pending server |
 | 12 | **Passed** in 4.5 minutes, about $2.40, on 2026-09-23 | Run finished with `success`; phase, module, and file approved; three passing tests, including a subprocess run of the script; self and Lead reviews; `hello_world.txt` holds `Hello, world!`. The Stop hook's wake list worked: the Oracle resumed the idle Lead for the handoff and the idle Manager for the module report. The report now carries the Oracle's tokens and a run total |
+| 13 | **Passed** in 3.6 minutes, about $2.33, on 2026-09-23 | Every agent released in order: the Coder on `approve`, the Lead by its Manager's `agent_release`, the Manager on phase approval, and the Oracle on `run_finish`. No agent was left live. The report's Oracle tokens match the ledger's final count |
 
 Every finding has a fix and a test. The fixes: hook 6 skips the tools without `agent_id`; the connection opens with `check_same_thread=False` and every tool call runs under one lock; `score_record` refuses a malformed rating with the full key list, and the tool description carries that list; `graph_upsert` checks edge targets first and drops `VIRTUAL_ENV`; the Lead prompt says one Coder owns the source and test pair; the parent prompts say to end the turn after a spawn instead of polling.
 

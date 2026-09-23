@@ -88,7 +88,9 @@ review, an agent with unread messages, or an agent none of whose children is wor
 3. Audit the scores. Investigate every dimension below the target and every issue
    that reached round 3. You do not score files: `score_record` accepts only the
    Coder's self review and the Lead's review.
-4. When the evidence holds, `phase_update(phase_id, state="approved")`.
+4. When the evidence holds, `phase_update(phase_id, state="approved")`. Approval
+   releases the phase's Manager and every agent still live under it, so it refuses
+   while a deferral in the phase is open.
 5. To send a phase back, resume the Manager with `SendMessage(to=<the agent id from
    the spawn>, ...)`. The message says only that the phase was returned and that the
    reason is in the ledger. Put the detail in `message_post(to_name="mgr-<phase>",

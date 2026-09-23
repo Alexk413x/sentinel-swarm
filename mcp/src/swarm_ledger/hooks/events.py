@@ -590,9 +590,10 @@ def handle_stop(ledger: Ledger, data: dict) -> dict | None:
     if data.get("stop_hook_active"):
         return None
     run = _active_run_row(ledger)
-    if run is None:
-        return None
     caller_id = _caller_id(data)
+    if run is None:
+        _refresh_finished_report(ledger, caller_id, data.get("transcript_path"))
+        return None
 
     oracle = ledger.conn.execute(
         "SELECT * FROM agents WHERE run_id = ? AND role = 'oracle' AND ended_at IS NULL "
@@ -693,4 +694,27 @@ def handle_session_end(ledger: Ledger, data: dict) -> None:
             tokens=_sum_tokens(transcript_path),
             end_reason=data.get("reason"),
         )
+        if _active_run_row(ledger) is None:
+            _refresh_finished_report(ledger, session_id, None)
     return None
+
+
+def _refresh_finished_report(
+    ledger: Ledger, caller_id: str | None, transcript_path: str | None
+) -> None:
+    run = ledger.conn.execute(
+        "SELECT * FROM runs WHERE state = 'finished' ORDER BY run_id DESC LIMIT 1"
+    ).fetchone()
+    if run is None or not caller_id:
+        return
+    oracle = ledger.conn.execute(
+        "SELECT agent_id FROM agents WHERE run_id = ? AND role = 'oracle' AND agent_id = ?",
+        (run["run_id"], caller_id),
+    ).fetchone()
+    if oracle is None:
+        return
+    if transcript_path:
+        ledger.agent_stop(
+            caller_id, transcript_path=transcript_path, tokens=_sum_tokens(transcript_path)
+        )
+    ledger.write_report(run["run_id"])

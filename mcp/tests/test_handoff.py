@@ -547,9 +547,8 @@ def test_accept_incomplete_creates_a_deferral_and_run_finish_refuses_until_decid
     assert file_row["state"] == "incomplete"
     assert file_row["released_at"] is not None
 
-    ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
     with pytest.raises(LedgerError, match="deferral"):
-        ledger.run_finish("oracle", ctx["oracle_id"], "success")
+        ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
 
     ledger.agreement_decide(
         "manager-1",
@@ -558,6 +557,7 @@ def test_accept_incomplete_creates_a_deferral_and_run_finish_refuses_until_decid
         "agreed",
         "acceptable for this run",
     )
+    ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
     result = ledger.run_finish("oracle", ctx["oracle_id"], "success")
     assert result["state"] == "finished"
 

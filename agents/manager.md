@@ -73,6 +73,9 @@ uses the short name.
    the detail is in the ledger. Put the detail in `message_post(to_name=<the Lead's
    name>, body=...)` first.
 5. On a regression the module cannot fix, brief and spawn a new Lead for it.
+6. When you accept the module, `agent_release(target_agent_id=<the Lead's agent id>)`.
+   A released Lead is finished and frees its slot for new work. `phase_update(...,
+   "handed_up")` refuses while any Lead of the phase is still live.
 
 ## Close the phase
 
