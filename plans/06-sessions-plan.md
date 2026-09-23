@@ -82,8 +82,8 @@ Decided by Alex on 2026-09-23: the child wakes its parent with a cross-session `
 
 - Each session uses about 530 to 980 MB of physical memory (measured 2026-09-23 across five sessions): 260 to 430 MB for the Claude Code process, and 250 to 610 MB for its helper processes. The helpers are the MCP servers of every plugin enabled for the user, about 14 Python processes, which each session starts for itself. Subagents shared their parent's process and its servers.
 - A swarm session needs only the ledger and codebase-kg servers. Starting only those may cut a session to roughly 300 to 450 MB; see prototype check 8.
-- `agent_spawn` refuses to start a session when the live sessions reach `parallelism_cap`. The parent tries again after a release frees a slot.
-- Default cap: 6 sessions, about 3 to 6 GB at the measured sizes. The user raises it in `.claude/sentinel-swarm.local.md`.
+- Decided by Alex on 2026-09-23: no limit by default. `parallelism_cap` stays empty in the settings template, and `agent_spawn` starts every session the plan calls for.
+- A user who sets `parallelism_cap` in `.claude/sentinel-swarm.local.md` gets a limit: `agent_spawn` refuses at the cap, and the parent tries again after a release frees a slot. **(proposed)**
 - Release stops the session, so a finished Lead or Coder frees its memory at once.
 
 ## MCP servers per session
@@ -101,7 +101,7 @@ Checked on 2026-09-23. Swarms in different repos keep separate ledgers, graphs, 
 | A second `run_start` in the same repo resumes the active run and releases the first Oracle, even while it is working | Decided by Alex on 2026-09-23: one swarm per repo. `run_start` refuses while another run's Oracle holds the repo. A swarm that works in several repos holds every one of them, so no other swarm starts in any of them until it finishes. Mechanism **(proposed)**: a lock record in each repo's records folder names the run and its Oracle's `session_id`; `run_start` takes the lock on every repo of the run or refuses; `run_finish` releases them; a lock whose Oracle session no longer exists in `claude agents --json` is stale and can be taken over. Runs span one repo today, so the multi-repo case applies once multi-repo runs exist |
 | Every swarm names its roles the same way, and cross-session `SendMessage` can address a session by name | Sessions are addressed by `session_id`. A hook refuses a `SendMessage` to a session outside the caller's run |
 | One ledger process per session breaks the `graph_upsert` lock | The shared ledger server above |
-| Each run counts only its own sessions against the cap | `agent_spawn` also counts every live swarm session on the machine, from `claude agents --json`, against a machine-wide cap |
+| Each run counts only its own sessions against a cap | No cap by default (Alex, 2026-09-23). When a user sets one, `agent_spawn` also counts the machine's other live swarm sessions, from `claude agents --json` **(proposed)** |
 | Every project install shares one cached plugin copy per version, and `scripts/smoke.sh` reinstalls it | Smoke runs install under their own version, so a real run elsewhere keeps its files |
 
 ## Prototype checks before the build
@@ -130,5 +130,4 @@ Each one is a cheap haiku probe, like the checks on 2026-09-21.
 
 ## Open questions
 
-1. The default parallelism cap.
-2. Where the model settings live: the `models` lists in `.claude/sentinel-swarm.local.md`, the `model` key in each agent file, or both.
+1. Where the model settings live: the `models` lists in `.claude/sentinel-swarm.local.md`, the `model` key in each agent file, or both.
