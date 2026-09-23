@@ -14,7 +14,8 @@ are the source of truth for every role's responsibilities.
 - `templates/` — the `.local.md` settings example for a host repo.
 - `mcp/` — the swarm-ledger Python server. A separate project; see `mcp/README.md`.
 - `knowledge/` — `code_graph.db`, the codebase-kg map of this repo. Committed.
-- `scripts/smoke.sh` — the smoke test. It rebuilds `runs/hello/` (git-ignored) on each run.
+- `scripts/smoke.sh` — the smoke test. It rebuilds `runs/hello/` (git-ignored) on each run and opens an
+  interactive Oracle session; `--headless` runs it with `claude -p` instead.
 - `.githooks/` — the codebase-kg staleness hooks. Run `sh .githooks/install.sh` once per
   clone.
 - `plans/` — design documents. Do not treat anything outside `plans/` as settled

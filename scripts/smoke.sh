@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+headless=false
+if [ "${1:-}" = "--headless" ]; then
+  headless=true
+  shift
+fi
 prompt="${1:-Create hello.py. When it runs, it writes the text Hello, world! to hello_world.txt in the current folder.}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 run_dir="$root/runs/hello"
@@ -68,13 +73,21 @@ git config core.autocrlf false
 git add -A
 git commit -q -m init
 
-# The transcript stays outside host/ so the swarm never sees it in git status or a Glob.
-echo "$prompt" | "${CLAUDE_BIN:-claude}" -p --agent sentinel-swarm:oracle \
-  --plugin-dir "$(win "$plugin_dir")" --plugin-dir "$(win "$kg_dir")" \
-  --permission-mode acceptEdits --settings '{"permissions":{"defaultMode":"acceptEdits"}}' \
-  --allowedTools "mcp__plugin_sentinel-swarm_swarm-ledger,mcp__plugin_codebase-kg_codebase-kg,Agent,Read,Grep,Glob,Write,Edit,MultiEdit,SendMessage,ToolSearch,Bash(python -m pytest:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*)" \
-  --output-format stream-json --verbose \
-  > "$run_dir/transcript.jsonl" 2> "$run_dir/stderr.txt" || echo "claude exited with status $?" >&2
+claude_args=(
+  --agent sentinel-swarm:oracle
+  --plugin-dir "$(win "$plugin_dir")" --plugin-dir "$(win "$kg_dir")"
+  --permission-mode acceptEdits --settings '{"permissions":{"defaultMode":"acceptEdits"}}'
+  --allowedTools "mcp__plugin_sentinel-swarm_swarm-ledger,mcp__plugin_codebase-kg_codebase-kg,Agent,Read,Grep,Glob,Write,Edit,MultiEdit,SendMessage,ToolSearch,Bash(python -m pytest:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*)"
+)
+
+if $headless; then
+  # The transcript stays outside host/ so the swarm never sees it in git status or a Glob.
+  echo "$prompt" | "${CLAUDE_BIN:-claude}" -p "${claude_args[@]}" \
+    --output-format stream-json --verbose \
+    > "$run_dir/transcript.jsonl" 2> "$run_dir/stderr.txt" || echo "claude exited with status $?" >&2
+else
+  "${CLAUDE_BIN:-claude}" "${claude_args[@]}" "$prompt" || echo "claude exited with status $?" >&2
+fi
 
 if [ -f "$host/hello.py" ]; then
   (cd "$host" && python hello.py) || echo "python hello.py exited with status $?" >&2
