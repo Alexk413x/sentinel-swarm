@@ -86,6 +86,24 @@ Decided by Alex on 2026-09-23: the child wakes its parent with a cross-session `
 - Default cap: 6 sessions, about 3 to 6 GB at the measured sizes. The user raises it in `.claude/sentinel-swarm.local.md`.
 - Release stops the session, so a finished Lead or Coder frees its memory at once.
 
+## MCP servers per session
+
+- Decided by Alex on 2026-09-23: a swarm session starts only the MCP servers its role needs, not every plugin's servers. Each session today starts its own copy of every enabled plugin's stdio servers, about 14 Python processes (measured 2026-09-23).
+- A stdio server serves exactly one session. A server that listens over HTTP serves every session that connects to its URL. **(proposed)**
+- The ledger runs as one shared HTTP server per host repo, started before the first session and stopped after the run. The port and the process id live in the records folder. **(proposed)** This is required, not only a saving: `graph_upsert` protects the code graph with a lock inside the ledger's process, and one ledger process per session would break that lock.
+
+## Several swarms at once
+
+Checked on 2026-09-23. Swarms in different repos keep separate ledgers, graphs, working trees, and claims. The gaps, each with a fix **(proposed)**:
+
+| Gap | Fix |
+|---|---|
+| A second `run_start` in the same repo resumes the active run and releases the first Oracle, even while it is working | `run_start` refuses while another Oracle of the repo is live. Separate runs in one repo would need separate claims and are out of scope |
+| Every swarm names its roles the same way, and cross-session `SendMessage` can address a session by name | Sessions are addressed by `session_id`. A hook refuses a `SendMessage` to a session outside the caller's run |
+| One ledger process per session breaks the `graph_upsert` lock | The shared ledger server above |
+| Each run counts only its own sessions against the cap | `agent_spawn` also counts every live swarm session on the machine, from `claude agents --json`, against a machine-wide cap |
+| Every project install shares one cached plugin copy per version, and `scripts/smoke.sh` reinstalls it | Smoke runs install under their own version, so a real run elsewhere keeps its files |
+
 ## Prototype checks before the build
 
 Each one is a cheap haiku probe, like the checks on 2026-09-21.
@@ -98,6 +116,7 @@ Each one is a cheap haiku probe, like the checks on 2026-09-21.
 6. A permission prompt in a background session appears in its agent-view row and waits for the user.
 7. Two sessions write different files in one working tree at the same time without trouble.
 8. A swarm session can start with only the MCP servers its role needs, not every user-level plugin's servers, and how much memory that saves.
+9. The ledger as a FastMCP HTTP server: two sessions connect to one process, hooks still stamp identity, and the plugin's `.mcp.json` points at a URL that differs per repo.
 
 ## Build order
 
