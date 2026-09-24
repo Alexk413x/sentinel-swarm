@@ -46,7 +46,7 @@ class WatchdogSettings:
     stuck_minutes: int = 15
     spin_failures: int = 5
     context_pct: int = 80
-    context_window: int = 200_000
+    context_window: int | None = None
     idle_exit_minutes: int = 15
 
 

@@ -705,10 +705,11 @@ def test_write_report_lists_departures_shortfalls_and_change_requests(ledger: Le
     assert "## Departures" in text
     assert "skipped the retry logic" in text
     assert "accepted by lead-1" in text
+    assert "reason: fine for v1" in text
     assert "## Shortfalls" in text
     assert "module works, could be tidier" in text
     assert "## Change requests" in text
-    assert f"CR #{cr['cr_id']}" in text
+    assert f"CR #{cr['cr_id']} for pkg/good.py (open), from manager-1 to" in text
 
 
 # -- wake lines -------------------------------------------------------------------------

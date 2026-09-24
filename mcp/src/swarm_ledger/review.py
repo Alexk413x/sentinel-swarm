@@ -51,6 +51,13 @@ def _rows(cursor: sqlite3.Cursor) -> list[dict]:
     return [dict(row) for row in cursor.fetchall()]
 
 
+def _agent_name(conn: sqlite3.Connection, agent_id: str | None) -> str:
+    if agent_id is None:
+        return "unknown"
+    row = conn.execute("SELECT name FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
+    return row["name"] if row is not None else agent_id
+
+
 def _criterion_text(dimension: str, criterion: str) -> str:
     return _CRITERION_TEXT.get((dimension, criterion), f"{dimension}.{criterion}")
 
@@ -702,13 +709,29 @@ class ReviewMixin:
                 ),
             )
             attempt_id = cur.lastrowid
+            coder_name = conn.execute(
+                "SELECT name FROM agents WHERE agent_id = ?", (handoff_row["agent_id"],)
+            ).fetchone()
+            pointer = f"Handoff {handoff_id} for {file_row['path']} is returned"
+            if coder_name is not None:
+                body = "\n".join(
+                    [
+                        f"{pointer} (fix round {next_round}).",
+                        "Issues:",
+                        *(f"- {issue}" for issue in issues),
+                        f"Dimensions to move: {', '.join(targeted) or 'none named'}",
+                    ]
+                )
+                conn.execute(
+                    "INSERT INTO messages (run_id, from_name, to_name, body) VALUES (?, ?, ?, ?)",
+                    (c.run_id, c.name, coder_name["name"], body),
+                )
             wakeup = self._owe_wakeup(
                 conn,
                 c,
                 handoff_row["agent_id"],
                 "return_work",
-                f"Handoff {handoff_id} for {file_row['path']} is returned; read its issues "
-                "in the ledger and fix them.",
+                f"{pointer}; read its issues with message_inbox and fix them.",
             )
 
         attempt = dict(
@@ -1095,6 +1118,28 @@ class ReviewMixin:
             lines.append(f"- [{r['kind']}] {scope} ({r['outcome']}): {r['notes']}")
         lines.append("")
 
+        lines.append("## Returns and fix attempts")
+        for a in _rows(
+            conn.execute(
+                "SELECT a.*, f.path, h.decided_by FROM attempts a "
+                "JOIN files f ON f.file_id = a.file_id "
+                "JOIN modules m ON m.module_id = f.module_id "
+                "JOIN phases p ON p.phase_id = m.phase_id "
+                "LEFT JOIN handoffs h ON h.handoff_id = a.handoff_id "
+                "WHERE p.run_id = ? ORDER BY a.attempt_id",
+                (run_id,),
+            )
+        ):
+            targeted = ", ".join(json.loads(a["targeted_json"] or "[]")) or "none named"
+            lines.append(
+                f"- {a['path']}, fix round {a['round']}, returned by "
+                f"{_agent_name(conn, a['decided_by'])} -- targeted: {targeted} -- "
+                f"outcome: {a['outcome'] or 'pending'}"
+            )
+            for issue in json.loads(a["issue_ids_json"] or "[]"):
+                lines.append(f"  - {issue}")
+        lines.append("")
+
         lines.append("## Open items")
         for d in _rows(
             conn.execute("SELECT * FROM deferrals WHERE run_id = ? AND state = 'open'", (run_id,))
@@ -1104,7 +1149,13 @@ class ReviewMixin:
         for round_no in sorted({i["round"] for i in issues}):
             lines.append(f"- Round {round_no}:")
             for issue in (i for i in issues if i["round"] == round_no):
-                lines.append(f"  - Issue #{issue['issue_id']} ({issue['state']}): {issue['title']}")
+                detail = f" -- {issue['body']}" if issue["body"] else ""
+                lines.append(
+                    f"  - Issue #{issue['issue_id']} ({issue['state']}, "
+                    f"{issue['attempts']} attempts): {issue['title']}{detail}"
+                )
+                if issue["resolution"]:
+                    lines.append(f"    - Resolution: {issue['resolution']}")
         lines.append("")
 
         lines.append("## Departures")
@@ -1115,14 +1166,11 @@ class ReviewMixin:
                 (run_id,),
             )
         ):
-            decider = conn.execute(
-                "SELECT name FROM agents WHERE agent_id = ?", (dep["decided_by"],)
-            ).fetchone()
-            decider_name = decider["name"] if decider is not None else dep["decided_by"]
+            reason = f" -- reason: {dep['decision_reason']}" if dep["decision_reason"] else ""
             solution = f" -- solution: {dep['solution']}" if dep["solution"] else ""
             lines.append(
-                f"- Departure #{dep['departure_id']} ({dep['state']} by {decider_name}): "
-                f"{dep['body']}{solution}"
+                f"- Departure #{dep['departure_id']} ({dep['state']} by "
+                f"{_agent_name(conn, dep['decided_by'])}): {dep['body']}{reason}{solution}"
             )
         lines.append("")
 
@@ -1141,7 +1189,26 @@ class ReviewMixin:
         for cr in _rows(
             conn.execute("SELECT * FROM change_requests WHERE run_id = ? ORDER BY cr_id", (run_id,))
         ):
-            lines.append(f"- CR #{cr['cr_id']} for {cr['path']} ({cr['state']}): {cr['body']}")
+            lines.append(
+                f"- CR #{cr['cr_id']} for {cr['path']} ({cr['state']}), from "
+                f"{_agent_name(conn, cr['from_agent_id'])} to "
+                f"{_agent_name(conn, cr['to_agent_id'])}: {cr['body']}"
+            )
+            if cr["decision_reason"]:
+                lines.append(f"  - Decision: {cr['decision_reason']}")
+            if cr["completion_notes"]:
+                lines.append(f"  - Work done: {cr['completion_notes']}")
+            if cr["evidence_test_run_id"] is not None:
+                run = conn.execute(
+                    "SELECT * FROM test_runs WHERE test_run_id = ?", (cr["evidence_test_run_id"],)
+                ).fetchone()
+                if run is not None:
+                    lines.append(
+                        f"  - Evidence: test run {run['test_run_id']} ({run['scope']}), "
+                        f"{run['passed']} passed, {run['failed']} failed, exit {run['exit_code']}"
+                    )
+            if cr["verify_notes"]:
+                lines.append(f"  - Verification: {cr['verify_notes']}")
         lines.append("")
 
         lines.append("## Overrides")

@@ -31,14 +31,18 @@ Status on 2026-09-24: written by session `sentinel-swarm-a8`, updated by `sentin
 7. **Open question** in `06-sessions-plan.md`: where the model settings live.
 8. **Code graph.** Refreshed on 2026-09-24: 70 nodes, no stale or unmapped file. Refresh it after each change to a mapped file; the `pre-push` hook blocks a push over drift.
 
-## For Alex to review, all **(proposed)**
+## Decided by Alex on 2026-09-24
 
-- The watchdog wakes the Oracle, and only the Oracle, with `claude --resume` when the Oracle's session is not running and reports are waiting. After 3 failed wakes it pauses the run. This sits next to your rule that the watchdog only reports.
-- The server exits after 15 idle minutes on an abandoned or paused run. `idle_exit_minutes` sets it.
-- Setup re-adds a ledger hook that the template has and a role file lacks, so a hook the user removed on purpose comes back.
-- A change request goes to the lowest live owner: the file's Coder, else its Lead, else its Manager, else the Oracle.
+- The watchdog resumes the Oracle when it can, with `claude --resume` when the Oracle's session is not running; after 3 failed wakes it pauses the run. For any other agent's failure it reports to the Oracle.
+- The ledger server exits when the run finishes, and after `idle_exit_minutes` (15) on an abandoned or paused run.
+- A rerun of setup restores every ledger hook the template has, including one the user removed.
+- A change request is a ledger record plus a wake-up message to the right agent: the file's Coder, else its Lead, else its Manager, else the Oracle. It closes only with verified evidence. The run report lists each change request with its reason, decision, work done, evidence, and verification, and each Lead return with its issues, targeted dimensions, and outcome.
+- The context window follows the model: 1,000,000 tokens for Sonnet, Opus, and Fable, 200,000 for Haiku. `context_window` in the settings overrides it.
+- No role runs subagents or workflows. The Oracle starts Managers, a Manager starts Leads, a Lead starts Coders, and a Lead reviews its Coders' work itself.
+
+## For Alex to review, **(proposed)**
+
 - Only a role above the normal decider can deny a departure that was already accepted; a late denial on an approved file opens a deferral.
-- The watchdog's context window defaults to 200,000 tokens. Sessions on a 1M model need `context_window: 1000000` in the settings, because the transcript does not say which window a session has.
 
 ## Earlier steps, done
 

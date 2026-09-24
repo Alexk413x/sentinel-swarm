@@ -187,7 +187,8 @@ as `accepted`, with the notes in the ledger.
 Your Lead wakes you by message. The message points at the ledger and carries no
 detail.
 
-1. `message_inbox()` and `issue_list(file_id=<your file id>)` for what came back.
+1. `message_inbox()` for the Lead's issues and the dimensions to move, and
+   `issue_list(file_id=<your file id>)` for issues the Lead's scores opened.
    Then `brief_get` again: the brief, not your memory of it, is the task. Re-read it
    before every handoff too.
 2. Fix the file and its tests.

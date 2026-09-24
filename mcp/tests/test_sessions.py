@@ -518,8 +518,13 @@ def test_return_work_owes_the_coder_a_wake_up(ledger: Ledger, claude: FakeClaude
     attempt = ledger.return_work(*ctx.lead, handoff_id, ["slow"], ["performance"])
     assert attempt["next"] == (
         f'SendMessage(to="my-host-r{ctx.run_id}-coder-1", message="Handoff {handoff_id} '
-        'for src/coder-1.py is returned; read its issues in the ledger and fix them.")'
+        'for src/coder-1.py is returned; read its issues with message_inbox and fix them.")'
     )
+    inbox = ledger.message_inbox(*coder)
+    assert len(inbox) == 1
+    assert inbox[0]["from_name"] == "lead-1"
+    assert "- slow" in inbox[0]["body"]
+    assert "Dimensions to move: performance" in inbox[0]["body"]
 
 
 def test_a_recipient_without_a_session_owes_nothing(ledger: Ledger, claude: FakeClaude) -> None:

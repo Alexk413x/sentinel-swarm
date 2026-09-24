@@ -27,6 +27,7 @@ WAKE_STATE = "watchdog_wake"
 PAUSE_REASON = "the watchdog could not wake the Oracle"
 _MEMBER_ROLES = ("manager", "lead", "coder")
 _WINDOW_1M = 1_000_000
+_WINDOW_HAIKU = 200_000
 _TAIL_BLOCK = 256 * 1024
 
 
@@ -245,6 +246,10 @@ def _usage_of(raw: bytes) -> tuple[int, str] | None:
     return tokens, str(message.get("model") or "")
 
 
+def _context_window(models: str) -> int:
+    return _WINDOW_HAIKU if "haiku" in models.lower() else _WINDOW_1M
+
+
 def _context_high(agent: dict, settings: WatchdogSettings) -> str | None:
     raw = agent["transcript_path"]
     if not raw:
@@ -256,9 +261,7 @@ def _context_high(agent: dict, settings: WatchdogSettings) -> str | None:
     if found is None:
         return None
     tokens, model = found
-    # A session's transcript names the model without the [1m] suffix that selects the 1M window,
-    # so the window comes from settings unless the ledger's model string carries the suffix.
-    window = _WINDOW_1M if "[1m]" in f"{agent['model'] or ''} {model}" else settings.context_window
+    window = settings.context_window or _context_window(f"{agent['model'] or ''} {model}")
     pct = tokens * 100 / window
     if pct < settings.context_pct:
         return None

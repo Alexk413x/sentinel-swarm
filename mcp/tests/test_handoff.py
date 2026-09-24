@@ -774,6 +774,12 @@ def test_lead_review_closes_resolved_issues_and_dedupes_open_ones(ledger: Ledger
     ledger.review_compare("lead-1", lead, second["handoff_id"])
     assert ledger.approve("lead-1", lead, second["handoff_id"])["state"] == "approved"
 
+    text = ledger.report_build("oracle", ctx["oracle_id"])["text"]
+    returns = text.split("## Returns and fix attempts")[1].split("## Open items")[0]
+    assert "pkg/good.py, fix round 1, returned by lead-1 -- targeted: performance" in returns
+    assert "  - slow" in returns
+    assert "attempts): " in text.split("## Open items")[1]
+
 
 def test_issue_close_is_for_the_lead_manager_or_oracle(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)

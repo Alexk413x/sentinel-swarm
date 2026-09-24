@@ -90,8 +90,8 @@ All hooks live in the plugin's `hooks/hooks.json`, because plugin agents ignore 
 | A message goes to an agent that exists in the run | `message_post` refuses an unregistered name and lists the registered ones. Any agent may message any other. Added 2026-09-22 at Alex's request |
 | A finished Lead or Manager is released so it stops and frees its slot | `phase_update(handed_up)` refuses while a Lead of the phase is live, so the Manager releases each Lead with `agent_release` after it accepts the module. `phase_update(approved)` releases the phase's Manager and every agent still live under it, and refuses while a deferral in the phase is open. `run_finish` releases anything left. Added 2026-09-23 at Alex's request |
 | Only the owner's parent chain escalates an issue | `issue_escalate` refuses anyone outside the file owner's chain. It records the receiver in `issues.escalated_to`: the Manager for round 2, the Oracle for round 3. It also messages the receiver. Added 2026-09-22 at Alex's request |
-| A non-owner requests, the owner changes | `cr_open` routes to the file's owner when live, else its module's live Lead, else its phase's live Manager, else the Oracle; it refuses a path with no `files` row and a caller who already owns it. **(proposed)** |
-| A change request is closed with evidence, not a claim | `cr_complete` refuses without a passing `tests_run(scope="file")` for the path since acceptance, from the Coder recipient itself, or (for any other recipient) by anyone, or an approved handoff for the file. `handoff_submit`, `approve`, `phase_update(approved)`, and `run_finish` each name the change request ids still open, accepted, or completed. **(proposed)** |
+| A non-owner requests, the owner changes | `cr_open` routes to the file's owner when live, else its module's live Lead, else its phase's live Manager, else the Oracle; it refuses a path with no `files` row and a caller who already owns it. The recipient gets a ledger record and a wake-up message. Decided by Alex on 2026-09-24 |
+| A change request is closed with evidence, not a claim | `cr_complete` refuses without a passing `tests_run(scope="file")` for the path since acceptance, from the Coder recipient itself, or (for any other recipient) by anyone, or an approved handoff for the file. `handoff_submit`, `approve`, `phase_update(approved)`, and `run_finish` each name the change request ids still open, accepted, or completed. The run report lists each change request with its reason, decision, work done, evidence test run, and verification, and each return with its issues, targeted dimensions, and outcome. Decided by Alex on 2026-09-24 |
 | A departure is decided before its handoff is approved, and a denial is a return | `approve` refuses while a departure on the handoff is `open` or `denied`. `departure_decide` requires the recorder's parent role or higher, and a denial needs a solution; a higher role may also deny an already `accepted` departure, opening a deferral when the file is already approved. **(proposed)** |
 | The Oracle checks the repo before a Manager starts | `agent_spawn` refuses a Manager until the run has a recorded `repo_check`. It does not require `obvious_start`: a not-obvious start is the Oracle's call, made by asking the user, not a block. **(proposed)** |
 | A phase hands up only after its Manager reviews every module | `phase_update(handed_up)` refuses unless every module of the phase has an accepted `module_review` newer than its last change. **(proposed)** |
@@ -153,6 +153,12 @@ It reports through the directive channel. See "User directives".
 
 Every item below is **(proposed)** unless it says it is Alex's rule. Checked with unit tests only, not yet in a live run.
 
+Decided by Alex on 2026-09-24:
+
+- The watchdog resumes the Oracle when it can. For any other agent's failure, it reports to the Oracle, and the Oracle acts.
+- The ledger server exits when the run finishes, and after `idle_exit_minutes` on an abandoned or paused run.
+- The context window follows the model: 1,000,000 tokens for Sonnet, Opus, and Fable, 200,000 for Haiku. Probed on 2026-09-24: `claude -p --model sonnet`, `opus`, and `fable` each report a 1,000,000-token window, with or without `[1m]`.
+
 Where it runs:
 
 - The detection script runs as a thread inside the repo's ledger server (`swarm_ledger/watchdog.py`), not as a process the Oracle starts. It starts and stops with the server, which starts before the Oracle and exits after `run_finish`. So it is started and stopped with the run, and nothing is left running after the run ends. The user's requirement is that nothing stays in the background after the run ends or is abandoned.
@@ -167,7 +173,7 @@ What it detects, for the live Manager, Lead, and Coder sessions of the active ru
 | `stuck` | The session runs, the ledger says `working`, and the last heartbeat (or the start) is older than `stuck_minutes` | Message it, or have its parent replace it. `agent_resume` refuses a running session |
 | `waiting_permission` | The session waits on a permission prompt. Not reported as `stuck` too | Tell the user to open that session in agent view and answer the prompt |
 | `spinning` | The agent's last `spin_failures` test runs for one scope and target all failed | Ask its parent to review: `return_work` or `issue_escalate` |
-| `context_high` | The agent's latest request fills `context_pct` of its window: input, cache read, and cache creation tokens of the last assistant message in its transcript. The window is 1,000,000 when the model names `[1m]`, else 200,000. Checked for the Oracle too | Have its parent replace it with a fresh agent that continues from the ledger. For the Oracle: pause the run so the user resumes it in a fresh Oracle session |
+| `context_high` | The agent's latest request fills `context_pct` of its window: input, cache read, and cache creation tokens of the last assistant message in its transcript. The window is 200,000 when the model names Haiku, else 1,000,000, unless the `context_window` setting names one. Checked for the Oracle too | Have its parent replace it with a fresh agent that continues from the ledger. For the Oracle: pause the run so the user resumes it in a fresh Oracle session |
 | `stalled` | The run is active, no session of the run runs (the Oracle included), and two passes in a row see it | Resume the agent whose work is pending, named by submitted handoffs and unread messages |
 
 - `stalled` counts pending work as live agents, submitted handoffs, unlocked phases, and open directives from any source but the watchdog. A run with none of these still reports `stalled`, with "the run is not finished", so an abandoned active run always reaches the Oracle or a pause.
@@ -193,7 +199,7 @@ When the server exits on its own:
 - After `idle_exit_minutes` with no active run, or with a paused run, and in both cases no session of the run running. A ledger tool call restarts the idle clock, so an Oracle that is still talking to the user before `run_start` keeps its server. A failed `claude agents --json` counts as no session running here, so a broken `claude` cannot keep the server alive.
 - The server keeps its port in `.sentinel-swarm/server.port` and binds it again on restart, so a session resumed after an idle exit still reaches the ledger at the URL it started with. When the port is taken, it binds a free one, and sessions started before then lose the ledger.
 
-Settings, in `.claude/sentinel-swarm.local.md` under `watchdog`: `interval_seconds` (30), `stuck_minutes` (15), `spin_failures` (5), `context_pct` (80), `idle_exit_minutes` (15).
+Settings, in `.claude/sentinel-swarm.local.md` under `watchdog`: `interval_seconds` (30), `stuck_minutes` (15), `spin_failures` (5), `context_pct` (80), `context_window` (unset: taken from the model), `idle_exit_minutes` (15).
 
 ## User directives
 

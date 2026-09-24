@@ -277,10 +277,10 @@ def test_an_agent_near_its_context_window_is_reported(
 ) -> None:
     _run_id(ledger)
     _oracle_running(claude)
-    full = _transcript(tmp_path / "full.jsonl", 170_000)
-    roomy = _transcript(tmp_path / "roomy.jsonl", 170_000, model="claude-opus-5")
+    full = _transcript(tmp_path / "full.jsonl", 170_000, model="claude-haiku-4-5")
+    roomy = _transcript(tmp_path / "roomy.jsonl", 170_000)
     _agent(ledger, "sess-full", "coder", "idle", started=now, transcript=full)
-    _agent(ledger, "sess-1m", "coder", "idle", started=now, transcript=roomy, model="opus[1m]")
+    _agent(ledger, "sess-1m", "coder", "idle", started=now, transcript=roomy, model="sonnet")
     _agent(ledger, "sess-none", "coder", "idle", started=now, transcript=tmp_path / "gone.jsonl")
     with write_tx(ledger.conn) as conn:
         conn.execute(
@@ -294,6 +294,8 @@ def test_an_agent_near_its_context_window_is_reported(
     assert findings[0].next_step.startswith("Have oracle release it and brief a fresh agent")
     assert "call run_pause" in findings[1].next_step
     assert _scan(ledger, claude, now, context_pct=90) == []
+    overridden = _scan(ledger, claude, now, context_window=200_000)
+    assert ("1m", "context_high") in _kinds(overridden)
 
 
 def test_the_latest_usage_is_found_across_read_blocks(
@@ -898,7 +900,7 @@ def test_watchdog_settings_come_from_the_local_settings_file(host: Path) -> None
     )
     path = host / ".claude" / "sentinel-swarm.local.md"
     text = path.read_text(encoding="utf-8").replace("stuck_minutes: 15", "stuck_minutes: 40")
-    text = text.replace("context_window: 200000", "context_window: 1000000")
+    text = text.replace("# context_window: 1000000", "context_window: 500000")
     path.write_text(text, encoding="utf-8")
     assert load_settings(host).watchdog.stuck_minutes == 40
-    assert load_settings(host).watchdog.context_window == 1_000_000
+    assert load_settings(host).watchdog.context_window == 500_000
