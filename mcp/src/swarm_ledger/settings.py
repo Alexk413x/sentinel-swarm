@@ -46,6 +46,7 @@ class WatchdogSettings:
     stuck_minutes: int = 15
     spin_failures: int = 5
     context_pct: int = 80
+    context_window: int = 200_000
     idle_exit_minutes: int = 15
 
 
@@ -122,6 +123,7 @@ def load_settings(repo_root: Path) -> Settings:
         stuck_minutes=watchdog_data.get("stuck_minutes", defaults.watchdog.stuck_minutes),
         spin_failures=watchdog_data.get("spin_failures", defaults.watchdog.spin_failures),
         context_pct=watchdog_data.get("context_pct", defaults.watchdog.context_pct),
+        context_window=watchdog_data.get("context_window", defaults.watchdog.context_window),
         idle_exit_minutes=watchdog_data.get(
             "idle_exit_minutes", defaults.watchdog.idle_exit_minutes
         ),

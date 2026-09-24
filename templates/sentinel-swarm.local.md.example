@@ -52,6 +52,9 @@ watchdog:
   spin_failures: 5
   # An agent whose latest request fills this percent of its context window is reported.
   context_pct: 80
+  # The context window in tokens. Claude Code sessions on a 1M-context model use 1000000;
+  # the transcript does not say which window a session runs with.
+  context_window: 200000
   # The ledger server exits after this many minutes with no active run, or a paused
   # run, and no session of the run running.
   idle_exit_minutes: 15

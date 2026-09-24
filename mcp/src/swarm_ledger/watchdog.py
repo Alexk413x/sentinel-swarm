@@ -27,7 +27,6 @@ WAKE_STATE = "watchdog_wake"
 PAUSE_REASON = "the watchdog could not wake the Oracle"
 _MEMBER_ROLES = ("manager", "lead", "coder")
 _WINDOW_1M = 1_000_000
-_WINDOW = 200_000
 _TAIL_BLOCK = 256 * 1024
 
 
@@ -257,7 +256,9 @@ def _context_high(agent: dict, settings: WatchdogSettings) -> str | None:
     if found is None:
         return None
     tokens, model = found
-    window = _WINDOW_1M if "[1m]" in f"{agent['model'] or ''} {model}" else _WINDOW
+    # A session's transcript names the model without the [1m] suffix that selects the 1M window,
+    # so the window comes from settings unless the ledger's model string carries the suffix.
+    window = _WINDOW_1M if "[1m]" in f"{agent['model'] or ''} {model}" else settings.context_window
     pct = tokens * 100 / window
     if pct < settings.context_pct:
         return None

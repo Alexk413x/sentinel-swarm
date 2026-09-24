@@ -898,5 +898,7 @@ def test_watchdog_settings_come_from_the_local_settings_file(host: Path) -> None
     )
     path = host / ".claude" / "sentinel-swarm.local.md"
     text = path.read_text(encoding="utf-8").replace("stuck_minutes: 15", "stuck_minutes: 40")
+    text = text.replace("context_window: 200000", "context_window: 1000000")
     path.write_text(text, encoding="utf-8")
     assert load_settings(host).watchdog.stuck_minutes == 40
+    assert load_settings(host).watchdog.context_window == 1_000_000
