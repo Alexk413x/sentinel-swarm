@@ -96,18 +96,26 @@ Call these in order. Nothing else works until `run_start` succeeds.
 3. `run_start(prd=<the PRD text>, session_id=<the session id the harness gave you;
    use the literal string "main" when you do not have one>)`. The identity hook
    stamps the real id. This registers you and opens the run.
-4. `profile_set(test_command=..., build_command=..., lint_command=...)`. Read
+4. `repo_check(fetch=<true unless you have a reason not to>)`. Read its `advice`
+   and follow it before you plan anything: when `obvious_start` is true, follow up
+   with `repo_branch_create(name=...)` to create the run's branch; otherwise ask
+   the user what to do, naming the reason `advice` gives (uncommitted changes, a
+   different branch, behind the remote, no base branch, or not a git repo), and
+   in a headless session with nobody to ask, record your assumption with
+   `guidelines_set` and proceed on the current branch. `agent_spawn` refuses to
+   start a Manager until this call has run at least once.
+5. `profile_set(test_command=..., build_command=..., lint_command=...)`. Read
    `.claude/sentinel-swarm.local.md` first and use the values the `setup` skill
    detected. The test command must contain `{target}`, for example
    `python -m pytest -q -p no:cacheprovider {target}`. Every `tests_run` in the run
    uses this command, so a wrong value blocks every handoff.
-5. `guidelines_set(body=...)`. Record the architecture, the stack, the conventions,
+6. `guidelines_set(body=...)`. Record the architecture, the stack, the conventions,
    the test and build commands, and every assumption you made about the PRD. Lower
    layers read this with `guidelines_get`.
-6. `phase_add(name=..., depends_on=[<phase_id>, ...])` once per phase, in dependency
+7. `phase_add(name=..., depends_on=[<phase_id>, ...])` once per phase, in dependency
    order, so a phase can name the ids it depends on.
-7. `phase_update(phase_id, state="unlocked")` for every phase with no dependency.
-8. Arm the watchdog. See "The watchdog".
+8. `phase_update(phase_id, state="unlocked")` for every phase with no dependency.
+9. Arm the watchdog. See "The watchdog".
 
 ## Run one phase
 
@@ -154,16 +162,25 @@ messages, or an agent none of whose children is working.
 1. `message_inbox()`, then read the Manager's report.
 2. `status_tree()` and `run_status()` for the tree and the states. `issue_list()` for
    what is still open. `events()` when you need the order things happened in.
-3. Audit the scores. Investigate every dimension below the target and every issue
+3. `tests_run(scope="full")`. Run it now that the phase is handed up, before you
+   review: `phase_review` refuses without a passing run recorded after the phase's
+   hand-up.
+4. Audit the scores. Investigate every dimension below the target and every issue
    that reached round 3. You do not score files: `score_record` accepts only the
    Coder's self review and the Lead's review.
-4. When the evidence holds, `phase_update(phase_id, state="approved")`. Approval
+5. `phase_review(phase_id, outcome="accepted" | "returned", notes=..., low_score_notes=...,
+   departure_notes=...)`. `low_score_notes` needs a non-empty note, keyed by `file_id`,
+   for every file whose latest Lead review has a dimension below the target; `departure_notes`
+   needs one, keyed by `departure_id`, for every accepted departure in the phase.
+6. When `phase_review` accepted, `phase_update(phase_id, state="approved")`. Approval
    releases the phase's Manager and every agent still live under it, and stops their
-   sessions, so it refuses while a deferral or a change request on a file of the
-   phase is still open, accepted, or completed but not yet verified.
-5. To send a phase back, put the reason in `message_post(to_name="mgr-<phase>",
-   body=...)`, then send the wake-up its `next` field names.
-6. `plan_unlocked()` lists the phases whose dependencies are now approved. Call
+   sessions, so it refuses while a deferral in the phase is open, while a change
+   request on a file of the phase is open, accepted, or completed but not yet
+   verified, or without the accepted `phase_review` from step 5.
+7. When `phase_review` returned, send the wake-up its `next` field names; the reason
+   already reached the Manager through the review record. When `next` is missing, the
+   Manager has ended, and you brief and spawn a new one for the phase.
+8. `plan_unlocked()` lists the phases whose dependencies are now approved. Call
    `phase_update(..., "unlocked")` on each, then brief and spawn its Manager.
 
 ## Join points and the end of the run

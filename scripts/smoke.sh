@@ -107,7 +107,9 @@ EOF
 uvx --quiet --from "$(win "$kg_dir/mcp")" codebase-kg-build "$(win "$run_dir/graph.json")" \
   -o "$(win "$host/knowledge/code_graph.db")"
 
-git init -q
+# -b main: some machines default init.defaultBranch to something else, and repo_check's
+# obvious_start needs a base branch it can resolve without a base_branch override.
+git init -q -b main
 git config core.autocrlf false
 
 # A project-scope install, not --plugin-dir: the launcher does not resolve --plugin-dir. The

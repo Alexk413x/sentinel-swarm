@@ -1050,6 +1050,11 @@ class ReviewMixin:
             lines.append(f"Paused: {self.pause_reason(run_id)}")
         lines.append("")
 
+        lines.append("## Repo")
+        lines.append(f"- Branch: {run['branch'] or '(none)'}")
+        lines.append(f"- Last repo_check: {run['repo_check_json'] or '(none)'}")
+        lines.append("")
+
         for phase in conn.execute(
             "SELECT * FROM phases WHERE run_id = ? ORDER BY ordinal", (run_id,)
         ).fetchall():
@@ -1075,6 +1080,20 @@ class ReviewMixin:
                     )
                     lines.append(f"- {file_row['path']} -- {file_row['state']} -- {scores}")
             lines.append("")
+
+        lines.append("## Manager and Oracle reviews")
+        for r in _rows(
+            conn.execute(
+                "SELECT r.* FROM reviews r JOIN phases p ON p.phase_id = r.phase_id "
+                "WHERE p.run_id = ? AND r.kind IN ('manager', 'oracle') ORDER BY r.review_id",
+                (run_id,),
+            )
+        ):
+            scope = (
+                f"module {r['module_id']}" if r["kind"] == "manager" else f"phase {r['phase_id']}"
+            )
+            lines.append(f"- [{r['kind']}] {scope} ({r['outcome']}): {r['notes']}")
+        lines.append("")
 
         lines.append("## Open items")
         for d in _rows(

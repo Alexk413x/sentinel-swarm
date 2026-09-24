@@ -31,6 +31,11 @@ _ADDED_COLUMNS = (
     ("departures", "decided_at", "TEXT"),
     ("departures", "decision_reason", "TEXT"),
     ("departures", "solution", "TEXT"),
+    ("runs", "repo_check_json", "TEXT"),
+    ("runs", "repo_checked_at", "TEXT"),
+    ("runs", "branch", "TEXT"),
+    ("phases", "handed_up_at", "TEXT"),
+    ("reviews", "details_json", "TEXT"),
 )
 _ADDED_TABLES = ("wakeups", "watchdog_findings")
 
@@ -117,6 +122,9 @@ def _upgrade(conn: sqlite3.Connection) -> None:
         conn.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
 
     for table, column, declaration in _ADDED_COLUMNS:
+        # A ledger old enough to predate the table itself gets it from _ADDED_TABLES below.
+        if table not in tables:
+            continue
         columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
         if column in columns:
             continue

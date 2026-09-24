@@ -449,15 +449,14 @@ def test_phase_update_approved_refused_while_a_cr_is_open(ledger: Ledger) -> Non
 
 
 def test_run_finish_refused_while_a_cr_is_open(ledger: Ledger) -> None:
-    # phase-1's file is approved and released, then a CR against it stays open
-    # while every phase in the run reaches 'approved'. run_finish's own check is
-    # the only thing left to catch it: phase_update(approved) cannot, because by
-    # the time every phase is approved, no phase can still carry a blocking CR.
+    # Phases are approved through SQL: the module and phase review gates would stop the
+    # flow before run_finish, and this test isolates run_finish's own change-request check.
     ctx = _bootstrap(ledger)
     _approve_good(ledger, ctx)
     ledger.agent_release("manager-1", ctx["manager"]["agent_id"], ctx["lead"]["agent_id"])
-    ledger.phase_update("manager-1", ctx["manager"]["agent_id"], ctx["phase_id"], "handed_up")
-    ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE phases SET state = 'approved' WHERE phase_id = ?", (ctx["phase_id"],))
+    ledger.agent_release("oracle", ctx["oracle_id"], ctx["manager"]["agent_id"])
 
     phase2 = ledger.phase_add("oracle", ctx["oracle_id"], "phase-2")
     ledger.phase_update("oracle", ctx["oracle_id"], phase2["phase_id"], "unlocked")
@@ -476,8 +475,10 @@ def test_run_finish_refused_while_a_cr_is_open(ledger: Ledger) -> None:
     cr = ledger.cr_open("manager-2", manager2["agent_id"], "pkg/good.py", "one more change")
     assert cr["to_agent_id"] == ctx["oracle_id"]
 
-    ledger.phase_update("manager-2", manager2["agent_id"], phase2["phase_id"], "handed_up")
-    ledger.phase_update("oracle", ctx["oracle_id"], phase2["phase_id"], "approved")
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE phases SET state = 'approved' WHERE phase_id = ?", (phase2["phase_id"],)
+        )
 
     with pytest.raises(LedgerError, match="not verified"):
         ledger.run_finish("oracle", ctx["oracle_id"], "success")

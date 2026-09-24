@@ -68,6 +68,9 @@ lint_command:
 
 # Left empty; no default parallelism cap is set yet.
 parallelism_cap:
+
+# Left empty; repo_check then tries main, then master, then reports no base branch.
+base_branch:
 ---
 
 # sentinel-swarm local settings

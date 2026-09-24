@@ -15,6 +15,8 @@ piece can be built and tested alone.
 | `review.py` | `ReviewMixin`: tests, the code graph, scoring, and the handoff/approve/return cycle |
 | `agreements.py` | **(proposed)** `AgreementsMixin`: change requests (`cr_open`, `cr_accept`, `cr_complete`, `cr_verify`, `cr_list`), departures and shortfalls (`departure_record`, `departure_decide`, `shortfall_record`), and the gates that block `handoff_submit`, `approve`, `phase_update(approved)`, and `run_finish` while one is unresolved. `Ledger` inherits `AgreementsMixin` before `ReviewMixin`, because `ReviewMixin` declares stub bodies for the gate methods (so `review.py`'s own methods type-check against it alone), and MRO resolves the first base's attribute first |
 | `rubric.py` | Dimension math: criterion ratings to a 0 to 100 dimension score, the pass rule, the disagreement rule, and the improved, plateau, or regression classification |
+| `repo.py` | `RepoMixin`: `repo_check` and `repo_branch_create`. `check_repo` is the pure git inspection underneath, callable without a `Ledger` **(proposed)** |
+| `oversight.py` | `OversightMixin`: the Manager's `module_review` and the Oracle's `phase_review`, and the shared readiness checks the `phase_update` gates for `handed_up` and `approved` call **(proposed)** |
 | `testing.py` | Runs the profile's test command for a scope and parses the result |
 | `graph.py` | `graph_upsert` under a process lock, and the graph-current check for a file |
 | `versions.py` | Saves and restores file versions in `.sentinel-swarm/versions/` |
