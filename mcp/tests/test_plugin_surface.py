@@ -133,6 +133,7 @@ def test_template_never_sets_max_turns(repo_root: Path, role: str):
 def test_template_tools(repo_root: Path, role: str):
     tools = _tools(_split(_template(repo_root, role))[0])
     assert "Agent" not in tools
+    assert "Workflow" not in tools
     assert "ToolSearch" in tools
     assert "SendMessage" in tools
     assert "mcp__swarm-ledger" in tools

@@ -234,7 +234,9 @@ def test_is_live_reads_status_and_pid(claude: FakeClaude) -> None:
     claude.add("s-running", "a")
     claude.listing.append({"pid": 5, "sessionId": "s-stopped", "status": "stopped"})
     claude.listing.append({"sessionId": "s-no-pid", "status": "idle"})
+    claude.listing.append({"pid": 6, "sessionId": "s-turn-done", "status": "idle", "state": "done"})
     assert sessions.is_live("s-running") is True
+    assert sessions.is_live("s-turn-done") is True
     assert sessions.is_live("s-stopped") is False
     assert sessions.is_live("s-no-pid") is False
     assert sessions.is_live("s-unknown") is False

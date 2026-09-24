@@ -11,6 +11,12 @@ Decided by Alex on 2026-09-23:
 - A session that locks up or crashes is resumed on its own, without restarting the run. Nothing is lost: the session keeps its conversation, and the ledger keeps the run's plan, progress, and evidence.
 - Hooks live in the agent definitions. Decided by Alex on 2026-09-23: the generated agent files in the host's `.claude/agents/` come first, and each role's hooks go in its own file's frontmatter. Users edit those files directly to control each role.
 
+Decided by Alex on 2026-09-24:
+
+- No role runs subagents, and so no role runs a Claude Code workflow, because every step of a workflow is a subagent. No role has the `Agent` or `Workflow` tool.
+- Each role starts only the role below it: the Oracle starts Managers, a Manager starts Leads, and a Lead starts Coders. A Coder starts nothing.
+- A Lead reviews its Coders' work itself. It does not hand the review to a subagent.
+
 This replaces the earlier rule "Only the Oracle runs as a session. Manager, Lead, and Coder run as nested subagents."
 
 ## What changes, in one table

@@ -15,7 +15,9 @@ CLAUDE_VAR = "SENTINEL_SWARM_CLAUDE"
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _BG_LINE = re.compile(r"backgrounded\s+\S+\s+([0-9A-Za-z-]+)")
 _LABELS = ("agents", "stop", "--resume", "--bg")
-_DEAD = frozenset({"stopped", "exited", "crashed", "failed", "killed", "dead", "done", "completed"})
+# Not "done": a background session reports state "done" once its turn ends, while its process
+# still runs and takes messages. Resuming it with --resume starts a second session.
+_DEAD = frozenset({"stopped", "exited", "crashed", "failed", "killed", "dead", "completed"})
 _TIMEOUT_S = 60.0
 _SPAWN_WAIT_S = 15.0
 _POLL_S = 0.5

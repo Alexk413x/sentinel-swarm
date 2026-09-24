@@ -138,8 +138,10 @@ one. The message only points at the ledger record; the detail lives in the ledge
 3. Review two things: whether the Lead met the tasks in its brief, and the items
    where the two most recent scores for a file did not agree. You do not score every
    file, and `score_record` does not accept a Manager's score.
-4. `tests_run(scope="module", target=<the module's directory or test selector>)` once
-   every file in the module is approved or accepted as incomplete.
+4. `tests_run(scope="phase", target=<the module's directory or test selector>)` once
+   every file in the module is approved or accepted as incomplete. Module scope
+   belongs to the Lead; your phase-scope run on the module's target counts for
+   `module_review`.
 5. `module_review(module_id, outcome="accepted" | "returned", notes=...,
    disagreement_notes=...)`. `disagreement_notes` needs a non-empty note, keyed by
    `file_id`, for every approved file whose self and Lead scores disagreed. `accepted`
