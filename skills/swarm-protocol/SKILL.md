@@ -119,8 +119,9 @@ keeps every gate.
   lock; `who_owns(path)` names the owner.
 - `score_record(kind="lead")` must come before `review_compare`. After
   `review_compare` runs for a handoff, blind scoring is closed.
-- `approve` refuses without a comparison, with a lead review that does not pass, or
-  while the file has an open issue.
+- `approve` refuses without a comparison, with a lead review that does not pass,
+  while the file has an open issue, while a change request on the file is not yet
+  verified, or while a departure on the handoff is open or denied.
 - `tests_run` scopes are role-bound: file to the Coder, module to the Lead, phase to
   the Manager, full to the Oracle.
 - `override_grant` is the Oracle's alone.
@@ -134,6 +135,8 @@ keeps every gate.
 - The code graph is not current for the file: no node, an anchor that does not
   resolve, or a symbol in the file that no node maps.
 - The self review is missing or older than the last edit.
+- The Coder has an `accepted` change request on the file that is not yet
+  `completed`.
 
 On success it records the test run, saves a version of the file and the test file,
 and marks the file handed up.
@@ -148,8 +151,42 @@ approves its work, and release stops its session.
 ## Ownership
 
 Every unit of work, a run, a phase, a module, or a file, has exactly one owner. A
-non-owner that needs a change asks the owner through `message_post` instead of
-editing the work. Only the Coder writes project files.
+non-owner that needs a change asks the owner through `cr_open(path, body)` instead
+of editing the work; the ledger routes it to the file's owner, or up the ownership
+chain (Lead, Manager, Oracle) when the owner has ended. Only the Coder writes
+project files.
+
+## Change requests
+
+| Tool | Caller | Effect |
+|---|---|---|
+| `cr_open(path, body)` | Any role | Opens a request against a path; refuses a path with no `files` row, and a caller who already owns it |
+| `cr_accept(cr_id, accept, reason)` | The recipient | `open` to `accepted` or `declined`; a decline needs a non-empty reason |
+| `cr_complete(cr_id, notes)` | The recipient | `accepted` to `completed`; refuses without a fresh passing `tests_run(scope="file")` for the path since acceptance |
+| `cr_verify(cr_id, ok, notes)` | The requester, or its nearest live ancestor | `completed` to `verified`, or back to `accepted` with the notes |
+| `cr_list(state=None)` | Any role | The caller's own change requests; the Oracle sees every one in the run |
+
+`handoff_submit` refuses while the Coder has an `accepted` change request on its
+file that is not `completed`. `approve`, `phase_update(approved)`, and `run_finish`
+each refuse while a change request on their scope's files is `open`, `accepted`, or
+`completed`.
+
+## Departures and shortfalls
+
+A departure records a break from the guidelines; `handoff_submit`'s `departures`
+list writes one row per string, linked to the handoff, in state `open`.
+`departure_record(body, file_id=None, guideline_id=None)` records one outside a
+handoff: a Coder for its own file, a Lead, Manager, or Oracle for work in its scope.
+`departure_decide(departure_id, decision, reason, solution=None)` is the recorder's
+parent role or higher; a denial needs a solution. `approve` refuses while a
+departure on the handoff is `open` (decide it first) or `denied` (a denied
+departure is a return). A higher role may also deny an already `accepted`
+departure; when the file is already approved, that opens a deferral so the phase
+cannot be approved until someone decides what happens.
+
+A shortfall records a solution that works but that nobody found better.
+`shortfall_record(body, file_id=None)` is any role, state `recorded`, and needs no
+decision.
 
 ## Rubric dimensions and criterion keys
 

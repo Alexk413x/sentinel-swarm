@@ -26,13 +26,13 @@ Status on 2026-09-20: first draft for Alex to review. Alex decided the frame: on
 | Run and plan | `run_start`, `run_status`, `profile_set`, `guidelines_get`, `phase_add`, `phase_update`, `plan_unlocked` | Oracle. All roles read |
 | Briefs | `brief_create`, `brief_get`, `brief_ack` | A parent creates. A child reads and acknowledges |
 | Ownership | `claim_file`, `release_file`, `who_owns` | A Lead claims for its Coders. All roles read |
-| Change requests | `cr_open`, `cr_accept`, `cr_complete`, `cr_verify` | Any role opens. The owner completes. The requester verifies |
+| Change requests | `cr_open`, `cr_accept`, `cr_complete`, `cr_verify`, `cr_list` **(proposed, `cr_list` added)** | Any role opens. The recipient accepts, completes. The requester, or its nearest live ancestor once it has ended, verifies |
 | Tests | `tests_run` with a scope of file, module, phase, or full | Coder, Lead, Manager, Oracle, each at its own scope |
 | Code graph | `graph_upsert`, the same arguments as `kg_upsert_node`, applied under one lock in the ledger process. Decided 2026-09-21; see check 5 | Coder |
 | Handoff | `handoff_submit` | The child, at the end of its work |
 | Review | `score_record`, `review_compare`, `approve`, `return_work`, `accept_incomplete` | The parent |
 | Issues | `issue_open`, `attempt_record`, `idea_record`, `issue_escalate` | Parent and child |
-| Agreements | `deferral_propose`, `departure_record`, `shortfall_record`, `agreement_decide` | Any role proposes. The responsible level decides |
+| Agreements | `deferral_propose`, `departure_record`, `departure_decide`, `shortfall_record`, `agreement_decide` **(proposed, `departure_decide` added)** | Any role proposes or records. The responsible level, the recorder's parent role or above, decides |
 | Overrides | `override_grant` | Oracle only |
 | Versions | `version_save`, `version_restore` | The tooling on handoff. The Coder on a regression |
 | Messages | `message_post`, `message_inbox` | All roles |
@@ -45,6 +45,8 @@ Status on 2026-09-20: first draft for Alex to review. Alex decided the frame: on
 2. Checks that the code graph is current for the file: the file has a node, the node's anchors resolve, and no symbol in the file is unmapped. Decided 2026-09-21; see check 7.
 3. Requires the Coder's own scores and its list of open issues and departures.
 4. Saves a version of the file.
+
+It also refuses while the Coder has an `accepted` change request on the file that is not yet `completed`; each string in `departures` becomes a `departures` row linked to the handoff, in state `open`, for the Lead to decide before `approve`. **(proposed)**
 
 `tests_run` executes the project's test command from the project profile. An agent never reports a test result itself.
 
@@ -86,6 +88,9 @@ All hooks live in the plugin's `hooks/hooks.json`, because plugin agents ignore 
 | A message goes to an agent that exists in the run | `message_post` refuses an unregistered name and lists the registered ones. Any agent may message any other. Added 2026-09-22 at Alex's request |
 | A finished Lead or Manager is released so it stops and frees its slot | `phase_update(handed_up)` refuses while a Lead of the phase is live, so the Manager releases each Lead with `agent_release` after it accepts the module. `phase_update(approved)` releases the phase's Manager and every agent still live under it, and refuses while a deferral in the phase is open. `run_finish` releases anything left. Added 2026-09-23 at Alex's request |
 | Only the owner's parent chain escalates an issue | `issue_escalate` refuses anyone outside the file owner's chain. It records the receiver in `issues.escalated_to`: the Manager for round 2, the Oracle for round 3. It also messages the receiver. Added 2026-09-22 at Alex's request |
+| A non-owner requests, the owner changes | `cr_open` routes to the file's owner when live, else its module's live Lead, else its phase's live Manager, else the Oracle; it refuses a path with no `files` row and a caller who already owns it. **(proposed)** |
+| A change request is closed with evidence, not a claim | `cr_complete` refuses without a passing `tests_run(scope="file")` for the path since acceptance, from the Coder recipient itself, or (for any other recipient) by anyone, or an approved handoff for the file. `handoff_submit`, `approve`, `phase_update(approved)`, and `run_finish` each name the change request ids still open, accepted, or completed. **(proposed)** |
+| A departure is decided before its handoff is approved, and a denial is a return | `approve` refuses while a departure on the handoff is `open` or `denied`. `departure_decide` requires the recorder's parent role or higher, and a denial needs a solution; a higher role may also deny an already `accepted` departure, opening a deferral when the file is already approved. **(proposed)** |
 
 ## One file, start to finish
 

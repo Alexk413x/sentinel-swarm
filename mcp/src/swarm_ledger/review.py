@@ -105,6 +105,12 @@ class ReviewMixin:
 
     def next_step(self, wakeup: dict | None) -> str | None: ...
 
+    def _block_handoff_for_open_cr(self, conn: sqlite3.Connection, file_id: int) -> None: ...
+
+    def _block_approve_for_cr(self, conn: sqlite3.Connection, file_id: int) -> None: ...
+
+    def _block_approve_for_departures(self, conn: sqlite3.Connection, handoff_id: int) -> None: ...
+
     # -- Shared helpers ---------------------------------------------------
 
     def _thresholds(self) -> rubric.Thresholds:
@@ -424,6 +430,7 @@ class ReviewMixin:
             raise LedgerError(f"{caller!r} does not own file {file_id!r}")
         if not file_row["test_path"]:
             raise LedgerError("file has no test_path; a handoff needs one")
+        self._block_handoff_for_open_cr(self.conn, file_id)
 
         test_result = self.tests_run(caller, agent_id, "file", file_row["test_path"])
         if not test_result["ok"]:
@@ -496,6 +503,12 @@ class ReviewMixin:
                 ),
             )
             handoff_id = cur.lastrowid
+            for departure_body in departures:
+                conn.execute(
+                    "INSERT INTO departures (run_id, agent_id, file_id, handoff_id, kind, "
+                    "state, body) VALUES (?, ?, ?, ?, 'departure', 'open', ?)",
+                    (c.run_id, c.agent_id, file_id, handoff_id, departure_body),
+                )
 
             conn.execute("UPDATE files SET state = 'handed_up' WHERE file_id = ?", (file_id,))
 
@@ -603,6 +616,8 @@ class ReviewMixin:
         ).fetchone()
         if open_issue is not None:
             raise LedgerError("the file has an open issue")
+        self._block_approve_for_cr(self.conn, file_row["file_id"])
+        self._block_approve_for_departures(self.conn, handoff_id)
 
         with self._release_tx() as conn:
             conn.execute(
@@ -1066,13 +1081,48 @@ class ReviewMixin:
             conn.execute("SELECT * FROM deferrals WHERE run_id = ? AND state = 'open'", (run_id,))
         ):
             lines.append(f"- Deferral #{d['deferral_id']}: {d['reason']}")
-        for dep in _rows(conn.execute("SELECT * FROM departures WHERE run_id = ?", (run_id,))):
-            lines.append(f"- Departure #{dep['departure_id']} ({dep['state']}): {dep['body']}")
         issues = _rows(conn.execute("SELECT * FROM issues WHERE run_id = ?", (run_id,)))
         for round_no in sorted({i["round"] for i in issues}):
             lines.append(f"- Round {round_no}:")
             for issue in (i for i in issues if i["round"] == round_no):
                 lines.append(f"  - Issue #{issue['issue_id']} ({issue['state']}): {issue['title']}")
+        lines.append("")
+
+        lines.append("## Departures")
+        for dep in _rows(
+            conn.execute(
+                "SELECT * FROM departures WHERE run_id = ? AND kind = 'departure' "
+                "AND state IN ('accepted', 'denied') ORDER BY departure_id",
+                (run_id,),
+            )
+        ):
+            decider = conn.execute(
+                "SELECT name FROM agents WHERE agent_id = ?", (dep["decided_by"],)
+            ).fetchone()
+            decider_name = decider["name"] if decider is not None else dep["decided_by"]
+            solution = f" -- solution: {dep['solution']}" if dep["solution"] else ""
+            lines.append(
+                f"- Departure #{dep['departure_id']} ({dep['state']} by {decider_name}): "
+                f"{dep['body']}{solution}"
+            )
+        lines.append("")
+
+        lines.append("## Shortfalls")
+        for sf in _rows(
+            conn.execute(
+                "SELECT * FROM departures WHERE run_id = ? AND kind = 'shortfall' "
+                "ORDER BY departure_id",
+                (run_id,),
+            )
+        ):
+            lines.append(f"- Shortfall #{sf['departure_id']}: {sf['body']}")
+        lines.append("")
+
+        lines.append("## Change requests")
+        for cr in _rows(
+            conn.execute("SELECT * FROM change_requests WHERE run_id = ? ORDER BY cr_id", (run_id,))
+        ):
+            lines.append(f"- CR #{cr['cr_id']} for {cr['path']} ({cr['state']}): {cr['body']}")
         lines.append("")
 
         lines.append("## Overrides")

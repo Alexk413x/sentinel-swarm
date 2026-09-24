@@ -16,6 +16,21 @@ _ADDED_COLUMNS = (
     ("runs", "watch_expires_at", "TEXT"),
     ("runs", "watch_owner", "TEXT"),
     ("directives", "notified_at", "TEXT"),
+    ("change_requests", "path", "TEXT"),
+    ("change_requests", "decision_reason", "TEXT"),
+    ("change_requests", "accepted_at", "TEXT"),
+    ("change_requests", "completed_at", "TEXT"),
+    ("change_requests", "completion_notes", "TEXT"),
+    ("change_requests", "evidence_test_run_id", "INTEGER"),
+    ("change_requests", "verified_at", "TEXT"),
+    ("change_requests", "verify_notes", "TEXT"),
+    ("change_requests", "decided_at", "TEXT"),
+    ("departures", "file_id", "INTEGER"),
+    ("departures", "handoff_id", "INTEGER"),
+    ("departures", "decided_by", "TEXT"),
+    ("departures", "decided_at", "TEXT"),
+    ("departures", "decision_reason", "TEXT"),
+    ("departures", "solution", "TEXT"),
 )
 _ADDED_TABLES = ("wakeups", "watchdog_findings")
 
@@ -92,18 +107,21 @@ def migrate(conn: sqlite3.Connection) -> None:
 
 
 def _upgrade(conn: sqlite3.Connection) -> None:
+    tables = {
+        row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    # Create any table a later version added before adding columns to it: an older
+    # ledger may lack a whole table that _ADDED_COLUMNS also targets, not just a column.
+    needed_tables = set(_ADDED_TABLES) | {table for table, _, _ in _ADDED_COLUMNS}
+    if any(table not in tables for table in needed_tables):
+        conn.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
+
     for table, column, declaration in _ADDED_COLUMNS:
         columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
-        # No columns means no table: the schema script below creates it with the column.
-        if not columns or column in columns:
+        if column in columns:
             continue
         try:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
         except sqlite3.OperationalError as exc:
             if "duplicate column" not in str(exc):
                 raise
-    tables = {
-        row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-    }
-    if any(table not in tables for table in _ADDED_TABLES):
-        conn.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))

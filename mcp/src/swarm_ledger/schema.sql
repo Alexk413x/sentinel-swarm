@@ -158,8 +158,17 @@ CREATE TABLE IF NOT EXISTS change_requests (
     from_agent_id TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
     to_agent_id TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
     file_id INTEGER REFERENCES files (file_id) ON DELETE RESTRICT,
+    path TEXT,
     state TEXT NOT NULL,
     body TEXT NOT NULL,
+    decision_reason TEXT,
+    accepted_at TEXT,
+    completed_at TEXT,
+    completion_notes TEXT,
+    evidence_test_run_id INTEGER REFERENCES test_runs (test_run_id) ON DELETE RESTRICT,
+    verified_at TEXT,
+    verify_notes TEXT,
+    decided_at TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -190,9 +199,15 @@ CREATE TABLE IF NOT EXISTS departures (
     run_id INTEGER NOT NULL REFERENCES runs (run_id) ON DELETE RESTRICT,
     agent_id TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
     guideline_id INTEGER REFERENCES guidelines (guideline_id) ON DELETE RESTRICT,
+    file_id INTEGER REFERENCES files (file_id) ON DELETE RESTRICT,
+    handoff_id INTEGER REFERENCES handoffs (handoff_id) ON DELETE RESTRICT,
     kind TEXT NOT NULL,
     state TEXT NOT NULL,
     body TEXT NOT NULL,
+    decided_by TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
+    decided_at TEXT,
+    decision_reason TEXT,
+    solution TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 

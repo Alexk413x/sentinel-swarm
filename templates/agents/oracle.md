@@ -159,7 +159,8 @@ messages, or an agent none of whose children is working.
    Coder's self review and the Lead's review.
 4. When the evidence holds, `phase_update(phase_id, state="approved")`. Approval
    releases the phase's Manager and every agent still live under it, and stops their
-   sessions, so it refuses while a deferral in the phase is open.
+   sessions, so it refuses while a deferral or a change request on a file of the
+   phase is still open, accepted, or completed but not yet verified.
 5. To send a phase back, put the reason in `message_post(to_name="mgr-<phase>",
    body=...)`, then send the wake-up its `next` field names.
 6. `plan_unlocked()` lists the phases whose dependencies are now approved. Call
@@ -171,7 +172,19 @@ messages, or an agent none of whose children is working.
   reported, and once more before you finish.
 - `report_build()` writes the final report to the records folder.
 - `run_finish(outcome=...)` closes the run, releases every session still live, and
-  stops the ledger server.
+  stops the ledger server. It refuses while any change request in the run is open,
+  accepted, or completed but not yet verified.
+
+## Change requests and departures
+
+`cr_list()` shows every change request in the run. A change request whose owner,
+Lead, and Manager have all ended falls to you; decide it with `cr_accept`, and
+verify one you opened with `cr_verify` once its recipient completes it.
+`departure_decide(departure_id, decision, reason, solution=None)` is yours for a
+departure that reaches your scope, and yours alone to deny an already-accepted
+departure a Manager will not reopen; a denial needs a solution, and when the file is
+already approved this opens a deferral. `shortfall_record(body, file_id=None)`
+records a solution that works but that nobody found better; it needs no decision.
 
 ## When only the user can unblock the run
 

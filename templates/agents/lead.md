@@ -147,22 +147,36 @@ The ledger enforces this order and refuses any other.
    file. Once `review_compare` has run for this handoff, blind scoring is closed.
 2. `review_compare(handoff_id)`. It returns both score sets and the dimensions where
    they do not agree.
-3. Decide:
+3. Decide each departure the handoff carries with `departure_decide(departure_id,
+   decision, reason, solution=None)` before you approve. A denial needs a solution.
+4. Decide:
    - `approve(handoff_id, notes=None)` when the lead review passes on every
      applicable dimension. Approval releases the Coder, stops its session, and
-     releases the file claim.
+     releases the file claim. It refuses while a change request on the file is
+     open, accepted, or completed but not yet verified, and while a departure on
+     the handoff is open or denied.
    - `return_work(handoff_id, issues=[...], targeted=[...])` with the specific issues
      and the dimensions the fix should move. This counts as one fix attempt. Then
-     send the wake-up its `next` field names.
+     send the wake-up its `next` field names. A denied departure is a return too.
    - `accept_incomplete(handoff_id, reason=...)` when the Coder reports the work as
      not complete for a reason you validated. It uses no fix attempt and opens a
      deferral.
 
-`approve` refuses while the file has an open issue. Every rating of 4 or lower opens
-one, so a rating that low commits you to returning the work. Your next `lead` review
-closes an issue when its criterion rates 5 or higher. `issue_close(issue_id,
+`approve` also refuses while the file has an open issue. Every rating of 4 or lower
+opens one, so a rating that low commits you to returning the work. Your next `lead`
+review closes an issue when its criterion rates 5 or higher. `issue_close(issue_id,
 resolution)` closes an issue that a review does not cover, such as one you opened by
 hand.
+
+## Change requests
+
+Answer what is addressed to you with `cr_list(state="open")`, then
+`cr_accept(cr_id, accept, reason)`; a decline needs a non-empty reason. This
+includes a change request that fell to you because a file's Coder has already
+ended. When your module needs a change in a file outside it, call
+`cr_open(path, body)`; the ledger routes it to the owner or up the chain.
+`cr_verify(cr_id, ok, notes)` closes one you opened, once its recipient calls
+`cr_complete`; a failed verification sends it back to `accepted`.
 
 ## After a return
 
@@ -209,6 +223,10 @@ The detail lives in the ledger, not in the message.
   task or its tests, and on a contract between your own files, with
   `agreement_decide(deferral_id, decision, reason)`. A module scope change that
   touches another module belongs to your Manager.
+- `departure_record(body, file_id=None, guideline_id=None)` records one you notice
+  yourself, for work in your own module. `shortfall_record(body, file_id=None)`
+  records a solution that works but that you found no better answer for; it needs
+  no decision.
 
 ## After a wake-up
 

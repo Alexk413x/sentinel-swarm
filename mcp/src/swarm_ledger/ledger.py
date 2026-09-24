@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from . import __version__, agentfiles, serve, sessions
+from .agreements import AgreementsMixin
 from .db import connect, ensure_git_exclude, ledger_path, write_tx
 from .identity import ROLES, Caller, LedgerError, child_role_of, require_role, resolve
 from .review import ReviewMixin
@@ -43,7 +44,11 @@ def session_name_for(repo_root: Path, run_id: int, child_name: str) -> str:
     return f"{repo_slug(repo_root)}-r{run_id}-{child_name}"
 
 
-class Ledger(ReviewMixin):
+class Ledger(AgreementsMixin, ReviewMixin):
+    # AgreementsMixin first: ReviewMixin declares stub bodies for the gate methods
+    # AgreementsMixin implements (for pyright, since review.py's methods are typed
+    # against ReviewMixin alone), and MRO resolves the first base's attribute, so
+    # ReviewMixin's empty stub would otherwise shadow the real implementation.
     def __init__(self, repo_root: Path, *, db_path: Path | None = None) -> None:
         self.repo_root = repo_root
         self.settings = load_settings(repo_root)
@@ -343,6 +348,8 @@ class Ledger(ReviewMixin):
             if open_deferrals:
                 raise LedgerError(f"{open_deferrals} deferral(s) are still open")
 
+            self._block_run_finish_for_cr(conn, run_id)
+
             conn.execute(
                 f"UPDATE runs SET state = 'finished', outcome = ?, ended_at = {_NOW} "
                 "WHERE run_id = ?",
@@ -493,6 +500,7 @@ class Ledger(ReviewMixin):
                         f"{open_deferrals} deferral(s) in the phase are still open; the Manager "
                         "decides them before approval releases it"
                     )
+                self._block_phase_approval_for_cr(conn, phase_id)
                 conn.execute(
                     f"UPDATE phases SET state = ?, ended_at = {_NOW} WHERE phase_id = ?",
                     (state, phase_id),
