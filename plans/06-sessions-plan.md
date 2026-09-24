@@ -206,6 +206,13 @@ The launcher and setup:
 - `python -m swarm_ledger.setup [--repo <root>]` writes or refreshes the role files, keeping the user's frontmatter and replacing the body. It writes the shim and merges `settings.local.json`. It adds `.sentinel-swarm/` and `.claude/agents/swarm-*.md` to `.git/info/exclude`, adds each project-scope plugin's MCP servers to the role files through the shim, and reports whether the repo is trusted.
 - `python -m swarm_ledger.launch [--repo <root>] [--bg | --headless] "<prompt>"` runs setup when a role file is missing, starts the server, and starts the Oracle with the same flags as `agent_spawn`. The session name is `<repo slug>-oracle`. It is interactive by default.
 
+## Build status on 2026-09-23
+
+- Built as `35905d7`: build steps 2 to 5, in two delegated packages checked in the main session. 352 tests pass, and pyright and ruff are clean.
+- Checked without a live session: in `runs/hello/host`, setup wrote the four role files, the shim, `settings.local.json`, and the git excludes. The shim ran a ledger hook, and it started codebase-kg's server, which answered the MCP handshake. The launcher refused the untrusted folder with the trust command.
+- Not run yet: build steps 6 and 7, the live smoke run and the crash test. They need Alex's one-time trust of `runs/hello/host`.
+- Small follow-ups: the trust message prints twice, once from setup and once from the launcher. The first start of codebase-kg's server builds its Python environment, so setup should build it ahead of time.
+
 ## Build order
 
 1. The prototype checks.
