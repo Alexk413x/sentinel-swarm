@@ -29,11 +29,11 @@ Status on 2026-09-20: first draft. Bullets marked **(proposed)** are Claude's ad
 | Role | `runtime` **(proposed default)** | `models` (approved list, Alex's defaults) |
 |---|---|---|
 | Oracle | session | fable, opus |
-| Manager | subagent | opus |
-| Lead | subagent | opus, sonnet |
-| Coder | subagent | sonnet, haiku |
+| Manager | session | opus |
+| Lead | session | opus, sonnet |
+| Coder | session | sonnet, haiku |
 
-The first version works in one working tree, so only the Oracle runs as a session. See `01-roles.md` "Git workflow in the host repo".
+Decided by Alex on 2026-09-23: every role runs as its own session, in the one working tree. See `06-sessions-plan.md`.
 
 The parent that spawns an agent picks the model from the child role's list, by the complexity of the task. The brief records the choice. The Oracle has no parent and runs on the first model in its list. **(Oracle rule proposed)**
 
@@ -112,3 +112,9 @@ Read on 2026-09-20 from `code.claude.com/docs/en/hooks.md`, through a summarizin
 3. Whether `SessionStart` and `SessionEnd` fire for agent view background sessions.
 4. Whether a session started with `--agent` reports `agent_type` to every hook.
 5. How to detect a context overflow in a subagent: whether `PreCompact` fires inside subagents, and what a compaction looks like in the transcript.
+
+## Added for sessions on 2026-09-23 **(proposed)**
+
+- `agents.session_name`: the machine-unique name `agent_spawn` gives a session, `<repo slug>-r<run_id>-<name>`. Messages between sessions go by this name.
+- `agents.bg_id`: the short id `claude --bg` prints, used to stop the session on release.
+- `wakeups`: each wake-up an agent owes after a step, with the recipient, the one-line pointer, and when it was sent. The `stop` hook blocks an agent that still owes one. See `06-sessions-plan.md`.

@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Literal
 
 from . import graph, rubric, versions
 from .db import ledger_path, write_tx
-from .identity import LedgerError, require_role, resolve
+from .identity import Caller, LedgerError, require_role, resolve
 from .rubric import Rating
 from .settings import Settings
 from .testing import run_tests
@@ -76,6 +77,7 @@ class ReviewMixin:
     conn: sqlite3.Connection
     settings: Settings
     repo_root: Path
+    _pending_stops: list[tuple[str, str]]
 
     def _log_event(
         self,
@@ -89,6 +91,19 @@ class ReviewMixin:
     def _active_run(self, conn: sqlite3.Connection) -> sqlite3.Row: ...
 
     def pause_reason(self, run_id: int) -> str | None: ...
+
+    def _release_tx(self) -> AbstractContextManager[sqlite3.Connection]: ...
+
+    def _owe_wakeup(
+        self,
+        conn: sqlite3.Connection,
+        c: Caller,
+        to_agent_id: str | None,
+        reason: str,
+        pointer: str,
+    ) -> dict | None: ...
+
+    def next_step(self, wakeup: dict | None) -> str | None: ...
 
     # -- Shared helpers ---------------------------------------------------
 
@@ -123,6 +138,8 @@ class ReviewMixin:
             (phase_name, target_agent_id),
         )
         self._log_event(conn, target_agent_id, row["state"], "released", reason)
+        if row["bg_id"] and row["role"] != "oracle":
+            self._pending_stops.append((target_agent_id, row["bg_id"]))
 
     # -- Tests --------------------------------------------------------------
 
@@ -488,12 +505,21 @@ class ReviewMixin:
             prior_state = agent_row["state"] if agent_row is not None else None
             conn.execute("UPDATE agents SET state = 'handed_up' WHERE agent_id = ?", (agent_id,))
             self._log_event(conn, agent_id, prior_state, "handed_up", "handoff_submit")
+            wakeup = self._owe_wakeup(
+                conn,
+                c,
+                c.parent_agent_id,
+                "handoff_submit",
+                f"Handoff {handoff_id} for {file_row['path']} is waiting in the ledger.",
+            )
 
-        return dict(
+        handoff = dict(
             self.conn.execute(
                 "SELECT * FROM handoffs WHERE handoff_id = ?", (handoff_id,)
             ).fetchone()
         )
+        handoff["next"] = self.next_step(wakeup)
+        return handoff
 
     # -- Review -----------------------------------------------------------------
 
@@ -578,7 +604,7 @@ class ReviewMixin:
         if open_issue is not None:
             raise LedgerError("the file has an open issue")
 
-        with write_tx(self.conn) as conn:
+        with self._release_tx() as conn:
             conn.execute(
                 f"UPDATE handoffs SET state = 'approved', decided_notes = ?, "
                 f"decided_at = {_NOW}, decided_by = ? WHERE handoff_id = ?",
@@ -661,12 +687,22 @@ class ReviewMixin:
                 ),
             )
             attempt_id = cur.lastrowid
+            wakeup = self._owe_wakeup(
+                conn,
+                c,
+                handoff_row["agent_id"],
+                "return_work",
+                f"Handoff {handoff_id} for {file_row['path']} is returned; read its issues "
+                "in the ledger and fix them.",
+            )
 
-        return dict(
+        attempt = dict(
             self.conn.execute(
                 "SELECT * FROM attempts WHERE attempt_id = ?", (attempt_id,)
             ).fetchone()
         )
+        attempt["next"] = self.next_step(wakeup)
+        return attempt
 
     def attempt_record(self, caller: str, agent_id: str, file_id: int) -> dict:
         c = resolve(self.conn, caller, agent_id)
@@ -794,7 +830,7 @@ class ReviewMixin:
         if file_row is None or c.module_id != file_row["module_id"]:
             raise LedgerError(f"{caller!r} is not the Lead of this file's module")
 
-        with write_tx(self.conn) as conn:
+        with self._release_tx() as conn:
             conn.execute(
                 f"UPDATE handoffs SET state = 'incomplete', decided_notes = ?, "
                 f"decided_at = {_NOW}, decided_by = ? WHERE handoff_id = ?",

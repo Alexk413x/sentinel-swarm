@@ -7,8 +7,9 @@ import shlex
 import subprocess
 from pathlib import Path
 
+from .. import sessions
 from ..db import ensure_git_exclude, write_tx
-from ..identity import ROLES, child_role_of
+from ..identity import ROLES, LedgerError
 from ..ledger import Ledger
 
 _RECORDS_DIR = ".sentinel-swarm"
@@ -71,7 +72,12 @@ def _deny(reason: str) -> dict:
 
 
 def handle_session_start(ledger: Ledger, data: dict) -> dict | None:
-    del data
+    caller = _swarm_caller(ledger, data.get("session_id"))
+    if caller is not None:
+        if caller["state"] == "idle":
+            ledger.agent_active(caller["agent_id"], "session_start")
+        return None
+
     parts: list[str] = []
 
     run = _active_run_row(ledger)
@@ -119,75 +125,15 @@ def handle_session_start(ledger: Ledger, data: dict) -> dict | None:
 
 
 def handle_pre_agent(ledger: Ledger, data: dict) -> dict | None:
-    if _active_run_row(ledger) is None:
+    if _swarm_caller(ledger, _caller_id(data)) is None:
         return None
-    caller_id = _caller_id(data)
-    caller = _swarm_caller(ledger, caller_id)
-    if caller is None:
-        return None
-
-    tool_input = data.get("tool_input") or {}
-    raw_subagent_type = str(tool_input.get("subagent_type") or "")
-    requested_role = raw_subagent_type.rsplit(":", 1)[-1]
-    expected_child = child_role_of(caller["role"])
-
-    def _deny_or_override(reason: str) -> dict | None:
-        if ledger.override_consume("spawn", caller["name"], raw_subagent_type):
-            return None
-        return _deny(reason)
-
-    if expected_child is None:
-        return _deny_or_override(f"role {caller['role']!r} has no child role to spawn")
-    if requested_role != expected_child:
-        return _deny_or_override(
-            f"{caller['name']!r} ({caller['role']}) may spawn only a {expected_child!r}; "
-            f"got {raw_subagent_type!r}"
-        )
-
-    model = tool_input.get("model")
-    if model is not None:
-        approved = ledger.settings.models.get(expected_child, [])
-        if model not in approved:
-            return _deny_or_override(
-                f"model {model!r} is not approved for {expected_child!r}; approved: {approved}"
-            )
-
-    unacked = ledger.conn.execute(
-        "SELECT 1 FROM briefs WHERE parent_agent_id = ? AND child_role = ? AND acked_at IS NULL",
-        (caller_id, expected_child),
-    ).fetchone()
-    if unacked is None:
-        return _deny_or_override(
-            f"no unacked brief for a {expected_child!r}; call brief_create first"
-        )
-
-    cap = ledger.settings.parallelism_cap
-    if cap is not None:
-        live = ledger.conn.execute(
-            "SELECT COUNT(*) AS n FROM agents WHERE run_id = ? AND ended_at IS NULL",
-            (caller["run_id"],),
-        ).fetchone()["n"]
-        if live >= cap:
-            return _deny_or_override(
-                f"parallelism cap of {cap} reached ({live} live agents); wait for one to finish"
-            )
-
-    return None
+    return _deny(
+        "roles start children with agent_spawn: write the brief with brief_create, "
+        "then call agent_spawn(child_name)"
+    )
 
 
-# -- 3. SubagentStart -------------------------------------------------------------
-
-
-def handle_subagent_start(ledger: Ledger, data: dict) -> None:
-    agent_id = data.get("agent_id") or data.get("session_id")
-    if agent_id:
-        row = ledger.agent_register_start(agent_id, str(data.get("agent_type") or ""))
-        if row.get("state") == "idle":
-            ledger.agent_active(agent_id, "subagent_start")
-    return None
-
-
-# -- 4. PreToolUse: Write, Edit, MultiEdit, NotebookEdit ------------------------
+# -- 3. PreToolUse: Write, Edit, MultiEdit, NotebookEdit ------------------------
 
 
 def handle_pre_write(ledger: Ledger, data: dict) -> dict | None:
@@ -237,7 +183,7 @@ def handle_pre_write(ledger: Ledger, data: dict) -> dict | None:
     return None
 
 
-# -- 5. PreToolUse: Bash, PowerShell -----------------------------------------------
+# -- 4. PreToolUse: Bash, PowerShell -----------------------------------------------
 
 
 def _command_allowed(ledger: Ledger, command: str) -> bool:
@@ -295,7 +241,7 @@ def handle_pre_shell(ledger: Ledger, data: dict) -> dict | None:
     return _deny_or_override(f"command not allowed; allowed: {'; '.join(allowed)}")
 
 
-# -- 6. PreToolUse: the swarm-ledger MCP tools -------------------------------------
+# -- 5. PreToolUse: the swarm-ledger MCP tools -------------------------------------
 
 
 def handle_pre_ledger(ledger: Ledger, data: dict) -> dict:
@@ -322,7 +268,7 @@ def handle_pre_ledger(ledger: Ledger, data: dict) -> dict:
     }
 
 
-# -- 7. PostToolUse: every tool ----------------------------------------------------
+# -- 6. PostToolUse: every tool ----------------------------------------------------
 
 
 def handle_post_any(ledger: Ledger, data: dict) -> None:
@@ -338,6 +284,11 @@ def handle_post_any(ledger: Ledger, data: dict) -> None:
     if caller["state"] == "idle":
         ledger.agent_active(caller["agent_id"], "post_tool_use")
 
+    if tool_name == "SendMessage":
+        to = str((data.get("tool_input") or {}).get("to") or "")
+        if to:
+            ledger.wakeups_sent(caller["agent_id"], to)
+
     if tool_name in _WRITE_TOOLS and caller["role"] == "coder":
         raw_path = str((data.get("tool_input") or {}).get("file_path") or "")
         rel = _repo_relative(ledger, raw_path)
@@ -346,7 +297,7 @@ def handle_post_any(ledger: Ledger, data: dict) -> None:
     return None
 
 
-# -- 8. PostToolUse: Bash, PowerShell ----------------------------------------------
+# -- 7. PostToolUse: Bash, PowerShell ----------------------------------------------
 
 
 def _parse_porcelain(output: str) -> list[str]:
@@ -418,7 +369,7 @@ def handle_post_shell(ledger: Ledger, data: dict) -> None:
     return None
 
 
-# -- 9. PreCompact ------------------------------------------------------------------
+# -- 8. PreCompact ------------------------------------------------------------------
 
 
 def handle_pre_compact(ledger: Ledger, data: dict) -> None:
@@ -432,7 +383,7 @@ def handle_pre_compact(ledger: Ledger, data: dict) -> None:
     return None
 
 
-# -- 10. SubagentStop ---------------------------------------------------------------
+# -- 9. Stop -----------------------------------------------------------------------
 
 
 def _sum_tokens(transcript_path: str | None) -> dict | None:
@@ -474,28 +425,6 @@ def _sum_tokens(transcript_path: str | None) -> dict | None:
         return None
 
 
-def handle_subagent_stop(ledger: Ledger, data: dict) -> dict | None:
-    if _active_run_row(ledger) is None:
-        return None
-    caller_id = _caller_id(data)
-    caller = _swarm_caller(ledger, caller_id)
-    if caller is None:
-        return None
-
-    transcript_path = data.get("agent_transcript_path")
-    tokens = _sum_tokens(transcript_path)
-    ledger.agent_stop(caller["agent_id"], transcript_path=transcript_path, tokens=tokens)
-
-    if caller["state"] != "working":
-        return None
-
-    blocked = _block_coder_stop_once(ledger, caller, data)
-    if blocked is not None:
-        return blocked
-    ledger.agent_idle(caller["agent_id"], "subagent_stop")
-    return None
-
-
 def _block_coder_stop_once(ledger: Ledger, caller: dict, data: dict) -> dict | None:
     if caller["role"] != "coder" or data.get("stop_hook_active"):
         return None
@@ -510,7 +439,7 @@ def _block_coder_stop_once(ledger: Ledger, caller: dict, data: dict) -> dict | N
     with write_tx(ledger.conn) as conn:
         conn.execute(
             "INSERT INTO agent_events (agent_id, from_state, to_state, reason) "
-            "VALUES (?, ?, 'stop_blocked', 'subagent_stop')",
+            "VALUES (?, ?, 'stop_blocked', 'stop')",
             (caller["agent_id"], caller["state"]),
         )
     return {
@@ -522,16 +451,33 @@ def _block_coder_stop_once(ledger: Ledger, caller: dict, data: dict) -> dict | N
     }
 
 
-# -- 11. Stop -------------------------------------------------------------------------
+def _live_session_ids() -> set[str] | None:
+    try:
+        return {
+            str(entry.get("sessionId"))
+            for entry in sessions.list_sessions()
+            if sessions.is_running(entry)
+        }
+    except LedgerError:
+        return None
 
 
-def _resume_hint(agent: dict) -> str:
-    return f"resume it with SendMessage(to={agent['agent_id']!r})"
+def _wake_hint(agent: dict, live_ids: set[str] | None) -> str:
+    resume = f"agent_resume(target_name={json.dumps(agent['name'])})"
+    if not agent["session_name"]:
+        return f"resume it with {resume}"
+    send = f"SendMessage(to={json.dumps(agent['session_name'])})"
+    if live_ids is None:
+        return f"wake it with {send}, or {resume} if that session is not running"
+    if agent["agent_id"] in live_ids:
+        return f"wake it with {send}"
+    return f"its session is not running; resume it with {resume}"
 
 
 def _wake_lines(ledger: Ledger, run_id: int, live: list[dict]) -> list[str]:
     by_id = {a["agent_id"]: a for a in live}
     waiting = {a["agent_id"]: a for a in live if a["state"] != "working"}
+    live_ids = _live_session_ids()
     lines: list[str] = []
     named: set[str] = set()
 
@@ -550,7 +496,7 @@ def _wake_lines(ledger: Ledger, run_id: int, live: list[dict]) -> list[str]:
             continue
         lines.append(
             f"handoff {handoff['handoff_id']} for {handoff['path']} waits on "
-            f"{reviewer['name']}, which is {reviewer['state']}; {_resume_hint(reviewer)}"
+            f"{reviewer['name']}, which is {reviewer['state']}; {_wake_hint(reviewer, live_ids)}"
         )
         named.add(reviewer["agent_id"])
 
@@ -561,7 +507,9 @@ def _wake_lines(ledger: Ledger, run_id: int, live: list[dict]) -> list[str]:
             (run_id, agent["name"]),
         ).fetchone()["n"]
         if unread:
-            lines.append(f"{agent['name']} has {unread} unread message(s); {_resume_hint(agent)}")
+            lines.append(
+                f"{agent['name']} has {unread} unread message(s); {_wake_hint(agent, live_ids)}"
+            )
             named.add(agent["agent_id"])
 
     def ancestors(agent_id: str) -> set[str]:
@@ -580,19 +528,27 @@ def _wake_lines(ledger: Ledger, run_id: int, live: list[dict]) -> list[str]:
         if agent["agent_id"] in covered:
             continue
         lines.append(
-            f"{agent['name']} is idle and none of its children is working; {_resume_hint(agent)}"
+            f"{agent['name']} is idle and none of its children is working; "
+            f"{_wake_hint(agent, live_ids)}"
         )
         covered |= ancestors(agent["agent_id"])
     return lines
 
 
 def handle_stop(ledger: Ledger, data: dict) -> dict | None:
-    if data.get("stop_hook_active"):
-        return None
     run = _active_run_row(ledger)
     caller_id = _caller_id(data)
     if run is None:
-        _refresh_finished_report(ledger, caller_id, data.get("transcript_path"))
+        if not data.get("stop_hook_active"):
+            _refresh_finished_report(ledger, caller_id, data.get("transcript_path"))
+        return None
+
+    caller = _swarm_caller(ledger, caller_id)
+    if caller is None:
+        return None
+    if caller["role"] != "oracle":
+        return _member_stop(ledger, caller, data)
+    if data.get("stop_hook_active"):
         return None
 
     oracle = ledger.conn.execute(
@@ -663,13 +619,11 @@ def handle_stop(ledger: Ledger, data: dict) -> dict | None:
 
     lines = _wake_lines(ledger, run["run_id"], live)
     if lines:
-        lines.insert(0, "No agent is working, so no completion notice will wake you.")
+        lines.insert(0, "No agent is working, so no child will wake you.")
     elif live:
-        listed = ", ".join(f"{a['name']} ({a['agent_id']}, {a['state']})" for a in live)
-        lines = [
-            f"Live agents: {listed}. Resume the one with pending work with "
-            "SendMessage(to=<agent_id>), or call run_pause."
-        ]
+        live_ids = _live_session_ids()
+        listed = "; ".join(f"{a['name']} ({a['state']}): {_wake_hint(a, live_ids)}" for a in live)
+        lines = [f"Live agents: {listed}. Wake the one with pending work, or call run_pause."]
     else:
         lines = ["Continue the plan, or call run_finish."]
 
@@ -681,7 +635,33 @@ def handle_stop(ledger: Ledger, data: dict) -> dict | None:
     }
 
 
-# -- 12. SessionEnd -----------------------------------------------------------------
+def _member_stop(ledger: Ledger, caller: dict, data: dict) -> dict | None:
+    transcript_path = data.get("transcript_path")
+    ledger.agent_stop(
+        caller["agent_id"], transcript_path=transcript_path, tokens=_sum_tokens(transcript_path)
+    )
+
+    if not data.get("stop_hook_active"):
+        owed = ledger.owed_wakeups(caller["agent_id"])
+        if owed:
+            steps = [f"- {ledger.next_step(wakeup)}" for wakeup in owed]
+            return {
+                "decision": "block",
+                "reason": "\n".join(
+                    ["You still owe a wake-up. Make each call below, then stop:", *steps]
+                ),
+            }
+
+    if caller["state"] != "working":
+        return None
+    blocked = _block_coder_stop_once(ledger, caller, data)
+    if blocked is not None:
+        return blocked
+    ledger.agent_idle(caller["agent_id"], "stop")
+    return None
+
+
+# -- 10. SessionEnd ----------------------------------------------------------------
 
 
 def handle_session_end(ledger: Ledger, data: dict) -> None:

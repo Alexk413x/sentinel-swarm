@@ -4,15 +4,12 @@
 tracking: local
 
 runtime:
-  # The first version keeps the whole swarm in one working tree: the Oracle runs
-  # as a session, and Manager, Lead, and Coder all run as subagents beneath it.
+  # Every role runs as its own Claude Code session in the one working tree. A parent
+  # starts a child with the ledger's agent_spawn tool.
   oracle: session
-  # Manager runs as a subagent under the Oracle session.
-  manager: subagent
-  # Lead runs as a subagent under its Manager.
-  lead: subagent
-  # Coder runs as a subagent under its Lead.
-  coder: subagent
+  manager: session
+  lead: session
+  coder: session
 
 models:
   # Approved models for the Oracle. It has no parent, so it runs on the first

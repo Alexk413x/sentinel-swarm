@@ -8,14 +8,20 @@ are the source of truth for every role's responsibilities.
 
 - `.claude-plugin/` — `plugin.json`, `marketplace.json`.
 - `.mcp.json` — the `swarm-ledger` MCP server entry.
-- `agents/` — `oracle.md`, `manager.md`, `lead.md`, `coder.md`.
 - `skills/` — `swarm-protocol`, `run`, `plan`, `status`, `resume`, `setup`.
-- `hooks/` — `hooks.json` and the planned hook table.
-- `templates/` — the `.local.md` settings example for a host repo.
+- `hooks/` — `hooks.json`, which carries no hooks, and a README with the per-role hook
+  table. Each role's hooks live in its project agent file.
+- `templates/` — `agents/<role>.md`, the four role templates that setup writes to a host
+  repo's `.claude/agents/swarm-<role>.md`; `hook_shim.py`, which setup writes to
+  `.sentinel-swarm/hook.py`; and the `.local.md` settings example. The plugin has no
+  `agents/` folder, so no plugin agent can run as a subagent.
 - `mcp/` — the swarm-ledger Python server. A separate project; see `mcp/README.md`.
+  `python -m swarm_ledger.setup` prepares a host repo, and `python -m
+  swarm_ledger.launch` starts the Oracle session.
 - `knowledge/` — `code_graph.db`, the codebase-kg map of this repo. Committed.
-- `scripts/smoke.sh` — the smoke test. It rebuilds `runs/hello/` (git-ignored) on each run and opens an
-  interactive Oracle session; `--headless` runs it with `claude -p` instead.
+- `scripts/smoke.sh` — the smoke test. It rebuilds `runs/hello/` (git-ignored) on each run
+  and starts the Oracle through the installed copy's launcher: interactive by default,
+  `--bg` for a background session, `--headless` for `claude -p`.
 - `.githooks/` — the codebase-kg staleness hooks. Run `sh .githooks/install.sh` once per
   clone.
 - `plans/` — design documents. Do not treat anything outside `plans/` as settled
@@ -33,17 +39,20 @@ are the source of truth for every role's responsibilities.
 
 ## Rules
 
-- Plugin agents must not set the `hooks`, `mcpServers`, or `permissionMode`
-  frontmatter keys. Claude Code ignores these keys for plugin agents; setting them
-  suggests behavior the plugin does not actually have.
-- No agent sets `maxTurns`. The watchdog and the escalation budget are the only
+- The plugin ships no agents. The four roles are templates in `templates/agents/`;
+  setup writes them into a host repo's `.claude/agents/` as `swarm-<role>.md`, where
+  their `hooks` frontmatter applies. Every role runs as its own session; no role has
+  the `Agent` tool.
+- No role template sets `maxTurns`. The watchdog and the escalation budget are the only
   controls on a runaway agent.
-- Every enforcement rule lives in `hooks/hooks.json` or in a swarm-ledger tool, not
-  in agent prompt text. An agent's system prompt describes what it must not do; a
-  hook or a ledger gate is what actually stops it.
+- Every enforcement rule lives in a role template's hooks or in a swarm-ledger tool,
+  not in agent prompt text. An agent's system prompt describes what it must not do; a
+  hook or a ledger gate is what actually stops it. `hooks/hooks.json` carries no hooks,
+  so no hook runs twice.
 - Mark any design addition that Alex has not reviewed as **(proposed)** in the
   `plans/` documents.
 - Before committing, run the three checks from `mcp/`: `uv run pytest`, `uv run
   pyright`, `uv run ruff check`.
 - `mcp/tests/test_plugin_surface.py` guards the surface contract described here:
-  agent frontmatter shape, the forbidden keys, and the plugin manifest fields.
+  the role templates' frontmatter and hooks, the empty `hooks.json`, and the plugin
+  manifest fields.

@@ -11,9 +11,9 @@ ROLES = ("oracle", "manager", "lead", "coder")
 
 _DEFAULT_RUNTIME = {
     "oracle": "session",
-    "manager": "subagent",
-    "lead": "subagent",
-    "coder": "subagent",
+    "manager": "session",
+    "lead": "session",
+    "coder": "session",
 }
 _DEFAULT_MODELS = {
     "oracle": ["fable", "opus"],

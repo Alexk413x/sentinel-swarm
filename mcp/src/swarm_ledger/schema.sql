@@ -83,7 +83,9 @@ CREATE TABLE IF NOT EXISTS agents (
     context_overflow_count INTEGER DEFAULT 0,
     tool_uses INTEGER,
     duration_ms INTEGER,
-    transcript_path TEXT
+    transcript_path TEXT,
+    session_name TEXT,
+    bg_id TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_name_live
@@ -297,3 +299,19 @@ CREATE TABLE IF NOT EXISTS agent_events (
     reason TEXT,
     at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+
+CREATE TABLE IF NOT EXISTS wakeups (
+    wakeup_id INTEGER PRIMARY KEY,
+    run_id INTEGER REFERENCES runs (run_id) ON DELETE RESTRICT,
+    from_agent_id TEXT NOT NULL,
+    to_agent_id TEXT NOT NULL,
+    to_name TEXT NOT NULL,
+    to_session_name TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    pointer TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    sent_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_wakeups_owed
+    ON wakeups (from_agent_id) WHERE sent_at IS NULL;

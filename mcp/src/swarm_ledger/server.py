@@ -19,6 +19,7 @@ T = TypeVar("T")
 _instance: Ledger | None = None
 _root: Path | None = None
 _CALL_LOCK = threading.RLock()
+on_run_finish: Callable[[], None] | None = None
 
 _TOOL_NAMES: tuple[str, ...] = (
     "run_start",
@@ -36,6 +37,8 @@ _TOOL_NAMES: tuple[str, ...] = (
     "brief_get",
     "brief_ack",
     "agent_release",
+    "agent_spawn",
+    "agent_resume",
     "claim_file",
     "release_file",
     "who_owns",
@@ -116,7 +119,10 @@ def run_status(caller: str, agent_id: str | None = None) -> dict[str, Any]:
 @mcp.tool
 def run_finish(caller: str, outcome: str, agent_id: str | None = None) -> dict[str, Any]:
     """Finishes the active run once every phase is approved; the Oracle calls this."""
-    return _call(_ledger().run_finish, caller=caller, agent_id=agent_id, outcome=outcome)
+    result = _call(_ledger().run_finish, caller=caller, agent_id=agent_id, outcome=outcome)
+    if on_run_finish is not None:
+        on_run_finish()
+    return result
 
 
 @mcp.tool
@@ -173,7 +179,7 @@ def phase_add(
 def phase_update(
     caller: str, phase_id: int, state: str, agent_id: str | None = None
 ) -> dict[str, Any]:
-    """Updates a phase's state; the Oracle calls this."""
+    """Updates a phase's state; handed_up returns the wake-up call to make as `next`."""
     return _call(
         _ledger().phase_update, caller=caller, agent_id=agent_id, phase_id=phase_id, state=state
     )
@@ -253,6 +259,18 @@ def agent_release(caller: str, target_agent_id: str, agent_id: str | None = None
     )
 
 
+@mcp.tool
+def agent_spawn(caller: str, child_name: str, agent_id: str | None = None) -> dict[str, Any]:
+    """Starts the session for a briefed child and registers it; the brief's parent calls this."""
+    return _call(_ledger().agent_spawn, caller=caller, agent_id=agent_id, child_name=child_name)
+
+
+@mcp.tool
+def agent_resume(caller: str, target_name: str, agent_id: str | None = None) -> dict[str, Any]:
+    """Resumes a stopped session of the run with the wake-ups owed to it; any agent calls it."""
+    return _call(_ledger().agent_resume, caller=caller, agent_id=agent_id, target_name=target_name)
+
+
 # -- File ownership -----------------------------------------------------------------
 
 
@@ -294,7 +312,7 @@ def who_owns(path: str) -> dict[str, Any]:
 def message_post(
     caller: str, to_name: str, body: str, agent_id: str | None = None
 ) -> dict[str, Any]:
-    """Posts a message to any agent registered in the run, by name; any agent calls this."""
+    """Posts a message to an agent of the run by name; returns the wake-up call as `next`."""
     return _call(
         _ledger().message_post, caller=caller, agent_id=agent_id, to_name=to_name, body=body
     )
@@ -507,7 +525,7 @@ def handoff_submit(
     departures: list[str],
     agent_id: str | None = None,
 ) -> dict[str, Any]:
-    """Submits a coder's file once its tests pass and its graph is current; a Coder calls it."""
+    """Submits a Coder's file once its tests pass and its graph is current; returns `next`."""
     return _call(
         _ledger().handoff_submit,
         caller=caller,
@@ -545,7 +563,7 @@ def return_work(
     targeted: list[str],
     agent_id: str | None = None,
 ) -> dict[str, Any]:
-    """Returns a handoff to its coder with issues to fix; a Lead calls this."""
+    """Returns a handoff to its Coder with issues to fix; a Lead calls this; returns `next`."""
     return _call(
         _ledger().return_work,
         caller=caller,

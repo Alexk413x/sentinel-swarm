@@ -9,14 +9,12 @@ from . import events
 _HANDLERS = {
     "session_start": events.handle_session_start,
     "pre_agent": events.handle_pre_agent,
-    "subagent_start": events.handle_subagent_start,
     "pre_write": events.handle_pre_write,
     "pre_shell": events.handle_pre_shell,
     "pre_ledger": events.handle_pre_ledger,
     "post_any": events.handle_post_any,
     "post_shell": events.handle_post_shell,
     "pre_compact": events.handle_pre_compact,
-    "subagent_stop": events.handle_subagent_stop,
     "stop": events.handle_stop,
     "session_end": events.handle_session_end,
 }

@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import json
+import re
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
-from . import __version__
+from . import __version__, agentfiles, serve, sessions
 from .db import connect, ensure_git_exclude, ledger_path, write_tx
-from .identity import ROLES, LedgerError, child_role_of, require_role, resolve
+from .identity import ROLES, Caller, LedgerError, child_role_of, require_role, resolve
 from .review import ReviewMixin
 from .settings import load_settings
 
 _NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
+_RESUME_POINTER = "Re-read your brief and your inbox in the ledger."
 _PHASE_STATES = ("planned", "unlocked", "working", "handed_up", "approved")
 _DIRECTIVE_SOURCES = ("user-chat", "outside-session", "skill", "watchdog")
 _LIVE_RUN = "state IN ('active', 'paused')"
@@ -30,14 +35,41 @@ def _rows(cursor: sqlite3.Cursor) -> list[dict]:
     return [dict(row) for row in cursor.fetchall()]
 
 
+def repo_slug(repo_root: Path) -> str:
+    return re.sub(r"[^a-z0-9]", "-", repo_root.resolve().name.lower())
+
+
+def session_name_for(repo_root: Path, run_id: int, child_name: str) -> str:
+    return f"{repo_slug(repo_root)}-r{run_id}-{child_name}"
+
+
 class Ledger(ReviewMixin):
     def __init__(self, repo_root: Path, *, db_path: Path | None = None) -> None:
         self.repo_root = repo_root
         self.settings = load_settings(repo_root)
         path = db_path if db_path is not None else ledger_path(repo_root)
         self.conn = connect(path)
+        self._pending_stops: list[tuple[str, str]] = []
         if (repo_root / ".git").exists():
             ensure_git_exclude(repo_root)
+
+    @contextmanager
+    def _release_tx(self) -> Iterator[sqlite3.Connection]:
+        self._pending_stops = []
+        with write_tx(self.conn) as conn:
+            yield conn
+        self._stop_released_sessions()
+
+    def _stop_released_sessions(self) -> None:
+        pending, self._pending_stops = self._pending_stops, []
+        for agent_id, bg_id in pending:
+            try:
+                sessions.stop(bg_id)
+                outcome = f"session {bg_id} stopped"
+            except Exception as exc:
+                outcome = f"session {bg_id} was not stopped: {exc}"
+            with write_tx(self.conn) as conn:
+                self._log_event(conn, agent_id, "released", "released", outcome)
 
     def _log_event(
         self,
@@ -73,10 +105,20 @@ class Ledger(ReviewMixin):
     # -- Run and plan -----------------------------------------------------
 
     def run_start(self, prd: str, session_id: str, oracle_name: str = "oracle") -> dict:
+        listing: list[dict] | None = None
+        listing_error: LedgerError | None = None
+        try:
+            listing = sessions.list_sessions()
+        except LedgerError as exc:
+            listing_error = exc
+        own = sessions.find_session(listing or [], session_id)
+        session_name = str(own["name"]) if own is not None and own.get("name") else None
+
         with write_tx(self.conn) as conn:
             active = conn.execute(f"SELECT * FROM runs WHERE {_LIVE_RUN}").fetchone()
             if active is not None:
-                return self._run_resume(conn, active, session_id)
+                self._refuse_live_oracle(conn, active, session_id, listing, listing_error)
+                return self._run_resume(conn, active, session_id, session_name)
 
             cur = conn.execute(
                 "INSERT INTO runs (prd, state, plugin_version, settings_json) "
@@ -87,14 +129,15 @@ class Ledger(ReviewMixin):
 
             conn.execute(
                 "INSERT INTO agents "
-                "(agent_id, name, role, runtime, model, run_id, state, started_at) "
-                f"VALUES (?, ?, 'oracle', ?, ?, ?, 'working', {_NOW})",
+                "(agent_id, name, role, runtime, model, run_id, state, session_name, started_at) "
+                f"VALUES (?, ?, 'oracle', ?, ?, ?, 'working', ?, {_NOW})",
                 (
                     session_id,
                     oracle_name,
                     self.settings.runtime.get("oracle"),
                     self.settings.models.get("oracle", [None])[0],
                     run_id,
+                    session_name,
                 ),
             )
             self._log_event(conn, session_id, None, "working", "run_start")
@@ -102,7 +145,41 @@ class Ledger(ReviewMixin):
         run = self.conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
         return {"run": dict(run), "oracle": self._agent_dict(session_id), "resumed": False}
 
-    def _run_resume(self, conn: sqlite3.Connection, run: sqlite3.Row, session_id: str) -> dict:
+    def _refuse_live_oracle(
+        self,
+        conn: sqlite3.Connection,
+        run: sqlite3.Row,
+        session_id: str,
+        listing: list[dict] | None,
+        listing_error: LedgerError | None,
+    ) -> None:
+        holder = conn.execute(
+            "SELECT * FROM agents WHERE run_id = ? AND role = 'oracle' AND ended_at IS NULL "
+            "AND agent_id != ? ORDER BY started_at DESC LIMIT 1",
+            (run["run_id"], session_id),
+        ).fetchone()
+        if holder is None:
+            return
+        if listing is None:
+            raise LedgerError(
+                f"cannot tell whether run {run['run_id']}'s Oracle session is still running, "
+                f"so run_start refuses: {listing_error}"
+            )
+        entry = sessions.find_session(listing, holder["agent_id"])
+        if entry is not None and sessions.is_running(entry):
+            label = holder["session_name"] or entry.get("name") or holder["agent_id"]
+            raise LedgerError(
+                f"run {run['run_id']} is held by the Oracle session {label!r}, which is still "
+                "running. One swarm runs per repo: finish or stop that session first"
+            )
+
+    def _run_resume(
+        self,
+        conn: sqlite3.Connection,
+        run: sqlite3.Row,
+        session_id: str,
+        session_name: str | None,
+    ) -> dict:
         oracle = conn.execute(
             "SELECT * FROM agents WHERE run_id = ? AND role = 'oracle' "
             "ORDER BY started_at DESC LIMIT 1",
@@ -111,7 +188,13 @@ class Ledger(ReviewMixin):
         if oracle is None:
             raise LedgerError("the active run has no Oracle row")
         old_id = oracle["agent_id"]
-        if old_id != session_id:
+        if old_id == session_id:
+            if session_name is not None:
+                conn.execute(
+                    "UPDATE agents SET session_name = ? WHERE agent_id = ?",
+                    (session_name, session_id),
+                )
+        else:
             conn.execute(
                 f"UPDATE agents SET ended_at = COALESCE(ended_at, {_NOW}), "
                 "end_reason = COALESCE(end_reason, 'resumed by a new session'), "
@@ -120,8 +203,8 @@ class Ledger(ReviewMixin):
             )
             conn.execute(
                 "INSERT INTO agents (agent_id, name, role, runtime, model, effort, "
-                "settings_json, run_id, state, phase_at_start, started_at) "
-                f"VALUES (?, ?, 'oracle', ?, ?, ?, ?, ?, 'working', ?, {_NOW})",
+                "settings_json, run_id, state, phase_at_start, session_name, started_at) "
+                f"VALUES (?, ?, 'oracle', ?, ?, ?, ?, ?, 'working', ?, ?, {_NOW})",
                 (
                     session_id,
                     oracle["name"],
@@ -131,6 +214,7 @@ class Ledger(ReviewMixin):
                     oracle["settings_json"],
                     run["run_id"],
                     oracle["phase_at_start"],
+                    session_name,
                 ),
             )
             conn.execute(
@@ -222,7 +306,7 @@ class Ledger(ReviewMixin):
         }
 
     def run_finish(self, caller: str, agent_id: str, outcome: str) -> dict:
-        with write_tx(self.conn) as conn:
+        with self._release_tx() as conn:
             c = resolve(conn, caller, agent_id)
             require_role(c, "oracle")
             run = self._active_run(conn)
@@ -369,7 +453,8 @@ class Ledger(ReviewMixin):
     def phase_update(self, caller: str, agent_id: str, phase_id: int, state: str) -> dict:
         if state not in _PHASE_STATES:
             raise LedgerError(f"unknown phase state {state!r}")
-        with write_tx(self.conn) as conn:
+        wakeup = None
+        with self._release_tx() as conn:
             c = resolve(conn, caller, agent_id)
             require_role(c, "oracle", "manager")
             if c.role == "manager" and (
@@ -423,9 +508,24 @@ class Ledger(ReviewMixin):
             else:
                 conn.execute("UPDATE phases SET state = ? WHERE phase_id = ?", (state, phase_id))
 
-        return dict(
+            if state == "handed_up" and c.parent_agent_id is not None:
+                phase_name = conn.execute(
+                    "SELECT name FROM phases WHERE phase_id = ?", (phase_id,)
+                ).fetchone()["name"]
+                wakeup = self._owe_wakeup(
+                    conn,
+                    c,
+                    c.parent_agent_id,
+                    "phase_update",
+                    f"Phase {phase_id} ({phase_name}) is handed up and waiting in the ledger.",
+                )
+
+        phase = dict(
             self.conn.execute("SELECT * FROM phases WHERE phase_id = ?", (phase_id,)).fetchone()
         )
+        if state == "handed_up":
+            phase["next"] = self.next_step(wakeup)
+        return phase
 
     def plan_unlocked(self, caller: str, agent_id: str) -> list[dict]:
         conn = self.conn
@@ -556,6 +656,10 @@ class Ledger(ReviewMixin):
             ).fetchone()
             if existing is not None and existing["state"] != "registered":
                 raise LedgerError(f"agent_id {agent_id!r} is already bound")
+            if existing is not None and existing["session_name"] and existing["name"] != caller:
+                raise LedgerError(
+                    f"agent_id {agent_id!r} was spawned as {existing['name']!r}, not {caller!r}"
+                )
 
             if (
                 conn.execute(
@@ -591,9 +695,9 @@ class Ledger(ReviewMixin):
                 )
             else:
                 conn.execute(
-                    "UPDATE agents SET name = ?, role = ?, runtime = ?, model = ?, "
-                    "parent_agent_id = ?, run_id = ?, phase_id = ?, module_id = ?, file_id = ?, "
-                    f"state = 'working', started_at = {_NOW} WHERE agent_id = ?",
+                    "UPDATE agents SET name = ?, role = ?, runtime = COALESCE(runtime, ?), "
+                    "model = ?, parent_agent_id = ?, run_id = ?, phase_id = ?, module_id = ?, "
+                    f"file_id = ?, state = 'working', started_at = {_NOW} WHERE agent_id = ?",
                     (
                         caller,
                         role,
@@ -698,7 +802,7 @@ class Ledger(ReviewMixin):
             return {"ended": False, "state": row["state"]}
 
     def agent_release(self, caller: str, agent_id: str, target_agent_id: str) -> dict:
-        with write_tx(self.conn) as conn:
+        with self._release_tx() as conn:
             c = resolve(conn, caller, agent_id)
             target = conn.execute(
                 "SELECT * FROM agents WHERE agent_id = ?", (target_agent_id,)
@@ -707,22 +811,198 @@ class Ledger(ReviewMixin):
                 raise LedgerError(f"unknown agent_id {target_agent_id!r}")
             if target["parent_agent_id"] != c.agent_id:
                 raise LedgerError(f"{caller!r} is not the parent of {target_agent_id!r}")
-
-            phase_name = None
-            if target["phase_id"] is not None:
-                phase_row = conn.execute(
-                    "SELECT name FROM phases WHERE phase_id = ?", (target["phase_id"],)
-                ).fetchone()
-                phase_name = phase_row["name"] if phase_row is not None else None
-
-            conn.execute(
-                f"UPDATE agents SET state = 'released', ended_at = {_NOW}, phase_at_end = ? "
-                "WHERE agent_id = ?",
-                (phase_name, target_agent_id),
-            )
-            self._log_event(conn, target_agent_id, target["state"], "released", "agent_release")
+            self._release_agent(conn, target_agent_id, "agent_release")
 
         return self._agent_dict(target_agent_id)
+
+    # -- Sessions -------------------------------------------------------------
+
+    def agent_spawn(self, caller: str, agent_id: str, child_name: str) -> dict:
+        c = resolve(self.conn, caller, agent_id)
+        brief = self.conn.execute(
+            "SELECT * FROM briefs WHERE child_name = ? AND acked_at IS NULL "
+            "ORDER BY created_at DESC, brief_id DESC LIMIT 1",
+            (child_name,),
+        ).fetchone()
+        if brief is None:
+            raise LedgerError(
+                f"no unacknowledged brief for {child_name!r}; call brief_create first"
+            )
+        if brief["parent_agent_id"] != c.agent_id or child_role_of(c.role) != brief["child_role"]:
+            raise LedgerError(f"{caller!r} is not the parent named in the brief for {child_name!r}")
+        spawned = self.conn.execute(
+            "SELECT session_name FROM agents WHERE name = ? AND ended_at IS NULL", (child_name,)
+        ).fetchone()
+        if spawned is not None:
+            raise LedgerError(
+                f"{child_name!r} already runs as session {spawned['session_name']!r}; wait for its "
+                "brief_ack, or call agent_resume if that session stopped"
+            )
+
+        session_name = session_name_for(self.repo_root, brief["run_id"], child_name)
+        if session_name in sessions.live_names(sessions.list_sessions()):
+            raise LedgerError(f"a running session already has the name {session_name!r}")
+        cap = self.settings.parallelism_cap
+        if cap is not None:
+            live = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM agents WHERE run_id = ? AND ended_at IS NULL",
+                (brief["run_id"],),
+            ).fetchone()["n"]
+            if live >= cap:
+                raise LedgerError(
+                    f"the parallelism cap of {cap} is reached ({live} live sessions); call "
+                    "agent_spawn again after a release frees a slot"
+                )
+
+        role = brief["child_role"]
+        options = agentfiles.session_options(
+            self.repo_root, role, brief["model"], serve.server_url(self.repo_root)
+        )
+        prompt = f"You are {child_name}. Read your brief from the swarm ledger and follow it."
+        bg_id, session_id = sessions.spawn(prompt, session_name, options, cwd=self.repo_root)
+
+        with write_tx(self.conn) as conn:
+            conn.execute(
+                "INSERT INTO agents (agent_id, name, role, runtime, model, parent_agent_id, "
+                "run_id, phase_id, module_id, file_id, state, session_name, bg_id, started_at) "
+                f"VALUES (?, ?, ?, 'session', ?, ?, ?, ?, ?, ?, 'registered', ?, ?, {_NOW})",
+                (
+                    session_id,
+                    child_name,
+                    role,
+                    brief["model"],
+                    c.agent_id,
+                    brief["run_id"],
+                    brief["phase_id"],
+                    brief["module_id"],
+                    brief["file_id"],
+                    session_name,
+                    bg_id,
+                ),
+            )
+            self._log_event(
+                conn, session_id, None, "registered", f"agent_spawn: {session_name} ({bg_id})"
+            )
+
+        return self._agent_dict(session_id)
+
+    def agent_resume(self, caller: str, agent_id: str, target_name: str) -> dict:
+        c = resolve(self.conn, caller, agent_id)
+        target = self.conn.execute(
+            "SELECT * FROM agents WHERE run_id = ? AND name = ? AND ended_at IS NULL",
+            (c.run_id, target_name),
+        ).fetchone()
+        if target is None:
+            raise LedgerError(f"no live agent named {target_name!r} in this run")
+        if target["agent_id"] == c.agent_id:
+            raise LedgerError("an agent cannot resume its own session")
+        if sessions.is_live(target["agent_id"]):
+            label = target["session_name"] or target["agent_id"]
+            raise LedgerError(
+                f"{target_name!r} is still running as {label!r}; wake it with "
+                f"SendMessage(to={json.dumps(label)}) instead"
+            )
+
+        owed = _rows(
+            self.conn.execute(
+                "SELECT * FROM wakeups WHERE from_agent_id = ? AND to_agent_id = ? "
+                "AND sent_at IS NULL ORDER BY wakeup_id",
+                (c.agent_id, target["agent_id"]),
+            )
+        )
+        message = " ".join(w["pointer"] for w in owed) or _RESUME_POINTER
+        bg_id = sessions.resume(target["agent_id"], message, cwd=self.repo_root)
+
+        with write_tx(self.conn) as conn:
+            if bg_id is not None and bg_id != target["bg_id"]:
+                conn.execute(
+                    "UPDATE agents SET bg_id = ? WHERE agent_id = ?", (bg_id, target["agent_id"])
+                )
+            conn.execute(
+                f"UPDATE wakeups SET sent_at = {_NOW} WHERE from_agent_id = ? "
+                "AND to_agent_id = ? AND sent_at IS NULL",
+                (c.agent_id, target["agent_id"]),
+            )
+            self._log_event(
+                conn,
+                target["agent_id"],
+                target["state"],
+                target["state"],
+                f"agent_resume by {c.name}: {message}",
+            )
+
+        return {
+            "agent": self._agent_dict(target["agent_id"]),
+            "message": message,
+            "wakeups_sent": len(owed),
+        }
+
+    # -- Owed wake-ups ----------------------------------------------------------
+
+    def _owe_wakeup(
+        self,
+        conn: sqlite3.Connection,
+        c: Caller,
+        to_agent_id: str | None,
+        reason: str,
+        pointer: str,
+    ) -> dict | None:
+        if to_agent_id is None or to_agent_id == c.agent_id:
+            return None
+        target = conn.execute(
+            "SELECT * FROM agents WHERE agent_id = ? AND ended_at IS NULL", (to_agent_id,)
+        ).fetchone()
+        if target is None or not target["session_name"]:
+            return None
+        cur = conn.execute(
+            "INSERT INTO wakeups (run_id, from_agent_id, to_agent_id, to_name, to_session_name, "
+            "reason, pointer) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                c.run_id,
+                c.agent_id,
+                to_agent_id,
+                target["name"],
+                target["session_name"],
+                reason,
+                pointer,
+            ),
+        )
+        return dict(
+            conn.execute("SELECT * FROM wakeups WHERE wakeup_id = ?", (cur.lastrowid,)).fetchone()
+        )
+
+    def next_step(self, wakeup: dict | None) -> str | None:
+        if wakeup is None:
+            return None
+        send = (
+            f"SendMessage(to={json.dumps(wakeup['to_session_name'])}, "
+            f"message={json.dumps(wakeup['pointer'])})"
+        )
+        resume = f"agent_resume(target_name={json.dumps(wakeup['to_name'])})"
+        try:
+            live = sessions.is_live(wakeup["to_agent_id"])
+        except LedgerError:
+            return f"{send}, or {resume} if that session is not running"
+        return send if live else resume
+
+    def owed_wakeups(self, agent_id: str) -> list[dict]:
+        return _rows(
+            self.conn.execute(
+                "SELECT w.* FROM wakeups w JOIN agents a ON a.agent_id = w.to_agent_id "
+                "WHERE w.from_agent_id = ? AND w.sent_at IS NULL AND a.ended_at IS NULL "
+                "ORDER BY w.wakeup_id",
+                (agent_id,),
+            )
+        )
+
+    def wakeups_sent(self, agent_id: str, to_session_name: str) -> int:
+        with write_tx(self.conn) as conn:
+            cur = conn.execute(
+                f"UPDATE wakeups SET sent_at = {_NOW} WHERE from_agent_id = ? "
+                "AND to_session_name = ? AND sent_at IS NULL",
+                (agent_id, to_session_name),
+            )
+        return cur.rowcount
 
     # -- File ownership -------------------------------------------------------
 
@@ -796,12 +1076,26 @@ class Ledger(ReviewMixin):
                 (c.run_id, c.name, to_name, body),
             )
             message_id = cur.lastrowid
+            recipient = conn.execute(
+                "SELECT agent_id FROM agents WHERE run_id = ? AND name = ? AND ended_at IS NULL",
+                (c.run_id, to_name),
+            ).fetchone()
+            wakeup = self._owe_wakeup(
+                conn,
+                c,
+                recipient["agent_id"] if recipient is not None else None,
+                "message_post",
+                f"Message {message_id} from {c.name} is waiting in the ledger; "
+                "read it with message_inbox.",
+            )
 
-        return dict(
+        message = dict(
             self.conn.execute(
                 "SELECT * FROM messages WHERE message_id = ?", (message_id,)
             ).fetchone()
         )
+        message["next"] = self.next_step(wakeup)
+        return message
 
     def message_inbox(self, caller: str, agent_id: str) -> list[dict]:
         with write_tx(self.conn) as conn:

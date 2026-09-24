@@ -5,10 +5,21 @@ from pathlib import Path
 
 import pytest
 
+from swarm_ledger import sessions
 from swarm_ledger.db import write_tx
 from swarm_ledger.identity import LedgerError
 from swarm_ledger.ledger import Ledger
 from swarm_ledger.settings import load_settings
+
+
+@pytest.fixture(autouse=True)
+def no_claude_sessions(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(args: list[str], cwd: Path | None = None) -> str:
+        del cwd
+        assert args[:2] == ["agents", "--json"], args
+        return "[]"
+
+    monkeypatch.setattr(sessions, "_run", fake_run)
 
 
 @pytest.fixture
@@ -69,7 +80,7 @@ def test_settings_defaults(tmp_path: Path) -> None:
     settings = load_settings(tmp_path)
     assert settings.tracking == "local"
     assert settings.runtime["oracle"] == "session"
-    assert settings.runtime["coder"] == "subagent"
+    assert settings.runtime["coder"] == "session"
     assert settings.models["oracle"] == ["fable", "opus"]
     assert settings.models["coder"] == ["sonnet", "haiku"]
     assert settings.rubric.target == 90

@@ -9,12 +9,30 @@ The shared vocabulary, names, tool order, and rubric keys for a sentinel-swarm r
 
 ## Hierarchy
 
-| Role | Count | Owns | Created by | Reports to |
-|---|---|---|---|---|
-| Oracle | 1 per run | The run and the PRD | The user | The user |
-| Manager | 1 per phase | One phase | Oracle | Oracle |
-| Lead | 1 per module | One module | Manager | Manager |
-| Coder | 1 per file | One file and its unit tests | Lead | Lead |
+| Role | Count | Owns | Started by | Reports to | Agent file | Color |
+|---|---|---|---|---|---|---|
+| Oracle | 1 per run | The run and the PRD | The user, through the launcher | The user | `swarm-oracle` | cyan |
+| Manager | 1 per phase | One phase | Oracle | Oracle | `swarm-manager` | green |
+| Lead | 1 per module | One module | Manager | Manager | `swarm-lead` | purple |
+| Coder | 1 per file | One file and its unit tests | Lead | Lead | `swarm-coder` | orange |
+
+## Sessions
+
+Every role runs as its own Claude Code session, with its own row in agent view. No
+role starts a subagent: no role has the `Agent` tool, and the `pre_agent` hook denies
+an `Agent` call from any swarm session.
+
+- Each role's model, tools, permission mode, MCP servers, and hooks live in its
+  project agent file, `.claude/agents/swarm-<role>.md` in the host repo. `setup`
+  writes the files from the plugin's templates, and the user edits them.
+- Every session runs in the host repo root, in one shared working tree.
+- Every session starts with only two MCP servers: the repo's shared ledger server
+  over HTTP, and codebase-kg. The launcher and `agent_spawn` pass them with
+  `--strict-mcp-config`.
+- A child that finishes a step wakes its parent with a cross-session `SendMessage`.
+  A parent that has started its children ends its turn instead of waiting in it.
+- Release stops a session. A crashed session is resumed with `agent_resume`, which
+  keeps its conversation.
 
 ## Names
 
@@ -25,38 +43,67 @@ The shared vocabulary, names, tool order, and rubric keys for a sentinel-swarm r
 | Lead | `lead-<phase>-<module>` | `lead-p2-auth` |
 | Coder | `coder-<phase>-<module>-<file>` | `coder-p2-auth-login` |
 
-A name is unique within a run and is the address other agents message. The parent
-puts it on the first line of the child's prompt: `You are <name>.` The child passes
-that name as `caller` on every ledger call and never passes `agent_id`; a hook stamps
-the real id.
+A name is unique within a run and is the address other agents use in the ledger.
+The child's prompt starts with it: `You are <name>.` The child passes that name as
+`caller` on every ledger call and never passes `agent_id`; a hook stamps the real id.
 
-## Spawning a child
+Each session also has a session name, which is unique on the machine:
+`<repo slug>-r<run id>-<name>`, and `<repo slug>-oracle` for the Oracle. `SendMessage`
+addresses a session only by its session name. The ledger maps each session name to
+its agent.
 
-The parent calls `brief_create` first, then the `Agent` tool with
-`subagent_type: "sentinel-swarm:<role>"`, a model from that role's approved list, and
-the prompt:
+## Starting a child
 
-```
-You are <name>.
-Read your brief from the swarm ledger and follow it.
-```
+1. The parent calls `brief_create` with the child's name, role, a model from that
+   role's approved list, and the brief.
+2. The parent calls `agent_spawn(caller=<its name>, child_name=<the child's name>)`.
+   It checks the role, the model, the brief, and the parallelism cap when the user
+   set one, then starts the child's session with `claude --bg --agent swarm-<role>`
+   and the prompt:
 
-The spawn hook denies an `Agent` call with no brief for the child. A parent resumes a
-child with `SendMessage(to=<the agent id the spawn returned>, ...)`, and the message
-only points at the ledger record. The detail lives in the ledger.
+   ```
+   You are <name>.
+   Read your brief from the swarm ledger and follow it.
+   ```
+
+3. The parent ends its turn. The child's message wakes it.
+
+## Wake-ups and next
+
+`handoff_submit`, `return_work`, `message_post`, and `phase_update(handed_up)` leave
+work for another agent. Each records that the caller owes that agent a wake-up and
+returns a `next` field with the exact call to make:
+
+- `SendMessage(to="<session name>", message="<one-line pointer>")` when the
+  recipient's session is running.
+- `agent_resume(...)` when it is not.
+
+The caller makes that call before it ends its turn. The `post_any` hook clears the
+debt when it sees the `SendMessage`, and the `stop` hook blocks a Manager, Lead, or
+Coder that still owes one. The message only points at the ledger record, for example
+"Handoff 1 for hello.py is waiting in the ledger." The detail lives in the ledger.
+
+## The first call in every session
+
+`ToolSearch(query="select:mcp__swarm-ledger__ledger_info", max_results=1)`. The
+ledger server can still be connecting when a session opens, and this call waits until
+it connects.
+
+## Tool names
+
+- Ledger tools: `mcp__swarm-ledger__<name>`, from the server `swarm-ledger`.
+- codebase-kg tools: `mcp__codebase-kg__<name>`, from the server `codebase-kg`.
 
 ## Tool order by role
 
-Ledger tools are named `mcp__plugin_sentinel-swarm_swarm-ledger__<name>`.
-
 | Role | Order |
 |---|---|
-| Oracle | `ledger_info` → `run_start` → `profile_set` → `guidelines_set` → `phase_add` per phase → `phase_update(unlocked)` → per phase: `brief_create` + spawn → review: `status_tree`, `run_status`, `issue_list` → `phase_update(approved)` → `plan_unlocked` → `tests_run(full)` at join points → `directive_inbox` at safe points → `run_pause(reason)` when only the user can unblock the run → `report_build` → `run_finish` |
-| Manager | `brief_get` → `brief_ack` → `guidelines_get` → `module_add` per module → per Lead: `brief_create` + spawn → review the Lead reports → `tests_run(phase)` → `phase_update(handed_up)` (a Manager sets only its own phase, to `working` or `handed_up`) → `message_post` to the Oracle |
-| Lead | `brief_get` → `brief_ack` → `guidelines_get` → per file: `claim_file` then `brief_create` then spawn → on a handoff: `score_record(kind="lead")` then `review_compare` then `approve` / `return_work` / `accept_incomplete` → after a return: `score_record(lead)`, `review_compare`, `attempt_record`, decide → `tests_run(module)` → `message_post` to the Manager |
-| Coder | `brief_get` → `brief_ack` → `kg_search` → write the test file → write the source file → `tests_run(scope="file")` until green → `graph_upsert` → `score_record(kind="self")` → `handoff_submit` |
+| Oracle | `ToolSearch` → `ledger_info` → `run_start` → `profile_set` → `guidelines_set` → `phase_add` per phase → `phase_update(unlocked)` → per phase: `brief_create` + `agent_spawn` → review: `status_tree`, `run_status`, `issue_list` → `phase_update(approved)` → `plan_unlocked` → `tests_run(full)` at join points → `directive_inbox` at safe points → `run_pause(reason)` when only the user can unblock the run → `report_build` → `run_finish` |
+| Manager | `ToolSearch` → `brief_get` → `brief_ack` → `guidelines_get` → `module_add` per module → per Lead: `brief_create` + `agent_spawn` → review the Lead reports → `tests_run(phase)` → `phase_update(handed_up)` (a Manager sets only its own phase, to `working` or `handed_up`) → `message_post` to the Oracle → the `SendMessage` that `next` names |
+| Lead | `ToolSearch` → `brief_get` → `brief_ack` → `guidelines_get` → per file: `claim_file` then `brief_create` then `agent_spawn` → on a handoff: `score_record(kind="lead")` then `review_compare` then `approve` / `return_work` / `accept_incomplete` → after a return: `score_record(lead)`, `review_compare`, `attempt_record`, decide → `tests_run(module)` → `message_post` to the Manager → the `SendMessage` that `next` names |
+| Coder | `ToolSearch` → `brief_get` → `brief_ack` → `kg_search` → write the test file → write the source file → `tests_run(scope="file")` until green → `graph_upsert` → `score_record(kind="self")` → `handoff_submit` → the `SendMessage` that `next` names |
 
-Every role calls `message_inbox` at the start of each turn after a resume.
+Every role calls `message_inbox` at the start of each turn after a wake-up or a resume.
 
 `run_start` on a paused run resumes it: the run goes back to active. A paused run
 keeps every gate.
@@ -64,6 +111,8 @@ keeps every gate.
 ## The gates the ledger enforces
 
 - Nothing works for a child before `brief_ack`.
+- `agent_spawn` refuses a child without an unacknowledged brief from the caller, a
+  session name a live session already uses, and a start past the parallelism cap.
 - `brief_create` refuses a model that is not on the child role's approved list, and
   refuses a name a live agent already holds.
 - `claim_file` refuses a path that already has a live claim. The claim is the file
@@ -94,7 +143,7 @@ and marks the file handed up.
 Every parent-and-child pair repeats: brief, work, self-review, hand up, review, then
 approve, return, or accept as incomplete. A returned result counts as one fix
 attempt. An improving attempt does not. The child stays available until its parent
-approves its work.
+approves its work, and release stops its session.
 
 ## Ownership
 
@@ -137,7 +186,7 @@ on a regression.
 ## Records
 
 `.sentinel-swarm/` at the root of the main checkout holds `ledger.db`, `versions/`,
-and `report.md`. It is excluded through `.git/info/exclude`, not the host repo's
+`report.md`, `server.json` (the ledger server's URL), and `hook.py` (the hook shim). It is excluded through `.git/info/exclude`, not the host repo's
 `.gitignore`.
 
 ## Finding code
@@ -149,4 +198,5 @@ Coder writes to the graph, and only through the ledger's `graph_upsert`.
 ## Source of truth
 
 The design lives in the `plans/` folder of the sentinel-swarm repository:
-`01-roles.md`, `02-rubric.md`, `03-ledger.md`, and `04-mcp-and-hooks.md`.
+`01-roles.md`, `02-rubric.md`, `03-ledger.md`, `04-mcp-and-hooks.md`, and
+`06-sessions-plan.md`.

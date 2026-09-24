@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 import sys
@@ -8,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from swarm_ledger import graph as graph_module
+from swarm_ledger import sessions
 from swarm_ledger.db import write_tx
 from swarm_ledger.identity import LedgerError
 from swarm_ledger.ledger import Ledger
@@ -44,6 +46,16 @@ def _touch_module(host: Path, name: str, marker: str) -> None:
     path.write_text(
         path.read_text(encoding="utf-8") + f"\n# {marker}\n", encoding="utf-8", newline="\n"
     )
+
+
+@pytest.fixture(autouse=True)
+def no_claude_sessions(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(args: list[str], cwd: Path | None = None) -> str:
+        del cwd
+        assert args[:2] == ["agents", "--json"], args
+        return "[]"
+
+    monkeypatch.setattr(sessions, "_run", fake_run)
 
 
 @pytest.fixture
@@ -402,6 +414,42 @@ def test_approve_releases_the_claim_and_the_coder(ledger: Ledger) -> None:
     ).fetchone()
     assert coder_row["state"] == "released"
     assert coder_row["ended_at"] is not None
+
+
+def test_handoff_next_wakes_the_lead_and_approve_stops_the_coders_session(
+    ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+    lead_session = {"pid": 9, "sessionId": "lead-agent", "name": "host-r1-lead-1", "status": "idle"}
+
+    def fake_run(args: list[str], cwd: Path | None = None) -> str:
+        del cwd
+        calls.append(list(args))
+        return json.dumps([lead_session]) if args[:2] == ["agents", "--json"] else ""
+
+    monkeypatch.setattr(sessions, "_run", fake_run)
+    ctx = _bootstrap(ledger)
+    coder = _spawn_coder(ledger, ctx, "coder-next", "pkg/good.py", "tests/test_good.py")
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE agents SET session_name = 'host-r1-lead-1' WHERE name = 'lead-1'")
+        conn.execute("UPDATE agents SET bg_id = 'coderbg' WHERE agent_id = ?", (coder["agent_id"],))
+    file_id = _file_id_for(ledger, "pkg/good.py")
+    ledger.score_record(
+        "coder-next", coder["agent_id"], file_id, _all_ratings(10), _all_applicable(), "self"
+    )
+
+    handoff = ledger.handoff_submit("coder-next", coder["agent_id"], file_id, [], [])
+    assert handoff["next"] == (
+        'SendMessage(to="host-r1-lead-1", '
+        f'message="Handoff {handoff["handoff_id"]} for pkg/good.py is waiting in the ledger.")'
+    )
+    assert [w["reason"] for w in ledger.owed_wakeups(coder["agent_id"])] == ["handoff_submit"]
+
+    lead_id = ctx["lead"]["agent_id"]
+    ledger.score_record("lead-1", lead_id, file_id, _all_ratings(10), _all_applicable(), "lead")
+    ledger.review_compare("lead-1", lead_id, handoff["handoff_id"])
+    ledger.approve("lead-1", lead_id, handoff["handoff_id"])
+    assert ["stop", "coderbg"] in calls
 
 
 # -- return, a second handoff, and attempt_record ------------------------------------------

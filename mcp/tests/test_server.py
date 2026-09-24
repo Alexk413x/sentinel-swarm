@@ -8,8 +8,19 @@ import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
-from swarm_ledger import __version__
+from swarm_ledger import __version__, sessions
+from swarm_ledger import server as server_module
 from swarm_ledger.server import _TOOL_NAMES, configure, mcp
+
+
+@pytest.fixture(autouse=True)
+def no_claude_sessions(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(args: list[str], cwd: Path | None = None) -> str:
+        del cwd
+        assert args[:2] == ["agents", "--json"], args
+        return "[]"
+
+    monkeypatch.setattr(sessions, "_run", fake_run)
 
 
 @pytest.fixture
@@ -144,3 +155,42 @@ async def _analytics_query() -> dict[str, Any]:
 def test_analytics_query_with_a_select_returns_rows(host: Path):
     data = asyncio.run(_analytics_query())
     assert data["rows"] == [{"prd": "Build X"}]
+
+
+def test_the_session_tools_are_registered() -> None:
+    assert {"agent_spawn", "agent_resume"} <= asyncio.run(_list_tool_names())
+
+
+async def _spawn_without_a_brief() -> str:
+    async with Client(mcp) as client:
+        await client.call_tool("run_start", {"prd": "Build X", "session_id": "sess-1"})
+        try:
+            await client.call_tool(
+                "agent_spawn", {"caller": "oracle", "agent_id": "sess-1", "child_name": "mgr-9"}
+            )
+        except ToolError as exc:
+            return str(exc)
+        raise AssertionError("expected agent_spawn to raise a ToolError")
+
+
+def test_agent_spawn_reports_a_missing_brief_as_a_tool_error(host: Path) -> None:
+    assert "no unacknowledged brief for 'mgr-9'" in asyncio.run(_spawn_without_a_brief())
+
+
+async def _start_and_finish() -> dict[str, Any]:
+    async with Client(mcp) as client:
+        await client.call_tool("run_start", {"prd": "Build X", "session_id": "sess-1"})
+        return (
+            await client.call_tool(
+                "run_finish", {"caller": "oracle", "agent_id": "sess-1", "outcome": "success"}
+            )
+        ).data
+
+
+def test_run_finish_calls_the_on_run_finish_hook(
+    host: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finished: list[bool] = []
+    monkeypatch.setattr(server_module, "on_run_finish", lambda: finished.append(True))
+    assert asyncio.run(_start_and_finish())["state"] == "finished"
+    assert finished == [True]

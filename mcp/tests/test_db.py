@@ -27,6 +27,7 @@ EXPECTED_TABLES = {
     "messages",
     "directives",
     "agent_events",
+    "wakeups",
     "schema_version",
 }
 
@@ -57,6 +58,44 @@ def test_connect_is_idempotent(tmp_path: Path) -> None:
         assert version == 1
     finally:
         conn.close()
+
+
+def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def test_new_ledger_has_the_session_columns(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "ledger.db")
+    try:
+        assert {"session_name", "bg_id"} <= _columns(conn, "agents")
+    finally:
+        conn.close()
+
+
+def test_connect_upgrades_an_older_version_1_ledger(tmp_path: Path) -> None:
+    db_path = tmp_path / "ledger.db"
+    old = sqlite3.connect(str(db_path))
+    old.executescript(
+        "CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
+        "version INTEGER NOT NULL);"
+        "INSERT INTO schema_version (id, version) VALUES (1, 1);"
+        "CREATE TABLE agents (agent_id TEXT PRIMARY KEY, name TEXT NOT NULL, "
+        "role TEXT NOT NULL, state TEXT NOT NULL, ended_at TEXT);"
+        "INSERT INTO agents (agent_id, name, role, state) VALUES ('a1', 'lead-1', 'lead', 'idle');"
+    )
+    old.close()
+
+    conn = connect(db_path)
+    try:
+        assert {"session_name", "bg_id"} <= _columns(conn, "agents")
+        tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master")}
+        assert "wakeups" in tables
+        row = conn.execute("SELECT * FROM agents WHERE agent_id = 'a1'").fetchone()
+        assert (row["name"], row["session_name"]) == ("lead-1", None)
+    finally:
+        conn.close()
+
+    connect(db_path).close()
 
 
 def test_write_tx_commits(tmp_path: Path) -> None:

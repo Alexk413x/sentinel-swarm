@@ -7,25 +7,26 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
+from swarm_ledger import sessions
 from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import events
+from swarm_ledger.hooks.__main__ import _HANDLERS
 from swarm_ledger.ledger import Ledger
 
-_KNOWN_EVENTS = {
-    "session_start",
-    "pre_agent",
-    "subagent_start",
-    "pre_write",
-    "pre_shell",
-    "pre_ledger",
-    "post_any",
-    "post_shell",
-    "pre_compact",
-    "subagent_stop",
-    "stop",
-    "session_end",
-}
+
+@pytest.fixture(autouse=True)
+def claude_sessions(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    listing: list[dict] = []
+
+    def fake_run(args: list[str], cwd: Path | None = None) -> str:
+        del cwd
+        assert args[:2] == ["agents", "--json"], args
+        return json.dumps(listing)
+
+    monkeypatch.setattr(sessions, "_run", fake_run)
+    return listing
 
 
 @pytest.fixture
@@ -288,51 +289,25 @@ def test_pre_ledger_denies_override_grant_for_a_coder(ledger: Ledger) -> None:
 # -- pre_agent --------------------------------------------------------------------------
 
 
-def test_pre_agent_denies_wrong_child_role(ledger: Ledger) -> None:
+@pytest.mark.parametrize("who", ["oracle", "manager", "lead", "coder"])
+def test_pre_agent_denies_every_agent_call_from_a_swarm_session(ledger: Ledger, who: str) -> None:
     ctx = _bootstrap(ledger)
-    data = {
-        "agent_id": ctx["lead"]["agent_id"],
-        "tool_input": {"subagent_type": "sentinel-swarm:lead", "model": "sonnet"},
+    ids = {
+        "oracle": ctx["oracle_id"],
+        "manager": ctx["manager"]["agent_id"],
+        "lead": ctx["lead"]["agent_id"],
+        "coder": _spawn_coder(ledger, ctx, "coder-ag", "src/a.py", "tests/test_a.py")["agent_id"],
     }
+    data = {"session_id": ids[who], "tool_input": {"subagent_type": "general-purpose"}}
     result = events.handle_pre_agent(ledger, data)
     assert result is not None
     assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "agent_spawn" in result["hookSpecificOutput"]["permissionDecisionReason"]
 
 
-def test_pre_agent_denies_wrong_model(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
-    data = {
-        "agent_id": ctx["lead"]["agent_id"],
-        "tool_input": {"subagent_type": "sentinel-swarm:coder", "model": "opus"},
-    }
-    result = events.handle_pre_agent(ledger, data)
-    assert result is not None
-    assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "not approved" in result["hookSpecificOutput"]["permissionDecisionReason"]
-
-
-def test_pre_agent_denies_no_brief(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
-    data = {
-        "agent_id": ctx["lead"]["agent_id"],
-        "tool_input": {"subagent_type": "sentinel-swarm:coder", "model": "sonnet"},
-    }
-    result = events.handle_pre_agent(ledger, data)
-    assert result is not None
-    assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "no unacked brief" in result["hookSpecificOutput"]["permissionDecisionReason"]
-
-
-def test_pre_agent_allows_with_a_brief(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
-    ledger.claim_file("lead-1", ctx["lead"]["agent_id"], "src/a.py", "tests/test_a.py", "coder-a")
-    ledger.brief_create(
-        "lead-1", ctx["lead"]["agent_id"], "coder-a", "coder", "sonnet", "Implement it."
-    )
-    data = {
-        "agent_id": ctx["lead"]["agent_id"],
-        "tool_input": {"subagent_type": "sentinel-swarm:coder", "model": "sonnet"},
-    }
+def test_pre_agent_allows_a_session_outside_the_swarm(ledger: Ledger) -> None:
+    _bootstrap(ledger)
+    data = {"session_id": "someone-else", "tool_input": {"subagent_type": "general-purpose"}}
     assert events.handle_pre_agent(ledger, data) is None
 
 
@@ -353,15 +328,15 @@ def test_post_any_sets_stale_since_after_an_edit(ledger: Ledger) -> None:
     assert file_row["stale_since"] is not None
 
 
-# -- subagent_stop ------------------------------------------------------------------------
+# -- stop for a Manager, Lead, or Coder ---------------------------------------------------
 
 
-def test_subagent_stop_blocks_a_working_coder_once_and_not_twice(ledger: Ledger) -> None:
+def test_stop_blocks_a_working_coder_once_and_not_twice(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     coder = _spawn_coder(ledger, ctx, "coder-block", "src/mine.py", "tests/test_mine.py")
-    data = {"agent_id": coder["agent_id"]}
+    data = {"session_id": coder["agent_id"]}
 
-    first = events.handle_subagent_stop(ledger, data)
+    first = events.handle_stop(ledger, data)
     assert first == {
         "decision": "block",
         "reason": (
@@ -370,11 +345,11 @@ def test_subagent_stop_blocks_a_working_coder_once_and_not_twice(ledger: Ledger)
         ),
     }
 
-    second = events.handle_subagent_stop(ledger, data)
+    second = events.handle_stop(ledger, data)
     assert second is None
 
 
-def test_subagent_stop_sums_tokens_from_a_transcript(ledger: Ledger, tmp_path: Path) -> None:
+def test_stop_sums_a_members_tokens_from_its_transcript(ledger: Ledger, tmp_path: Path) -> None:
     ctx = _bootstrap(ledger)
     transcript = tmp_path / "transcript.jsonl"
     lines = [
@@ -406,8 +381,8 @@ def test_subagent_stop_sums_tokens_from_a_transcript(ledger: Ledger, tmp_path: P
     ]
     transcript.write_text("\n".join(json.dumps(line) for line in lines), encoding="utf-8")
 
-    data = {"agent_id": ctx["lead"]["agent_id"], "agent_transcript_path": str(transcript)}
-    assert events.handle_subagent_stop(ledger, data) is None
+    data = {"session_id": ctx["lead"]["agent_id"], "transcript_path": str(transcript)}
+    assert events.handle_stop(ledger, data) is None
 
     row = ledger.conn.execute(
         "SELECT * FROM agents WHERE agent_id = ?", (ctx["lead"]["agent_id"],)
@@ -507,16 +482,31 @@ def test_main_malformed_json_exits_zero_with_empty_stdout(host: Path, repo_root:
 # -- hooks.json -------------------------------------------------------------------------
 
 
+def _hook_commands(hooks: dict) -> list[str]:
+    return [hook["command"] for entries in hooks.values() for e in entries for hook in e["hooks"]]
+
+
 def test_hooks_json_names_only_dispatchable_events(repo_root: Path) -> None:
     data = json.loads((repo_root / "hooks" / "hooks.json").read_text(encoding="utf-8"))
-    seen = set()
-    for entries in data["hooks"].values():
-        for entry in entries:
-            for hook in entry["hooks"]:
-                event = hook["command"].rsplit(" ", 1)[-1]
-                assert event in _KNOWN_EVENTS, hook["command"]
-                seen.add(event)
-    assert seen == _KNOWN_EVENTS
+    for command in _hook_commands(data.get("hooks") or {}):
+        assert command.rsplit(" ", 1)[-1] in _HANDLERS, command
+
+
+def test_role_templates_name_only_dispatchable_events(repo_root: Path) -> None:
+    templates = sorted((repo_root / "templates" / "agents").glob("*.md"))
+    for template in templates:
+        lines = template.read_text(encoding="utf-8").splitlines()
+        end = lines.index("---", 1)
+        frontmatter = yaml.safe_load("\n".join(lines[1:end]))
+        for command in _hook_commands(frontmatter.get("hooks") or {}):
+            for part in command.split("||"):
+                event = part.split(" hook ", 1)[1].split()[0]
+                assert event in _HANDLERS, (template.name, command)
+
+
+def test_subagent_events_are_gone_from_the_dispatch_table() -> None:
+    assert "subagent_start" not in _HANDLERS
+    assert "subagent_stop" not in _HANDLERS
 
 
 def test_pre_ledger_does_not_stamp_tools_without_an_agent_id(ledger: Ledger) -> None:
@@ -533,7 +523,7 @@ def test_pre_ledger_does_not_stamp_tools_without_an_agent_id(ledger: Ledger) -> 
 
 
 def _go_idle(ledger: Ledger, agent_id: str) -> None:
-    events.handle_subagent_stop(ledger, {"agent_id": agent_id, "stop_hook_active": True})
+    events.handle_stop(ledger, {"session_id": agent_id, "stop_hook_active": True})
 
 
 def _state(ledger: Ledger, agent_id: str) -> str:
@@ -563,19 +553,19 @@ def test_session_start_reports_a_paused_run_and_its_reason(ledger: Ledger) -> No
     assert "the API key is missing" in context
 
 
-def test_subagent_stop_marks_idle_and_post_tool_use_marks_working(ledger: Ledger) -> None:
+def test_stop_marks_idle_and_post_tool_use_marks_working(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     lead_id = ctx["lead"]["agent_id"]
 
-    assert events.handle_subagent_stop(ledger, {"agent_id": lead_id}) is None
+    assert events.handle_stop(ledger, {"session_id": lead_id}) is None
     assert _state(ledger, lead_id) == "idle"
-    assert events.handle_subagent_stop(ledger, {"agent_id": lead_id}) is None
+    assert events.handle_stop(ledger, {"session_id": lead_id}) is None
     idle_events = [e for e in ledger.events(agent_id=lead_id) if e["to_state"] == "idle"]
     assert len(idle_events) == 1
     assert idle_events[0]["from_state"] == "working"
-    assert idle_events[0]["reason"] == "subagent_stop"
+    assert idle_events[0]["reason"] == "stop"
 
-    events.handle_post_any(ledger, {"agent_id": lead_id, "tool_name": "Read", "tool_input": {}})
+    events.handle_post_any(ledger, {"session_id": lead_id, "tool_name": "Read", "tool_input": {}})
     assert _state(ledger, lead_id) == "working"
     assert any(
         e["from_state"] == "idle" and e["to_state"] == "working"
@@ -583,25 +573,42 @@ def test_subagent_stop_marks_idle_and_post_tool_use_marks_working(ledger: Ledger
     )
 
 
-def test_subagent_start_on_resume_marks_an_idle_agent_working(ledger: Ledger) -> None:
+def test_session_start_marks_a_resumed_idle_session_working(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     lead_id = ctx["lead"]["agent_id"]
     _go_idle(ledger, lead_id)
-    events.handle_subagent_start(ledger, {"agent_id": lead_id, "agent_type": "lead"})
+    assert events.handle_session_start(ledger, {"session_id": lead_id}) is None
     assert _state(ledger, lead_id) == "working"
 
 
-def test_subagent_stop_blocks_a_coder_before_marking_it_idle(ledger: Ledger) -> None:
+def test_session_start_leaves_a_spawned_session_registered_for_brief_ack(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    ledger.brief_create(
+        "manager-1", "mgr-agent", "lead-2", "lead", "sonnet", "Own it.", module_id=ctx["module_id"]
+    )
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "INSERT INTO agents (agent_id, name, role, parent_agent_id, run_id, state, "
+            "session_name, bg_id) VALUES ('sess-lead-2', 'lead-2', 'lead', 'mgr-agent', ?, "
+            "'registered', 'host-r1-lead-2', 'bg2')",
+            (ctx["manager"]["run_id"],),
+        )
+    assert events.handle_session_start(ledger, {"session_id": "sess-lead-2"}) is None
+    assert _state(ledger, "sess-lead-2") == "registered"
+    assert ledger.brief_ack("lead-2", "sess-lead-2")["state"] == "working"
+
+
+def test_stop_blocks_a_coder_before_marking_it_idle(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     coder = _spawn_coder(ledger, ctx, "coder-idle", "src/mine.py", "tests/test_mine.py")
-    data = {"agent_id": coder["agent_id"]}
+    data = {"session_id": coder["agent_id"]}
 
-    first = events.handle_subagent_stop(ledger, data)
+    first = events.handle_stop(ledger, data)
     assert first is not None
     assert first["decision"] == "block"
     assert _state(ledger, coder["agent_id"]) == "working"
 
-    assert events.handle_subagent_stop(ledger, data) is None
+    assert events.handle_stop(ledger, data) is None
     assert _state(ledger, coder["agent_id"]) == "idle"
 
 
@@ -636,7 +643,7 @@ def test_stop_names_the_idle_lead_that_owes_a_handoff_review(ledger: Ledger) -> 
     assert result["decision"] == "block"
     reason = result["reason"]
     assert "for src/mine.py waits on lead-1, which is idle" in reason
-    assert f"SendMessage(to={ctx['lead']['agent_id']!r})" in reason
+    assert 'resume it with agent_resume(target_name="lead-1")' in reason
     assert "manager-1 is idle" not in reason
     assert reason.endswith(
         "If the run is blocked on something only the user can fix, call run_pause(reason)."
@@ -653,7 +660,7 @@ def test_stop_names_an_idle_agent_with_unread_messages(ledger: Ledger) -> None:
     assert result is not None
     reason = result["reason"]
     assert "manager-1 has 1 unread message(s)" in reason
-    assert f"SendMessage(to={ctx['manager']['agent_id']!r})" in reason
+    assert 'agent_resume(target_name="manager-1")' in reason
 
 
 def test_stop_stores_the_oracle_tokens_from_its_transcript(ledger: Ledger, tmp_path: Path) -> None:
@@ -697,3 +704,121 @@ def test_stop_after_run_finish_records_the_oracle_tokens_and_rebuilds_the_report
 
     report = (host / ".sentinel-swarm" / "report.md").read_text(encoding="utf-8")
     assert "- oracle (oracle, fable): tokens in=7 out=3" in report
+
+
+# -- sessions: owed wake-ups and wake hints ------------------------------------------------
+
+
+def _as_session(ledger: Ledger, agent_id: str, session_name: str) -> None:
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET session_name = ? WHERE agent_id = ?", (session_name, agent_id)
+        )
+
+
+def _running(listing: list[dict], agent_id: str, session_name: str) -> None:
+    listing.append({"pid": 7, "sessionId": agent_id, "name": session_name, "status": "idle"})
+
+
+def test_stop_blocks_a_member_until_it_sends_the_owed_wake_up(
+    ledger: Ledger, claude_sessions: list[dict]
+) -> None:
+    ctx = _bootstrap(ledger)
+    _as_session(ledger, "mgr-agent", "host-r1-manager-1")
+    _running(claude_sessions, "mgr-agent", "host-r1-manager-1")
+    posted = ledger.message_post("lead-1", "lead-agent", "manager-1", "module-1 is done")
+    pointer = f"Message {posted['message_id']} from lead-1 is waiting in the ledger; "
+    assert posted["next"].startswith(f'SendMessage(to="host-r1-manager-1", message="{pointer}')
+
+    blocked = events.handle_stop(ledger, {"session_id": ctx["lead"]["agent_id"]})
+    assert blocked is not None
+    assert blocked["decision"] == "block"
+    assert f"- {posted['next']}" in blocked["reason"]
+    assert _state(ledger, "lead-agent") == "working"
+
+    events.handle_post_any(
+        ledger,
+        {
+            "session_id": "lead-agent",
+            "tool_name": "SendMessage",
+            "tool_input": {"to": "host-r1-manager-1", "message": "see the ledger"},
+        },
+    )
+    assert ledger.owed_wakeups("lead-agent") == []
+    assert events.handle_stop(ledger, {"session_id": "lead-agent"}) is None
+    assert _state(ledger, "lead-agent") == "idle"
+
+
+def test_stop_names_agent_resume_when_the_recipient_session_is_not_running(
+    ledger: Ledger,
+) -> None:
+    ctx = _bootstrap(ledger)
+    _as_session(ledger, "mgr-agent", "host-r1-manager-1")
+    ledger.message_post("lead-1", "lead-agent", "manager-1", "module-1 is done")
+
+    blocked = events.handle_stop(ledger, {"session_id": ctx["lead"]["agent_id"]})
+    assert blocked is not None
+    assert '- agent_resume(target_name="manager-1")' in blocked["reason"]
+
+
+def test_stop_allows_an_owing_member_when_stop_hook_active(ledger: Ledger) -> None:
+    _bootstrap(ledger)
+    _as_session(ledger, "mgr-agent", "host-r1-manager-1")
+    ledger.message_post("lead-1", "lead-agent", "manager-1", "module-1 is done")
+    data = {"session_id": "lead-agent", "stop_hook_active": True}
+    assert events.handle_stop(ledger, data) is None
+    assert _state(ledger, "lead-agent") == "idle"
+
+
+def test_send_message_to_another_session_keeps_the_debt(ledger: Ledger) -> None:
+    _bootstrap(ledger)
+    _as_session(ledger, "mgr-agent", "host-r1-manager-1")
+    ledger.message_post("lead-1", "lead-agent", "manager-1", "module-1 is done")
+    events.handle_post_any(
+        ledger,
+        {"session_id": "lead-agent", "tool_name": "SendMessage", "tool_input": {"to": "other"}},
+    )
+    assert len(ledger.owed_wakeups("lead-agent")) == 1
+
+
+def test_stop_tells_the_oracle_to_send_message_to_a_live_idle_session(
+    ledger: Ledger, claude_sessions: list[dict]
+) -> None:
+    ctx = _bootstrap(ledger)
+    coder = _spawn_coder(ledger, ctx, "coder-live", "src/mine.py", "tests/test_mine.py")
+    _submit_handoff_row(ledger, coder, "src/mine.py")
+    _as_session(ledger, "lead-agent", "host-r1-lead-1")
+    _running(claude_sessions, "lead-agent", "host-r1-lead-1")
+    for agent_id in (coder["agent_id"], ctx["lead"]["agent_id"], ctx["manager"]["agent_id"]):
+        _go_idle(ledger, agent_id)
+
+    result = events.handle_stop(ledger, {"session_id": ctx["oracle_id"]})
+    assert result is not None
+    assert (
+        'waits on lead-1, which is idle; wake it with SendMessage(to="host-r1-lead-1")'
+        in (result["reason"])
+    )
+
+
+def test_stop_tells_the_oracle_to_resume_a_stopped_session(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    coder = _spawn_coder(ledger, ctx, "coder-dead", "src/mine.py", "tests/test_mine.py")
+    _submit_handoff_row(ledger, coder, "src/mine.py")
+    _as_session(ledger, "lead-agent", "host-r1-lead-1")
+    for agent_id in (coder["agent_id"], ctx["lead"]["agent_id"], ctx["manager"]["agent_id"]):
+        _go_idle(ledger, agent_id)
+
+    result = events.handle_stop(ledger, {"session_id": ctx["oracle_id"]})
+    assert result is not None
+    assert (
+        'its session is not running; resume it with agent_resume(target_name="lead-1")'
+        in result["reason"]
+    )
+
+
+def test_stop_does_not_block_the_oracle_for_its_own_debts(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    _as_session(ledger, "mgr-agent", "host-r1-manager-1")
+    ledger.message_post("oracle", ctx["oracle_id"], "manager-1", "Change of plan.")
+    ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
+    assert events.handle_stop(ledger, {"session_id": ctx["oracle_id"]}) is None

@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Prepares a host repo for sentinel-swarm: writes .claude/sentinel-swarm.local.md, detects the test, build, and lint commands, and builds the code graph. Use for "set up sentinel-swarm here", "prepare this repo for the swarm", or "check if this repo is ready for sentinel-swarm".
+description: Prepares a host repo for sentinel-swarm. It writes .claude/sentinel-swarm.local.md, detects the test, build, and lint commands, builds the code graph, writes the role files in .claude/agents/, and checks that the repo is trusted. Use for "set up sentinel-swarm here", "prepare this repo for the swarm", or "check if this repo is ready for sentinel-swarm".
 ---
 
 # setup
@@ -59,15 +59,42 @@ finds. `handoff_submit` checks that each Coder's file has a node whose anchors
 resolve, so a graph that does not cover the repo's existing code slows the first
 phase down.
 
-## 5. Confirm the records folder is excluded
+## 5. Write the role files
 
-The ledger creates `.sentinel-swarm/` at the root of the main checkout and adds it to
-`.git/info/exclude` on first use. Confirm the repo is a git checkout so that this
-works, and confirm that nothing in the host repo's `.gitignore` or CI expects the
-folder. Do not add it to the host repo's committed `.gitignore`.
+Run from the host repo root:
 
-## 6. Report
+```bash
+uv run --project "${CLAUDE_PLUGIN_ROOT}/mcp" --frozen --no-dev python -m swarm_ledger.setup
+```
+
+It is safe to run again, and it prints what it changed:
+
+- `.claude/agents/swarm-oracle.md`, `swarm-manager.md`, `swarm-lead.md`, and
+  `swarm-coder.md`, from the plugin's templates. Each file sets its role's model,
+  color, tools, permission mode, MCP servers, and hooks. A new file's `tools` line
+  also gets each MCP server of every plugin the repo enables at project scope.
+- When a role file already exists, it keeps the user's frontmatter values, adds any
+  key the template has that the file lacks, and replaces the prompt body. Run it
+  again after a plugin upgrade.
+- `.sentinel-swarm/hook.py`, the shim every role's hooks call.
+- `worktree.bgIsolation: "none"` in `.claude/settings.local.json`, so every session
+  works in the one shared working tree.
+- `.sentinel-swarm/` and `.claude/agents/swarm-*.md` in `.git/info/exclude`. Do not
+  add them to the host repo's committed `.gitignore`. A user who wants to share the
+  role files commits them on purpose.
+
+The role files are the user's to edit. Tell the user so: each role's model, tools,
+and hooks live in its own file.
+
+## 6. Trust the repo
+
+The last line of the output says whether the repo is trusted. A background session
+refuses to start in an untrusted folder, and Claude Code runs the role files' hooks
+only in a trusted folder. When the repo is not trusted, show the user the command the
+output prints. They run it once in a terminal, accept the trust prompt, and exit.
+
+## 7. Report
 
 Say what was detected, what was written, and anything the user must confirm by hand:
-a test command you could not infer, a missing dependency, or a repo with no git
-checkout.
+a test command you could not infer, a missing dependency, a repo with no git
+checkout, or a repo that is not trusted yet.

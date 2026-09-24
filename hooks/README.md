@@ -1,51 +1,81 @@
 # sentinel-swarm hooks
 
-Twelve hooks, all wired in `hooks.json`, all calling `python -m swarm_ledger.hooks
-<event>` from `mcp/`. Each hook reads one JSON object from stdin and, when it has an
-opinion, writes one JSON object to stdout. The dispatch logic lives in
-`mcp/src/swarm_ledger/hooks/__main__.py`; the per-event behavior lives in
-`mcp/src/swarm_ledger/hooks/events.py`, as functions `handle_<event>(ledger, data)`
-that tests call directly, in-process.
+`hooks.json` carries no hooks. Every role runs as its own Claude Code session, and
+each role's hooks live in the frontmatter of its project agent file,
+`.claude/agents/swarm-<role>.md` in the host repo. `python -m swarm_ledger.setup`
+writes those files from `templates/agents/<role>.md`. A hook in both places would run
+twice, so each hook lives in exactly one place.
 
-| # | Event | Matcher | What it does | Blocks |
-|---|---|---|---|---|
-| 1 | `SessionStart` | none | Reports an unfinished run and its Oracle, a missing `knowledge/code_graph.db`, and a `.git/info/exclude` that lacks `.sentinel-swarm/` (and fixes that last one) | No |
-| 2 | `PreToolUse` | `Agent` | Spawn gate: the caller's role may create this child role, the model is approved, an unacked brief exists, and the parallelism cap has room | Yes |
-| 3 | `SubagentStart` | the four roles | Registers the agent in the ledger. Marks an idle agent working again when it is resumed | No |
-| 4 | `PreToolUse` | `Write\|Edit\|MultiEdit\|NotebookEdit` | Role gate: only a Coder writes. Ownership gate: the path must be the caller's claimed file or test file. Protected paths: nobody hand-writes `.sentinel-swarm/` | Yes |
-| 5 | `PreToolUse` | `Bash\|PowerShell` | Shell gate for Coders: allows the project profile's test, build, and lint commands, and read-only git. Denies the rest, and denies any shell use by a non-Coder | Yes |
-| 6 | `PreToolUse` | the swarm-ledger MCP tools | Stamps the caller's real `agent_id` onto every call, overwriting whatever the agent passed. Denies `override_grant` for a non-Oracle | Yes |
-| 7 | `PostToolUse` | none | Heartbeat to the registry. Marks an idle agent working again. After a Coder's edit, marks the file's claim stale, so a handoff needs a fresh self review | No |
-| 8 | `PostToolUse` | `Bash\|PowerShell` | Compares `git status --porcelain` against the Coder's claim. A change outside the claim is logged as a violation and reported to the Lead | No |
-| 9 | `PreCompact` | none | Adds one to the agent's context overflow count | No |
-| 10 | `SubagentStop` | the four roles | Fires each time a subagent's turn ends. Records the transcript path and token totals. Blocks a working Coder once, until it calls `handoff_submit` or messages its Lead. Otherwise marks a working agent idle | Once per agent |
-| 11 | `Stop` | none | Records the Oracle's token totals from its transcript. Allows the stop when the run is paused, a directive needs the user, or any agent is working. Otherwise, while the run has unlocked phases, a submitted handoff, a live claim, or a live agent, blocks and names each idle agent to resume and its agent id | Yes |
-| 12 | `SessionEnd` | none | Closes the registry entry for the session and records its token totals | No |
+Claude Code runs an agent file's frontmatter hooks only in a trusted folder. The
+`setup` skill reports whether the host repo is trusted and prints the one command to
+trust it.
 
-## The two rules every hook follows
+## How a hook reaches the ledger
+
+Every hook command has this form, run from the host repo root:
+
+```
+python3 .sentinel-swarm/hook.py hook <event> || python .sentinel-swarm/hook.py hook <event>
+```
+
+`.sentinel-swarm/hook.py` is the shim that setup copies from
+`templates/hook_shim.py`. It uses the standard library only. It finds the
+sentinel-swarm install for the repo in `~/.claude/plugins/installed_plugins.json`,
+in this order: scope `local`, then `project` with a matching `projectPath`, then
+`user`. It then runs `uv run --project <installPath>/mcp --frozen --no-dev python -m
+swarm_ledger.hooks <event>` and passes stdin and stdout through. A plugin upgrade
+changes the registry, not the agent files.
+
+The per-event behavior lives in `mcp/src/swarm_ledger/hooks/events.py`, as functions
+`handle_<event>(ledger, data)` that tests call directly, in-process.
+
+## Hooks per role
+
+| Event | Matcher | Ledger hook event | Roles |
+|---|---|---|---|
+| `SessionStart` | all | `session_start` | all |
+| `PreToolUse` | `Agent` | `pre_agent`, which denies | all |
+| `PreToolUse` | `Write\|Edit\|MultiEdit\|NotebookEdit` | `pre_write` | all |
+| `PreToolUse` | `Bash\|PowerShell` | `pre_shell` | all |
+| `PreToolUse` | `mcp__swarm-ledger__.*` | `pre_ledger` | all |
+| `PostToolUse` | all | `post_any` | all |
+| `PostToolUse` | `Bash\|PowerShell` | `post_shell` | coder |
+| `PreCompact` | all | `pre_compact` | all |
+| `Stop` | all | `stop` | all |
+| `SessionEnd` | all | `session_end` | all |
+
+`pre_agent`, `pre_write`, `pre_shell`, and `pre_ledger` are the gating events.
+
+## When the shim cannot run a hook
+
+The registry is missing, the plugin is not installed for the repo, the install's
+files are missing, `uv` is not on `PATH`, or the ledger hook fails or runs longer than
+50 seconds. Then:
+
+- A gating event answers `deny`, with the reason.
+- Every event adds a `systemMessage` with the reason and tells the user to run
+  `/sentinel-swarm:setup`.
+- The shim exits 0.
+
+## The two rules every ledger hook follows
 
 - **A hook never exits non-zero and never blocks through exit code 2.** It blocks by
   printing a JSON decision (`permissionDecision: "deny"` for `PreToolUse`, `decision:
-  "block"` for `Stop` and `SubagentStop`) and exiting 0.
-- **A broken hook allows.** Any exception is caught at the top level, written as one
-  line to stderr, and the hook prints nothing and exits 0. A hook can never lock the
-  user out.
+  "block"` for `Stop`) and exiting 0.
+- **A broken ledger hook allows.** Any exception inside `swarm_ledger.hooks` is
+  caught at the top level, written as one line to stderr, and the hook prints nothing
+  and exits 0. The shim's deny covers only the cases above, where the ledger code
+  never ran.
 
-## No-op by default
+## The user owns the hooks
 
-Every hook is a no-op (allow, print nothing) unless an active run exists in the
-ledger and the caller is a registered, live swarm agent. A paused run counts as
-active here: every gate still applies while the run is paused. Exceptions: `SessionStart`
-always runs its checks, `SubagentStart` always registers the agent, hook 4's
-protected-records rule applies to everyone whenever a run is active, and hook 6
-always stamps identity, because a ledger call can arrive before its caller is a
-registered agent (`run_start` itself, for instance).
+The hooks in a role's file are the user's to edit, and a user can weaken a hook-based
+gate in their own project. The ledger tools' gates, such as `handoff_submit`,
+`approve`, and `agent_spawn`, apply whatever the files say.
 
-## Why `uv run`, not `python3 || python`
+## MCP servers through the same shim
 
-The sibling plugins' hooks are single-file scripts with no third-party imports, so
-they run as `python3 ... || python ...` to work on a host with only one of those
-names. These hooks import the `swarm_ledger` package and its dependencies
-(`fastmcp`, `pyyaml`), so they run through `uv run --project
-"${CLAUDE_PLUGIN_ROOT}/mcp" --frozen --no-dev`, which resolves the locked
-environment before running.
+`hook.py mcp <plugin_id> <server>` starts another plugin's MCP server for a swarm
+session. It finds the plugin's install the same way, reads the server's entry from
+the install's `.mcp.json`, expands `${CLAUDE_PLUGIN_ROOT}` and `${VAR:-default}`, and
+runs it with stdio passed through. The role files use it for codebase-kg.
