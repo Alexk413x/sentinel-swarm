@@ -8,7 +8,8 @@ CREATE TABLE IF NOT EXISTS runs (
     started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     ended_at TEXT,
     watch_heartbeat_at TEXT,
-    watch_expires_at TEXT
+    watch_expires_at TEXT,
+    watch_owner TEXT
 );
 
 CREATE TABLE IF NOT EXISTS phases (

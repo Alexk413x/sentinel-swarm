@@ -110,6 +110,38 @@ def test_existing_role_file_keeps_frontmatter_and_gets_new_body(repo: Path):
     assert "permissionMode" in line and "hooks" in line
 
 
+def test_a_hook_new_in_the_template_joins_an_existing_role_file(repo: Path):
+    template = setup.template_file("oracle").read_text(encoding="utf-8")
+    monitor_entry = (
+        '    - matcher: "Monitor"\n'
+        "      hooks:\n"
+        "        - type: command\n"
+        '          command: "python3 .sentinel-swarm/hook.py hook pre_monitor || '
+        'python .sentinel-swarm/hook.py hook pre_monitor"\n'
+        "          timeout: 60\n"
+    )
+    assert monitor_entry in template
+    old = template.replace(monitor_entry, "").replace("color: cyan", "color: pink")
+    path = setup.role_file(repo, "oracle")
+    path.parent.mkdir(parents=True)
+    path.write_bytes(old.encode("utf-8"))
+
+    report = setup.run_setup(repo)
+
+    merged = path.read_text(encoding="utf-8")
+    frontmatter, _ = setup.split_document(merged)
+    pre_tool_use = frontmatter.index("  PreToolUse:")
+    assert frontmatter.index(monitor_entry) > pre_tool_use
+    assert frontmatter.index(monitor_entry) < frontmatter.index("  PostToolUse:")
+    assert "color: pink" in frontmatter
+    assert frontmatter.count("pre_monitor ||") == 1
+    line = next(line for line in report.lines if "swarm-oracle.md" in line)
+    assert "hook pre_monitor" in line
+
+    setup.run_setup(repo)
+    assert path.read_text(encoding="utf-8") == merged
+
+
 def test_role_file_without_frontmatter_is_left_alone(repo: Path):
     path = setup.role_file(repo, "coder")
     path.parent.mkdir(parents=True)

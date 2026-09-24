@@ -29,6 +29,9 @@ WORKTREE_SETTINGS: dict[str, Any] = {"worktree": {"bgIsolation": "none"}}
 
 _KEY_LINE = re.compile(r"^([A-Za-z_][\w-]*)\s*:")
 _PLAIN_NAME = re.compile(r"[A-Za-z0-9_.-]+")
+_HOOK_EVENT_LINE = re.compile(r"^  ([A-Za-z]+):\s*$")
+_HOOK_ITEM_LINE = re.compile(r"^    - ")
+_LEDGER_HOOK = re.compile(r"hook\.py hook (\w+)")
 
 
 class SetupError(Exception):
@@ -99,6 +102,53 @@ def _join_document(frontmatter: str, body: str) -> str:
     return f"---\n{_with_newline(frontmatter)}---\n{body}"
 
 
+def _hook_entries(frontmatter: str) -> list[tuple[str, str, str]]:
+    entries: list[tuple[str, str, str]] = []
+    parent: str | None = None
+    current: list[str] = []
+
+    def flush() -> None:
+        if parent is not None and current:
+            text = "".join(current)
+            match = _LEDGER_HOOK.search(text)
+            if match:
+                entries.append((parent, match.group(1), text))
+
+    for line in key_blocks(frontmatter).get("hooks", "").splitlines(keepends=True)[1:]:
+        event = _HOOK_EVENT_LINE.match(line)
+        if event:
+            flush()
+            parent, current = event.group(1), []
+        elif _HOOK_ITEM_LINE.match(line):
+            flush()
+            current = [line]
+        elif current:
+            current.append(line)
+    flush()
+    return entries
+
+
+def add_missing_hooks(user_frontmatter: str, template_frontmatter: str) -> tuple[str, list[str]]:
+    have = {event for _, event, _ in _hook_entries(user_frontmatter)}
+    lines = _with_newline(user_frontmatter).splitlines(keepends=True)
+    added: list[str] = []
+    for parent, event, text in _hook_entries(template_frontmatter):
+        if event in have:
+            continue
+        header = f"  {parent}:"
+        at = next((i for i, line in enumerate(lines) if line.rstrip() == header), None)
+        if at is None:
+            hooks_at = next((i for i, line in enumerate(lines) if line.rstrip() == "hooks:"), None)
+            if hooks_at is None:
+                continue
+            lines.insert(hooks_at + 1, header + "\n")
+            at = hooks_at + 1
+        lines.insert(at + 1, text)
+        have.add(event)
+        added.append(event)
+    return "".join(lines), added
+
+
 def merge_role_file(existing: str, template: str) -> tuple[str, list[str], bool]:
     user_frontmatter, user_body = split_document(existing)
     template_frontmatter, template_body = split_document(template)
@@ -106,6 +156,9 @@ def merge_role_file(existing: str, template: str) -> tuple[str, list[str], bool]
     template_keys = key_blocks(template_frontmatter)
     added = [key for key in template_keys if key not in user_keys]
     frontmatter = _with_newline(user_frontmatter) + "".join(template_keys[key] for key in added)
+    if "hooks" in user_keys:
+        frontmatter, hooks = add_missing_hooks(frontmatter, template_frontmatter)
+        added += [f"hook {event}" for event in hooks]
     return _join_document(frontmatter, template_body), added, user_body != template_body
 
 

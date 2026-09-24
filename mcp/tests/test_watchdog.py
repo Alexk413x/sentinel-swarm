@@ -733,6 +733,31 @@ def test_the_listener_loop_prints_new_directives_then_exits_on_pause(
     assert naps == [2.0, 2.0]
 
 
+def test_a_newer_listener_retires_the_older_one(ledger: Ledger, now: datetime) -> None:
+    _run_id(ledger)
+    watch.claim(ledger.conn, "old")
+    ledger.directive_submit("watchdog", "watchdog", "For the new listener.")
+    watch.claim(ledger.conn, "new")
+
+    assert watch.poll(ledger.conn, now, "old") == (False, [])
+    keep, lines = watch.poll(ledger.conn, now, "new")
+    assert keep
+    assert lines == ["Watchdog directive 1: For the new listener."]
+
+
+def test_the_listener_loop_exits_once_another_listener_claims_the_run(
+    ledger: Ledger, now: datetime
+) -> None:
+    _run_id(ledger)
+    out = io.StringIO()
+
+    def sleep(seconds: float) -> None:
+        watch.claim(ledger.conn, "newer")
+
+    assert watch.watch(ledger.conn, out, sleep=sleep, clock=lambda: now, owner="older") == 0
+    assert out.getvalue() == ""
+
+
 def test_directive_inbox_marks_directives_notified(ledger: Ledger) -> None:
     _run_id(ledger)
     ledger.directive_submit("watchdog", "watchdog", "Seen in the inbox.")

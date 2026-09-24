@@ -36,7 +36,7 @@ Decided by Alex on 2026-09-22 and 2026-09-23: the plugin's four agent files are 
 - What the user controls in each file: `model`, `color`, `tools`, `permissionMode`, `mcpServers`, and `hooks`, plus the prompt body.
 - The default `tools` line is the core set plus each plugin the project enables at project scope. Decided 2026-09-22.
 - A new session loads agent files when it starts. The Oracle's file must exist before the Oracle starts, so the launcher (`/sentinel-swarm:run`, or `scripts/smoke.sh`) writes the files first. Every child starts as a new session, so it always sees the current files.
-- Updating after a plugin upgrade: `setup` replaces the prompt body from the new template and keeps the user's frontmatter. It reports any key the new template adds.
+- Updating after a plugin upgrade: `setup` replaces the prompt body from the new template and keeps the user's frontmatter. It reports any key the new template adds. It also adds each ledger hook that the template has and the file lacks, such as `pre_monitor` for a host set up before that hook existed, and reports it. A hook the user removed on purpose comes back on the next setup. **(proposed, 2026-09-24)**
 - The hooks in a role's file are the user's to edit. A user can weaken a hook-based gate in their own project. The ledger tools' gates, such as `handoff_submit`, `approve`, and `agent_spawn`, still apply whatever the files say.
 
 ## Starting a session

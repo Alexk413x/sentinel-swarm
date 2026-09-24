@@ -14,6 +14,7 @@ _ADDED_COLUMNS = (
     ("agents", "bg_id", "TEXT"),
     ("runs", "watch_heartbeat_at", "TEXT"),
     ("runs", "watch_expires_at", "TEXT"),
+    ("runs", "watch_owner", "TEXT"),
     ("directives", "notified_at", "TEXT"),
 )
 _ADDED_TABLES = ("wakeups", "watchdog_findings")

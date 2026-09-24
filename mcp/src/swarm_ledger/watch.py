@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sqlite3
 import sys
 import time
+import uuid
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -16,11 +18,29 @@ from .watchdog import stamp, utcnow
 POLL_SECONDS = 2.0
 
 
-def poll(conn: sqlite3.Connection, now: datetime) -> tuple[bool, list[str]]:
-    run = conn.execute(
+def _live_run(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    return conn.execute(
         "SELECT * FROM runs WHERE state IN ('active', 'paused') ORDER BY run_id DESC LIMIT 1"
     ).fetchone()
+
+
+def claim(conn: sqlite3.Connection, owner: str) -> None:
+    with write_tx(conn):
+        run = _live_run(conn)
+        if run is not None:
+            conn.execute("UPDATE runs SET watch_owner = ? WHERE run_id = ?", (owner, run["run_id"]))
+
+
+def poll(
+    conn: sqlite3.Connection, now: datetime, owner: str | None = None
+) -> tuple[bool, list[str]]:
+    run = _live_run(conn)
     if run is None or run["state"] != "active":
+        return False, []
+    # Windows does not kill a killed Monitor's child processes, so an expired listener can
+    # outlive its Monitor. The newest listener owns the run; an older one exits instead of
+    # taking the directives meant for the listener the Oracle re-armed.
+    if owner is not None and run["watch_owner"] != owner:
         return False, []
     at = stamp(now)
     with write_tx(conn):
@@ -45,9 +65,12 @@ def watch(
     *,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], datetime] = utcnow,
+    owner: str | None = None,
 ) -> int:
+    owner = owner or f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    claim(conn, owner)
     while True:
-        keep, lines = poll(conn, clock())
+        keep, lines = poll(conn, clock(), owner)
         for line in lines:
             out.write(line + "\n")
             out.flush()
