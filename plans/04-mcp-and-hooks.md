@@ -22,7 +22,7 @@ Status on 2026-09-20: first draft for Alex to review. Alex decided the frame: on
 
 | Group | Tools | Used by |
 |---|---|---|
-| Repo | `repo_check` (up to date with `main`, clean tree), `repo_branch_create` | Oracle |
+| Repo | `repo_check(fetch=False)`, `repo_branch_create(name)`. Built. **(proposed)** `repo_check` reports `branch`, `clean`, `dirty_paths`, `base_branch` (`base_branch` setting, else `main`, else `master`, else none), `base_exists`, `ahead_of_base`/`behind_base`, `upstream`, `ahead_of_upstream`/`behind_of_upstream`, `obvious_start`, and one-sentence `advice`; it records its result on the run. `repo_branch_create` refuses unless the run's last `repo_check` reports `obvious_start`, the tree is still clean, and no Manager, Lead, or Coder of the run is live | Oracle |
 | Run and plan | `run_start`, `run_status`, `profile_set`, `guidelines_get`, `phase_add`, `phase_update`, `plan_unlocked` | Oracle. All roles read |
 | Briefs | `brief_create`, `brief_get`, `brief_ack` | A parent creates. A child reads and acknowledges |
 | Ownership | `claim_file`, `release_file`, `who_owns` | A Lead claims for its Coders. All roles read |
@@ -31,6 +31,8 @@ Status on 2026-09-20: first draft for Alex to review. Alex decided the frame: on
 | Code graph | `graph_upsert`, the same arguments as `kg_upsert_node`, applied under one lock in the ledger process. Decided 2026-09-21; see check 5 | Coder |
 | Handoff | `handoff_submit` | The child, at the end of its work |
 | Review | `score_record`, `review_compare`, `approve`, `return_work`, `accept_incomplete` | The parent |
+| Oversight | `module_review(module_id, outcome, notes, disagreement_notes)`. Built. **(proposed)** Only the module's phase Manager; `accepted` refuses without every file approved or incomplete, a passing module- or phase-scope test run after the module's last file approval, and a non-empty `disagreement_notes` entry for every approved file whose self and Lead scores disagreed. `returned` sets the module back and owes its live Lead a wake-up | Manager |
+| Oversight | `phase_review(phase_id, outcome, notes, low_score_notes, departure_notes)`. Built. **(proposed)** Only the Oracle, only for a phase in `handed_up`; `accepted` refuses without a passing full-scope test run since hand-up, a non-empty `low_score_notes` entry for every file whose latest Lead review has a dimension below the target, and a non-empty `departure_notes` entry for every accepted departure of the phase. `returned` sets the phase back to `working` and owes its live Manager a wake-up | Oracle |
 | Issues | `issue_open`, `attempt_record`, `idea_record`, `issue_escalate` | Parent and child |
 | Agreements | `deferral_propose`, `departure_record`, `shortfall_record`, `agreement_decide` | Any role proposes. The responsible level decides |
 | Overrides | `override_grant` | Oracle only |
@@ -86,6 +88,9 @@ All hooks live in the plugin's `hooks/hooks.json`, because plugin agents ignore 
 | A message goes to an agent that exists in the run | `message_post` refuses an unregistered name and lists the registered ones. Any agent may message any other. Added 2026-09-22 at Alex's request |
 | A finished Lead or Manager is released so it stops and frees its slot | `phase_update(handed_up)` refuses while a Lead of the phase is live, so the Manager releases each Lead with `agent_release` after it accepts the module. `phase_update(approved)` releases the phase's Manager and every agent still live under it, and refuses while a deferral in the phase is open. `run_finish` releases anything left. Added 2026-09-23 at Alex's request |
 | Only the owner's parent chain escalates an issue | `issue_escalate` refuses anyone outside the file owner's chain. It records the receiver in `issues.escalated_to`: the Manager for round 2, the Oracle for round 3. It also messages the receiver. Added 2026-09-22 at Alex's request |
+| The Oracle checks the repo before a Manager starts | `agent_spawn` refuses a Manager until the run has a recorded `repo_check`. It does not require `obvious_start`: a not-obvious start is the Oracle's call, made by asking the user, not a block. Added on this branch **(proposed)** |
+| A phase hands up only after its Manager reviews every module | `phase_update(handed_up)` refuses unless every module of the phase has an accepted `module_review` newer than its last change. Added on this branch **(proposed)** |
+| A phase is approved only after the Oracle reviews it | `phase_update(approved)` refuses without an accepted `phase_review` of the phase recorded since it was handed up. Added on this branch **(proposed)** |
 
 ## One file, start to finish
 

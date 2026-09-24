@@ -65,12 +65,35 @@ def _bootstrap(ledger: Ledger) -> dict:
     lead = ledger.brief_ack("lead-1", "lead-agent")
 
     return {
+        "run_id": started["run"]["run_id"],
         "oracle_id": oracle_id,
         "phase_id": phase_id,
         "module_id": module_id,
         "manager": manager,
         "lead": lead,
     }
+
+
+def _insert_passing_test_run(ledger: Ledger, run_id: int, agent_id: str, scope: str) -> None:
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "INSERT INTO test_runs (run_id, agent_id, scope, target, command, exit_code, "
+            "passed, failed, skipped, output) VALUES (?, ?, ?, 'x', 'x', 0, 1, 0, 0, '')",
+            (run_id, agent_id, scope),
+        )
+
+
+def _accept_module(ledger: Ledger, ctx: dict) -> dict:
+    _insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
+    return ledger.module_review(
+        "manager-1", ctx["manager"]["agent_id"], ctx["module_id"], "accepted", "looks good"
+    )
+
+
+def _hand_up_and_accept_phase(ledger: Ledger, ctx: dict) -> dict:
+    ledger.phase_update("manager-1", ctx["manager"]["agent_id"], ctx["phase_id"], "handed_up")
+    _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+    return ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ship it")
 
 
 # -- settings -----------------------------------------------------------------
@@ -183,14 +206,20 @@ def test_run_finish_refuses_when_a_phase_is_not_approved(ledger: Ledger) -> None
 def test_run_finish_refuses_when_a_file_claim_is_live(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     ledger.claim_file("lead-1", ctx["lead"]["agent_id"], "src/a.py", "tests/test_a.py", "coder-1")
-    ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
+    # Bypasses phase_update's own review gates: this test isolates run_finish's live-claim
+    # check, which a live claim's owning module would otherwise never let reach "approved".
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE phases SET state = 'approved' WHERE phase_id = ?", (ctx["phase_id"],))
     with pytest.raises(LedgerError):
         ledger.run_finish("oracle", ctx["oracle_id"], "success")
 
 
 def test_run_finish_refuses_when_a_directive_is_open(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
+    # Bypasses phase_update's own review gates: this test isolates run_finish's open-directive
+    # check.
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE phases SET state = 'approved' WHERE phase_id = ?", (ctx["phase_id"],))
     ledger.directive_submit("watchdog", "watchdog", "Agent X looks stuck.")
     with pytest.raises(LedgerError):
         ledger.run_finish("oracle", ctx["oracle_id"], "success")
@@ -202,12 +231,16 @@ def test_handed_up_refuses_while_a_lead_of_the_phase_is_live(ledger: Ledger) -> 
         ledger.phase_update("manager-1", "mgr-agent", ctx["phase_id"], "handed_up")
 
     ledger.agent_release("manager-1", "mgr-agent", ctx["lead"]["agent_id"])
+    _accept_module(ledger, ctx)
     phase = ledger.phase_update("manager-1", "mgr-agent", ctx["phase_id"], "handed_up")
     assert phase["state"] == "handed_up"
 
 
 def test_phase_approval_releases_the_manager_and_everything_under_it(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
+    _accept_module(ledger, ctx)
+    ledger.agent_release("manager-1", ctx["manager"]["agent_id"], ctx["lead"]["agent_id"])
+    _hand_up_and_accept_phase(ledger, ctx)
     ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
 
     rows = ledger.conn.execute(
@@ -232,6 +265,9 @@ def test_run_finish_releases_every_agent_left_live(ledger: Ledger) -> None:
 
 def test_run_finish_succeeds_once_the_run_is_clear(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
+    _accept_module(ledger, ctx)
+    ledger.agent_release("manager-1", ctx["manager"]["agent_id"], ctx["lead"]["agent_id"])
+    _hand_up_and_accept_phase(ledger, ctx)
     ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
     result = ledger.run_finish("oracle", ctx["oracle_id"], "success")
     assert result["state"] == "finished"
@@ -267,6 +303,7 @@ def test_guidelines_set_is_oracle_only_and_get_returns_the_latest(ledger: Ledger
 def test_phase_deps_and_plan_unlocked(ledger: Ledger) -> None:
     started = ledger.run_start(prd="Build X", session_id="sess-1")
     oracle_id = started["oracle"]["agent_id"]
+    run_id = started["run"]["run_id"]
 
     phase_1 = ledger.phase_add("oracle", oracle_id, "phase-1")
     phase_2 = ledger.phase_add("oracle", oracle_id, "phase-2", depends_on=[phase_1["phase_id"]])
@@ -274,6 +311,11 @@ def test_phase_deps_and_plan_unlocked(ledger: Ledger) -> None:
     unlocked = {p["phase_id"] for p in ledger.plan_unlocked("oracle", oracle_id)}
     assert unlocked == {phase_1["phase_id"]}
 
+    # phase-1 has no modules, so its own module-review gate is vacuous; it still needs to go
+    # through handed_up and an accepted phase_review before it can be approved.
+    ledger.phase_update("oracle", oracle_id, phase_1["phase_id"], "handed_up")
+    _insert_passing_test_run(ledger, run_id, oracle_id, "full")
+    ledger.phase_review("oracle", oracle_id, phase_1["phase_id"], "accepted", "nothing to build")
     ledger.phase_update("oracle", oracle_id, phase_1["phase_id"], "approved")
 
     unlocked_after = {p["phase_id"] for p in ledger.plan_unlocked("oracle", oracle_id)}
@@ -655,6 +697,7 @@ def test_manager_sets_its_own_phase_to_working_and_handed_up_only(ledger: Ledger
     mgr = ctx["manager"]["agent_id"]
     assert ledger.phase_update("manager-1", mgr, ctx["phase_id"], "working")["state"] == "working"
     ledger.agent_release("manager-1", mgr, ctx["lead"]["agent_id"])
+    _accept_module(ledger, ctx)
     assert (
         ledger.phase_update("manager-1", mgr, ctx["phase_id"], "handed_up")["state"] == "handed_up"
     )

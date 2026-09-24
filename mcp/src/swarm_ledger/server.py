@@ -26,6 +26,8 @@ _TOOL_NAMES: tuple[str, ...] = (
     "run_status",
     "run_finish",
     "run_pause",
+    "repo_check",
+    "repo_branch_create",
     "profile_set",
     "guidelines_set",
     "guidelines_get",
@@ -63,6 +65,8 @@ _TOOL_NAMES: tuple[str, ...] = (
     "return_work",
     "attempt_record",
     "accept_incomplete",
+    "module_review",
+    "phase_review",
     "deferral_propose",
     "agreement_decide",
     "version_restore",
@@ -129,6 +133,23 @@ def run_finish(caller: str, outcome: str, agent_id: str | None = None) -> dict[s
 def run_pause(caller: str, reason: str, agent_id: str | None = None) -> dict[str, Any]:
     """Pauses the run on a blocker only the user can fix; the Oracle calls this."""
     return _call(_ledger().run_pause, caller=caller, agent_id=agent_id, reason=reason)
+
+
+# -- Repo -----------------------------------------------------------------------------
+
+
+@mcp.tool
+def repo_check(caller: str, fetch: bool = False, agent_id: str | None = None) -> dict[str, Any]:
+    """Checks the repo's branch and clean state against its base branch and upstream, and
+    records the result on the run; the Oracle calls this before planning."""
+    return _call(_ledger().repo_check, caller=caller, agent_id=agent_id, fetch=fetch)
+
+
+@mcp.tool
+def repo_branch_create(caller: str, name: str, agent_id: str | None = None) -> dict[str, Any]:
+    """Creates a run branch from the base branch once repo_check reports obvious_start; the
+    Oracle calls this."""
+    return _call(_ledger().repo_branch_create, caller=caller, agent_id=agent_id, name=name)
 
 
 @mcp.tool
@@ -591,6 +612,55 @@ def accept_incomplete(
         agent_id=agent_id,
         handoff_id=handoff_id,
         reason=reason,
+    )
+
+
+# -- Oversight: Manager and Oracle reviews -------------------------------------------------------
+
+
+@mcp.tool
+def module_review(
+    caller: str,
+    module_id: int,
+    outcome: Literal["accepted", "returned"],
+    notes: str,
+    disagreement_notes: dict[str, str] | None = None,
+    agent_id: str | None = None,
+) -> dict[str, Any]:
+    """Records the Manager's review of a module before it hands the phase up; a returned
+    module owes its live Lead a wake-up as `next`."""
+    return _call(
+        _ledger().module_review,
+        caller=caller,
+        agent_id=agent_id,
+        module_id=module_id,
+        outcome=outcome,
+        notes=notes,
+        disagreement_notes=disagreement_notes,
+    )
+
+
+@mcp.tool
+def phase_review(
+    caller: str,
+    phase_id: int,
+    outcome: Literal["accepted", "returned"],
+    notes: str,
+    low_score_notes: dict[str, str] | None = None,
+    departure_notes: dict[str, str] | None = None,
+    agent_id: str | None = None,
+) -> dict[str, Any]:
+    """Records the Oracle's review of a handed-up phase before phase_update(approved); a
+    returned phase owes its live Manager a wake-up as `next`."""
+    return _call(
+        _ledger().phase_review,
+        caller=caller,
+        agent_id=agent_id,
+        phase_id=phase_id,
+        outcome=outcome,
+        notes=notes,
+        low_score_notes=low_score_notes,
+        departure_notes=departure_notes,
     )
 
 

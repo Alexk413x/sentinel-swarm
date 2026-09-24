@@ -138,6 +138,7 @@ def _bootstrap(ledger: Ledger, claude: FakeClaude) -> Ctx:
     claude.add(_ORACLE_SESSION, "my-host-oracle")
     started = ledger.run_start(prd="Build X", session_id=_ORACLE_SESSION)
     oracle = ("oracle", str(started["oracle"]["agent_id"]))
+    ledger.repo_check(*oracle)
     phase = ledger.phase_add(*oracle, "phase-1")
     manager = _spawn(ledger, oracle, "manager-1", "manager", "opus", phase_id=phase["phase_id"])
     mgr = ("manager-1", str(manager["agent_id"]))
@@ -171,6 +172,26 @@ def _row(ledger: Ledger, agent_id: str) -> dict:
     return dict(
         ledger.conn.execute("SELECT * FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
     )
+
+
+def _insert_passing_test_run(ledger: Ledger, run_id: int, agent_id: str, scope: str) -> None:
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "INSERT INTO test_runs (run_id, agent_id, scope, target, command, exit_code, "
+            "passed, failed, skipped, output) VALUES (?, ?, ?, 'x', 'x', 0, 1, 0, 0, '')",
+            (run_id, agent_id, scope),
+        )
+
+
+def _accept_module(ledger: Ledger, ctx: Ctx) -> dict:
+    _insert_passing_test_run(ledger, ctx.run_id, ctx.manager[1], "phase")
+    return ledger.module_review(*ctx.manager, ctx.module_id, "accepted", "looks good")
+
+
+def _hand_up_and_accept_phase(ledger: Ledger, ctx: Ctx) -> dict:
+    ledger.phase_update(*ctx.manager, ctx.phase_id, "handed_up")
+    _insert_passing_test_run(ledger, ctx.run_id, ctx.oracle[1], "full")
+    return ledger.phase_review(*ctx.oracle, ctx.phase_id, "accepted", "ship it")
 
 
 # -- the CLI wrapper ------------------------------------------------------------------------
@@ -473,6 +494,7 @@ def test_phase_update_handed_up_owes_the_oracle_a_wake_up(
 ) -> None:
     ctx = _bootstrap(ledger, claude)
     ledger.agent_release(*ctx.manager, ctx.lead[1])
+    _accept_module(ledger, ctx)
     phase = ledger.phase_update(*ctx.manager, ctx.phase_id, "handed_up")
     assert phase["next"] == (
         'SendMessage(to="my-host-oracle", '
@@ -541,6 +563,9 @@ def test_phase_approval_and_run_finish_stop_every_session_but_the_oracles(
     ctx = _bootstrap(ledger, claude)
     with write_tx(ledger.conn) as conn:
         conn.execute("UPDATE agents SET bg_id = 'oraclebg' WHERE agent_id = ?", (ctx.oracle[1],))
+    _accept_module(ledger, ctx)
+    ledger.agent_release(*ctx.manager, ctx.lead[1])
+    _hand_up_and_accept_phase(ledger, ctx)
     ledger.phase_update(*ctx.oracle, ctx.phase_id, "approved")
     stopped = {args[1] for args in claude.commands("stop")}
     assert stopped == {

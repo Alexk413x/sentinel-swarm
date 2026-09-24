@@ -53,6 +53,8 @@ class Settings:
     build_command: str | None = None
     lint_command: str | None = None
     parallelism_cap: int | None = None
+    # Empty means repo_check tries main, then master, then reports no base branch.
+    base_branch: str | None = None
 
     def snapshot(self) -> str:
         return json.dumps(asdict(self), sort_keys=True)
@@ -116,4 +118,5 @@ def load_settings(repo_root: Path) -> Settings:
         build_command=data.get("build_command") or defaults.build_command,
         lint_command=data.get("lint_command") or defaults.lint_command,
         parallelism_cap=data.get("parallelism_cap") or defaults.parallelism_cap,
+        base_branch=data.get("base_branch") or defaults.base_branch,
     )

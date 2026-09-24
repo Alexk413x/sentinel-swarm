@@ -9,7 +9,16 @@ _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 _GIT_EXCLUDE_LINE = ".sentinel-swarm/"
 _GITDIR_PREFIX = "gitdir:"
 # What an older version 1 ledger may lack. schema.sql declares them too, for a new ledger.
-_ADDED_COLUMNS = (("agents", "session_name", "TEXT"), ("agents", "bg_id", "TEXT"))
+_ADDED_COLUMNS = (
+    ("agents", "session_name", "TEXT"),
+    ("agents", "bg_id", "TEXT"),
+    ("runs", "repo_check_json", "TEXT"),
+    ("runs", "repo_checked_at", "TEXT"),
+    ("runs", "branch", "TEXT"),
+    ("phases", "handed_up_at", "TEXT"),
+    ("reviews", "details_json", "TEXT"),
+    ("departures", "file_id", "INTEGER"),
+)
 _ADDED_TABLES = ("wakeups",)
 
 
@@ -85,7 +94,13 @@ def migrate(conn: sqlite3.Connection) -> None:
 
 
 def _upgrade(conn: sqlite3.Connection) -> None:
+    tables = {
+        row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
     for table, column, declaration in _ADDED_COLUMNS:
+        # A ledger old enough to predate the table itself gets it from _ADDED_TABLES below.
+        if table not in tables:
+            continue
         columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
         if column in columns:
             continue
@@ -94,8 +109,5 @@ def _upgrade(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError as exc:
             if "duplicate column" not in str(exc):
                 raise
-    tables = {
-        row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-    }
     if any(table not in tables for table in _ADDED_TABLES):
         conn.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))

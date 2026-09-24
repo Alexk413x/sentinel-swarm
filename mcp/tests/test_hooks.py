@@ -74,12 +74,32 @@ def _bootstrap(ledger: Ledger) -> dict:
     lead = ledger.brief_ack("lead-1", "lead-agent")
 
     return {
+        "run_id": started["run"]["run_id"],
         "oracle_id": oracle_id,
         "phase_id": phase_id,
         "module_id": module_id,
         "manager": manager,
         "lead": lead,
     }
+
+
+def _insert_passing_test_run(ledger: Ledger, run_id: int, agent_id: str, scope: str) -> None:
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "INSERT INTO test_runs (run_id, agent_id, scope, target, command, exit_code, "
+            "passed, failed, skipped, output) VALUES (?, ?, ?, 'x', 'x', 0, 1, 0, 0, '')",
+            (run_id, agent_id, scope),
+        )
+
+
+def _accept_module_and_phase(ledger: Ledger, ctx: dict) -> None:
+    _insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
+    ledger.module_review(
+        "manager-1", ctx["manager"]["agent_id"], ctx["module_id"], "accepted", "looks good"
+    )
+    ledger.phase_update("manager-1", ctx["manager"]["agent_id"], ctx["phase_id"], "handed_up")
+    _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+    ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ship it")
 
 
 def _spawn_coder(ledger: Ledger, ctx: dict, coder_name: str, path: str, test_path: str) -> dict:
@@ -694,6 +714,7 @@ def test_stop_after_run_finish_records_the_oracle_tokens_and_rebuilds_the_report
 ) -> None:
     ctx = _bootstrap(ledger)
     ledger.agent_release("manager-1", "mgr-agent", ctx["lead"]["agent_id"])
+    _accept_module_and_phase(ledger, ctx)
     ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
     ledger.run_finish("oracle", ctx["oracle_id"], "success")
     transcript = tmp_path / "oracle.jsonl"
@@ -819,6 +840,8 @@ def test_stop_tells_the_oracle_to_resume_a_stopped_session(ledger: Ledger) -> No
 def test_stop_does_not_block_the_oracle_for_its_own_debts(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     _as_session(ledger, "mgr-agent", "host-r1-manager-1")
+    ledger.agent_release("manager-1", "mgr-agent", ctx["lead"]["agent_id"])
+    _accept_module_and_phase(ledger, ctx)
     ledger.message_post("oracle", ctx["oracle_id"], "manager-1", "Change of plan.")
     ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
     assert events.handle_stop(ledger, {"session_id": ctx["oracle_id"]}) is None

@@ -10,6 +10,8 @@ from pathlib import Path
 from . import __version__, agentfiles, serve, sessions
 from .db import connect, ensure_git_exclude, ledger_path, write_tx
 from .identity import ROLES, Caller, LedgerError, child_role_of, require_role, resolve
+from .oversight import OversightMixin
+from .repo import RepoMixin
 from .review import ReviewMixin
 from .settings import load_settings
 
@@ -43,7 +45,7 @@ def session_name_for(repo_root: Path, run_id: int, child_name: str) -> str:
     return f"{repo_slug(repo_root)}-r{run_id}-{child_name}"
 
 
-class Ledger(ReviewMixin):
+class Ledger(ReviewMixin, RepoMixin, OversightMixin):
     def __init__(self, repo_root: Path, *, db_path: Path | None = None) -> None:
         self.repo_root = repo_root
         self.settings = load_settings(repo_root)
@@ -480,6 +482,7 @@ class Ledger(ReviewMixin):
                     raise LedgerError(
                         f"release every Lead of the phase with agent_release first: {live_leads}"
                     )
+                self._require_phase_modules_reviewed(conn, phase_id)
 
             if state == "approved":
                 open_deferrals = conn.execute(
@@ -493,6 +496,19 @@ class Ledger(ReviewMixin):
                         f"{open_deferrals} deferral(s) in the phase are still open; the Manager "
                         "decides them before approval releases it"
                     )
+                phase_row = conn.execute(
+                    "SELECT handed_up_at FROM phases WHERE phase_id = ?", (phase_id,)
+                ).fetchone()
+                accepted_review = conn.execute(
+                    "SELECT 1 FROM reviews WHERE phase_id = ? AND kind = 'oracle' "
+                    "AND outcome = 'accepted' AND (? IS NULL OR created_at >= ?) LIMIT 1",
+                    (phase_id, phase_row["handed_up_at"], phase_row["handed_up_at"]),
+                ).fetchone()
+                if accepted_review is None:
+                    raise LedgerError(
+                        "no accepted Oracle phase_review of this phase exists since it was "
+                        "handed up; call phase_review first"
+                    )
                 conn.execute(
                     f"UPDATE phases SET state = ?, ended_at = {_NOW} WHERE phase_id = ?",
                     (state, phase_id),
@@ -505,6 +521,11 @@ class Ledger(ReviewMixin):
                     (phase_id, phase_id, phase_id),
                 ).fetchall():
                     self._release_agent(conn, row["agent_id"], "phase approved")
+            elif state == "handed_up":
+                conn.execute(
+                    f"UPDATE phases SET state = ?, handed_up_at = {_NOW} WHERE phase_id = ?",
+                    (state, phase_id),
+                )
             else:
                 conn.execute("UPDATE phases SET state = ? WHERE phase_id = ?", (state, phase_id))
 
@@ -830,6 +851,14 @@ class Ledger(ReviewMixin):
             )
         if brief["parent_agent_id"] != c.agent_id or child_role_of(c.role) != brief["child_role"]:
             raise LedgerError(f"{caller!r} is not the parent named in the brief for {child_name!r}")
+        if brief["child_role"] == "manager":
+            run_row = self.conn.execute(
+                "SELECT repo_checked_at FROM runs WHERE run_id = ?", (brief["run_id"],)
+            ).fetchone()
+            if run_row is None or run_row["repo_checked_at"] is None:
+                raise LedgerError(
+                    "call repo_check first; create a branch or ask the user as its advice says"
+                )
         spawned = self.conn.execute(
             "SELECT session_name FROM agents WHERE name = ? AND ended_at IS NULL", (child_name,)
         ).fetchone()

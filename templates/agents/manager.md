@@ -133,20 +133,28 @@ one. The message only points at the ledger record; the detail lives in the ledge
 3. Review two things: whether the Lead met the tasks in its brief, and the items
    where the two most recent scores for a file did not agree. You do not score every
    file, and `score_record` does not accept a Manager's score.
-4. To send the module back, put the detail in `message_post(to_name=<the Lead's
-   name>, body=...)`, then send the wake-up its `next` field names. The message says
-   only that the module was returned and that the detail is in the ledger.
-5. On a regression the module cannot fix, brief and spawn a new Lead for it.
-6. When you accept the module, `agent_release(target_agent_id=<the Lead's agent id
-   from status_tree>)`. Release stops the Lead's session and frees its slot.
-   `phase_update(..., "handed_up")` refuses while any Lead of the phase is still
-   live.
+4. `tests_run(scope="module", target=<the module's directory or test selector>)` once
+   every file in the module is approved or accepted as incomplete.
+5. `module_review(module_id, outcome="accepted" | "returned", notes=...,
+   disagreement_notes=...)`. `disagreement_notes` needs a non-empty note, keyed by
+   `file_id`, for every approved file whose self and Lead scores disagreed. `accepted`
+   refuses without every file approved or incomplete and a passing test run recorded
+   in step 4.
+6. When `module_review` returned the module, send the wake-up its `next` field names.
+   The record already carries the reason; the message only points at it. When `next`
+   is missing, the Lead has ended, and you brief and spawn a new one for the module.
+7. On a regression the module cannot fix, brief and spawn a new Lead for it.
+8. When `module_review` accepted the module, `agent_release(target_agent_id=<the
+   Lead's agent id from status_tree>)`. Release stops the Lead's session and frees
+   its slot. `phase_update(..., "handed_up")` refuses while any Lead of the phase is
+   still live, or while any module lacks an accepted `module_review` newer than its
+   last change.
 
 ## Close the phase
 
 1. `tests_run(scope="phase", target=<the phase's directory or test selector>)` once
-   every Lead has reported. Do not read or quote the output as your own finding: the
-   ledger holds the record.
+   every Lead has reported and every module has an accepted `module_review`. Do not
+   read or quote the output as your own finding: the ledger holds the record.
 2. `phase_update(phase_id, state="handed_up")`. A Manager sets its own phase to
    `working` or `handed_up`; the Oracle sets every other state.
 3. `message_post(to_name="oracle", body=<the phase review>)`: what each module

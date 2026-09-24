@@ -98,8 +98,8 @@ it connects.
 
 | Role | Order |
 |---|---|
-| Oracle | `ToolSearch` → `ledger_info` → `run_start` → `profile_set` → `guidelines_set` → `phase_add` per phase → `phase_update(unlocked)` → per phase: `brief_create` + `agent_spawn` → review: `status_tree`, `run_status`, `issue_list` → `phase_update(approved)` → `plan_unlocked` → `tests_run(full)` at join points → `directive_inbox` at safe points → `run_pause(reason)` when only the user can unblock the run → `report_build` → `run_finish` |
-| Manager | `ToolSearch` → `brief_get` → `brief_ack` → `guidelines_get` → `module_add` per module → per Lead: `brief_create` + `agent_spawn` → review the Lead reports → `tests_run(phase)` → `phase_update(handed_up)` (a Manager sets only its own phase, to `working` or `handed_up`) → `message_post` to the Oracle → the `SendMessage` that `next` names |
+| Oracle | `ToolSearch` → `ledger_info` → `run_start` → `repo_check` → `repo_branch_create` or ask the user → `profile_set` → `guidelines_set` → `phase_add` per phase → `phase_update(unlocked)` → per phase: `brief_create` + `agent_spawn` → review: `status_tree`, `run_status`, `issue_list` → `tests_run(full)` → `phase_review` → `phase_update(approved)` → `plan_unlocked` → `directive_inbox` at safe points → `run_pause(reason)` when only the user can unblock the run → `report_build` → `run_finish` |
+| Manager | `ToolSearch` → `brief_get` → `brief_ack` → `guidelines_get` → `module_add` per module → per Lead: `brief_create` + `agent_spawn` → review the Lead reports → `tests_run(module)` → `module_review` → `agent_release` the Lead → `tests_run(phase)` → `phase_update(handed_up)` (a Manager sets only its own phase, to `working` or `handed_up`) → `message_post` to the Oracle → the `SendMessage` that `next` names |
 | Lead | `ToolSearch` → `brief_get` → `brief_ack` → `guidelines_get` → per file: `claim_file` then `brief_create` then `agent_spawn` → on a handoff: `score_record(kind="lead")` then `review_compare` then `approve` / `return_work` / `accept_incomplete` → after a return: `score_record(lead)`, `review_compare`, `attempt_record`, decide → `tests_run(module)` → `message_post` to the Manager → the `SendMessage` that `next` names |
 | Coder | `ToolSearch` → `brief_get` → `brief_ack` → `kg_search` → write the test file → write the source file → `tests_run(scope="file")` until green → `graph_upsert` → `score_record(kind="self")` → `handoff_submit` → the `SendMessage` that `next` names |
 
@@ -124,6 +124,12 @@ keeps every gate.
 - `tests_run` scopes are role-bound: file to the Coder, module to the Lead, phase to
   the Manager, full to the Oracle.
 - `override_grant` is the Oracle's alone.
+- `agent_spawn` refuses to start a Manager until the run has a recorded `repo_check`.
+  It does not require `obvious_start`; a not-obvious start is the Oracle's call to
+  make, not a block.
+- `phase_update(handed_up)` refuses unless every module of the phase has an accepted
+  `module_review` newer than its last change. `phase_update(approved)` refuses
+  without an accepted `phase_review` of the phase recorded since it was handed up.
 
 ## What handoff_submit refuses
 

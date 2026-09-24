@@ -5,6 +5,10 @@ CREATE TABLE IF NOT EXISTS runs (
     plugin_version TEXT,
     settings_json TEXT,
     outcome TEXT,
+    -- The Oracle's most recent repo_check result and the branch repo_branch_create made.
+    repo_check_json TEXT,
+    repo_checked_at TEXT,
+    branch TEXT,
     started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     ended_at TEXT
 );
@@ -16,6 +20,9 @@ CREATE TABLE IF NOT EXISTS phases (
     ordinal INTEGER NOT NULL,
     state TEXT NOT NULL,
     started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    -- Set when phase_update moves the phase to handed_up. phase_review and the
+    -- approved gate both measure freshness against this timestamp.
+    handed_up_at TEXT,
     ended_at TEXT
 );
 
@@ -118,6 +125,9 @@ CREATE TABLE IF NOT EXISTS reviews (
     outcome TEXT,
     notes TEXT,
     applicable_json TEXT,
+    -- For kind='manager': {"disagreement_notes": {file_id: note}}.
+    -- For kind='oracle': {"low_score_notes": {...}, "departure_notes": {...}}.
+    details_json TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -187,6 +197,7 @@ CREATE TABLE IF NOT EXISTS departures (
     run_id INTEGER NOT NULL REFERENCES runs (run_id) ON DELETE RESTRICT,
     agent_id TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
     guideline_id INTEGER REFERENCES guidelines (guideline_id) ON DELETE RESTRICT,
+    file_id INTEGER REFERENCES files (file_id) ON DELETE RESTRICT,
     kind TEXT NOT NULL,
     state TEXT NOT NULL,
     body TEXT NOT NULL,

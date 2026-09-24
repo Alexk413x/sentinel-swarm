@@ -604,6 +604,12 @@ def handle_stop(ledger: Ledger, data: dict) -> dict | None:
         "WHERE p.run_id = ? AND f.released_at IS NULL",
         (run["run_id"],),
     ).fetchone()["n"]
+    pending_phase_reviews = ledger.conn.execute(
+        "SELECT COUNT(*) AS n FROM phases p WHERE p.run_id = ? AND p.state = 'handed_up' "
+        "AND NOT EXISTS (SELECT 1 FROM reviews r WHERE r.phase_id = p.phase_id "
+        "AND r.kind = 'oracle' AND r.outcome = 'accepted' AND r.created_at >= p.handed_up_at)",
+        (run["run_id"],),
+    ).fetchone()["n"]
 
     reasons = []
     if plan_unlocked:
@@ -612,6 +618,8 @@ def handle_stop(ledger: Ledger, data: dict) -> dict | None:
         reasons.append(f"{submitted_handoffs} handoff(s) awaiting review")
     if live_claims:
         reasons.append(f"{live_claims} live file claim(s)")
+    if pending_phase_reviews:
+        reasons.append(f"{pending_phase_reviews} handed-up phase(s) awaiting an Oracle review")
     if live:
         reasons.append(f"{len(live)} live agent(s), none working")
     if not reasons:
