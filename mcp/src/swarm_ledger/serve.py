@@ -126,7 +126,9 @@ def ensure_server(repo_root: Path, timeout: float = START_TIMEOUT_S) -> str:
     command = [sys.executable, "-m", "swarm_ledger.serve", "--repo", str(root)]
     with log_path.open("ab") as log:
         if sys.platform == "win32":
-            flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+            # A hidden console, not DETACHED_PROCESS: a process with no console opens a new
+            # window for every console program it runs, such as the watchdog's claude calls.
+            flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
             process = subprocess.Popen(
                 command,
                 cwd=root,
