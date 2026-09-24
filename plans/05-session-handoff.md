@@ -29,7 +29,7 @@ Status on 2026-09-24: written by session `sentinel-swarm-a8`, updated by `sentin
 5. **Run the swarm on a real PRD** with two modules and several files, to exercise parallel Leads and Coders, release freeing slots, `return_work`, escalation, change requests, and messages between Coders. Draft a small PRD for Alex to review first. Expect about $10 to $20.
 6. **Prototype checks still open.** Whether `PreCompact` fires in a long session.
 7. **Open question** in `06-sessions-plan.md`: where the model settings live.
-8. **Refresh the code graph.** `knowledge/code_graph.db` is stale for about 30 files after 2026-09-24. Run `/codebase-kg:refresh`.
+8. **Code graph.** Refreshed on 2026-09-24: 70 nodes, no stale or unmapped file. Refresh it after each change to a mapped file; the `pre-push` hook blocks a push over drift.
 
 ## For Alex to review, all **(proposed)**
 
