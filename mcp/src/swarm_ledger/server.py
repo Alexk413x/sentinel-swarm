@@ -65,6 +65,14 @@ _TOOL_NAMES: tuple[str, ...] = (
     "accept_incomplete",
     "deferral_propose",
     "agreement_decide",
+    "cr_open",
+    "cr_accept",
+    "cr_complete",
+    "cr_verify",
+    "cr_list",
+    "departure_record",
+    "departure_decide",
+    "shortfall_record",
     "version_restore",
     "status_tree",
     "report_build",
@@ -623,6 +631,109 @@ def agreement_decide(
         deferral_id=deferral_id,
         decision=decision,
         reason=reason,
+    )
+
+
+@mcp.tool
+def cr_open(caller: str, path: str, body: str, agent_id: str | None = None) -> dict[str, Any]:
+    """Opens a change request on a path the caller does not own; any role calls this. The
+    ledger routes it to the file's owner, or up the chain when the owner has ended."""
+    return _call(_ledger().cr_open, caller=caller, agent_id=agent_id, path=path, body=body)
+
+
+@mcp.tool
+def cr_accept(
+    caller: str, cr_id: int, accept: bool, reason: str, agent_id: str | None = None
+) -> dict[str, Any]:
+    """Accepts or declines an open change request; only its recipient calls this. A decline
+    needs a non-empty reason."""
+    return _call(
+        _ledger().cr_accept,
+        caller=caller,
+        agent_id=agent_id,
+        cr_id=cr_id,
+        accept=accept,
+        reason=reason,
+    )
+
+
+@mcp.tool
+def cr_complete(caller: str, cr_id: int, notes: str, agent_id: str | None = None) -> dict[str, Any]:
+    """Completes an accepted change request with evidence; only its recipient calls this. It
+    refuses without a passing test run or an approved handoff for the path since acceptance."""
+    return _call(_ledger().cr_complete, caller=caller, agent_id=agent_id, cr_id=cr_id, notes=notes)
+
+
+@mcp.tool
+def cr_verify(
+    caller: str, cr_id: int, ok: bool, notes: str, agent_id: str | None = None
+) -> dict[str, Any]:
+    """Verifies a completed change request; only the requester or its nearest live ancestor
+    calls this. A failed verification goes back to accepted and owes the recipient a wake-up."""
+    return _call(
+        _ledger().cr_verify, caller=caller, agent_id=agent_id, cr_id=cr_id, ok=ok, notes=notes
+    )
+
+
+@mcp.tool
+def cr_list(
+    caller: str, state: str | None = None, agent_id: str | None = None
+) -> list[dict[str, Any]]:
+    """Lists the change requests the caller sent or received; the Oracle sees every one."""
+    return _call(_ledger().cr_list, caller=caller, agent_id=agent_id, state=state)
+
+
+@mcp.tool
+def departure_record(
+    caller: str,
+    body: str,
+    file_id: int | None = None,
+    guideline_id: int | None = None,
+    agent_id: str | None = None,
+) -> dict[str, Any]:
+    """Records a departure from the guidelines; a Coder for its own file, or a Lead, Manager,
+    or Oracle for work in its scope."""
+    return _call(
+        _ledger().departure_record,
+        caller=caller,
+        agent_id=agent_id,
+        body=body,
+        file_id=file_id,
+        guideline_id=guideline_id,
+    )
+
+
+@mcp.tool
+def departure_decide(
+    caller: str,
+    departure_id: int,
+    decision: Literal["accepted", "denied"],
+    reason: str,
+    solution: str | None = None,
+    agent_id: str | None = None,
+) -> dict[str, Any]:
+    """Decides an open departure as accepted or denied; the recorder's parent role or above
+    calls this. A denial needs a solution, and a higher role may deny an already accepted
+    departure."""
+    return _call(
+        _ledger().departure_decide,
+        caller=caller,
+        agent_id=agent_id,
+        departure_id=departure_id,
+        decision=decision,
+        reason=reason,
+        solution=solution,
+    )
+
+
+@mcp.tool
+def shortfall_record(
+    caller: str, body: str, file_id: int | None = None, agent_id: str | None = None
+) -> dict[str, Any]:
+    """Records a shortfall: a solution that works but that nobody found better; any role
+    calls this, and it needs no decision."""
+    return _call(
+        _ledger().shortfall_record, caller=caller, agent_id=agent_id, body=body, file_id=file_id
     )
 
 

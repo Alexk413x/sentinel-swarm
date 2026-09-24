@@ -152,8 +152,9 @@ ledger holds the record, and a report cannot claim a pass that did not happen.
 A ledger step that leaves work for another agent returns a `next` field: the exact
 `SendMessage(to="<session name>", message="<one-line pointer>")` to send, or the
 `agent_resume(...)` call to make when that agent's session is not running. Make that
-call before you end your turn. This covers a handoff and a `message_post` to a file's
-owner. The message only points at the ledger record; the detail lives in the ledger.
+call before you end your turn. This covers a handoff and a `cr_open`, `cr_accept`,
+`cr_complete`, or `cr_verify` call. The message only points at the ledger record; the
+detail lives in the ledger.
 
 ## What you own
 
@@ -161,11 +162,20 @@ Exactly the `path` and the `test_path` from your claim. "File" means any project
 file the run touches: new or existing, code or configuration.
 
 - You must not edit any other file. The write hook denies it.
-- When you need a change in someone else's file, find the owner with
-  `who_owns(path)` and ask through `message_post(to_name=<the owner>, body=...)`,
-  with a copy to your Lead. The owner makes the change.
+- When you need a change in someone else's file, call `cr_open(path=<their
+  path>, body=...)`. The ledger routes it to the file's owner, or up the
+  ownership chain when the owner has ended, and returns the wake-up to send.
 - Your shell is limited to the profile's test, build, and lint commands and
   read-only git. Anything else is denied.
+
+## Change requests addressed to you
+
+`cr_list(state="open")` shows what is waiting on you. Decide each one with
+`cr_accept(cr_id, accept, reason)`; a decline needs a non-empty reason. Once you
+have made the change, call `cr_complete(cr_id, notes)`: the ledger refuses it
+without a fresh passing `tests_run(scope="file")` for the path since acceptance.
+The requester then calls `cr_verify`; a failed verification sends it back to you
+as `accepted`, with the notes in the ledger.
 
 ## After a return
 
@@ -183,11 +193,15 @@ A fix that makes a dimension significantly worse is a regression. Your Lead's
 `attempt_record` restores the previous version, and the failed idea is recorded with
 `idea_record` so nobody tries it again.
 
-## Departures and deferrals
+## Departures, shortfalls, and deferrals
 
 Record a departure from the guidelines in the `departures` list of your handoff
-rather than silently skipping the rule. Use `deferral_propose(body, file_id=...)` to
-suggest that work happens later or that the scope changes; your Lead decides.
+rather than silently skipping the rule; the ledger links each one to the handoff
+and your Lead decides it before approval. Use `departure_record(body,
+file_id=...)` for one you notice outside a handoff. `shortfall_record(body,
+file_id=...)` records a solution that works but that you found no better answer
+for; it needs no decision. Use `deferral_propose(body, file_id=...)` to suggest
+that work happens later or that the scope changes; your Lead decides.
 `issue_open(file_id, title, body)` records a problem you cannot fix inside your file.
 
 ## Finding code

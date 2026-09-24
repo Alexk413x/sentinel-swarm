@@ -9,7 +9,25 @@ _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 _GIT_EXCLUDE_LINE = ".sentinel-swarm/"
 _GITDIR_PREFIX = "gitdir:"
 # What an older version 1 ledger may lack. schema.sql declares them too, for a new ledger.
-_ADDED_COLUMNS = (("agents", "session_name", "TEXT"), ("agents", "bg_id", "TEXT"))
+_ADDED_COLUMNS = (
+    ("agents", "session_name", "TEXT"),
+    ("agents", "bg_id", "TEXT"),
+    ("change_requests", "path", "TEXT"),
+    ("change_requests", "decision_reason", "TEXT"),
+    ("change_requests", "accepted_at", "TEXT"),
+    ("change_requests", "completed_at", "TEXT"),
+    ("change_requests", "completion_notes", "TEXT"),
+    ("change_requests", "evidence_test_run_id", "INTEGER"),
+    ("change_requests", "verified_at", "TEXT"),
+    ("change_requests", "verify_notes", "TEXT"),
+    ("change_requests", "decided_at", "TEXT"),
+    ("departures", "file_id", "INTEGER"),
+    ("departures", "handoff_id", "INTEGER"),
+    ("departures", "decided_by", "TEXT"),
+    ("departures", "decided_at", "TEXT"),
+    ("departures", "decision_reason", "TEXT"),
+    ("departures", "solution", "TEXT"),
+)
 _ADDED_TABLES = ("wakeups",)
 
 
@@ -85,6 +103,15 @@ def migrate(conn: sqlite3.Connection) -> None:
 
 
 def _upgrade(conn: sqlite3.Connection) -> None:
+    tables = {
+        row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    # Create any table a later version added before adding columns to it: an older
+    # ledger may lack a whole table that _ADDED_COLUMNS also targets, not just a column.
+    needed_tables = set(_ADDED_TABLES) | {table for table, _, _ in _ADDED_COLUMNS}
+    if any(table not in tables for table in needed_tables):
+        conn.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
+
     for table, column, declaration in _ADDED_COLUMNS:
         columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
         if column in columns:
@@ -94,8 +121,3 @@ def _upgrade(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError as exc:
             if "duplicate column" not in str(exc):
                 raise
-    tables = {
-        row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-    }
-    if any(table not in tables for table in _ADDED_TABLES):
-        conn.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))

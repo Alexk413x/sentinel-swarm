@@ -512,6 +512,38 @@ def _wake_lines(ledger: Ledger, run_id: int, live: list[dict]) -> list[str]:
             )
             named.add(agent["agent_id"])
 
+    open_crs = ledger.conn.execute(
+        "SELECT cr_id, path, to_agent_id FROM change_requests WHERE run_id = ? AND state = 'open'",
+        (run_id,),
+    ).fetchall()
+    for cr in open_crs:
+        recipient = waiting.get(cr["to_agent_id"])
+        if recipient is None or recipient["state"] != "idle":
+            continue
+        lines.append(
+            f"change request {cr['cr_id']} for {cr['path']} waits on {recipient['name']}, "
+            f"which is idle; {_wake_hint(recipient, live_ids)}"
+        )
+        named.add(recipient["agent_id"])
+
+    completed_crs = ledger.conn.execute(
+        "SELECT cr_id, path, from_agent_id FROM change_requests WHERE run_id = ? "
+        "AND state = 'completed'",
+        (run_id,),
+    ).fetchall()
+    for cr in completed_crs:
+        verifier = ledger.nearest_live_agent(ledger.conn, cr["from_agent_id"])
+        if verifier is None:
+            continue
+        agent = waiting.get(verifier["agent_id"])
+        if agent is None or agent["state"] != "idle":
+            continue
+        lines.append(
+            f"change request {cr['cr_id']} for {cr['path']} is completed and waits on "
+            f"{agent['name']} to verify it, which is idle; {_wake_hint(agent, live_ids)}"
+        )
+        named.add(agent["agent_id"])
+
     def ancestors(agent_id: str) -> set[str]:
         found: set[str] = set()
         parent_id = by_id[agent_id]["parent_agent_id"]

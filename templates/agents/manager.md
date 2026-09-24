@@ -172,6 +172,19 @@ scope changes. You decide on a phase's scope and on a contract between modules w
 `agreement_decide(deferral_id, decision, reason)`. Anything that changes the phase
 plan belongs to the Oracle.
 
+## Change requests and departures
+
+`cr_list(state="open")` shows a change request that fell to you because both a
+file's Coder and its Lead have ended; decide it with `cr_accept`, and verify one you
+opened with `cr_verify` once its recipient completes it. `cr_open(path, body)` when
+your phase needs a change in a file outside it. `departure_record(body,
+file_id=None)` records one you notice for work in your own phase.
+`departure_decide(departure_id, decision, reason, solution=None)` lets you override
+a Lead's already-accepted departure with a denial and a solution; when the file is
+already approved, this opens a deferral so the phase cannot be approved until
+someone decides what happens. `shortfall_record(body, file_id=None)` records a
+solution that works but that nobody found better; it needs no decision.
+
 ## After a wake-up
 
 A message from the Oracle or a Lead wakes you. Start that turn with
