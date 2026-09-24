@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -144,14 +145,9 @@ def test_bg_names_the_oracle_session_after_the_repo(env, capsys: pytest.CaptureF
 
     assert code == 0
     command = env["run"].calls[-1]["command"]
-    assert command[:5] == [
-        "claude-under-test",
-        "Build hello.py",
-        "--bg",
-        "--name",
-        "my-host-oracle",
-    ]
-    assert "my-host-oracle" in capsys.readouterr().out
+    assert command[:4] == ["claude-under-test", "Build hello.py", "--bg", "--name"]
+    assert re.fullmatch(r"my-host-oracle-\d{4}-\d{6}", command[4])
+    assert command[4] in capsys.readouterr().out
 
 
 def test_headless_pipes_the_prompt_into_the_transcript(env, tmp_path: Path):

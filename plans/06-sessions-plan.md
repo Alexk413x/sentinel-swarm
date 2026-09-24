@@ -210,7 +210,15 @@ The launcher and setup:
 
 - Built as `35905d7`: build steps 2 to 5, in two delegated packages checked in the main session. 352 tests pass, and pyright and ruff are clean.
 - Checked without a live session: in `runs/hello/host`, setup wrote the four role files, the shim, `settings.local.json`, and the git excludes. The shim ran a ledger hook, and it started codebase-kg's server, which answered the MCP handshake. The launcher refused the untrusted folder with the trust command.
-- Not run yet: build steps 6 and 7, the live smoke run and the crash test. They need Alex's one-time trust of `runs/hello/host`.
+- Build step 6 passed on 2026-09-23: the live background smoke run. Four sessions, `host-oracle`, `host-r1-mgr-hello`, `host-r1-lead-hello-hello`, and `host-r1-coder-hello-hello-hello`, each started by its parent's `agent_spawn`. Four owed wake-ups, all sent within 3 to 19 seconds. Five passing test runs, both reviews, approvals, `success` in 6 minutes. Each release stopped its session, and the ledger server exited after `run_finish`.
+- Build step 7 passed on 2026-09-23: the crash test. The Coder's session was stopped after it wrote `hello.py` and before its handoff. Told of it, the Oracle called `agent_resume`; the Coder resumed under its own name, finished, and handed off. The Lead's, Manager's, and Oracle's sessions had exited while they waited, and each was woken by `agent_resume` through the `next` field. The run finished with `success`.
+- Found in the live runs:
+  - `claude --resume <id> --bg` restarts a session "with its saved options": the same name, agent, permission mode, MCP config, and tools.
+  - A background session that has ended its turn can exit while it waits. `agent_resume` brings it back, so the wake-up path covers it.
+  - The Oracle's fixed name `<repo>-oracle` collided with a stale Remote Control session of an earlier run, which then received a message meant for the live Oracle. Fixed: the Oracle's name carries its launch time.
+  - Once, the ledger server exited about a minute after it started, with no error in its log, and the Oracle could not connect. It did not happen again in two later runs. Open.
+  - An open session in the host repo holds the plugin's files, so reinstalling the plugin fails until it closes. `scripts/smoke.sh` now copies the plugin into a new temp folder each run.
+  - Nothing notices a dead session on its own. The watchdog is still needed; in the crash test, the report to the Oracle came from outside the run.
 - Small follow-ups: the trust message prints twice, once from setup and once from the launcher. The first start of codebase-kg's server builds its Python environment, so setup should build it ahead of time.
 
 ## Build order

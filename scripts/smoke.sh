@@ -40,8 +40,9 @@ fi
 
 # The run installs the plugin from a clean copy of its files. Installing from the repo would
 # copy runs/ and mcp/.venv into the plugin cache.
-plugin_dir="${TMPDIR:-/tmp}/sentinel-swarm-plugin"
-rm -rf "$plugin_dir"
+# A fresh folder per run: an open session can hold files in an earlier copy.
+for old in "${TMPDIR:-/tmp}"/sentinel-swarm-plugin*; do rm -rf "$old" 2>/dev/null || true; done
+plugin_dir="${TMPDIR:-/tmp}/sentinel-swarm-plugin-$(date +%s)"
 mkdir -p "$plugin_dir"
 (cd "$root" && tar cf - --exclude=.venv --exclude=__pycache__ --exclude=.pytest_cache \
   --exclude=.ruff_cache .claude-plugin .mcp.json skills hooks templates mcp) |
@@ -49,7 +50,7 @@ mkdir -p "$plugin_dir"
 
 # Empties the folder instead of deleting it: Windows refuses to delete a folder that a shell has open.
 mkdir -p "$run_dir"
-find "$run_dir" -mindepth 1 -delete
+find "$run_dir" -mindepth 1 ! -path "$host" -delete
 mkdir -p "$host/.claude" "$host/knowledge"
 cd "$host"
 

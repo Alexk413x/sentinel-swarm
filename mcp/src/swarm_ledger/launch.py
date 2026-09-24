@@ -4,6 +4,7 @@ import argparse
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Literal
 
@@ -40,11 +41,16 @@ def repo_slug(repo: Path) -> str:
     return re.sub(r"[^a-z0-9]+", "-", repo.resolve().name.lower()).strip("-") or "repo"
 
 
-def oracle_session_name(repo: Path) -> str:
-    return f"{repo_slug(repo)}-oracle"
+def oracle_session_name(repo: Path, started: float | None = None) -> str:
+    # A launch-unique name: a stale session, local or over Remote Control, can keep an old name
+    # and receive the messages meant for this Oracle.
+    stamp = time.strftime("%m%d-%H%M%S", time.localtime(started))
+    return f"{repo_slug(repo)}-oracle-{stamp}"
 
 
-def oracle_command(repo: Path, prompt: str, ledger_url: str, mode: Mode) -> list[str]:
+def oracle_command(
+    repo: Path, prompt: str, ledger_url: str, mode: Mode, name: str | None = None
+) -> list[str]:
     model = _read_agent_file(repo, "oracle").get("model")
     options = _session_options(repo, "oracle", str(model) if model else None, ledger_url)
     claude = _claude_binary()
@@ -54,7 +60,7 @@ def oracle_command(repo: Path, prompt: str, ledger_url: str, mode: Mode) -> list
     # prompt that follows it.
     head = [claude, prompt]
     if mode == "bg":
-        head += ["--bg", "--name", oracle_session_name(repo)]
+        head += ["--bg", "--name", name or oracle_session_name(repo)]
     return [*head, *options]
 
 
@@ -82,8 +88,9 @@ def launch(repo: Path, prompt: str, mode: Mode, transcript: Path | None = None) 
     if mode == "bg" and not setup.is_trusted(repo):
         sys.stderr.write(setup.trust_instructions(repo) + "\n")
         return 1
+    name = oracle_session_name(repo)
     try:
-        command = oracle_command(repo, prompt, _ensure_server(repo), mode)
+        command = oracle_command(repo, prompt, _ensure_server(repo), mode, name)
     except Exception as exc:
         sys.stderr.write(f"cannot start the Oracle: {exc}\n")
         return 1
@@ -93,7 +100,7 @@ def launch(repo: Path, prompt: str, mode: Mode, transcript: Path | None = None) 
         sys.stderr.write(f"cannot start {command[0]}: {exc}. Set SENTINEL_SWARM_CLAUDE.\n")
         return 1
     if mode == "bg" and code == 0:
-        print(f"The Oracle runs in the background as {oracle_session_name(repo)}.")
+        print(f"The Oracle runs in the background as {name}.")
         print("Watch it in agent view or with: claude agents")
     return code
 
