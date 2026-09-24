@@ -20,7 +20,7 @@ T = TypeVar("T")
 _instance: Ledger | None = None
 _root: Path | None = None
 _CALL_LOCK = threading.RLock()
-on_run_finish: Callable[[], None] | None = None
+on_run_finish: Callable[[str | None], None] | None = None
 last_call_at = 0.0
 
 _TOOL_NAMES: tuple[str, ...] = (
@@ -137,7 +137,17 @@ def run_finish(caller: str, outcome: str, agent_id: str | None = None) -> dict[s
     """Finishes the active run once every phase is approved; the Oracle calls this."""
     result = _call(_ledger().run_finish, caller=caller, agent_id=agent_id, outcome=outcome)
     if on_run_finish is not None:
-        on_run_finish()
+        with _CALL_LOCK:
+            oracle = (
+                _ledger()
+                .conn.execute(
+                    "SELECT agent_id FROM agents WHERE run_id = ? AND role = 'oracle' "
+                    "ORDER BY ended_at DESC LIMIT 1",
+                    (result["run_id"],),
+                )
+                .fetchone()
+            )
+        on_run_finish(oracle["agent_id"] if oracle is not None else None)
     return result
 
 

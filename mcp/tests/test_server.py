@@ -190,7 +190,8 @@ async def _start_and_finish() -> dict[str, Any]:
 def test_run_finish_calls_the_on_run_finish_hook(
     host: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    finished: list[bool] = []
-    monkeypatch.setattr(server_module, "on_run_finish", lambda: finished.append(True))
+    finished: list[str | None] = []
+    monkeypatch.setattr(server_module, "on_run_finish", finished.append)
     assert asyncio.run(_start_and_finish())["state"] == "finished"
-    assert finished == [True]
+    assert len(finished) == 1
+    assert finished[0] is not None

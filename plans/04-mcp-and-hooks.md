@@ -157,6 +157,7 @@ Decided by Alex on 2026-09-24:
 
 - The watchdog resumes the Oracle when it can. For any other agent's failure, it reports to the Oracle, and the Oracle acts.
 - The ledger server exits when the run finishes, and after `idle_exit_minutes` on an abandoned or paused run.
+- A finished run leaves nothing running. Before the server exits after `run_finish`, it stops the Oracle's background session once the Oracle's last turn ends, or after 5 minutes. An interactive Oracle is the user's own terminal, so it keeps running.
 - The context window follows the model: 1,000,000 tokens for Sonnet, Opus, and Fable, 200,000 for Haiku. Probed on 2026-09-24: `claude -p --model sonnet`, `opus`, and `fable` each report a 1,000,000-token window, with or without `[1m]`.
 
 Where it runs:

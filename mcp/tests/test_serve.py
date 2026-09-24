@@ -144,3 +144,58 @@ def test_server_json_lives_in_the_records_folder(host: Path) -> None:
         json.dumps({"url": "http://127.0.0.1:5/mcp", "port": 5, "pid": 1}), encoding="utf-8"
     )
     assert serve.server_url(host) == "http://127.0.0.1:5/mcp"
+
+
+def _fake_sessions(monkeypatch: pytest.MonkeyPatch, listing: list[list[dict]]) -> list[str]:
+    stopped: list[str] = []
+    snapshots = iter(listing)
+    last: list[dict] = []
+
+    def list_sessions() -> list[dict]:
+        nonlocal last
+        last = next(snapshots, last)
+        return last
+
+    monkeypatch.setattr(serve.sessions, "list_sessions", list_sessions)
+    monkeypatch.setattr(serve.sessions, "stop", stopped.append)
+    monkeypatch.setattr(serve, "_POLL_S", 0)
+    return stopped
+
+
+def _oracle(status: str, kind: str = "background") -> dict:
+    return {"id": "bg1", "sessionId": "sess-o", "pid": 7, "kind": kind, "status": status}
+
+
+def test_a_finished_background_oracle_is_stopped_once_its_turn_ends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stopped = _fake_sessions(monkeypatch, [[_oracle("busy")], [_oracle("busy")], [_oracle("idle")]])
+    assert serve.stop_finished_oracle("sess-o") == "Oracle session bg1 stopped"
+    assert stopped == ["bg1"]
+
+
+def test_an_oracle_still_busy_at_the_deadline_is_stopped(monkeypatch: pytest.MonkeyPatch) -> None:
+    stopped = _fake_sessions(monkeypatch, [[_oracle("busy")]])
+    assert serve.stop_finished_oracle("sess-o", wait_s=0) == "Oracle session bg1 stopped"
+    assert stopped == ["bg1"]
+
+
+@pytest.mark.parametrize(
+    ("listing", "message"),
+    [
+        ([_oracle("idle", kind="interactive")], "Oracle session is interactive; left running"),
+        ([], "Oracle session already ended"),
+    ],
+)
+def test_an_interactive_or_ended_oracle_is_left_alone(
+    monkeypatch: pytest.MonkeyPatch, listing: list[dict], message: str
+) -> None:
+    stopped = _fake_sessions(monkeypatch, [listing])
+    assert serve.stop_finished_oracle("sess-o") == message
+    assert stopped == []
+
+
+def test_no_recorded_oracle_stops_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    stopped = _fake_sessions(monkeypatch, [[_oracle("idle")]])
+    assert serve.stop_finished_oracle(None) == "no Oracle session recorded"
+    assert stopped == []

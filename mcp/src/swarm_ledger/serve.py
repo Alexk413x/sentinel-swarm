@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import sessions
 from .db import ledger_path
 from .identity import LedgerError
 
@@ -24,6 +25,7 @@ SERVER_FILE = "server.json"
 PORT_FILE = "server.port"
 LOG_FILE = "server.log"
 EXIT_DELAY_S = 3.0
+ORACLE_TURN_WAIT_S = 300.0
 START_TIMEOUT_S = 30.0
 _PROBE_TIMEOUT_S = 2.0
 _POLL_S = 0.2
@@ -176,8 +178,36 @@ def _exit_now(path: Path) -> None:
     os._exit(0)
 
 
-def exit_later(path: Path, delay: float = EXIT_DELAY_S) -> None:
-    timer = threading.Timer(delay, _exit_now, args=(path,))
+def stop_finished_oracle(session_id: str | None, wait_s: float = ORACLE_TURN_WAIT_S) -> str:
+    if session_id is None:
+        return "no Oracle session recorded"
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            entry = sessions.find_session(sessions.list_sessions(), session_id)
+        except LedgerError as exc:
+            return f"Oracle session not checked: {exc}"
+        if entry is None or not sessions.is_running(entry):
+            return "Oracle session already ended"
+        if entry.get("kind") != "background":
+            return "Oracle session is interactive; left running"
+        if str(entry.get("status") or "").lower() != "busy" or time.monotonic() >= deadline:
+            sessions.stop(str(entry["id"]))
+            return f"Oracle session {entry['id']} stopped"
+        time.sleep(_POLL_S)
+
+
+def _finish(path: Path, oracle_session_id: str | None) -> None:
+    try:
+        print(stop_finished_oracle(oracle_session_id), file=sys.stderr, flush=True)
+    except Exception as exc:
+        print(f"Oracle session not stopped: {exc}", file=sys.stderr, flush=True)
+    finally:
+        _exit_now(path)
+
+
+def finish_later(path: Path, oracle_session_id: str | None, delay: float = EXIT_DELAY_S) -> None:
+    timer = threading.Timer(delay, _finish, args=(path, oracle_session_id))
     timer.daemon = True
     timer.start()
 
@@ -207,7 +237,7 @@ def serve(repo_root: Path) -> None:
         return JSONResponse({"name": "swarm-ledger", "repo_root": str(root), "pid": os.getpid()})
 
     server.configure(root)
-    server.on_run_finish = lambda: exit_later(path)
+    server.on_run_finish = lambda oracle_session_id: finish_later(path, oracle_session_id)
     _start_watchdog(root, path)
     try:
         server.mcp.run(
