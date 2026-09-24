@@ -152,6 +152,60 @@ Alex's direction first, then what the probes found, then the resulting design **
 | 4 | Is `--strict-mcp-config` needed | Asked whether it is needed at all | Turning off unneeded servers for one session means tracking plugins, user MCP servers in `~/.claude.json`, and the claude.ai connectors, which change whenever the user adds one. Strict mode is one flag. It drops only MCP servers: the plugin's agents, skills, and hooks still loaded and fired. An agent file's `mcpServers` key did not load when that agent ran as the session, strict or not | Every swarm session starts with `--strict-mcp-config`. `agent_spawn` reads the role's agent file, takes its `mcpServers` list, adds the ledger's URL, and passes the result through `--mcp-config`. The agent file stays the one place the user edits |
 | 5 | Hook commands find the plugin | Paths relative to the project root, with error handling | A hook command `python <relative path>/hook.py <event>` in an agent file ran from the project root. `~/.claude/plugins/installed_plugins.json` records each install's `installPath`, per project for project scope, and Claude Code updates it on install and upgrade. A shim that looks up that record ran the real ledger hooks from the installed copy. With the plugin missing, the shim blocked the gating hook with "sentinel-swarm cannot check this call: ... is not installed for ...; run /sentinel-swarm:setup" and reported the other events | `setup` writes a small shim to `.sentinel-swarm/hook.py`. Agent-file hook commands call it by a project-relative path. It finds the install from the registry, so upgrades need no change to the agent files. When the plugin or its files are missing, or the ledger hook fails, it blocks a gating hook with the reason and reports the rest |
 
+## Build spec **(proposed)**
+
+The contract both build packages follow. Names here are exact.
+
+Files in a host repo:
+
+- `.claude/agents/swarm-oracle.md`, `swarm-manager.md`, `swarm-lead.md`, `swarm-coder.md`: the role files, written by setup from the plugin's `templates/agents/<role>.md`. The plugin's own `agents/` folder is removed, so no plugin agent can run as a subagent.
+- `.sentinel-swarm/hook.py`: the shim, written by setup from the plugin's `templates/hook_shim.py`. Two commands:
+  - `hook.py hook <event>` finds the sentinel-swarm install for this repo in `~/.claude/plugins/installed_plugins.json` (scope `local`, then `project` with a matching `projectPath`, then `user`) and runs `uv run --project <installPath>/mcp --frozen --no-dev python -m swarm_ledger.hooks <event>`, passing stdin and stdout through.
+  - `hook.py mcp <plugin_id> <server>` finds that plugin's install the same way, reads the server's entry from its `.mcp.json`, expands `${CLAUDE_PLUGIN_ROOT}` and `${VAR:-default}`, and runs it with stdio passed through.
+  - Errors: when the plugin, its files, or the ledger hook fail, a gating event (`pre_agent`, `pre_write`, `pre_shell`, `pre_ledger`) answers `deny` with the reason, and every event adds a `systemMessage`. Exit code 0.
+- `.sentinel-swarm/server.json`: `{"url", "port", "pid", "started_at"}` for the repo's ledger server.
+- `.claude/settings.local.json`: setup merges in `{"worktree": {"bgIsolation": "none"}}`.
+
+A role file's frontmatter:
+
+- `name` (`swarm-<role>`), `description`, `model`, `color`, `tools`, `permissionMode`, `mcpServers`, `hooks`, then the prompt body.
+- Claude Code applies `tools`, `model`, `color`, and `hooks` from a project agent file to a session. It does not apply `mcpServers`; the launcher and `agent_spawn` read `mcpServers` and `permissionMode` from the file and pass them as `--mcp-config` and `--permission-mode`.
+- MCP tool names: the ledger is the server `swarm-ledger`, so its tools are `mcp__swarm-ledger__<tool>`. codebase-kg is the server `codebase-kg`, so its tools are `mcp__codebase-kg__<tool>`.
+- Hook commands: `python3 .sentinel-swarm/hook.py hook <event> || python .sentinel-swarm/hook.py hook <event>`.
+- Hooks per role:
+
+| Event | Matcher | Ledger hook event | Roles |
+|---|---|---|---|
+| `SessionStart` | all | `session_start` | all |
+| `PreToolUse` | `Agent` | `pre_agent`, which denies | all |
+| `PreToolUse` | `Write\|Edit\|MultiEdit\|NotebookEdit` | `pre_write` | all |
+| `PreToolUse` | `Bash\|PowerShell` | `pre_shell` | all |
+| `PreToolUse` | `mcp__swarm-ledger__.*` | `pre_ledger` | all |
+| `PostToolUse` | all | `post_any` | all |
+| `PostToolUse` | `Bash\|PowerShell` | `post_shell` | coder |
+| `PreCompact` | all | `pre_compact` | all |
+| `Stop` | all | `stop` | all |
+| `SessionEnd` | all | `session_end` | all |
+
+- The plugin's `hooks/hooks.json` carries no hooks, so no hook runs twice.
+
+The ledger:
+
+- `python -m swarm_ledger.serve [--repo <root>]` binds a free port on 127.0.0.1, writes `server.json`, and serves FastMCP over HTTP at `/mcp`. A second start finds the first one alive and exits 0. The server exits a few seconds after `run_finish`.
+- `swarm_ledger.serve.ensure_server(repo_root) -> str` starts the server detached when it is not answering, waits until it answers, and returns its URL.
+- `swarm_ledger.agentfiles.read_agent_file(repo_root, role) -> dict` returns a role file's frontmatter and body.
+- `agent_spawn(caller, child_name, agent_id)`: the caller must be the parent role of the child's unacknowledged brief. It names the session `<repo slug>-r<run_id>-<child_name>`, refuses a name that a live session already uses, and applies `parallelism_cap` when the user set one. It runs, in the repo root: `claude "<prompt>" --bg --name <session name> --agent swarm-<role> --model <brief model> --permission-mode <file value> --strict-mcp-config --mcp-config <swarm-ledger URL plus the file's mcpServers> --allowedTools <the file's tools> --settings '{"worktree":{"bgIsolation":"none"}}'`, with the prompt before the options. It records the row: `agent_id` = the `sessionId`, `session_name`, `bg_id`, state `registered`.
+- `agent_resume(caller, target_name, agent_id)` runs `claude --resume <sessionId> --bg "<pointer>"` for a run's session that is not running, and refuses one that is.
+- Owed wake-ups: `message_post`, `handoff_submit`, `return_work`, and `phase_update(handed_up)` record that the caller owes the recipient a wake-up, and return `next`: the exact `SendMessage(to="<recipient session name>", message="<one-line pointer>")`, or `agent_resume(...)` when the recipient is not running. `post_any` clears the debt when it sees `SendMessage` to that name. `stop` blocks a Manager, Lead, or Coder that still owes one.
+- Release stops the session with `claude stop <bg_id>`, except the Oracle's. `run_finish` releases everything left, then shuts the server down.
+- `run_start` refuses while another run's Oracle session is still live in `claude agents --json`; a dead Oracle's run is resumed.
+- The claude binary is `SENTINEL_SWARM_CLAUDE` when set, else `claude`.
+
+The launcher and setup:
+
+- `python -m swarm_ledger.setup [--repo <root>]` writes or refreshes the role files, keeping the user's frontmatter and replacing the body. It writes the shim and merges `settings.local.json`. It adds `.sentinel-swarm/` and `.claude/agents/swarm-*.md` to `.git/info/exclude`, adds each project-scope plugin's MCP servers to the role files through the shim, and reports whether the repo is trusted.
+- `python -m swarm_ledger.launch [--repo <root>] [--bg | --headless] "<prompt>"` runs setup when a role file is missing, starts the server, and starts the Oracle with the same flags as `agent_spawn`. The session name is `<repo slug>-oracle`. It is interactive by default.
+
 ## Build order
 
 1. The prototype checks.
