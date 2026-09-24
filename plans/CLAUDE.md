@@ -25,7 +25,7 @@ Alex settles responsibilities first, then mechanics.
 3. Protocol: briefs, reviews, change requests, notifications, escalation records.
 4. Records: the folder structure for plans, progress, reviews, scores, and evidence. Resume from records.
 5. Enforcement: hooks for each role. The mode is decided: hard block, and only the Oracle overrides. See `01-roles.md` "Enforcement and overrides".
-6. Watchdog: stuck-agent detection and how it reaches the Oracle.
+6. Watchdog: stuck-agent detection and how it reaches the Oracle. Built on 2026-09-24 as **(proposed)**; see `04-mcp-and-hooks.md` "Watchdog".
 7. Tracking: decided. Local ledger only, as a setting with one value for now. Records are git-ignored. See `03-ledger.md` "Tracking and storage".
 8. Sibling plugins: decided. codebase-kg is required, the others are optional. See `01-roles.md` "The code graph". Graph writes across sessions and worktrees need a test.
 9. Git: this repo is initialized and `plans/` is committed (2026-09-20). The private remote is `github.com/Alexk413x/sentinel-swarm`, created 2026-09-21. The host-repo git workflow is in `01-roles.md` "Git workflow in the host repo".

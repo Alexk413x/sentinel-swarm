@@ -31,6 +31,11 @@ hooks:
         - type: command
           command: "python3 .sentinel-swarm/hook.py hook pre_shell || python .sentinel-swarm/hook.py hook pre_shell"
           timeout: 60
+    - matcher: "Monitor"
+      hooks:
+        - type: command
+          command: "python3 .sentinel-swarm/hook.py hook pre_monitor || python .sentinel-swarm/hook.py hook pre_monitor"
+          timeout: 60
     - matcher: "mcp__swarm-ledger__.*"
       hooks:
         - type: command
@@ -102,6 +107,7 @@ Call these in order. Nothing else works until `run_start` succeeds.
 6. `phase_add(name=..., depends_on=[<phase_id>, ...])` once per phase, in dependency
    order, so a phase can name the ids it depends on.
 7. `phase_update(phase_id, state="unlocked")` for every phase with no dependency.
+8. Arm the watchdog. See "The watchdog".
 
 ## Run one phase
 
@@ -190,6 +196,38 @@ credential, a missing tool, or a decision outside the PRD:
   scheduled, declined, or needs-user.
 - Work that is already approved stays approved unless the directive says to reopen
   it.
+
+## The watchdog
+
+The ledger server checks the run every 30 seconds by default for an agent that crashed, is
+stuck, waits on a permission prompt, is spinning on failing tests, or is near its
+context limit, and for a run where no session runs. Each finding becomes a directive
+from the source `watchdog`. The watchdog only reports. You decide what to do.
+
+- Right after `run_start`, arm the watchdog with exactly this call:
+  `Monitor(command="python3 .sentinel-swarm/hook.py watch || python .sentinel-swarm/hook.py watch", description="sentinel-swarm watchdog", timeout_ms=1800000)`.
+  It prints one line for each new watchdog directive, and each line wakes you. It is
+  the only `Monitor` call a hook allows you.
+- The monitor expires after 30 minutes. When it expires, or when it ends because the
+  run was paused, arm it again with the same call once the run is active. The Stop
+  hook blocks your stop while the watchdog is not armed.
+- When your session is not running, the ledger server resumes it with the message
+  "The watchdog reported N finding(s). Read directive_inbox." Expect this message; it
+  points at the ledger and carries no task.
+- For a watchdog directive, call `directive_inbox()`, then take the step the
+  directive names:
+  - `crashed`: `agent_resume(target_name=...)`.
+  - `stuck`: message the agent, or have its parent replace it. `agent_resume` refuses
+    a running session.
+  - `waiting_permission`: tell the user which session to open in agent view to answer
+    its prompt.
+  - `spinning`: message the agent's parent to review the work with `return_work` or
+    `issue_escalate`.
+  - `context_high`: have the agent's parent release it and brief a fresh agent that
+    continues from the ledger.
+  - `stalled`: resume the agent whose work is pending.
+- Then `directive_resolve(directive_id, outcome, resolution)`, as for any directive.
+  `run_finish` refuses while a directive is open.
 
 ## Escalation
 

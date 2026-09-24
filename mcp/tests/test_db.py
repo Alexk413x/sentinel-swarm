@@ -28,6 +28,7 @@ EXPECTED_TABLES = {
     "directives",
     "agent_events",
     "wakeups",
+    "watchdog_findings",
     "schema_version",
 }
 
@@ -88,14 +89,42 @@ def test_connect_upgrades_an_older_version_1_ledger(tmp_path: Path) -> None:
     conn = connect(db_path)
     try:
         assert {"session_name", "bg_id"} <= _columns(conn, "agents")
+        assert {"watch_heartbeat_at", "watch_expires_at"} <= _columns(conn, "runs")
+        assert "notified_at" in _columns(conn, "directives")
         tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master")}
-        assert "wakeups" in tables
+        assert {"wakeups", "watchdog_findings"} <= tables
         row = conn.execute("SELECT * FROM agents WHERE agent_id = 'a1'").fetchone()
         assert (row["name"], row["session_name"]) == ("lead-1", None)
     finally:
         conn.close()
 
     connect(db_path).close()
+
+
+def test_connect_adds_the_watchdog_columns_to_existing_tables(tmp_path: Path) -> None:
+    db_path = tmp_path / "ledger.db"
+    old = sqlite3.connect(str(db_path))
+    old.executescript(
+        "CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
+        "version INTEGER NOT NULL);"
+        "INSERT INTO schema_version (id, version) VALUES (1, 1);"
+        "CREATE TABLE runs (run_id INTEGER PRIMARY KEY, state TEXT NOT NULL);"
+        "CREATE TABLE directives (directive_id INTEGER PRIMARY KEY, run_id INTEGER, "
+        "source TEXT NOT NULL, body TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'open');"
+        "CREATE TABLE agents (agent_id TEXT PRIMARY KEY, name TEXT NOT NULL, "
+        "role TEXT NOT NULL, state TEXT NOT NULL, ended_at TEXT);"
+        "INSERT INTO runs (run_id, state) VALUES (1, 'active');"
+    )
+    old.close()
+
+    conn = connect(db_path)
+    try:
+        assert {"watch_heartbeat_at", "watch_expires_at"} <= _columns(conn, "runs")
+        assert "notified_at" in _columns(conn, "directives")
+        assert "run_id" in _columns(conn, "watchdog_findings")
+        assert conn.execute("SELECT state FROM runs").fetchone()[0] == "active"
+    finally:
+        conn.close()
 
 
 def test_write_tx_commits(tmp_path: Path) -> None:

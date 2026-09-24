@@ -6,7 +6,9 @@ CREATE TABLE IF NOT EXISTS runs (
     settings_json TEXT,
     outcome TEXT,
     started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    ended_at TEXT
+    ended_at TEXT,
+    watch_heartbeat_at TEXT,
+    watch_expires_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS phases (
@@ -268,6 +270,7 @@ CREATE TABLE IF NOT EXISTS directives (
     outcome TEXT,
     resolved_at TEXT,
     resolution TEXT,
+    notified_at TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -315,3 +318,19 @@ CREATE TABLE IF NOT EXISTS wakeups (
 
 CREATE INDEX IF NOT EXISTS idx_wakeups_owed
     ON wakeups (from_agent_id) WHERE sent_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS watchdog_findings (
+    finding_id INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL REFERENCES runs (run_id) ON DELETE RESTRICT,
+    agent_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    detail TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    reported_at TEXT,
+    directive_id INTEGER REFERENCES directives (directive_id) ON DELETE RESTRICT,
+    cleared_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_watchdog_findings_live
+    ON watchdog_findings (run_id, agent_id, kind) WHERE cleared_at IS NULL;

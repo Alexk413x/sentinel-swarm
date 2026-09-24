@@ -43,6 +43,19 @@ escalation:
   # Non-improving attempts per round before the issue moves to the next round.
   attempts_per_round: 3
 
+watchdog:
+  # Seconds between two checks. The watchdog runs inside the ledger server.
+  interval_seconds: 30
+  # A working agent with no activity for this many minutes is reported as stuck.
+  stuck_minutes: 15
+  # This many failed test runs in a row, for the same scope and target, is spinning.
+  spin_failures: 5
+  # An agent whose latest request fills this percent of its context window is reported.
+  context_pct: 80
+  # The ledger server exits after this many minutes with no active run, or a paused
+  # run, and no session of the run running.
+  idle_exit_minutes: 15
+
 # Left empty; the setup skill fills this in from the detected stack.
 test_command:
 # Left empty; the setup skill fills this in from the detected stack.

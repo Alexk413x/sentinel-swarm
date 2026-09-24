@@ -13,10 +13,10 @@ from collections.abc import Mapping
 from pathlib import Path
 
 PLUGIN_ID = "sentinel-swarm@sentinel-swarm"
-GATING_EVENTS = frozenset({"pre_agent", "pre_write", "pre_shell", "pre_ledger"})
+GATING_EVENTS = frozenset({"pre_agent", "pre_write", "pre_shell", "pre_ledger", "pre_monitor"})
 HOOK_TIMEOUT_SECONDS = 50
 SCOPES = ("local", "project", "user")
-USAGE = "usage: hook.py hook <event> | hook.py mcp <plugin_id> <server>\n"
+USAGE = "usage: hook.py hook <event> | hook.py mcp <plugin_id> <server> | hook.py watch\n"
 _VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 
@@ -123,8 +123,7 @@ def failure_answer(event: str, reason: str) -> dict:
     }
 
 
-def run_ledger_hook(event: str, payload: bytes) -> bytes:
-    repo = repo_root()
+def ledger_command(repo: Path, module: str, *args: str) -> tuple[list[str], dict[str, str]]:
     install = find_install(PLUGIN_ID, repo)
     project = install / "mcp"
     if not (project / "pyproject.toml").is_file():
@@ -136,7 +135,13 @@ def run_ledger_hook(event: str, payload: bytes) -> bytes:
     env.setdefault("CLAUDE_PROJECT_DIR", str(repo))
     env["CLAUDE_PLUGIN_ROOT"] = str(install)
     command = [uv, "run", "--project", str(project), "--frozen", "--no-dev"]
-    command += ["python", "-m", "swarm_ledger.hooks", event]
+    command += ["python", "-m", module, *args]
+    return command, env
+
+
+def run_ledger_hook(event: str, payload: bytes) -> bytes:
+    repo = repo_root()
+    command, env = ledger_command(repo, "swarm_ledger.hooks", event)
     try:
         done = subprocess.run(
             command,
@@ -208,11 +213,33 @@ def mcp_main(plugin_id: str, server: str) -> int:
         return 1
 
 
+def watch_main() -> int:
+    repo = repo_root()
+    try:
+        command, env = ledger_command(repo, "swarm_ledger.watch", "--repo", str(repo))
+        process = subprocess.Popen(
+            command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, env=env, cwd=str(repo)
+        )
+    except (ShimError, OSError) as exc:
+        sys.stdout.write(
+            f"sentinel-swarm watchdog cannot start: {exc}; run /sentinel-swarm:setup\n"
+        )
+        sys.stdout.flush()
+        return 1
+    assert process.stdout is not None
+    for line in iter(process.stdout.readline, b""):
+        sys.stdout.buffer.write(line)
+        sys.stdout.flush()
+    return process.wait()
+
+
 def main(argv: list[str]) -> int:
     if len(argv) == 2 and argv[0] == "hook":
         return hook_main(argv[1])
     if len(argv) == 3 and argv[0] == "mcp":
         return mcp_main(argv[1], argv[2])
+    if argv == ["watch"]:
+        return watch_main()
     sys.stderr.write(USAGE)
     return 1
 

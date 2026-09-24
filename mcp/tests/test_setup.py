@@ -310,8 +310,40 @@ def test_shim_expands_plugin_root_and_defaults(shim):
     assert shim.expand("${UNSET}-${SET}", "/root", env) == "-value"
 
 
+def test_shim_watch_reports_a_missing_install_as_one_line(repo: Path, config_dir: Path):
+    setup.run_setup(repo)
+
+    result = _run_shim(repo, config_dir, "watch")
+
+    assert result.returncode == 1
+    lines = result.stdout.splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith("sentinel-swarm watchdog cannot start: ")
+    assert lines[0].endswith("run /sentinel-swarm:setup")
+
+
+def test_shim_watch_runs_the_listener_and_passes_each_line_through(
+    tmp_path: Path, shim, monkeypatch: pytest.MonkeyPatch, capfdbinary: pytest.CaptureFixture
+):
+    calls: list[tuple] = []
+    script = "print('one', flush=True); print('two', flush=True); raise SystemExit(0)"
+
+    def fake_command(repo: Path, module: str, *args: str):
+        calls.append((repo, module, args))
+        return [sys.executable, "-c", script], dict(os.environ)
+
+    monkeypatch.setattr(shim, "ledger_command", fake_command)
+
+    assert shim.main(["watch"]) == 0
+
+    assert capfdbinary.readouterr().out.splitlines() == [b"one", b"two"]
+    repo = shim.repo_root()
+    assert calls == [(repo, "swarm_ledger.watch", ("--repo", str(repo)))]
+
+
 def test_shim_failure_answer_denies_only_gating_events(shim):
-    for event in ("pre_agent", "pre_write", "pre_shell", "pre_ledger"):
+    assert "pre_monitor" in shim.GATING_EVENTS
+    for event in ("pre_agent", "pre_write", "pre_shell", "pre_ledger", "pre_monitor"):
         answer = shim.failure_answer(event, "broken")
         specific = answer["hookSpecificOutput"]
         assert specific["permissionDecision"] == "deny"

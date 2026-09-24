@@ -9,8 +9,14 @@ _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 _GIT_EXCLUDE_LINE = ".sentinel-swarm/"
 _GITDIR_PREFIX = "gitdir:"
 # What an older version 1 ledger may lack. schema.sql declares them too, for a new ledger.
-_ADDED_COLUMNS = (("agents", "session_name", "TEXT"), ("agents", "bg_id", "TEXT"))
-_ADDED_TABLES = ("wakeups",)
+_ADDED_COLUMNS = (
+    ("agents", "session_name", "TEXT"),
+    ("agents", "bg_id", "TEXT"),
+    ("runs", "watch_heartbeat_at", "TEXT"),
+    ("runs", "watch_expires_at", "TEXT"),
+    ("directives", "notified_at", "TEXT"),
+)
+_ADDED_TABLES = ("wakeups", "watchdog_findings")
 
 
 def _main_git_dir(repo_root: Path) -> Path:
@@ -87,7 +93,8 @@ def migrate(conn: sqlite3.Connection) -> None:
 def _upgrade(conn: sqlite3.Connection) -> None:
     for table, column, declaration in _ADDED_COLUMNS:
         columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
-        if column in columns:
+        # No columns means no table: the schema script below creates it with the column.
+        if not columns or column in columns:
             continue
         try:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")

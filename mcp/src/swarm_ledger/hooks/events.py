@@ -5,12 +5,14 @@ import os
 import re
 import shlex
 import subprocess
+from datetime import timedelta
 from pathlib import Path
 
 from .. import sessions
 from ..db import ensure_git_exclude, write_tx
 from ..identity import ROLES, LedgerError
 from ..ledger import Ledger
+from ..watchdog import MONITOR_CALL, WATCH_COMMAND, parse_stamp, utcnow
 
 _RECORDS_DIR = ".sentinel-swarm"
 _WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
@@ -20,6 +22,12 @@ _UNSTAMPED_TOOLS = frozenset({"ledger_info", "brief_get", "who_owns", "directive
 _SHELL_OPERATORS = re.compile(r"[;&|<>`\n]|\$\(")
 _LIVE_RUN = "state IN ('active', 'paused')"
 _PAUSE_HINT = "If the run is blocked on something only the user can fix, call run_pause(reason)."
+_WATCH_STALE = timedelta(seconds=60)
+_WATCH_RENEW = timedelta(seconds=30)
+_ARM_WATCHDOG = (
+    f"Arm the watchdog before you stop: {MONITOR_CALL}. Re-arm it with the same call "
+    "whenever it expires."
+)
 
 
 # -- Shared helpers -----------------------------------------------------------
@@ -74,6 +82,8 @@ def _deny(reason: str) -> dict:
 def handle_session_start(ledger: Ledger, data: dict) -> dict | None:
     caller = _swarm_caller(ledger, data.get("session_id"))
     if caller is not None:
+        if data.get("transcript_path"):
+            ledger.agent_transcript(caller["agent_id"], str(data["transcript_path"]))
         if caller["state"] == "idle":
             ledger.agent_active(caller["agent_id"], "session_start")
         return None
@@ -241,6 +251,29 @@ def handle_pre_shell(ledger: Ledger, data: dict) -> dict | None:
     return _deny_or_override(f"command not allowed; allowed: {'; '.join(allowed)}")
 
 
+def _role_of(ledger: Ledger, data: dict) -> str | None:
+    caller = _swarm_caller(ledger, _caller_id(data))
+    if caller is not None:
+        return caller["role"]
+    agent_type = str(data.get("agent_type") or "")
+    role = agent_type.removeprefix("swarm-")
+    return role if agent_type.startswith("swarm-") and role in ROLES else None
+
+
+def handle_pre_monitor(ledger: Ledger, data: dict) -> dict | None:
+    role = _role_of(ledger, data)
+    if role is None:
+        return None
+    tool_input = data.get("tool_input") or {}
+    command = " ".join(str(tool_input.get("command") or "").split())
+    if role == "oracle" and tool_input.get("ws") is None and command == WATCH_COMMAND:
+        return None
+    return _deny(
+        "a swarm role runs no Monitor of its own. The one Monitor call allowed is the "
+        f"Oracle's watchdog: {MONITOR_CALL}"
+    )
+
+
 # -- 5. PreToolUse: the swarm-ledger MCP tools -------------------------------------
 
 
@@ -283,6 +316,14 @@ def handle_post_any(ledger: Ledger, data: dict) -> None:
     ledger.agent_heartbeat(caller["agent_id"], tool_name)
     if caller["state"] == "idle":
         ledger.agent_active(caller["agent_id"], "post_tool_use")
+    if data.get("transcript_path") and not caller["transcript_path"]:
+        ledger.agent_transcript(caller["agent_id"], str(data["transcript_path"]))
+
+    if tool_name == "Monitor" and caller["role"] == "oracle":
+        tool_input = data.get("tool_input") or {}
+        if " ".join(str(tool_input.get("command") or "").split()) == WATCH_COMMAND:
+            timeout_ms = tool_input.get("timeout_ms")
+            ledger.watch_armed(timeout_ms if isinstance(timeout_ms, int) else None)
 
     if tool_name == "SendMessage":
         to = str((data.get("tool_input") or {}).get("to") or "")
@@ -570,6 +611,24 @@ def handle_stop(ledger: Ledger, data: dict) -> dict | None:
     if run["state"] == "paused":
         return None
 
+    blocked = _oracle_work_block(ledger, run, dict(oracle))
+    if not _watch_unarmed(run):
+        return blocked
+    if blocked is None:
+        return {"decision": "block", "reason": _ARM_WATCHDOG}
+    return blocked | {"reason": f"{blocked['reason']}\n{_ARM_WATCHDOG}"}
+
+
+def _watch_unarmed(run: dict) -> bool:
+    now = utcnow()
+    heartbeat = parse_stamp(run.get("watch_heartbeat_at"))
+    if heartbeat is None or now - heartbeat > _WATCH_STALE:
+        return True
+    expires = parse_stamp(run.get("watch_expires_at"))
+    return expires is not None and expires - now <= _WATCH_RENEW
+
+
+def _oracle_work_block(ledger: Ledger, run: dict, oracle: dict) -> dict | None:
     needs_user = ledger.conn.execute(
         "SELECT 1 FROM directives WHERE run_id = ? AND state = 'open' AND outcome = 'needs_user'",
         (run["run_id"],),

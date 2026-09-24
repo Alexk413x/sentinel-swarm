@@ -1149,14 +1149,37 @@ class Ledger(ReviewMixin):
         )
 
     def directive_inbox(self, caller: str, agent_id: str) -> list[dict]:
-        c = resolve(self.conn, caller, agent_id)
-        require_role(c, "oracle")
-        return _rows(
-            self.conn.execute(
-                "SELECT * FROM directives WHERE run_id = ? AND state = 'open' "
-                "ORDER BY directive_id",
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            require_role(c, "oracle")
+            conn.execute(
+                f"UPDATE directives SET notified_at = {_NOW} WHERE run_id = ? "
+                "AND state = 'open' AND notified_at IS NULL",
                 (c.run_id,),
             )
+            return _rows(
+                conn.execute(
+                    "SELECT * FROM directives WHERE run_id = ? AND state = 'open' "
+                    "ORDER BY directive_id",
+                    (c.run_id,),
+                )
+            )
+
+    def watch_armed(self, timeout_ms: int | None) -> dict:
+        expires = (
+            f"strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+{timeout_ms / 1000:.3f} seconds')"
+            if timeout_ms is not None and timeout_ms > 0
+            else "NULL"
+        )
+        with write_tx(self.conn) as conn:
+            run = self._active_run(conn)
+            conn.execute(
+                f"UPDATE runs SET watch_heartbeat_at = {_NOW}, watch_expires_at = {expires} "
+                "WHERE run_id = ?",
+                (run["run_id"],),
+            )
+        return dict(
+            self.conn.execute("SELECT * FROM runs WHERE run_id = ?", (run["run_id"],)).fetchone()
         )
 
     def directive_resolve(
@@ -1342,6 +1365,13 @@ class Ledger(ReviewMixin):
                 (agent_id, path, path),
             )
         return {"path": path, "updated": cur.rowcount > 0}
+
+    def agent_transcript(self, agent_id: str, transcript_path: str) -> None:
+        with write_tx(self.conn) as conn:
+            conn.execute(
+                "UPDATE agents SET transcript_path = ? WHERE agent_id = ?",
+                (transcript_path, agent_id),
+            )
 
     def agent_idle(self, agent_id: str, reason: str) -> bool:
         return self._agent_transition(agent_id, "working", "idle", reason)
