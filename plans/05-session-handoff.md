@@ -9,15 +9,35 @@ Status on 2026-09-24: written by session `sentinel-swarm-a8`, updated by `sentin
 - **The swarm runs.** On 2026-09-23 the background smoke run passed with four sessions, and the crash test passed: a stopped Coder session was resumed with `agent_resume` and the run finished with `success`. See `06-sessions-plan.md` "Build status on 2026-09-23".
 - The repo is on `main`, pushed to the private remote `github.com/Alexk413x/sentinel-swarm`. CI has not run since 2026-09-22 05:36: GitHub does not start the jobs because "recent account payments have failed or your spending limit needs to be increased". Alex must fix the billing in GitHub's Billing & plans settings. Until then, the four local checks are the only checks.
 - What exists: the `swarm-ledger` server (`mcp/src/swarm_ledger/`, layout in `mcp/ARCHITECTURE.md`), the hooks behind `python -m swarm_ledger.hooks`, the four role templates in `templates/agents/`, setup and the launcher, and the six skills. Run `uv run pytest`, `uv run pyright`, `uv run ruff check`, and `uv run ruff format --check` from `mcp/` before each commit.
-- Not built, in progress from 2026-09-24 at Alex's request: the watchdog, started and stopped with the run; the change-request tools (`cr_*`); `repo_check` and `repo_branch_create`; `departure_record` and `shortfall_record` as separate tools; and a Manager-level and Oracle-level review gate.
+- Built on 2026-09-24, unit-tested only, **not yet run live**:
+  - **Watchdog** (`watchdog.py`, `watch.py`): a thread in the ledger server finds crashed, stuck, spinning, permission-blocked, near-full-context, and stalled sessions, and files each as a `watchdog` directive. The Oracle arms `Monitor` with `python3 .sentinel-swarm/hook.py watch || python .sentinel-swarm/hook.py watch`; a new directive prints a line, which wakes the Oracle (probed 2026-09-24: a Monitor line wakes an idle background session). The Oracle's Stop hook blocks until the watch is armed. `pre_monitor` allows only that command, which closes the shell hole that `Monitor` opened for the Oracle. Lifecycle: the thread lives and dies with the server; the server exits after `run_finish`, and after `idle_exit_minutes` (15) with no active run or a paused run and no session running. The listener exits when the run is not active, and a newer listener retires an older one. The server reuses its port from `.sentinel-swarm/server.port`, so resumed sessions keep their ledger URL.
+  - **Change requests** (`agreements.py`): `cr_open`, `cr_accept`, `cr_complete` (needs test evidence), `cr_verify`, `cr_list`; gates on `handoff_submit`, `approve`, `phase_update(approved)`, and `run_finish`.
+  - **Departures and shortfalls**: `departure_record`, `departure_decide`, `shortfall_record`; `handoff_submit`'s `departures` list becomes departure rows; `approve` refuses an undecided or denied departure; the report lists all three kinds.
+  - **Repo tools and review gates**: see the last merge commit on `main` for what landed. `repo_check`, `repo_branch_create`, the Manager's `module_review`, and the Oracle's `phase_review` were briefed; confirm them against `mcp/ARCHITECTURE.md`.
+  - Setup adds a ledger hook that the template has and an existing role file lacks, so hosts set up earlier get `pre_monitor`.
+  - The ledger server starts with a hidden console on Windows (`CREATE_NO_WINDOW`). With `DETACHED_PROCESS`, every console program it ran opened a terminal window that took focus.
+- macOS: the code has POSIX branches, and CI covers macOS, but CI is blocked by billing and no live run has happened on a Mac.
 - Open: once, the ledger server exited about a minute after it started, with no error in its log. It did not happen again.
 
 ## Next steps, in order
 
-1. **Finish the missing features** listed above, each with tests, then prove them in a live smoke run and a crash test that the watchdog reports on its own.
-2. **Run the swarm on a real PRD** with two modules and several files, to exercise parallel Leads and Coders, release freeing slots, `return_work`, escalation, change requests, and messages between Coders. Draft a small PRD for Alex to review first. Expect about $10 to $20.
-3. **Prototype checks still open.** Whether `PreCompact` fires in a long session.
-4. **Open question** in `06-sessions-plan.md`: where the model settings live.
+1. **Live smoke run with the new features.** `bash scripts/smoke.sh --bg`, then `bash scripts/smoke.sh --results`. Check in the ledger: a `repo_check` on the run, a Manager `module_review` and an Oracle `phase_review`, `runs.watch_heartbeat_at` set while the run was active, and `success`. Expect the prompts to need tuning for the new steps.
+2. **Crash test that the watchdog catches alone.** During a `--bg` run, `claude stop` the Coder's session mid-file. Pass: within about a minute a `watchdog` directive of kind `crashed` appears, the Oracle wakes from its Monitor and calls `agent_resume`, and the run finishes, with no message from outside the run.
+3. **Nothing left running.** After each run, check that no `swarm_ledger` process remains (PowerShell: `Get-CimInstance Win32_Process | ? CommandLine -match swarm_ledger`), that `.sentinel-swarm/server.json` is gone, and that the run's sessions are stopped in `claude agents`. Do not `claude rm` them; Alex reviews them in agent view.
+4. **Fix the GitHub billing** so CI runs on Ubuntu, Windows, and macOS again. Then one live smoke run on a Mac.
+5. **Run the swarm on a real PRD** with two modules and several files, to exercise parallel Leads and Coders, release freeing slots, `return_work`, escalation, change requests, and messages between Coders. Draft a small PRD for Alex to review first. Expect about $10 to $20.
+6. **Prototype checks still open.** Whether `PreCompact` fires in a long session.
+7. **Open question** in `06-sessions-plan.md`: where the model settings live.
+8. **Refresh the code graph.** `knowledge/code_graph.db` is stale for about 30 files after 2026-09-24. Run `/codebase-kg:refresh`.
+
+## For Alex to review, all **(proposed)**
+
+- The watchdog wakes the Oracle, and only the Oracle, with `claude --resume` when the Oracle's session is not running and reports are waiting. After 3 failed wakes it pauses the run. This sits next to your rule that the watchdog only reports.
+- The server exits after 15 idle minutes on an abandoned or paused run. `idle_exit_minutes` sets it.
+- Setup re-adds a ledger hook that the template has and a role file lacks, so a hook the user removed on purpose comes back.
+- A change request goes to the lowest live owner: the file's Coder, else its Lead, else its Manager, else the Oracle.
+- Only a role above the normal decider can deny a departure that was already accepted; a late denial on an approved file opens a deferral.
+- The watchdog's context window defaults to 200,000 tokens. Sessions on a 1M model need `context_window: 1000000` in the settings, because the transcript does not say which window a session has.
 
 ## Earlier steps, done
 
