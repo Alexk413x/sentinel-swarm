@@ -1,11 +1,20 @@
 # swarm-ledger
 
-Local stdio MCP server for the sentinel-swarm plugin. It backs a SQLite
-ledger of runs, phases, briefs, file claims, reviews, scores, and agent
-activity.
+The MCP server for the sentinel-swarm plugin. It backs a SQLite ledger of
+runs, phases, briefs, file claims, reviews, scores, and agent activity, and it
+holds every gate the swarm's roles pass through.
 
-The server is a skeleton today. It exposes one tool, `ledger_info`, which
-reports its name, version, and status.
+During a run, one server per host repo listens over HTTP on a free local port.
+`python -m swarm_ledger.serve` starts it and writes its URL to
+`.sentinel-swarm/server.json`; every role session connects to that URL. The
+server exits after `run_finish`. `ARCHITECTURE.md` maps the modules.
+
+Entry points:
+
+- `python -m swarm_ledger.setup` prepares a host repo.
+- `python -m swarm_ledger.launch` starts the ledger server and the Oracle session.
+- `python -m swarm_ledger.hooks <event>` runs one hook. The host repo's shim,
+  `.sentinel-swarm/hook.py`, calls it.
 
 ## The ledger database
 

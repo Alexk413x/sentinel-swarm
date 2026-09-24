@@ -39,12 +39,14 @@ class SetupError(Exception):
 class SetupReport:
     lines: list[str] = field(default_factory=list)
     trusted: bool = False
+    trust_note: str = ""
 
     def add(self, line: str) -> None:
         self.lines.append(line)
 
-    def text(self) -> str:
-        return "\n".join(self.lines)
+    def text(self, with_trust: bool = True) -> str:
+        lines = [*self.lines, self.trust_note] if with_trust and self.trust_note else self.lines
+        return "\n".join(lines)
 
 
 def role_file(repo: Path, role: str) -> Path:
@@ -326,18 +328,25 @@ def run_setup(repo: Path) -> SetupReport:
     merge_settings_local(repo, report)
     ensure_excludes(repo, report)
     report.trusted = is_trusted(repo)
-    if report.trusted:
-        report.add(f"{repo} is trusted")
-    else:
-        report.add(trust_instructions(repo))
+    report.trust_note = f"{repo} is trusted" if report.trusted else trust_instructions(repo)
     return report
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m swarm_ledger.setup")
     parser.add_argument("--repo", type=Path, default=None, help="host repo root; default: cwd")
+    parser.add_argument(
+        "--check-trust",
+        action="store_true",
+        help="only check that the repo is trusted; exit 1 with the trust command when it is not",
+    )
     args = parser.parse_args(argv)
     repo = (args.repo or Path.cwd()).resolve()
+    if args.check_trust:
+        if is_trusted(repo):
+            return 0
+        sys.stderr.write(trust_instructions(repo) + "\n")
+        return 1
     if not repo.is_dir():
         sys.stderr.write(f"{repo} is not a folder\n")
         return 1

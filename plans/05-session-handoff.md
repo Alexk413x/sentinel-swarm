@@ -1,22 +1,23 @@
 # sentinel-swarm: session handoff
 
-Status on 2026-09-23: written by session `sentinel-swarm-a8`, updated by `sentinel-swarm-d3`, `sentinel-swarm-75`, and the session that followed it. Read `plans/CLAUDE.md` first, then this file.
+Status on 2026-09-24: written by session `sentinel-swarm-a8`, updated by `sentinel-swarm-d3`, `sentinel-swarm-75`, and later sessions. Read `plans/CLAUDE.md` first, then this file.
 
 ## Where the work stands
 
-- The design is drafted in `01-roles.md`, `02-rubric.md`, `03-ledger.md`, and `04-mcp-and-hooks.md`. Alex settled every open question in them. Items marked **(proposed)** are Claude's additions, and Alex has not reviewed them one by one.
+- The design is drafted in `01-roles.md`, `02-rubric.md`, `03-ledger.md`, `04-mcp-and-hooks.md`, and `06-sessions-plan.md`. Items marked **(proposed)** are Claude's additions, and Alex has not reviewed them one by one.
+- Every role runs as its own Claude Code session, decided by Alex on 2026-09-23 and built as `35905d7`. A parent starts its child with the ledger tool `agent_spawn`; no role has the `Agent` tool. One ledger server per host repo listens over HTTP, and every session connects to it. See `06-sessions-plan.md`.
+- **The swarm runs.** On 2026-09-23 the background smoke run passed with four sessions, and the crash test passed: a stopped Coder session was resumed with `agent_resume` and the run finished with `success`. See `06-sessions-plan.md` "Build status on 2026-09-23".
 - The repo is on `main`, pushed to the private remote `github.com/Alexk413x/sentinel-swarm`. CI has not run since 2026-09-22 05:36: GitHub does not start the jobs because "recent account payments have failed or your spending limit needs to be increased". Alex must fix the billing in GitHub's Billing & plans settings. Until then, the four local checks are the only checks.
-- **The swarm runs.** Run 13 of the smoke test passed on 2026-09-23 in 3.6 minutes for about $2.33: the swarm wrote `hello.py`, which writes `hello_world.txt`, with passing tests, both reviews, approvals, every agent released in order, and a report with a run token total. Runs 5 to 12 found and fixed a write block, a test-runner bug, a lost wake-up, and a startup race. See the results table in `04-mcp-and-hooks.md` "Smoke test results on 2026-09-22".
-- What exists: the `swarm-ledger` server with 46 tools (`mcp/src/swarm_ledger/`, layout in `mcp/ARCHITECTURE.md`), the twelve hooks behind `python -m swarm_ledger.hooks`, the four role prompts, and the six skills. 230 tests. Run `uv run pytest`, `uv run pyright`, `uv run ruff check`, and `uv run ruff format --check` from `mcp/` before each commit.
-- Not built: the watchdog, the change-request tools (`cr_*`), `repo_check` and `repo_branch_create`, `departure_record` and `shortfall_record` as separate tools, and a Manager-level or Oracle-level review gate. The prompts route those through `message_post` and the handoff's `departures` list for now.
+- What exists: the `swarm-ledger` server (`mcp/src/swarm_ledger/`, layout in `mcp/ARCHITECTURE.md`), the hooks behind `python -m swarm_ledger.hooks`, the four role templates in `templates/agents/`, setup and the launcher, and the six skills. Run `uv run pytest`, `uv run pyright`, `uv run ruff check`, and `uv run ruff format --check` from `mcp/` before each commit.
+- Not built, in progress from 2026-09-24 at Alex's request: the watchdog, started and stopped with the run; the change-request tools (`cr_*`); `repo_check` and `repo_branch_create`; `departure_record` and `shortfall_record` as separate tools; and a Manager-level and Oracle-level review gate.
+- Open: once, the ledger server exited about a minute after it started, with no error in its log. It did not happen again.
 
 ## Next steps, in order
 
-1. **Watch a run interactively.** `bash scripts/smoke.sh` now opens the Oracle as an interactive session in `runs/hello/host`, so Alex can watch the Manager, Lead, and Coder in the agent tree. Alex has not tried it yet. From PowerShell, use Git Bash explicitly: `& "C:\Program Files\Git\bin\bash.exe" scripts/smoke.sh`, because `bash` on Windows can resolve to WSL.
-2. **Run the swarm on a real PRD** with two modules and several files, to exercise parallel Leads and Coders, release freeing slots, `return_work`, escalation, and messages between Coders. Draft a small PRD for Alex to review first. Expect about $10 to $20.
-3. **Build the watchdog** and decide its home: `monitors/monitors.json` or a script the Oracle starts. It reads `agents.last_heartbeat_at` and the new `idle` state, and reports through `directive_submit(source="watchdog")`.
-4. **The missing tools** listed above, as Alex prioritizes them.
-5. **Prototype checks still open.** `PreCompact` inside a subagent.
+1. **Finish the missing features** listed above, each with tests, then prove them in a live smoke run and a crash test that the watchdog reports on its own.
+2. **Run the swarm on a real PRD** with two modules and several files, to exercise parallel Leads and Coders, release freeing slots, `return_work`, escalation, change requests, and messages between Coders. Draft a small PRD for Alex to review first. Expect about $10 to $20.
+3. **Prototype checks still open.** Whether `PreCompact` fires in a long session.
+4. **Open question** in `06-sessions-plan.md`: where the model settings live.
 
 ## Earlier steps, done
 
@@ -45,7 +46,7 @@ Status on 2026-09-23: written by session `sentinel-swarm-a8`, updated by `sentin
 
 - Four roles: Oracle (cyan), Manager (green), Lead (purple), Coder (orange). One Manager per phase, one Lead per module, one Coder per file. A hello-world run still creates one of each.
 - Only the Coder writes project files. Oracle, Manager, and Lead have no shell and no write tools. They work through MCP tools only.
-- The first version works in one working tree, on the checked-out branch. The swarm never commits or pushes. Only the Oracle runs as a session. Manager, Lead, and Coder run as nested subagents.
+- The first version works in one working tree, on the checked-out branch. The swarm never commits or pushes. Every role runs as its own session (decided 2026-09-23; this replaced nested subagents).
 - The ledger MCP server holds the state and the gates. Hooks make the ledger unavoidable. Enforcement is a hard block, and only the Oracle overrides.
 - The hard check at handoff: the ledger runs the file's tests itself, and the code graph must be current for the file.
 - Scoring: each criterion rated 1 to 10, each dimension computed out of 100, no combined score and no weights. Target 90, floor 70.
@@ -67,7 +68,7 @@ All are recorded in `04-mcp-and-hooks.md`.
 
 ## Working notes for the smoke test
 
-- Run `bash scripts/smoke.sh [--headless] ["<prompt>"]` from this repo. Without `--headless` it opens an interactive Oracle session you can watch. It deletes `runs/hello/`, rebuilds the host repo in `runs/hello/host/`, runs the Oracle headless, and writes the transcript to `runs/hello/transcript.jsonl`. `runs/` is git-ignored. The host repo has a README, a `pyproject.toml` that sets `testpaths` and `pythonpath`, `.claude/sentinel-swarm.local.md` from the template with `test_command: python -m pytest -q -p no:cacheprovider {target}`, and a one-node graph. Set `KG_PLUGIN_DIR` to pick a codebase-kg version other than the newest in the plugin cache.
+- Run `bash scripts/smoke.sh [--headless | --bg] ["<prompt>"]` from this repo. It empties `runs/hello/`, rebuilds the host repo in `runs/hello/host/`, installs a clean copy of the plugin at project scope, runs setup, and starts the Oracle through the installed copy's launcher. Without a flag the Oracle opens as an interactive session. `--bg` starts it in the background; `bash scripts/smoke.sh --results` then prints the results. `--headless` runs `claude -p` and writes the transcript to `runs/hello/transcript.jsonl`. From PowerShell, use Git Bash explicitly: `& "C:\Program Files\Git\bin\bash.exe" scripts/smoke.sh`, because `bash` on Windows can resolve to WSL. `runs/` is git-ignored. The host repo has a README, a `pyproject.toml` that sets `testpaths` and `pythonpath`, `.claude/sentinel-swarm.local.md` from the template with `test_command: python -m pytest -q -p no:cacheprovider {target}`, and a one-node graph. Set `KG_PLUGIN_DIR` to pick a codebase-kg version other than the newest in the plugin cache.
 - A headless run needs an explicit `--allowedTools` list. Do not use `--dangerously-skip-permissions`; the session's permission classifier denies it.
 - Judge a run from `.sentinel-swarm/ledger.db`, not from the transcript. The queries used are in the results table's rows.
 

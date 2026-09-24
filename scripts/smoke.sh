@@ -38,6 +38,14 @@ if [ "$mode" = results ]; then
   exit 0
 fi
 
+# A background session cannot answer the trust prompt. Checking first also keeps the launcher
+# from printing the trust command a second time after setup.
+if [ "$mode" = bg ]; then
+  mkdir -p "$host"
+  uv run --quiet --project "$(win "$root/mcp")" \
+    python -m swarm_ledger.setup --check-trust --repo "$(win "$host")" || exit 1
+fi
+
 # The run installs the plugin from a clean copy of its files. Installing from the repo would
 # copy runs/ and mcp/.venv into the plugin cache.
 # A fresh folder per run: an open session can hold files in an earlier copy.

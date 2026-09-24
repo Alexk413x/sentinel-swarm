@@ -138,6 +138,20 @@ def test_bg_refuses_an_untrusted_repo(env, capsys: pytest.CaptureFixture[str]):
     assert f'cd "{env["repo"].resolve()}" && claude' in err
 
 
+def test_bg_prints_the_trust_instructions_once(env, capsys: pytest.CaptureFixture[str]):
+    launch.main(["--repo", str(env["repo"]), "--bg", "go"])
+
+    captured = capsys.readouterr()
+    assert (captured.out + captured.err).count("is not trusted yet") == 1
+    assert "wrote .claude/agents/swarm-oracle.md" in captured.out
+
+
+def test_interactive_setup_reports_the_trust_step(env, capsys: pytest.CaptureFixture[str]):
+    launch.main(["--repo", str(env["repo"]), "go"])
+
+    assert capsys.readouterr().out.count("is not trusted yet") == 1
+
+
 def test_bg_names_the_oracle_session_after_the_repo(env, capsys: pytest.CaptureFixture[str]):
     _trust(env["config"], env["repo"])
 

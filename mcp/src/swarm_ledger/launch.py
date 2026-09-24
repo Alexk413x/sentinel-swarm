@@ -84,7 +84,8 @@ def _run(command: list[str], repo: Path, prompt: str, mode: Mode, transcript: Pa
 def launch(repo: Path, prompt: str, mode: Mode, transcript: Path | None = None) -> int:
     repo = repo.resolve()
     if _needs_setup(repo):
-        print(setup.run_setup(repo).text())
+        report = setup.run_setup(repo)
+        print(report.text(with_trust=mode != "bg" or report.trusted))
     if mode == "bg" and not setup.is_trusted(repo):
         sys.stderr.write(setup.trust_instructions(repo) + "\n")
         return 1

@@ -259,6 +259,23 @@ def test_untrusted_repo_gets_the_trust_command(repo: Path):
 
     assert not report.trusted
     assert f'cd "{repo.resolve()}" && claude' in report.text()
+    assert "not trusted" not in report.text(with_trust=False)
+
+
+def test_check_trust_prints_only_the_trust_command(
+    repo: Path, config_dir: Path, capsys: pytest.CaptureFixture[str]
+):
+    assert setup.main(["--repo", str(repo), "--check-trust"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.count("is not trusted yet") == 1
+    assert not setup.role_file(repo, "oracle").exists()
+
+    key = repo.resolve().as_posix()
+    (config_dir / ".claude.json").write_text(
+        json.dumps({"projects": {key: {"hasTrustDialogAccepted": True}}}), encoding="utf-8"
+    )
+    assert setup.main(["--repo", str(repo), "--check-trust"]) == 0
 
 
 @pytest.fixture
