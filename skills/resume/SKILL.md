@@ -30,8 +30,23 @@ uv run --project "${CLAUDE_PLUGIN_ROOT}/mcp" --frozen --no-dev \
   python -m swarm_ledger.launch --bg "Resume the sentinel-swarm run in this repo."
 ```
 
-The launcher starts the ledger server again when it is not running. Do not paste the
-PRD again: `run_start` ignores it on a resume.
+The launcher starts the ledger server again when it is not running, before it starts
+the Oracle. The server exits on its own after a run has been paused, or left with no
+session running, for `idle_exit_minutes`, so a resume usually starts it again. It
+binds the port saved in `.sentinel-swarm/server.port`, the same port as before, so
+every session the Oracle resumes still reaches the ledger at the URL it started with.
+Do not paste the PRD again: `run_start` ignores it on a resume.
+
+When a paused run's Oracle session is still open and the server has exited, start the
+server first, then type "continue" in the Oracle's row:
+
+```bash
+uv run --project "${CLAUDE_PLUGIN_ROOT}/mcp" --frozen --no-dev python -c \
+  "from pathlib import Path; from swarm_ledger.serve import ensure_server; print(ensure_server(Path('.')))"
+```
+
+`ensure_server` starts the server detached when it does not answer, waits until it
+answers, and prints its URL.
 
 For a paused run whose Oracle session is still open, the user can instead type
 "continue" in the Oracle's row in agent view.

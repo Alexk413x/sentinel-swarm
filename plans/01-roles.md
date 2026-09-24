@@ -284,6 +284,14 @@ The watchdog is a background job, not a role. It exists only to keep control of 
 - The Oracle can hand a stalled agent to that agent's parent to resume or replace. **(proposed)**
 - The watchdog cannot recover an Oracle that has crashed, because the Oracle starts it. When the Oracle runs as an agent view session, the supervisor restarts a crashed session, and agent view notifies the user when the Oracle waits on input. **(proposed)**
 
+As built on 2026-09-24 **(proposed)**. The mechanics are in `04-mcp-and-hooks.md` "Watchdog".
+
+- The watchdog runs inside the repo's ledger server, which starts before the Oracle and exits after the run. The Oracle's part is to arm a listener with `Monitor` right after `run_start`, and to re-arm it when it expires. The Oracle's `Stop` hook enforces this.
+- It reports six kinds of finding: crashed, stuck, waiting on a permission prompt, spinning, near the context limit, and a stalled run with no session running. Each report is a directive that names the agent, what was found, and the next step for the Oracle.
+- It still never resumes, replaces, or stops a Manager, Lead, or Coder.
+- One exception, so that a report can reach the Oracle at all: when the Oracle's session is not running, the watchdog resumes the Oracle with a one-line pointer to its inbox, at most every 5 minutes. After 3 attempts with no answer, it pauses the run for the user.
+- When a run is paused or abandoned and none of its sessions runs, the ledger server exits after an idle window, so nothing stays running in the background.
+
 ## Shared tooling and records
 
 - All roles share the MCP tooling. Each role applies it from its own perspective. The Coder has the most tools.

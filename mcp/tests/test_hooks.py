@@ -53,6 +53,7 @@ def ledger(host: Path) -> Ledger:
 def _bootstrap(ledger: Ledger) -> dict:
     started = ledger.run_start(prd="Build X", session_id="sess-1")
     oracle_id = started["oracle"]["agent_id"]
+    ledger.watch_armed(1_800_000)
 
     phase = ledger.phase_add("oracle", oracle_id, "phase-1")
     phase_id = phase["phase_id"]

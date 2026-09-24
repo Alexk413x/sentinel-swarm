@@ -31,6 +31,11 @@ hooks:
         - type: command
           command: "python3 .sentinel-swarm/hook.py hook pre_shell || python .sentinel-swarm/hook.py hook pre_shell"
           timeout: 60
+    - matcher: "Monitor"
+      hooks:
+        - type: command
+          command: "python3 .sentinel-swarm/hook.py hook pre_monitor || python .sentinel-swarm/hook.py hook pre_monitor"
+          timeout: 60
     - matcher: "mcp__swarm-ledger__.*"
       hooks:
         - type: command

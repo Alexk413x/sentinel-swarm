@@ -28,6 +28,7 @@ HOOK_TABLE = (
     ("PreToolUse", "Agent", "pre_agent", ALL_ROLES),
     ("PreToolUse", "Write|Edit|MultiEdit|NotebookEdit", "pre_write", ALL_ROLES),
     ("PreToolUse", "Bash|PowerShell", "pre_shell", ALL_ROLES),
+    ("PreToolUse", "Monitor", "pre_monitor", ALL_ROLES),
     ("PreToolUse", "mcp__swarm-ledger__.*", "pre_ledger", ALL_ROLES),
     ("PostToolUse", None, "post_any", ALL_ROLES),
     ("PostToolUse", "Bash|PowerShell", "post_shell", frozenset({"coder"})),
@@ -178,6 +179,19 @@ def test_template_hooks_match_the_spec_table(repo_root: Path, role: str):
         ]
         expected.setdefault(event, []).append(group)
     assert hooks == expected
+
+
+def test_only_the_oracle_lists_monitor(repo_root: Path):
+    for role in ROLES:
+        tools = _tools(_split(_template(repo_root, role))[0])
+        assert ("Monitor" in tools) == (role == "oracle"), role
+
+
+def test_the_oracle_body_arms_the_exact_watchdog_call(repo_root: Path):
+    from swarm_ledger.watchdog import MONITOR_CALL
+
+    _, body = _split(_template(repo_root, "oracle"))
+    assert MONITOR_CALL in body
 
 
 def test_hook_shim_template_exists(repo_root: Path):

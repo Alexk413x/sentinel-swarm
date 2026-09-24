@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal, TypeVar
@@ -20,6 +21,7 @@ _instance: Ledger | None = None
 _root: Path | None = None
 _CALL_LOCK = threading.RLock()
 on_run_finish: Callable[[], None] | None = None
+last_call_at = 0.0
 
 _TOOL_NAMES: tuple[str, ...] = (
     "run_start",
@@ -87,6 +89,8 @@ def _ledger() -> Ledger:
 
 
 def _call(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+    global last_call_at
+    last_call_at = time.monotonic()
     try:
         with _CALL_LOCK:
             return fn(*args, **kwargs)

@@ -23,7 +23,7 @@ This replaces the earlier rule "Only the Oracle runs as a session. Manager, Lead
 | Finished child | A completion notice to the parent, which skips a parent that ended its turn | The child sends its parent a cross-session `SendMessage` with a one-line pointer, and hooks enforce it |
 | Turn end | `SubagentStop` marks the agent idle | The `Stop` hook marks the session idle |
 | Release | The ledger marks the row released | The ledger also stops the session with `claude stop <id>`, which frees its memory |
-| Crash | The subagent dies with its parent | A watchdog compares `claude agents --json` with the ledger and resumes a crashed session with `claude --resume <id> --bg` |
+| Crash | The subagent dies with its parent | A watchdog compares `claude agents --json` with the ledger and reports a crashed session to the Oracle, which resumes it with `agent_resume` (`claude --resume <id> --bg`) |
 | Nesting | Three layers, the Coder at the limit | No nesting. Every session is a top-level row |
 | Permission prompts | A background subagent's prompt is denied | A session shows its prompt in its agent-view row |
 
@@ -56,13 +56,13 @@ Decided by Alex on 2026-09-23: the child wakes its parent with a cross-session `
 - The ledger tool that finishes a step returns the next step. For example, `handoff_submit` returns "Next: SendMessage(to=<the parent's session>, message=\"Handoff 1 for hello.py is waiting in the ledger.\")". **(proposed)**
 - A `PostToolUse` hook on `SendMessage` records in the ledger who the child messaged. The child's `Stop` hook blocks the child from ending its turn until it has messaged its parent after the step. **(proposed)**
 - The same rule covers every upward step: a Coder's handoff, a Lead's module report, a Manager's phase hand-up, and a returned file going down to a Coder. **(proposed)**
-- A parent whose session has crashed or exited cannot receive a message. The watchdog restarts it with `claude --resume <session_id> --bg "<pointer>"`, which continues the same session and conversation. `--resume` on a session that is still running starts a copy, so it is never used on a live session. **(proposed)**
+- A parent whose session has crashed or exited cannot receive a message. The child restarts it with `agent_resume`, which runs `claude --resume <session_id> --bg "<pointer>"` and continues the same session and conversation. `--resume` on a session that is still running starts a copy, so it is never used on a live session. **(proposed)**
 
 ## Crashes and resume
 
 - The watchdog, step 3 of the handoff list, reads `claude agents --json`: each session's `state`, `status`, and `waitingFor`. It compares them with the ledger.
-- A session that the ledger says is live but that has exited, crashed, or stopped is resumed with `claude --resume <session_id> --bg "Re-read your brief and your inbox in the ledger."`. It keeps its own conversation, and the ledger supplies the truth.
-- A session that is `waitingFor` a permission answer is reported to the user, not resumed.
+- A session that the ledger says is live but that has exited, crashed, or stopped is reported to the Oracle, which resumes it with `agent_resume`: `claude --resume <session_id> --bg "Re-read your brief and your inbox in the ledger."`. It keeps its own conversation, and the ledger supplies the truth. The watchdog itself never resumes a Manager, Lead, or Coder (Alex's rule, `01-roles.md` "Watchdog").
+- A session that is `waitingFor` a permission answer is reported to the user through the Oracle, not resumed.
 - The `resume` skill does the same for a whole run, one session at a time.
 
 ## Hooks
@@ -159,11 +159,13 @@ The contract both build packages follow. Names here are exact.
 Files in a host repo:
 
 - `.claude/agents/swarm-oracle.md`, `swarm-manager.md`, `swarm-lead.md`, `swarm-coder.md`: the role files, written by setup from the plugin's `templates/agents/<role>.md`. The plugin's own `agents/` folder is removed, so no plugin agent can run as a subagent.
-- `.sentinel-swarm/hook.py`: the shim, written by setup from the plugin's `templates/hook_shim.py`. Two commands:
+- `.sentinel-swarm/hook.py`: the shim, written by setup from the plugin's `templates/hook_shim.py`. Three commands:
   - `hook.py hook <event>` finds the sentinel-swarm install for this repo in `~/.claude/plugins/installed_plugins.json` (scope `local`, then `project` with a matching `projectPath`, then `user`) and runs `uv run --project <installPath>/mcp --frozen --no-dev python -m swarm_ledger.hooks <event>`, passing stdin and stdout through.
   - `hook.py mcp <plugin_id> <server>` finds that plugin's install the same way, reads the server's entry from its `.mcp.json`, expands `${CLAUDE_PLUGIN_ROOT}` and `${VAR:-default}`, and runs it with stdio passed through.
-  - Errors: when the plugin, its files, or the ledger hook fail, a gating event (`pre_agent`, `pre_write`, `pre_shell`, `pre_ledger`) answers `deny` with the reason, and every event adds a `systemMessage`. Exit code 0.
+  - `hook.py watch` finds the install the same way and runs `uv run --project <installPath>/mcp --frozen --no-dev python -m swarm_ledger.watch`, passing each stdout line through with no timeout. The Oracle runs it as its watchdog `Monitor`.
+  - Errors: when the plugin, its files, or the ledger hook fail, a gating event (`pre_agent`, `pre_write`, `pre_shell`, `pre_monitor`, `pre_ledger`) answers `deny` with the reason, and every event adds a `systemMessage`. Exit code 0.
 - `.sentinel-swarm/server.json`: `{"url", "port", "pid", "started_at"}` for the repo's ledger server.
+- `.sentinel-swarm/server.port`: the port the ledger server last bound. It survives the server's exit, so a restarted server comes back on the same port and a resumed session's MCP URL still works.
 - `.claude/settings.local.json`: setup merges in `{"worktree": {"bgIsolation": "none"}}`.
 
 A role file's frontmatter:
@@ -180,6 +182,7 @@ A role file's frontmatter:
 | `PreToolUse` | `Agent` | `pre_agent`, which denies | all |
 | `PreToolUse` | `Write\|Edit\|MultiEdit\|NotebookEdit` | `pre_write` | all |
 | `PreToolUse` | `Bash\|PowerShell` | `pre_shell` | all |
+| `PreToolUse` | `Monitor` | `pre_monitor`, which allows only the Oracle's watchdog call | all |
 | `PreToolUse` | `mcp__swarm-ledger__.*` | `pre_ledger` | all |
 | `PostToolUse` | all | `post_any` | all |
 | `PostToolUse` | `Bash\|PowerShell` | `post_shell` | coder |
@@ -191,7 +194,7 @@ A role file's frontmatter:
 
 The ledger:
 
-- `python -m swarm_ledger.serve [--repo <root>]` binds a free port on 127.0.0.1, writes `server.json`, and serves FastMCP over HTTP at `/mcp`. A second start finds the first one alive and exits 0. The server exits a few seconds after `run_finish`.
+- `python -m swarm_ledger.serve [--repo <root>]` binds the port in `server.port` on 127.0.0.1, or a free port when that one is taken, writes `server.json`, and serves FastMCP over HTTP at `/mcp`. A second start finds the first one alive and exits 0. The server exits a few seconds after `run_finish`, and after `idle_exit_minutes` with no active run, or a paused run, and no session of the run running. It runs the watchdog on a thread. See `04-mcp-and-hooks.md` "Watchdog".
 - `swarm_ledger.serve.ensure_server(repo_root) -> str` starts the server detached when it is not answering, waits until it answers, and returns its URL.
 - `swarm_ledger.agentfiles.read_agent_file(repo_root, role) -> dict` returns a role file's frontmatter and body.
 - `agent_spawn(caller, child_name, agent_id)`: the caller must be the parent role of the child's unacknowledged brief. It names the session `<repo slug>-r<run_id>-<child_name>`, refuses a name that a live session already uses, and applies `parallelism_cap` when the user set one. It runs, in the repo root: `claude "<prompt>" --bg --name <session name> --agent swarm-<role> --model <brief model> --permission-mode <file value> --strict-mcp-config --mcp-config <swarm-ledger URL plus the file's mcpServers> --allowedTools <the file's tools> --settings '{"worktree":{"bgIsolation":"none"}}'`, with the prompt before the options. It records the row: `agent_id` = the `sessionId`, `session_name`, `bg_id`, state `registered`.
@@ -219,6 +222,7 @@ The launcher and setup:
   - Once, the ledger server exited about a minute after it started, with no error in its log, and the Oracle could not connect. It did not happen again in two later runs. Open.
   - An open session in the host repo holds the plugin's files, so reinstalling the plugin fails until it closes. `scripts/smoke.sh` now copies the plugin into a new temp folder each run.
   - Nothing notices a dead session on its own. The watchdog is still needed; in the crash test, the report to the Oracle came from outside the run.
+- Built on 2026-09-24: the watchdog, in the ledger server process, with the Oracle's listener and the `pre_monitor` gate. It detects and reports through directives; the design is in `04-mcp-and-hooks.md` "Watchdog". Checked with unit tests only, not yet in a live run.
 - Small follow-ups: the trust message prints twice, once from setup and once from the launcher. The first start of codebase-kg's server builds its Python environment, so setup should build it ahead of time.
 
 ## Build order

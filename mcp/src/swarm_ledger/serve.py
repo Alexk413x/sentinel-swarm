@@ -21,6 +21,7 @@ HOST = "127.0.0.1"
 MCP_PATH = "/mcp"
 HEALTH_PATH = "/health"
 SERVER_FILE = "server.json"
+PORT_FILE = "server.port"
 LOG_FILE = "server.log"
 EXIT_DELAY_S = 3.0
 START_TIMEOUT_S = 30.0
@@ -34,6 +35,38 @@ def records_dir(repo_root: Path) -> Path:
 
 def server_info_path(repo_root: Path) -> Path:
     return records_dir(repo_root) / SERVER_FILE
+
+
+def port_path(repo_root: Path) -> Path:
+    return records_dir(repo_root) / PORT_FILE
+
+
+def _saved_port(repo_root: Path) -> int | None:
+    try:
+        port = int(port_path(repo_root).read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    return port if 0 < port < 65536 else None
+
+
+def bind_socket(repo_root: Path) -> socket.socket:
+    saved = _saved_port(repo_root)
+    for port in (saved, 0) if saved is not None else (0,):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        if sys.platform != "win32":
+            # On Windows SO_REUSEADDR lets a second server take a port in use; elsewhere it
+            # only lets the saved port be bound again while old connections sit in TIME_WAIT.
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((HOST, port))
+        except OSError:
+            sock.close()
+            continue
+        path = port_path(repo_root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{sock.getsockname()[1]}\n", encoding="utf-8", newline="\n")
+        return sock
+    raise OSError(f"cannot bind a port on {HOST}")
 
 
 def read_server_info(repo_root: Path) -> dict[str, Any] | None:
@@ -155,11 +188,9 @@ def serve(repo_root: Path) -> None:
     from . import server
 
     root = repo_root.resolve()
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind((HOST, 0))
+    sock = bind_socket(root)
     port = sock.getsockname()[1]
     path = server_info_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
     info = {
         "url": f"http://{HOST}:{port}{MCP_PATH}",
         "port": port,
@@ -175,6 +206,7 @@ def serve(repo_root: Path) -> None:
 
     server.configure(root)
     server.on_run_finish = lambda: exit_later(path)
+    _start_watchdog(root, path)
     try:
         server.mcp.run(
             transport="http",
@@ -186,6 +218,20 @@ def serve(repo_root: Path) -> None:
         )
     finally:
         _remove_if_ours(path)
+
+
+def _start_watchdog(root: Path, path: Path) -> None:
+    from . import env, server, watchdog
+    from .db import connect
+    from .settings import load_settings
+
+    watchdog.start(
+        root,
+        connect(env.db_path_for(root)),
+        load_settings(root).watchdog,
+        exit_server=lambda: _exit_now(path),
+        activity=lambda: server.last_call_at,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

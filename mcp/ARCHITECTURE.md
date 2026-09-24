@@ -8,7 +8,7 @@ piece can be built and tested alone.
 | Module | Holds |
 |---|---|
 | `db.py` | `ledger_path`, `connect`, `write_tx`, `migrate` with an idempotent upgrade for columns and tables added after version 1, `ensure_git_exclude` |
-| `schema.sql` | The tables, including `agents.session_name`, `agents.bg_id`, and `wakeups` (the wake-ups each agent owes) |
+| `schema.sql` | The tables, including `agents.session_name`, `agents.bg_id`, `wakeups` (the wake-ups each agent owes), `watchdog_findings`, `directives.notified_at`, and `runs.watch_heartbeat_at` |
 | `settings.py` | `Settings` loaded from `.claude/sentinel-swarm.local.md` frontmatter, with the defaults from `templates/sentinel-swarm.local.md.example` |
 | `identity.py` | `Caller`: resolves a call's `caller` name and stamped `agent_id` against the `agents` table. `require_role` |
 | `ledger.py` | `Ledger`: one object per server process, holding the connection, the repo root, and the settings. Every tool is a method that returns a plain dict |
@@ -17,7 +17,9 @@ piece can be built and tested alone.
 | `graph.py` | `graph_upsert` under a process lock, and the graph-current check for a file |
 | `versions.py` | Saves and restores file versions in `.sentinel-swarm/versions/` |
 | `server.py` | FastMCP tool registration. Each tool is a thin wrapper over a `Ledger` method |
-| `serve.py` | `python -m swarm_ledger.serve`: one HTTP ledger server per repo on a free port, its URL in `.sentinel-swarm/server.json`; `ensure_server` starts it when needed |
+| `serve.py` | `python -m swarm_ledger.serve`: one HTTP ledger server per repo, on the port saved in `.sentinel-swarm/server.port` or a free one, its URL in `.sentinel-swarm/server.json`; `ensure_server` starts it when needed. It starts the watchdog thread |
+| `watchdog.py` | The watchdog, a thread in the ledger server: `scan` turns `claude agents --json` and the ledger into findings, `record` dedups them in `watchdog_findings` and files each new one as a `watchdog` directive, and `Watchdog.tick` also wakes a stopped Oracle and exits an idle server |
+| `watch.py` | `python -m swarm_ledger.watch`: the Oracle's `Monitor` listener. Prints one line per new watchdog directive, beats `runs.watch_heartbeat_at`, and exits when the run is not active |
 | `sessions.py` | The `claude` CLI: start, list, stop, and resume background sessions. Every call goes through `_run`, which tests replace |
 | `agentfiles.py` | Reads a host repo's `.claude/agents/swarm-<role>.md` and builds a role session's flags |
 | `setup.py` | `python -m swarm_ledger.setup`: writes the role files from `templates/agents/`, the hook shim, and the settings a host repo needs |
@@ -39,4 +41,4 @@ A refused call raises `LedgerError(message)`. The server returns it as a tool er
 
 ## Records folder
 
-`.sentinel-swarm/` at the main checkout root: `ledger.db`, `versions/`, `report.md`, `server.json`, `server.log`, and the hook shim `hook.py`. It is excluded through `.git/info/exclude`.
+`.sentinel-swarm/` at the main checkout root: `ledger.db`, `versions/`, `report.md`, `server.json`, `server.port`, `server.log`, and the hook shim `hook.py`. It is excluded through `.git/info/exclude`.

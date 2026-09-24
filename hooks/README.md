@@ -37,6 +37,7 @@ The per-event behavior lives in `mcp/src/swarm_ledger/hooks/events.py`, as funct
 | `PreToolUse` | `Agent` | `pre_agent`, which denies | all |
 | `PreToolUse` | `Write\|Edit\|MultiEdit\|NotebookEdit` | `pre_write` | all |
 | `PreToolUse` | `Bash\|PowerShell` | `pre_shell` | all |
+| `PreToolUse` | `Monitor` | `pre_monitor` | all |
 | `PreToolUse` | `mcp__swarm-ledger__.*` | `pre_ledger` | all |
 | `PostToolUse` | all | `post_any` | all |
 | `PostToolUse` | `Bash\|PowerShell` | `post_shell` | coder |
@@ -44,7 +45,20 @@ The per-event behavior lives in `mcp/src/swarm_ledger/hooks/events.py`, as funct
 | `Stop` | all | `stop` | all |
 | `SessionEnd` | all | `session_end` | all |
 
-`pre_agent`, `pre_write`, `pre_shell`, and `pre_ledger` are the gating events.
+`pre_agent`, `pre_write`, `pre_shell`, `pre_monitor`, and `pre_ledger` are the gating
+events.
+
+`pre_monitor` allows exactly one `Monitor` call from a swarm session: the Oracle's
+watchdog listener, with no `ws` input and this command, compared after whitespace is
+normalized:
+
+```
+python3 .sentinel-swarm/hook.py watch || python .sentinel-swarm/hook.py watch
+```
+
+It denies every other `Monitor` call from a swarm session and names the allowed call
+in the reason. A session that is not yet in the ledger counts as a swarm session when
+its hook input carries `agent_type` `swarm-<role>`. A non-swarm caller passes.
 
 ## When the shim cannot run a hook
 
@@ -79,3 +93,11 @@ gate in their own project. The ledger tools' gates, such as `handoff_submit`,
 session. It finds the plugin's install the same way, reads the server's entry from
 the install's `.mcp.json`, expands `${CLAUDE_PLUGIN_ROOT}` and `${VAR:-default}`, and
 runs it with stdio passed through. The role files use it for codebase-kg.
+
+## The watchdog listener through the same shim
+
+`hook.py watch` finds the sentinel-swarm install the same way as `hook` and runs `uv
+run --project <installPath>/mcp --frozen --no-dev python -m swarm_ledger.watch`. It
+passes each stdout line through as it arrives and sets no timeout. The Oracle runs it
+as a `Monitor` command, so each line wakes the Oracle. When the install cannot be
+found, it prints one line with the reason and exits 1.

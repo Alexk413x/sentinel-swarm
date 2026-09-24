@@ -139,6 +139,52 @@ The Oracle starts a plain script at the start of a run. The script reads the reg
 
 It reports through the directive channel. See "User directives".
 
+### What was built on 2026-09-24
+
+Every item below is **(proposed)** unless it says it is Alex's rule. Checked with unit tests only, not yet in a live run.
+
+Where it runs:
+
+- The detection script runs as a thread inside the repo's ledger server (`swarm_ledger/watchdog.py`), not as a process the Oracle starts. It starts and stops with the server, which starts before the Oracle and exits after `run_finish`. So it is started and stopped with the run, and nothing is left running after the run ends. The user's requirement is that nothing stays in the background after the run ends or is abandoned.
+- It opens its own SQLite connection and writes with `BEGIN IMMEDIATE`, like any other ledger writer.
+- Every `interval_seconds` it reads `claude agents --json` and scans the active run. It skips a paused run. A failed `claude agents --json` skips one pass. Errors go to `.sentinel-swarm/server.log`, and the loop keeps going.
+
+What it detects, for the live Manager, Lead, and Coder sessions of the active run:
+
+| Kind | Condition | Next step the report names |
+|---|---|---|
+| `crashed` | The ledger says `working`, or `registered` for more than 2 minutes, and the session is missing from `claude agents --json` or not running. An `idle` or `handed_up` agent whose session exited is normal | `agent_resume(target_name=...)` |
+| `stuck` | The session runs, the ledger says `working`, and the last heartbeat (or the start) is older than `stuck_minutes` | Message it, or have its parent replace it. `agent_resume` refuses a running session |
+| `waiting_permission` | The session waits on a permission prompt. Not reported as `stuck` too | Tell the user to open that session in agent view and answer the prompt |
+| `spinning` | The agent's last `spin_failures` test runs for one scope and target all failed | Ask its parent to review: `return_work` or `issue_escalate` |
+| `context_high` | The agent's latest request fills `context_pct` of its window: input, cache read, and cache creation tokens of the last assistant message in its transcript. The window is 1,000,000 when the model names `[1m]`, else 200,000. Checked for the Oracle too | Have its parent replace it with a fresh agent that continues from the ledger. For the Oracle: pause the run so the user resumes it in a fresh Oracle session |
+| `stalled` | The run is active, no session of the run runs (the Oracle included), and two passes in a row see it | Resume the agent whose work is pending, named by submitted handoffs and unread messages |
+
+- `stalled` counts pending work as live agents, submitted handoffs, unlocked phases, and open directives from any source but the watchdog. A run with none of these still reports `stalled`, with "the run is not finished", so an abandoned active run always reaches the Oracle or a pause.
+- The transcript path comes from `SessionStart`, or from the first `PostToolUse` when `SessionStart` ran before `agent_spawn` wrote the row.
+
+How it reports:
+
+- Table `watchdog_findings` keeps one live row per run, agent, and kind. A finding that the next pass does not see is cleared. One that comes back later gets a new row and a new report.
+- Each new finding becomes a directive with source `watchdog` and sender `watchdog`, inserted directly by the server. Its body names the agent, its session, the kind, the detail, and the next step. Open directives already block `run_finish`, so the Oracle resolves each one.
+- The watchdog never resumes, replaces, or stops a Manager, Lead, or Coder. Alex's rule.
+
+How a report reaches the Oracle:
+
+- The listener: `python -m swarm_ledger.watch`, run through the shim as `hook.py watch`. Every 2 seconds it prints one line per unnotified watchdog directive, marks it notified, and writes `runs.watch_heartbeat_at`. It exits when no run is active, or the run is paused or finished.
+- The Oracle arms it with `Monitor(command="python3 .sentinel-swarm/hook.py watch || python .sentinel-swarm/hook.py watch", description="sentinel-swarm watchdog", timeout_ms=1800000)`. Each printed line wakes the Oracle (verified 2026-09-24). A monitor expires after 30 minutes, so the Oracle re-arms it.
+- `pre_monitor` allows that one call from the Oracle and denies every other `Monitor` call from a swarm session. This closes the shell that `Monitor` gave the Oracle.
+- The Oracle's `Stop` hook blocks while the run is active and the listener's heartbeat is missing or older than 60 seconds, or the armed monitor expires within 30 seconds. `PostToolUse` on the Oracle's watch call records the arm time as a heartbeat and the expiry from `timeout_ms`, so the listener's start-up time does not trip the rule.
+- `directive_inbox` marks the directives it returns as notified, so the listener does not repeat them.
+- Waking a stopped Oracle: when a watchdog directive stays unnotified for one interval and the Oracle's session is not running, the server runs `claude --resume <Oracle session> --bg "The watchdog reported N finding(s). Read directive_inbox."`, at most once every 5 minutes. Each attempt is an `agent_events` row. After 3 attempts with no Oracle heartbeat since the first, it pauses the run with the reason "the watchdog could not wake the Oracle". This exists so that a report can reach the Oracle at all.
+
+When the server exits on its own:
+
+- After `idle_exit_minutes` with no active run, or with a paused run, and in both cases no session of the run running. A ledger tool call restarts the idle clock, so an Oracle that is still talking to the user before `run_start` keeps its server. A failed `claude agents --json` counts as no session running here, so a broken `claude` cannot keep the server alive.
+- The server keeps its port in `.sentinel-swarm/server.port` and binds it again on restart, so a session resumed after an idle exit still reaches the ledger at the URL it started with. When the port is taken, it binds a free one, and sessions started before then lose the ledger.
+
+Settings, in `.claude/sentinel-swarm.local.md` under `watchdog`: `interval_seconds` (30), `stuck_minutes` (15), `spin_failures` (5), `context_pct` (80), `idle_exit_minutes` (15).
+
 ## User directives
 
 From Alex on 2026-09-21:

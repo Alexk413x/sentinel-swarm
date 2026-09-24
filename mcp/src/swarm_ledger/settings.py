@@ -41,6 +41,15 @@ class EscalationSettings:
 
 
 @dataclass
+class WatchdogSettings:
+    interval_seconds: int = 30
+    stuck_minutes: int = 15
+    spin_failures: int = 5
+    context_pct: int = 80
+    idle_exit_minutes: int = 15
+
+
+@dataclass
 class Settings:
     tracking: str = "local"
     runtime: dict[str, str] = field(default_factory=lambda: dict(_DEFAULT_RUNTIME))
@@ -49,6 +58,7 @@ class Settings:
     )
     rubric: RubricSettings = field(default_factory=RubricSettings)
     escalation: EscalationSettings = field(default_factory=EscalationSettings)
+    watchdog: WatchdogSettings = field(default_factory=WatchdogSettings)
     test_command: str | None = None
     build_command: str | None = None
     lint_command: str | None = None
@@ -106,12 +116,24 @@ def load_settings(repo_root: Path) -> Settings:
         ),
     )
 
+    watchdog_data = data.get("watchdog") or {}
+    watchdog = WatchdogSettings(
+        interval_seconds=watchdog_data.get("interval_seconds", defaults.watchdog.interval_seconds),
+        stuck_minutes=watchdog_data.get("stuck_minutes", defaults.watchdog.stuck_minutes),
+        spin_failures=watchdog_data.get("spin_failures", defaults.watchdog.spin_failures),
+        context_pct=watchdog_data.get("context_pct", defaults.watchdog.context_pct),
+        idle_exit_minutes=watchdog_data.get(
+            "idle_exit_minutes", defaults.watchdog.idle_exit_minutes
+        ),
+    )
+
     return Settings(
         tracking=data.get("tracking") or defaults.tracking,
         runtime=runtime,
         models=models,
         rubric=rubric,
         escalation=escalation,
+        watchdog=watchdog,
         test_command=data.get("test_command") or defaults.test_command,
         build_command=data.get("build_command") or defaults.build_command,
         lint_command=data.get("lint_command") or defaults.lint_command,

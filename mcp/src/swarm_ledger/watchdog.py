@@ -1,0 +1,591 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+import sys
+import threading
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from . import sessions
+from .db import write_tx
+from .identity import LedgerError
+from .settings import WatchdogSettings
+
+WATCH_COMMAND = "python3 .sentinel-swarm/hook.py watch || python .sentinel-swarm/hook.py watch"
+MONITOR_TIMEOUT_MS = 1_800_000
+MONITOR_CALL = (
+    f"Monitor(command={json.dumps(WATCH_COMMAND)}, "
+    f'description="sentinel-swarm watchdog", timeout_ms={MONITOR_TIMEOUT_MS})'
+)
+REGISTER_GRACE = timedelta(minutes=2)
+WAKE_EVERY = timedelta(minutes=5)
+MAX_WAKES = 3
+WAKE_STATE = "watchdog_wake"
+PAUSE_REASON = "the watchdog could not wake the Oracle"
+_MEMBER_ROLES = ("manager", "lead", "coder")
+_WINDOW_1M = 1_000_000
+_WINDOW = 200_000
+_TAIL_BLOCK = 256 * 1024
+
+
+@dataclass(frozen=True)
+class Finding:
+    agent_id: str
+    name: str
+    session_name: str | None
+    kind: str
+    detail: str
+    next_step: str
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def stamp(moment: datetime) -> str:
+    moment = moment.astimezone(timezone.utc)
+    return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
+
+
+def parse_stamp(raw: object) -> datetime | None:
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def _log(message: str) -> None:
+    sys.stderr.write(f"{stamp(utcnow())} watchdog: {message}\n")
+    sys.stderr.flush()
+
+
+def scan(
+    conn: sqlite3.Connection, listing: list[dict], now: datetime, settings: WatchdogSettings
+) -> list[Finding]:
+    run = conn.execute("SELECT * FROM runs WHERE state = 'active'").fetchone()
+    if run is None:
+        return []
+    agents = [
+        dict(row)
+        for row in conn.execute(
+            "SELECT * FROM agents WHERE run_id = ? AND ended_at IS NULL "
+            "AND role IN ('oracle', 'manager', 'lead', 'coder') ORDER BY started_at, agent_id",
+            (run["run_id"],),
+        )
+    ]
+    by_session = {str(e["sessionId"]): e for e in listing if e.get("sessionId")}
+    names = {a["agent_id"]: a["name"] for a in agents}
+
+    findings: list[Finding] = []
+    for agent in agents:
+        entry = by_session.get(agent["agent_id"])
+        if agent["role"] in _MEMBER_ROLES:
+            findings += _session_findings(agent, entry, now, settings)
+            spin = _spinning(conn, agent, settings)
+            if spin is not None:
+                parent = names.get(agent["parent_agent_id"]) or "its parent"
+                findings.append(
+                    _finding(
+                        agent,
+                        "spinning",
+                        spin,
+                        f"Ask {parent} to review the work: return_work with new direction, "
+                        "or issue_escalate.",
+                    )
+                )
+        context = _context_high(agent, settings)
+        if context is not None:
+            findings.append(_finding(agent, "context_high", context, _context_step(agent, names)))
+
+    stalled = _stalled(conn, run, agents, by_session)
+    if stalled is not None:
+        findings.append(stalled)
+    return findings
+
+
+def _finding(agent: dict, kind: str, detail: str, next_step: str) -> Finding:
+    return Finding(
+        agent_id=agent["agent_id"],
+        name=agent["name"],
+        session_name=agent["session_name"],
+        kind=kind,
+        detail=detail,
+        next_step=next_step,
+    )
+
+
+def _session_findings(
+    agent: dict, entry: dict | None, now: datetime, settings: WatchdogSettings
+) -> list[Finding]:
+    name = json.dumps(agent["name"])
+    if entry is not None and "permission" in str(entry.get("waitingFor") or "").lower():
+        return [
+            _finding(
+                agent,
+                "waiting_permission",
+                "its session waits on a permission prompt",
+                f"Tell the user to open the session {agent['session_name'] or agent['name']} "
+                "in agent view and answer its permission prompt.",
+            )
+        ]
+
+    state = agent["state"]
+    running = entry is not None and sessions.is_running(entry)
+    if not running:
+        started = parse_stamp(agent["started_at"])
+        overdue = started is not None and now - started > REGISTER_GRACE
+        if state == "working" or (state == "registered" and overdue):
+            where = (
+                "is not in claude agents --json"
+                if entry is None
+                else f"is not running (status {entry.get('status')}, state {entry.get('state')})"
+            )
+            return [
+                _finding(
+                    agent,
+                    "crashed",
+                    f"the ledger says {state}, but its session {where}",
+                    f"Resume it with agent_resume(target_name={name}).",
+                )
+            ]
+        return []
+
+    if state != "working":
+        return []
+    last = parse_stamp(agent["last_heartbeat_at"]) or parse_stamp(agent["started_at"])
+    if last is None or now - last < timedelta(minutes=settings.stuck_minutes):
+        return []
+    minutes = int((now - last).total_seconds() // 60)
+    activity = agent["current_activity"] or "none recorded"
+    label = json.dumps(agent["session_name"] or agent["name"])
+    return [
+        _finding(
+            agent,
+            "stuck",
+            f"its session runs, but it has shown no activity for {minutes} minutes "
+            f"(last activity: {activity})",
+            f"Message it with SendMessage(to={label}) and ask what blocks it, or have its "
+            "parent replace it with a fresh agent that continues from the ledger. "
+            "agent_resume refuses a running session.",
+        )
+    ]
+
+
+def _failed(row: sqlite3.Row) -> bool:
+    exit_code = row["exit_code"]
+    return (exit_code is None or exit_code != 0) or (row["failed"] or 0) > 0
+
+
+def _spinning(conn: sqlite3.Connection, agent: dict, settings: WatchdogSettings) -> str | None:
+    limit = settings.spin_failures
+    if limit <= 0:
+        return None
+    groups: dict[tuple[str, str | None], list[sqlite3.Row]] = {}
+    for row in conn.execute(
+        "SELECT test_run_id, scope, target, exit_code, failed FROM test_runs "
+        "WHERE agent_id = ? ORDER BY test_run_id DESC",
+        (agent["agent_id"],),
+    ):
+        latest = groups.setdefault((row["scope"], row["target"]), [])
+        if len(latest) < limit:
+            latest.append(row)
+    spinning = [
+        f"the last {limit} test runs for scope {scope} and target {target or 'none'} failed "
+        f"(latest test_run_id {rows[0]['test_run_id']})"
+        for (scope, target), rows in groups.items()
+        if len(rows) == limit and all(_failed(r) for r in rows)
+    ]
+    return "; ".join(spinning) or None
+
+
+def _last_usage(path: Path) -> tuple[int, str] | None:
+    with path.open("rb") as handle:
+        handle.seek(0, 2)
+        end = handle.tell()
+        carry = b""
+        while end > 0:
+            start = max(0, end - _TAIL_BLOCK)
+            handle.seek(start)
+            chunk = handle.read(end - start) + carry
+            lines = chunk.split(b"\n")
+            carry = lines[0] if start > 0 else b""
+            for raw in reversed(lines[1:] if start > 0 else lines):
+                found = _usage_of(raw)
+                if found is not None:
+                    return found
+            end = start
+    return None
+
+
+def _usage_of(raw: bytes) -> tuple[int, str] | None:
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        record = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(record, dict) or record.get("isSidechain"):
+        return None
+    message = record.get("message")
+    if not isinstance(message, dict) or message.get("role", "assistant") != "assistant":
+        return None
+    usage = message.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    tokens = sum(
+        int(usage.get(key) or 0)
+        for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+    )
+    return tokens, str(message.get("model") or "")
+
+
+def _context_high(agent: dict, settings: WatchdogSettings) -> str | None:
+    raw = agent["transcript_path"]
+    if not raw:
+        return None
+    try:
+        found = _last_usage(Path(raw))
+    except OSError:
+        return None
+    if found is None:
+        return None
+    tokens, model = found
+    window = _WINDOW_1M if "[1m]" in f"{agent['model'] or ''} {model}" else _WINDOW
+    pct = tokens * 100 / window
+    if pct < settings.context_pct:
+        return None
+    return f"its latest request used {tokens} of {window} context tokens ({pct:.0f}%)"
+
+
+def _context_step(agent: dict, names: dict[str, str]) -> str:
+    if agent["role"] == "oracle":
+        return (
+            "Record where the run stands in the ledger, then call run_pause so the user can "
+            "continue the run in a fresh Oracle session with /sentinel-swarm:resume."
+        )
+    parent = names.get(agent["parent_agent_id"]) or "its parent"
+    return (
+        f"Have {parent} release it and brief a fresh agent that continues from the ledger records."
+    )
+
+
+def _stalled(
+    conn: sqlite3.Connection, run: sqlite3.Row, agents: list[dict], by_session: dict[str, dict]
+) -> Finding | None:
+    if any(
+        sessions.is_running(by_session[a["agent_id"]])
+        for a in agents
+        if a["agent_id"] in by_session
+    ):
+        return None
+    oracle = next((a for a in agents if a["role"] == "oracle"), None)
+    if oracle is None:
+        return None
+    run_id = run["run_id"]
+    members = [a for a in agents if a["role"] != "oracle"]
+    handoffs = conn.execute(
+        "SELECT h.handoff_id, f.path, coder.parent_agent_id AS reviewer_id FROM handoffs h "
+        "JOIN files f ON f.file_id = h.file_id "
+        "JOIN modules m ON m.module_id = f.module_id "
+        "JOIN phases p ON p.phase_id = m.phase_id "
+        "LEFT JOIN agents coder ON coder.agent_id = h.agent_id "
+        "WHERE p.run_id = ? AND h.state = 'submitted' ORDER BY h.handoff_id",
+        (run_id,),
+    ).fetchall()
+    unlocked = conn.execute(
+        "SELECT COUNT(*) AS n FROM phases WHERE run_id = ? AND state = 'unlocked'", (run_id,)
+    ).fetchone()["n"]
+    directives = conn.execute(
+        "SELECT COUNT(*) AS n FROM directives WHERE run_id = ? AND state = 'open' "
+        "AND source != 'watchdog'",
+        (run_id,),
+    ).fetchone()["n"]
+
+    pending: list[str] = []
+    if members:
+        pending.append(f"{len(members)} live agent(s)")
+    if handoffs:
+        pending.append(f"{len(handoffs)} submitted handoff(s)")
+    if unlocked:
+        pending.append(f"{unlocked} unlocked phase(s)")
+    if directives:
+        pending.append(f"{directives} open directive(s)")
+
+    by_id = {a["agent_id"]: a for a in members}
+    targets: list[str] = []
+    for handoff in handoffs:
+        reviewer = by_id.get(handoff["reviewer_id"])
+        if reviewer is not None and reviewer["name"] not in targets:
+            targets.append(reviewer["name"])
+    for agent in members:
+        unread = conn.execute(
+            "SELECT 1 FROM messages WHERE run_id = ? AND to_name = ? AND read_at IS NULL",
+            (run_id, agent["name"]),
+        ).fetchone()
+        if unread is not None and agent["name"] not in targets:
+            targets.append(agent["name"])
+
+    if pending:
+        detail = f"no session of the run is running, and work is pending: {', '.join(pending)}"
+    else:
+        detail = "no session of the run is running, and the run is not finished"
+    if targets:
+        calls = ", ".join(f"agent_resume(target_name={json.dumps(t)})" for t in targets)
+        step = f"Resume the agent whose work is pending: {calls}."
+    elif pending:
+        step = "Continue the plan: resume or spawn the agent that owns the pending work."
+    else:
+        step = "Continue the plan, or call run_finish."
+    return _finding(oracle, "stalled", detail, step)
+
+
+def directive_body(finding: Finding) -> str:
+    session = finding.session_name or "none recorded"
+    return (
+        f"Watchdog finding {finding.kind}: {finding.name} (session {session}): "
+        f"{finding.detail}. Next: {finding.next_step} Then resolve this directive with "
+        "directive_resolve."
+    )
+
+
+def _needs_confirmation(kind: str) -> bool:
+    # A run passes through "no session running" for a moment while one session exits and
+    # another resumes, so a stall is reported only once two passes in a row see it.
+    return kind == "stalled"
+
+
+def record(
+    conn: sqlite3.Connection, run_id: int, findings: list[Finding], now: datetime
+) -> list[dict]:
+    at = stamp(now)
+    reported: list[dict] = []
+    with write_tx(conn):
+        live = {
+            (row["agent_id"], row["kind"]): dict(row)
+            for row in conn.execute(
+                "SELECT * FROM watchdog_findings WHERE run_id = ? AND cleared_at IS NULL",
+                (run_id,),
+            )
+        }
+        seen: set[tuple[str, str]] = set()
+        for finding in findings:
+            key = (finding.agent_id, finding.kind)
+            if key in seen:
+                continue
+            seen.add(key)
+            row = live.get(key)
+            if row is None:
+                cur = conn.execute(
+                    "INSERT INTO watchdog_findings (run_id, agent_id, kind, detail, "
+                    "first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (run_id, finding.agent_id, finding.kind, finding.detail, at, at),
+                )
+                finding_id = cur.lastrowid
+                if _needs_confirmation(finding.kind):
+                    continue
+            else:
+                finding_id = row["finding_id"]
+                conn.execute(
+                    "UPDATE watchdog_findings SET detail = ?, last_seen_at = ? "
+                    "WHERE finding_id = ?",
+                    (finding.detail, at, finding_id),
+                )
+                if row["reported_at"] is not None:
+                    continue
+            cur = conn.execute(
+                "INSERT INTO directives (run_id, source, sender_name, body, created_at) "
+                "VALUES (?, 'watchdog', 'watchdog', ?, ?)",
+                (run_id, directive_body(finding), at),
+            )
+            conn.execute(
+                "UPDATE watchdog_findings SET reported_at = ?, directive_id = ? "
+                "WHERE finding_id = ?",
+                (at, cur.lastrowid, finding_id),
+            )
+            reported.append(
+                dict(
+                    conn.execute(
+                        "SELECT * FROM watchdog_findings WHERE finding_id = ?", (finding_id,)
+                    ).fetchone()
+                )
+            )
+        for key, row in live.items():
+            if key not in seen:
+                conn.execute(
+                    "UPDATE watchdog_findings SET cleared_at = ? WHERE finding_id = ?",
+                    (at, row["finding_id"]),
+                )
+    return reported
+
+
+class Watchdog:
+    def __init__(
+        self,
+        repo_root: Path,
+        conn: sqlite3.Connection,
+        settings: WatchdogSettings,
+        *,
+        exit_server: Callable[[], None],
+        activity: Callable[[], object] = lambda: None,
+        log: Callable[[str], None] = _log,
+    ) -> None:
+        self.repo_root = repo_root
+        self.conn = conn
+        self.settings = settings
+        self._exit_server = exit_server
+        self._activity = activity
+        self._log = log
+        self._activity_seen = activity()
+        self._idle_since: datetime | None = None
+
+    @property
+    def interval(self) -> timedelta:
+        return timedelta(seconds=self.settings.interval_seconds)
+
+    def tick(self, now: datetime) -> None:
+        run = self._live_run()
+        try:
+            listing: list[dict] | None = sessions.list_sessions()
+        except LedgerError as exc:
+            self._log(f"skipped a pass: {exc}")
+            listing = None
+        if run is not None and run["state"] == "active" and listing is not None:
+            findings = scan(self.conn, listing, now, self.settings)
+            for row in record(self.conn, run["run_id"], findings, now):
+                self._log(
+                    f"reported {row['kind']} for {row['agent_id']} "
+                    f"as directive {row['directive_id']}"
+                )
+            self._wake_oracle(run, listing, now)
+        self._check_idle(run, listing, now)
+
+    def run_forever(self, stop: threading.Event) -> None:
+        while not stop.wait(self.settings.interval_seconds):
+            try:
+                self.tick(utcnow())
+            except Exception as exc:
+                self._log(f"a pass failed: {type(exc).__name__}: {exc}")
+
+    def _live_run(self) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM runs WHERE state IN ('active', 'paused') ORDER BY run_id DESC LIMIT 1"
+        ).fetchone()
+
+    def _oracle(self, run_id: int) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM agents WHERE run_id = ? AND role = 'oracle' AND ended_at IS NULL "
+            "ORDER BY started_at DESC LIMIT 1",
+            (run_id,),
+        ).fetchone()
+
+    def _wake_oracle(self, run: sqlite3.Row, listing: list[dict], now: datetime) -> None:
+        oracle = self._oracle(run["run_id"])
+        if oracle is None:
+            return
+        entry = sessions.find_session(listing, oracle["agent_id"])
+        if entry is not None and sessions.is_running(entry):
+            return
+        waiting = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM directives WHERE run_id = ? AND source = 'watchdog' "
+            "AND state = 'open' AND notified_at IS NULL AND created_at <= ?",
+            (run["run_id"], stamp(now - self.interval)),
+        ).fetchone()["n"]
+        if not waiting:
+            return
+        attempts = [
+            parse_stamp(row["at"])
+            for row in self.conn.execute(
+                "SELECT at FROM agent_events WHERE agent_id = ? AND to_state = ? AND at > ? "
+                "ORDER BY event_id",
+                (oracle["agent_id"], WAKE_STATE, oracle["last_heartbeat_at"] or ""),
+            )
+        ]
+        last = attempts[-1] if attempts else None
+        if last is not None and now - last < WAKE_EVERY:
+            return
+        if len(attempts) >= MAX_WAKES:
+            self._pause(run, oracle, now)
+            return
+
+        message = f"The watchdog reported {waiting} finding(s). Read directive_inbox."
+        try:
+            sessions.resume(oracle["agent_id"], message, cwd=self.repo_root)
+            reason = f"the watchdog woke the Oracle: {message}"
+        except LedgerError as exc:
+            reason = f"the watchdog could not resume the Oracle: {exc}"
+        with write_tx(self.conn) as conn:
+            conn.execute(
+                "INSERT INTO agent_events (agent_id, from_state, to_state, reason, at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (oracle["agent_id"], oracle["state"], WAKE_STATE, reason, stamp(now)),
+            )
+        self._log(reason)
+
+    def _pause(self, run: sqlite3.Row, oracle: sqlite3.Row, now: datetime) -> None:
+        with write_tx(self.conn) as conn:
+            cur = conn.execute(
+                "UPDATE runs SET state = 'paused' WHERE run_id = ? AND state = 'active'",
+                (run["run_id"],),
+            )
+            if cur.rowcount:
+                conn.execute(
+                    "INSERT INTO agent_events (agent_id, from_state, to_state, reason, at) "
+                    "VALUES (?, 'active', 'paused', ?, ?)",
+                    (oracle["agent_id"], PAUSE_REASON, stamp(now)),
+                )
+        self._log(f"paused run {run['run_id']}: {PAUSE_REASON}")
+
+    def _check_idle(
+        self, run: sqlite3.Row | None, listing: list[dict] | None, now: datetime
+    ) -> None:
+        activity = self._activity()
+        if activity != self._activity_seen:
+            self._activity_seen = activity
+            self._idle_since = None
+            return
+        if run is not None and run["state"] == "active":
+            self._idle_since = None
+            return
+        if run is not None and listing is not None and self._any_running(run, listing):
+            self._idle_since = None
+            return
+        if self._idle_since is None:
+            self._idle_since = now
+            return
+        if now - self._idle_since >= timedelta(minutes=self.settings.idle_exit_minutes):
+            self._log("no run is active and no session of the run runs; the server exits")
+            self._exit_server()
+
+    def _any_running(self, run: sqlite3.Row, listing: list[dict]) -> bool:
+        ids = {
+            row["agent_id"]
+            for row in self.conn.execute(
+                "SELECT agent_id FROM agents WHERE run_id = ? AND ended_at IS NULL",
+                (run["run_id"],),
+            )
+        }
+        return any(sessions.is_running(entry) for entry in listing if entry.get("sessionId") in ids)
+
+
+def start(
+    repo_root: Path,
+    conn: sqlite3.Connection,
+    settings: WatchdogSettings,
+    *,
+    exit_server: Callable[[], None],
+    activity: Callable[[], object],
+) -> threading.Event:
+    dog = Watchdog(repo_root, conn, settings, exit_server=exit_server, activity=activity)
+    stop = threading.Event()
+    thread = threading.Thread(
+        target=dog.run_forever, args=(stop,), name="swarm-watchdog", daemon=True
+    )
+    thread.start()
+    return stop
