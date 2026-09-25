@@ -639,7 +639,7 @@ class ReviewMixin:
             self._release_agent(conn, handoff_row["agent_id"], "approve")
             pending = conn.execute(
                 "SELECT COUNT(*) AS n FROM files WHERE module_id = ? "
-                "AND state NOT IN ('approved', 'incomplete')",
+                "AND state NOT IN ('approved', 'incomplete', 'superseded')",
                 (file_row["module_id"],),
             ).fetchone()["n"]
             if pending == 0:

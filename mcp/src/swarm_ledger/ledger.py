@@ -1063,6 +1063,11 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
                 (c.module_id, path, test_path, for_name),
             )
             file_id = cur.lastrowid
+            conn.execute(
+                "UPDATE files SET state = 'superseded' WHERE module_id = ? AND path = ? "
+                "AND state = 'released' AND file_id != ?",
+                (c.module_id, path, file_id),
+            )
 
         return dict(
             self.conn.execute("SELECT * FROM files WHERE file_id = ?", (file_id,)).fetchone()

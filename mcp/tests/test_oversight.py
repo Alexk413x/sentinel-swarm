@@ -278,6 +278,26 @@ def test_module_review_accepted_succeeds_with_an_agreeing_file(ledger: Ledger) -
     assert result["kind"] == "manager"
 
 
+def test_a_released_claim_that_was_claimed_again_does_not_block_module_review(
+    ledger: Ledger,
+) -> None:
+    ctx = _bootstrap(ledger)
+    lead = ctx["lead"]["agent_id"]
+    first = ledger.claim_file("lead-1", lead, "pkg/good.py", "tests/test_good.py", "coder-old")
+    ledger.release_file("lead-1", lead, "pkg/good.py")
+    _approve_file(ledger, ctx, "coder-new", "pkg/good.py", "tests/test_good.py")
+    _insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
+
+    state = ledger.conn.execute(
+        "SELECT state FROM files WHERE file_id = ?", (first["file_id"],)
+    ).fetchone()["state"]
+    assert state == "superseded"
+    result = ledger.module_review(
+        "manager-1", ctx["manager"]["agent_id"], ctx["module_id"], "accepted", "looks good"
+    )
+    assert result["outcome"] == "accepted"
+
+
 def test_module_review_refuses_missing_disagreement_notes(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     file_id = _approve_file(

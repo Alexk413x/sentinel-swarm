@@ -123,7 +123,9 @@ class OversightMixin:
         disagreement_notes: dict[str, str],
     ) -> None:
         files = _rows(conn.execute("SELECT * FROM files WHERE module_id = ?", (module_id,)))
-        not_ready = [f["path"] for f in files if f["state"] not in ("approved", "incomplete")]
+        not_ready = [
+            f["path"] for f in files if f["state"] not in ("approved", "incomplete", "superseded")
+        ]
         if not_ready:
             raise LedgerError(f"file(s) are not approved or incomplete yet: {not_ready}")
 
