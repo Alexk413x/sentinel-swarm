@@ -138,3 +138,33 @@ def test_session_options_leaves_out_what_the_file_does_not_set(tmp_path: Path) -
     assert "--permission-mode" not in options
     assert "--allowedTools" not in options
     assert options[:2] == ["--agent", "swarm-lead"]
+
+
+def _registry(config_dir: Path, entries: list[dict]) -> None:
+    path = config_dir / "plugins" / "installed_plugins.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"plugins": {"a11y@accessibility-tools": entries}}), "utf-8")
+
+
+def test_session_options_add_a11y_only_when_the_host_has_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = tmp_path / "host"
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    _write(host, "coder", _CODER)
+
+    def a11y_parts() -> tuple[set[str], str]:
+        options = session_options(host, "coder", None, "http://127.0.0.1:1/mcp")
+        servers = json.loads(options[options.index("--mcp-config") + 1])["mcpServers"]
+        return set(servers), options[options.index("--allowedTools") + 1]
+
+    _registry(config_dir, [{"scope": "project", "projectPath": str(tmp_path / "other")}])
+    servers, tools = a11y_parts()
+    assert "a11y-tools" not in servers
+    assert "mcp__a11y" not in tools
+
+    _registry(config_dir, [{"scope": "project", "projectPath": str(host)}])
+    servers, tools = a11y_parts()
+    assert {"a11y-tools", "a11y-kg"} <= servers
+    assert tools.endswith(",mcp__a11y-tools,mcp__a11y-kg")

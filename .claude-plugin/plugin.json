@@ -24,13 +24,13 @@
       "name": "codebase-kg",
       "marketplace": "codebase-kg",
       "version": ">=0.7.0"
-    }
-  ],
-  "optionalDependencies": [
+    },
     {
       "name": "a11y",
       "marketplace": "accessibility-tools"
-    },
+    }
+  ],
+  "optionalDependencies": [
     {
       "name": "cartographer",
       "marketplace": "cartographer"

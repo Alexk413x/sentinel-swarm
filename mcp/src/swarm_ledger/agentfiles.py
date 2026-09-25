@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,47 @@ from .identity import ROLES, LedgerError
 LEDGER_SERVER = "swarm-ledger"
 SESSION_SETTINGS = '{"worktree":{"bgIsolation":"none"}}'
 _SETUP_HINT = "run /sentinel-swarm:setup"
+OPTIONAL_SERVERS = {"a11y@accessibility-tools": ("a11y-tools", "a11y-kg")}
+
+
+def _registry_path() -> Path:
+    raw = os.environ.get("CLAUDE_CONFIG_DIR")
+    base = Path(raw) if raw else Path.home() / ".claude"
+    return base / "plugins" / "installed_plugins.json"
+
+
+def _same_path(raw: object, repo_root: Path) -> bool:
+    if not isinstance(raw, str) or not raw:
+        return False
+    try:
+        return os.path.normcase(str(Path(raw).resolve())) == os.path.normcase(
+            str(repo_root.resolve())
+        )
+    except OSError:
+        return False
+
+
+def plugin_installed(repo_root: Path, plugin_id: str) -> bool:
+    try:
+        data = json.loads(_registry_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    plugins = data.get("plugins") if isinstance(data, dict) else None
+    entries = plugins.get(plugin_id) if isinstance(plugins, dict) else None
+    return any(
+        isinstance(entry, dict)
+        and (entry.get("scope") == "user" or _same_path(entry.get("projectPath"), repo_root))
+        for entry in entries or []
+    )
+
+
+def optional_servers(repo_root: Path) -> dict[str, Any]:
+    return {
+        server: {"command": "python", "args": [".sentinel-swarm/hook.py", "mcp", plugin, server]}
+        for plugin, servers in OPTIONAL_SERVERS.items()
+        if plugin_installed(repo_root, plugin)
+        for server in servers
+    }
 
 
 def agent_file_path(repo_root: Path, role: str) -> Path:
@@ -59,10 +101,12 @@ def mcp_servers(agent_file: dict[str, Any]) -> dict[str, Any]:
 
 def session_options(repo_root: Path, role: str, model: str | None, ledger_url: str) -> list[str]:
     agent_file = read_agent_file(repo_root, role)
+    extra = optional_servers(repo_root)
     config = {
         "mcpServers": {
             LEDGER_SERVER: {"type": "http", "url": ledger_url},
             **mcp_servers(agent_file),
+            **extra,
         }
     }
     options = ["--agent", f"swarm-{role}"]
@@ -74,6 +118,7 @@ def session_options(repo_root: Path, role: str, model: str | None, ledger_url: s
     options += ["--strict-mcp-config", "--mcp-config", json.dumps(config)]
     tools = tool_list(agent_file)
     if tools:
+        tools += [f"mcp__{server}" for server in extra if f"mcp__{server}" not in tools]
         options += ["--allowedTools", ",".join(tools)]
     options += ["--settings", SESSION_SETTINGS]
     return options

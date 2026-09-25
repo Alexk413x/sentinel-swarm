@@ -68,6 +68,7 @@ def test_plugin_manifest_parses(repo_root: Path):
     deps = data["dependencies"]
     names = [d if isinstance(d, str) else d.get("name") for d in deps]
     assert "codebase-kg" in names
+    assert "a11y" in names
 
 
 def test_marketplace_manifest_parses(repo_root: Path):
@@ -139,7 +140,10 @@ def test_template_tools(repo_root: Path, role: str):
     assert "mcp__swarm-ledger" in tools
     for tool in KG_TOOLS:
         assert f"mcp__codebase-kg__{tool}" in tools
+    assert "mcp__a11y-tools" in tools
+    assert "mcp__a11y-kg" in tools
     assert not any(t.startswith("mcp__plugin_") for t in tools)
+    assert not any("driver" in t for t in tools)
 
 
 def test_only_coder_writes_edits_and_runs_a_shell(repo_root: Path):
@@ -163,7 +167,24 @@ def test_template_mcp_servers_go_through_the_shim(repo_root: Path, role: str):
                     "codebase-kg",
                 ],
             }
-        }
+        },
+        {
+            "a11y-tools": {
+                "command": "python",
+                "args": [
+                    ".sentinel-swarm/hook.py",
+                    "mcp",
+                    "a11y@accessibility-tools",
+                    "a11y-tools",
+                ],
+            }
+        },
+        {
+            "a11y-kg": {
+                "command": "python",
+                "args": [".sentinel-swarm/hook.py", "mcp", "a11y@accessibility-tools", "a11y-kg"],
+            }
+        },
     ]
 
 

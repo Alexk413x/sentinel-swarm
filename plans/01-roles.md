@@ -150,6 +150,22 @@ Each parent and child pair follows the same cycle:
 - **Must not:** edit a file that it does not own. It files a change request with the owner.
 - **Done when:** its Lead approves the file.
 
+## Driver (not built)
+
+Decided by Alex on 2026-09-24. Responsibilities only; the mechanics are not designed yet.
+
+- **Does:**
+  - Runs the app and tests changes on it, using the device and browser driver plugins: android-driver, ios-driver, and web-driver.
+  - Takes requests from any role. A request can ask for a build and a refresh, then names the checks to run.
+  - Keeps a queue of requested work, explores each item, and reports back to the agent that asked, with its findings and the evidence.
+- **The requester then:** fixes or tweaks its work and asks again, or records its work as complete.
+- **Tooling:** the only role that loads the driver plugins.
+- **Must not:** edit project files. It observes and reports.
+
+## MCP servers per role
+
+Decided by Alex on 2026-09-24: every role has swarm-ledger and codebase-kg. A role also gets the a11y plugin's servers when the host repo has a11y installed; `agent_spawn` and the launcher check the host's installed plugins. Only the Driver will have the driver plugins. Every session starts with `--strict-mcp-config`, so no other MCP server loads.
+
 ## Testing
 
 The swarm creates unit tests only. End-to-end testing is a separate process outside the swarm.
