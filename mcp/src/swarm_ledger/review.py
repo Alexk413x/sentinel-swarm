@@ -118,6 +118,14 @@ class ReviewMixin:
 
     def _block_approve_for_departures(self, conn: sqlite3.Connection, handoff_id: int) -> None: ...
 
+    def _block_return_for_open_departures(
+        self, conn: sqlite3.Connection, handoff_id: int
+    ) -> None: ...
+
+    def _mark_departures_reworked(
+        self, conn: sqlite3.Connection, file_id: int, handoff_id: int
+    ) -> None: ...
+
     # -- Shared helpers ---------------------------------------------------
 
     def _thresholds(self) -> rubric.Thresholds:
@@ -517,10 +525,15 @@ class ReviewMixin:
                 ),
             )
             handoff_id = cur.lastrowid
+            conn.execute(
+                "UPDATE departures SET handoff_id = ? WHERE file_id = ? AND handoff_id IS NULL "
+                "AND kind = 'departure' AND state = 'open' AND level = 'lead'",
+                (handoff_id, file_id),
+            )
             for departure_body in departures:
                 conn.execute(
                     "INSERT INTO departures (run_id, agent_id, file_id, handoff_id, kind, "
-                    "state, body) VALUES (?, ?, ?, ?, 'departure', 'open', ?)",
+                    "state, body, level) VALUES (?, ?, ?, ?, 'departure', 'open', ?, 'lead')",
                     (c.run_id, c.agent_id, file_id, handoff_id, departure_body),
                 )
 
@@ -643,6 +656,7 @@ class ReviewMixin:
                 f"UPDATE files SET state = 'approved', released_at = {_NOW} WHERE file_id = ?",
                 (file_row["file_id"],),
             )
+            self._mark_departures_reworked(conn, file_row["file_id"], handoff_id)
             self._release_agent(conn, handoff_row["agent_id"], "approve")
             pending = conn.execute(
                 "SELECT COUNT(*) AS n FROM files WHERE module_id = ? "
@@ -676,6 +690,8 @@ class ReviewMixin:
         ).fetchone()
         if file_row is None or c.module_id != file_row["module_id"]:
             raise LedgerError(f"{caller!r} is not the Lead of this file's module")
+
+        self._block_return_for_open_departures(self.conn, handoff_id)
 
         next_round = self.conn.execute(
             "SELECT COALESCE(MAX(round), 0) + 1 AS n FROM attempts WHERE file_id = ?",
@@ -874,6 +890,7 @@ class ReviewMixin:
         ).fetchone()
         if file_row is None or c.module_id != file_row["module_id"]:
             raise LedgerError(f"{caller!r} is not the Lead of this file's module")
+        self._block_approve_for_departures(self.conn, handoff_id)
 
         with self._release_tx() as conn:
             conn.execute(
@@ -885,6 +902,7 @@ class ReviewMixin:
                 f"UPDATE files SET state = 'incomplete', released_at = {_NOW} WHERE file_id = ?",
                 (file_row["file_id"],),
             )
+            self._mark_departures_reworked(conn, file_row["file_id"], handoff_id)
             self._release_agent(conn, handoff_row["agent_id"], "accept_incomplete")
 
             cur = conn.execute(
@@ -1168,17 +1186,34 @@ class ReviewMixin:
         lines.append("## Departures")
         for dep in _rows(
             conn.execute(
-                "SELECT * FROM departures WHERE run_id = ? AND kind = 'departure' "
-                "AND state IN ('accepted', 'denied') ORDER BY departure_id",
+                "SELECT d.*, f.path FROM departures d LEFT JOIN files f ON f.file_id = d.file_id "
+                "WHERE d.run_id = ? AND d.kind = 'departure' ORDER BY d.departure_id",
                 (run_id,),
             )
         ):
-            reason = f" -- reason: {dep['decision_reason']}" if dep["decision_reason"] else ""
-            solution = f" -- solution: {dep['solution']}" if dep["solution"] else ""
+            where = f" on {dep['path']}" if dep["path"] else ""
             lines.append(
-                f"- Departure #{dep['departure_id']} ({dep['state']} by "
-                f"{_agent_name(conn, dep['decided_by'])}): {dep['body']}{reason}{solution}"
+                f"- Departure #{dep['departure_id']}{where}, recorded by "
+                f"{_agent_name(conn, dep['agent_id'])}: {dep['body']}"
             )
+            for decision in _rows(
+                conn.execute(
+                    "SELECT * FROM departure_decisions WHERE departure_id = ? ORDER BY decision_id",
+                    (dep["departure_id"],),
+                )
+            ):
+                verb = "agreed" if decision["decision"] == "agree" else "pushed back"
+                solution = f" -- solution: {decision['solution']}" if decision["solution"] else ""
+                lines.append(
+                    f"  - {decision['role']} {_agent_name(conn, decision['agent_id'])} {verb}: "
+                    f"{decision['reason']}{solution}"
+                )
+            final = dep["state"]
+            if dep["state"] == "reworked" and dep["reworked_by_handoff_id"] is not None:
+                final = f"reworked, approved in handoff {dep['reworked_by_handoff_id']}"
+            elif dep["level"]:
+                final = f"{dep['state']}, waits on the {dep['level']}"
+            lines.append(f"  - Final state: {final}")
         lines.append("")
 
         lines.append("## Shortfalls")

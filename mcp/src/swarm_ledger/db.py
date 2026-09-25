@@ -31,13 +31,17 @@ _ADDED_COLUMNS = (
     ("departures", "decided_at", "TEXT"),
     ("departures", "decision_reason", "TEXT"),
     ("departures", "solution", "TEXT"),
+    ("departures", "level", "TEXT"),
+    ("departures", "signed_off_at", "TEXT"),
+    ("departures", "reworked_at", "TEXT"),
+    ("departures", "reworked_by_handoff_id", "INTEGER"),
     ("runs", "repo_check_json", "TEXT"),
     ("runs", "repo_checked_at", "TEXT"),
     ("runs", "branch", "TEXT"),
     ("phases", "handed_up_at", "TEXT"),
     ("reviews", "details_json", "TEXT"),
 )
-_ADDED_TABLES = ("wakeups", "watchdog_findings")
+_ADDED_TABLES = ("wakeups", "watchdog_findings", "departure_decisions")
 
 
 def _main_git_dir(repo_root: Path) -> Path:
@@ -133,3 +137,21 @@ def _upgrade(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError as exc:
             if "duplicate column" not in str(exc):
                 raise
+    _upgrade_departure_states(conn)
+
+
+def _upgrade_departure_states(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "UPDATE departures SET state = 'lead_agreed', level = 'manager' "
+        "WHERE kind = 'departure' AND state = 'accepted'"
+    )
+    conn.execute(
+        "UPDATE departures SET state = 'pushed_back', level = NULL "
+        "WHERE kind = 'departure' AND state = 'denied'"
+    )
+    conn.execute(
+        "UPDATE departures SET level = CASE (SELECT role FROM agents a "
+        "WHERE a.agent_id = departures.agent_id) WHEN 'coder' THEN 'lead' "
+        "WHEN 'lead' THEN 'manager' ELSE 'oracle' END "
+        "WHERE kind = 'departure' AND state = 'open' AND level IS NULL"
+    )

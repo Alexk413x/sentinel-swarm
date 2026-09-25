@@ -152,16 +152,23 @@ The ledger enforces this order and refuses any other.
 2. `review_compare(handoff_id)`. It returns both score sets and the dimensions where
    they do not agree.
 3. Decide each departure the handoff carries with `departure_decide(departure_id,
-   decision, reason, solution=None)` before you approve. A denial needs a solution.
+   decision, reason, solution=None)` before you approve, return, or accept the work
+   as incomplete. A departure passes up a chain for sign-off: you, then your
+   Manager, then the Oracle.
+   `decision="agree"` passes it up to your Manager. `decision="push_back"` needs a
+   suggested solution the Coder can try, and it is a return: call `return_work` next.
+   Every decision needs a reason; the reason is the note the report keeps.
 4. Decide:
    - `approve(handoff_id, notes=None)` when the lead review passes on every
      applicable dimension. Approval releases the Coder, stops its session, and
      releases the file claim. It refuses while a change request on the file is
      open, accepted, or completed but not yet verified, and while a departure on
-     the handoff is open or denied.
+     the handoff is open or pushed back.
    - `return_work(handoff_id, issues=[...], targeted=[...])` with the specific issues
      and the dimensions the fix should move. This counts as one fix attempt. Then
-     send the wake-up its `next` field names. A denied departure is a return too.
+     send the wake-up its `next` field names. A pushed-back departure is a return
+     too; name its solution in `issues`. `return_work` refuses while a departure on
+     the handoff is still open.
    - `accept_incomplete(handoff_id, reason=...)` when the Coder reports the work as
      not complete for a reason you validated. It uses no fix attempt and opens a
      deferral.
@@ -212,8 +219,8 @@ The detail lives in the ledger, not in the message.
 1. `tests_run(scope="module", target=<the module's directory or test selector>)` once
    every file in the module is approved or accepted as incomplete.
 2. `message_post(to_name="mgr-<phase>", body=<the module review>)`: every file and
-   its outcome, the module test result, open issues, deferrals, accepted departures,
-   and recorded shortfalls.
+   its outcome, the module test result, open issues, deferrals, the departures you
+   agreed to, which now wait on your Manager, and recorded shortfalls.
 3. Send the wake-up that `next` names, then end your turn. Your session stays open
    until your Manager accepts the module or returns it.
 
@@ -228,7 +235,8 @@ The detail lives in the ledger, not in the message.
   `agreement_decide(deferral_id, decision, reason)`. A module scope change that
   touches another module belongs to your Manager.
 - `departure_record(body, file_id=None, guideline_id=None)` records one you notice
-  yourself, for work in your own module. `shortfall_record(body, file_id=None)`
+  yourself, for work in your own module; your Manager decides it first.
+  `shortfall_record(body, file_id=None)`
   records a solution that works but that you found no better answer for; it needs
   no decision.
 
@@ -236,7 +244,14 @@ The detail lives in the ledger, not in the message.
 
 A message from your Manager or a Coder wakes you. Start that turn with
 `message_inbox()` and read the ledger record the message points at. Then `brief_get`
-again: the brief, not your memory of it, is the task. Before you approve or return a
+again: the brief, not your memory of it, is the task.
+
+When your Manager or the Oracle pushes back on a departure you agreed to, the ledger
+reopens the file for the same Coder, resumes you and that Coder, and posts the
+departure, the decider, the reason, and the solution to each of you. Read it with
+`message_inbox()`, then pay the wake-up you owe the Coder: the Stop hook names the
+call. The reworked file comes back as a new handoff; review it as usual. Approving it
+marks the pushed-back departure reworked. Before you approve or return a
 file, re-read the brief you gave its Coder with `brief_get(caller_name=<your name>,
 child_name=<coder>)`, and review against that record.
 

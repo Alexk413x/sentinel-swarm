@@ -129,7 +129,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     notes TEXT,
     applicable_json TEXT,
     -- For kind='manager': {"disagreement_notes": {file_id: note}}.
-    -- For kind='oracle': {"low_score_notes": {...}, "departure_notes": {...}}.
+    -- For kind='oracle': {"low_score_notes": {file_id: note}}.
     details_json TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -217,6 +217,23 @@ CREATE TABLE IF NOT EXISTS departures (
     decided_by TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
     decided_at TEXT,
     decision_reason TEXT,
+    solution TEXT,
+    -- The role whose decision is next: lead, manager, or oracle. NULL once no decision
+    -- is pending. departure_decisions holds every decision made.
+    level TEXT,
+    signed_off_at TEXT,
+    reworked_at TEXT,
+    reworked_by_handoff_id INTEGER REFERENCES handoffs (handoff_id) ON DELETE RESTRICT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS departure_decisions (
+    decision_id INTEGER PRIMARY KEY,
+    departure_id INTEGER NOT NULL REFERENCES departures (departure_id) ON DELETE RESTRICT,
+    role TEXT NOT NULL,
+    agent_id TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
+    decision TEXT NOT NULL,
+    reason TEXT NOT NULL,
     solution TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );

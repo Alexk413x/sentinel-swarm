@@ -44,6 +44,14 @@ class OversightMixin:
 
     def _thresholds(self) -> Thresholds: ...
 
+    def _block_module_review_for_departures(
+        self, conn: sqlite3.Connection, module_id: int
+    ) -> None: ...
+
+    def _block_phase_review_for_departures(
+        self, conn: sqlite3.Connection, phase_id: int
+    ) -> None: ...
+
     # -- Shared helpers -----------------------------------------------------
 
     def _latest_role_agent(
@@ -128,6 +136,7 @@ class OversightMixin:
         ]
         if not_ready:
             raise LedgerError(f"file(s) are not approved or incomplete yet: {not_ready}")
+        self._block_module_review_for_departures(conn, module_id)
 
         last_change = self._module_last_decision(conn, module_id)
         if not self._passing_scoped_test_after(conn, module_id, phase_id, last_change):
@@ -174,9 +183,9 @@ class OversightMixin:
         conn: sqlite3.Connection,
         phase_row: sqlite3.Row,
         low_score_notes: dict[str, str],
-        departure_notes: dict[str, str],
     ) -> None:
         phase_id = phase_row["phase_id"]
+        self._block_phase_review_for_departures(conn, phase_id)
         if not self._passing_full_test_after(conn, phase_row["run_id"], phase_row["handed_up_at"]):
             raise LedgerError(
                 "no passing tests_run of scope 'full' by the Oracle exists after the phase was "
@@ -223,26 +232,6 @@ class OversightMixin:
             raise LedgerError(
                 f"low_score_notes needs a non-empty note keyed by file_id for {missing_low}, "
                 "whose latest lead review has a dimension below the rubric target"
-            )
-
-        missing_dep = []
-        for dep in conn.execute(
-            "SELECT * FROM departures WHERE run_id = ? AND state = 'accepted'",
-            (phase_row["run_id"],),
-        ).fetchall():
-            if dep["file_id"] is not None:
-                owning_phase = conn.execute(
-                    "SELECT m.phase_id AS phase_id FROM files f "
-                    "JOIN modules m ON m.module_id = f.module_id WHERE f.file_id = ?",
-                    (dep["file_id"],),
-                ).fetchone()
-                if owning_phase is None or owning_phase["phase_id"] != phase_id:
-                    continue
-            if not str(departure_notes.get(str(dep["departure_id"])) or "").strip():
-                missing_dep.append(dep["departure_id"])
-        if missing_dep:
-            raise LedgerError(
-                f"departure_notes needs a non-empty note keyed by departure_id for {missing_dep}"
             )
 
     # -- Manager review of a module ------------------------------------------
@@ -327,12 +316,10 @@ class OversightMixin:
         outcome: Literal["accepted", "returned"],
         notes: str,
         low_score_notes: dict[str, str] | None = None,
-        departure_notes: dict[str, str] | None = None,
     ) -> dict:
         if outcome not in ("accepted", "returned"):
             raise LedgerError(f"unknown phase_review outcome {outcome!r}")
         low_score_notes = low_score_notes or {}
-        departure_notes = departure_notes or {}
 
         wakeup = None
         manager_ended = False
@@ -350,9 +337,7 @@ class OversightMixin:
             manager_row = self._latest_role_agent(conn, phase_id=phase_id, role="manager")
 
             if outcome == "accepted":
-                self._require_phase_ready_for_review(
-                    conn, phase_row, low_score_notes, departure_notes
-                )
+                self._require_phase_ready_for_review(conn, phase_row, low_score_notes)
             else:
                 conn.execute("UPDATE phases SET state = 'working' WHERE phase_id = ?", (phase_id,))
                 if manager_row is not None and manager_row["ended_at"] is None:
@@ -375,9 +360,7 @@ class OversightMixin:
                     manager_row["agent_id"] if manager_row is not None else None,
                     outcome,
                     notes,
-                    json.dumps(
-                        {"low_score_notes": low_score_notes, "departure_notes": departure_notes}
-                    ),
+                    json.dumps({"low_score_notes": low_score_notes}),
                 ),
             )
             review_id = cur.lastrowid

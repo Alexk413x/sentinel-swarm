@@ -181,11 +181,10 @@ The hard check is a hook at the end of the Coder's work, not a gate at the start
 - Each lower layer checks the guidelines at its own level of detail. It adds the details that apply to its scope: the phase, the module, or the file. A lower layer does not contradict a higher one. **(proposed)**
 - The guidelines are a target, not a gate on the first pass. An agent sometimes needs to get something working first. The review cycle then adjusts the working result toward the guidelines.
 - A departure from the guidelines is recorded as an open issue when the work is handed up. **(proposed)**
-- A file can pass final approval with a departure, when the responsible level agrees to it and records the reason.
-- Any higher level can deny an accepted departure. The denial needs a reason and a solution that overrides the departure. The higher level passes the needed context down, so that the lower agent can fix the work with that solution.
-- A higher level that finds no better solution agrees and approves the departure.
-- A denied departure goes back as a return, so it counts as one fix attempt. **(proposed)**
-- The Oracle audits the accepted departures along with the scores. **(proposed)**
+- A departure passes up the chain for sign-off: the Lead, then the Manager, then the Oracle. Each level agrees or pushes back, and records its reason. When every level agrees, the departure is signed off. Decided by Alex on 2026-09-24.
+- A level that pushes back gives a suggested solution. The chain below that level resumes with the solution, down to the Coder, which tries it. The reworked file then goes back up through the normal reviews. This holds even when the file is already approved: the same agents reopen it. Decided by Alex on 2026-09-24.
+- A pushback from the Lead is a return, so it counts as one fix attempt. A pushback from the Manager or the Oracle records a fix attempt too.
+- The Manager accepts a module only after it decides every departure in the module. The Oracle accepts a phase, and finishes the run, only after every departure is signed off or reworked. Decided by Alex on 2026-09-24.
 
 ## Review and scoring
 
@@ -252,7 +251,7 @@ The Oracle decides between a notification now and a line in the final report.
 |---|---|---|
 | Only the user can unblock it, the fix is simple, and the run can continue afterwards | A device is not connected. A permission is needed | Notifies the user now |
 | The layers have no options left | An issue ends round 3 below the floor | Notifies the user now |
-| It works, but nobody found a better solution | A recorded shortfall. An accepted departure | Puts it in the final report, to be worked on separately |
+| It works, but nobody found a better solution | A recorded shortfall. A signed-off departure | Puts it in the final report, to be worked on separately |
 
 - While the run waits for the user, the phases that the problem does not block keep going. **(proposed)**
 - A notification states what is blocked, what the user needs to do, and what resumes after. **(proposed)**
@@ -263,7 +262,7 @@ The Oracle writes a final summary report at the end of the run. **(contents prop
 
 - The outcome, and the evidence for it: the full test suite result and the phase reviews.
 - What was built, by phase.
-- Items to work on separately: solutions that work but could be better, recorded shortfalls, and accepted departures.
+- Items to work on separately: solutions that work but could be better, recorded shortfalls, and signed-off departures.
 - Every override, with its reason.
 - Deferred items and scope changes, with who agreed to each.
 - Notifications that were sent, and how each was resolved.
@@ -354,7 +353,7 @@ Alex has seen these and has not objected. Reverse any of them on request.
 1. **Managers per phase.** Resolved on 2026-09-20: one Manager per phase, and phases run in parallel where the plan allows. See "The plan".
 2. **Test first and "working first".** Resolved on 2026-09-20: test-first is the ideal, not a gate. The hard check is the hook at handoff: tests exist and pass. See "Testing".
 3. **Escalation design.** Resolved on 2026-09-20: three rounds of 3. See "Escalation". One point to confirm: the budget is 9, and the earlier round 4 is removed.
-4. **Accepted departures.** Resolved on 2026-09-20: a departure can stay when the responsible level accepts it. A higher level can deny it with a reason and a solution. See "Guidelines".
+4. **Accepted departures.** Resolved on 2026-09-20: a departure can stay when the responsible level accepts it. A higher level can deny it with a reason and a solution. Replaced on 2026-09-24 by the sign-off chain: the Lead, the Manager, and the Oracle each agree or push back with a solution. See "Guidelines".
 5. **"Aware of the context of each agent".** Resolved on 2026-09-20: both meanings. The registry records what each agent is doing, its start and end time, its tokens, its context percentage, and its context overflow count. The data supports later tuning. See `03-ledger.md` "Run analytics".
 6. **Model choice.** Resolved on 2026-09-20: the setting is a list of approved models for each role, and the parent picks from it by task complexity. See "Models".
 

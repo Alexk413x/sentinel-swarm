@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 import sys
@@ -485,33 +486,33 @@ def test_phase_review_refuses_missing_low_score_notes(ledger: Ledger) -> None:
     assert accepted["outcome"] == "accepted"
 
 
-def test_phase_review_refuses_missing_departure_notes(ledger: Ledger) -> None:
+def test_a_lead_recorded_departure_gates_module_review_and_phase_review(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    _accept_module_and_hand_up(ledger, ctx)
-    _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
-
-    with write_tx(ledger.conn) as conn:
-        cur = conn.execute(
-            "INSERT INTO departures (run_id, agent_id, kind, state, body) "
-            "VALUES (?, ?, 'guideline', 'accepted', 'skipped the lint rule for speed')",
-            (ctx["run_id"], ctx["lead"]["agent_id"]),
-        )
-        departure_id = cur.lastrowid
+    manager_id = ctx["manager"]["agent_id"]
+    departure = ledger.departure_record(
+        "lead-1", ctx["lead"]["agent_id"], "skipped the lint rule for speed"
+    )
+    departure_id = departure["departure_id"]
+    _insert_passing_test_run(ledger, ctx["run_id"], manager_id, "phase")
 
     with pytest.raises(
-        LedgerError, match=f"departure_notes needs a non-empty note.*{departure_id}"
+        LedgerError, match=rf"\[{departure_id}\] in the module.*waits on the Manager"
     ):
+        ledger.module_review("manager-1", manager_id, ctx["module_id"], "accepted", "ok")
+
+    ledger.departure_decide("manager-1", manager_id, departure_id, "agree", "fine for this run")
+    _release_lead(ledger, ctx)
+    ledger.module_review("manager-1", manager_id, ctx["module_id"], "accepted", "ok")
+    _hand_up_phase(ledger, ctx)
+    _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+
+    with pytest.raises(LedgerError, match=rf"\[{departure_id}\] in the phase are not signed off"):
         ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok")
 
-    accepted = ledger.phase_review(
-        "oracle",
-        ctx["oracle_id"],
-        ctx["phase_id"],
-        "accepted",
-        "ok",
-        departure_notes={str(departure_id): "reviewed; acceptable"},
-    )
+    ledger.departure_decide("oracle", ctx["oracle_id"], departure_id, "agree", "acceptable")
+    accepted = ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok")
     assert accepted["outcome"] == "accepted"
+    assert json.loads(accepted["details_json"]) == {"low_score_notes": {}}
 
 
 def test_phase_review_returned_owes_the_live_manager_a_wake_up(ledger: Ledger) -> None:

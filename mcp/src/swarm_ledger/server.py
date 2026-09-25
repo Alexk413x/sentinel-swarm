@@ -649,8 +649,9 @@ def module_review(
     disagreement_notes: dict[str, str] | None = None,
     agent_id: str | None = None,
 ) -> dict[str, Any]:
-    """Records the Manager's review of a module before it hands the phase up; a returned
-    module owes its live Lead a wake-up as `next`."""
+    """Records the Manager's review of a module before it hands the phase up; an accepted
+    review refuses while a departure in the module waits on the Lead or the Manager, and a
+    returned module owes its live Lead a wake-up as `next`."""
     return _call(
         _ledger().module_review,
         caller=caller,
@@ -669,11 +670,11 @@ def phase_review(
     outcome: Literal["accepted", "returned"],
     notes: str,
     low_score_notes: dict[str, str] | None = None,
-    departure_notes: dict[str, str] | None = None,
     agent_id: str | None = None,
 ) -> dict[str, Any]:
-    """Records the Oracle's review of a handed-up phase before phase_update(approved); a
-    returned phase owes its live Manager a wake-up as `next`."""
+    """Records the Oracle's review of a handed-up phase before phase_update(approved); an
+    accepted review refuses while a departure in the phase is not signed off or reworked, and
+    a returned phase owes its live Manager a wake-up as `next`."""
     return _call(
         _ledger().phase_review,
         caller=caller,
@@ -682,7 +683,6 @@ def phase_review(
         outcome=outcome,
         notes=notes,
         low_score_notes=low_score_notes,
-        departure_notes=departure_notes,
     )
 
 
@@ -791,14 +791,16 @@ def departure_record(
 def departure_decide(
     caller: str,
     departure_id: int,
-    decision: Literal["accepted", "denied"],
+    decision: Literal["agree", "push_back"],
     reason: str,
     solution: str | None = None,
     agent_id: str | None = None,
 ) -> dict[str, Any]:
-    """Decides an open departure as accepted or denied; the recorder's parent role or above
-    calls this. A denial needs a solution, and a higher role may deny an already accepted
-    departure."""
+    """Decides a departure at the next level of its sign-off chain: the file's Lead decides an
+    open one, the phase's Manager a lead_agreed one, and the Oracle a manager_agreed one, whose
+    agreement signs it off. A push_back needs a solution; above the Lead, it reopens the file
+    for the same Coder, resumes the agents below the decider, and returns the first wake-up
+    as `next`."""
     return _call(
         _ledger().departure_decide,
         caller=caller,

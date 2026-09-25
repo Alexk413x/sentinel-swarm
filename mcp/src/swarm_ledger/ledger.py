@@ -351,6 +351,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
                 raise LedgerError(f"{open_deferrals} deferral(s) are still open")
 
             self._block_run_finish_for_cr(conn, run_id)
+            self._block_run_finish_for_departures(conn, run_id)
 
             conn.execute(
                 f"UPDATE runs SET state = 'finished', outcome = ?, ended_at = {_NOW} "

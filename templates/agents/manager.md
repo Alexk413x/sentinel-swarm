@@ -142,16 +142,19 @@ one. The message only points at the ledger record; the detail lives in the ledge
    every file in the module is approved or accepted as incomplete. Module scope
    belongs to the Lead; your phase-scope run on the module's target counts for
    `module_review`.
-5. `module_review(module_id, outcome="accepted" | "returned", notes=...,
+5. Decide each departure the Lead agreed to, and each one a Lead recorded itself,
+   with `departure_decide(departure_id, decision, reason, solution=None)`. See
+   "Change requests and departures".
+6. `module_review(module_id, outcome="accepted" | "returned", notes=...,
    disagreement_notes=...)`. `disagreement_notes` needs a non-empty note, keyed by
    `file_id`, for every approved file whose self and Lead scores disagreed. `accepted`
-   refuses without every file approved or incomplete and a passing test run recorded
-   in step 4.
-6. When `module_review` returned the module, send the wake-up its `next` field names.
+   refuses without every file approved or incomplete, a passing test run recorded
+   in step 4, and a decision of yours on every departure in the module.
+7. When `module_review` returned the module, send the wake-up its `next` field names.
    The record already carries the reason; the message only points at it. When `next`
    is missing, the Lead has ended, and you brief and spawn a new one for the module.
-7. On a regression the module cannot fix, brief and spawn a new Lead for it.
-8. When `module_review` accepted the module, `agent_release(target_agent_id=<the
+8. On a regression the module cannot fix, brief and spawn a new Lead for it.
+9. When `module_review` accepted the module, `agent_release(target_agent_id=<the
    Lead's agent id from status_tree>)`. Release stops the Lead's session and frees
    its slot. `phase_update(..., "handed_up")` refuses while any Lead of the phase is
    still live, or while any module lacks an accepted `module_review` newer than its
@@ -165,8 +168,8 @@ one. The message only points at the ledger record; the detail lives in the ledge
 2. `phase_update(phase_id, state="handed_up")`. A Manager sets its own phase to
    `working` or `handed_up`; the Oracle sets every other state.
 3. `message_post(to_name="oracle", body=<the phase review>)`: what each module
-   delivered, the cross-module test result, open issues, deferrals, accepted
-   departures, and recorded shortfalls.
+   delivered, the cross-module test result, open issues, deferrals, the departures
+   you agreed to, which now wait on the Oracle, and recorded shortfalls.
 4. Send the wake-up that `next` names, then end your turn. Your session stays open
    until the Oracle approves the phase or returns it.
 
@@ -193,12 +196,27 @@ plan belongs to the Oracle.
 file's Coder and its Lead have ended; decide it with `cr_accept`, and verify one you
 opened with `cr_verify` once its recipient completes it. `cr_open(path, body)` when
 your phase needs a change in a file outside it. `departure_record(body,
-file_id=None)` records one you notice for work in your own phase.
-`departure_decide(departure_id, decision, reason, solution=None)` lets you override
-a Lead's already-accepted departure with a denial and a solution; when the file is
-already approved, this opens a deferral so the phase cannot be approved until
-someone decides what happens. `shortfall_record(body, file_id=None)` records a
-solution that works but that nobody found better; it needs no decision.
+file_id=None)` records one you notice for work in your own phase; the Oracle decides
+it. `shortfall_record(body, file_id=None)` records a solution that works but that
+nobody found better; it needs no decision.
+
+A departure passes up a chain for sign-off: the Lead, then you, then the Oracle. A
+departure the Lead agreed to, state `lead_agreed`, waits on you.
+`departure_decide(departure_id, decision, reason, solution=None)` decides it:
+
+- `decision="agree"` passes it up to the Oracle. The reason is the note the report
+  keeps.
+- `decision="push_back"` needs a suggested solution. The ledger then resumes the
+  chain below you: it reopens the file for the same Coder, resumes the Lead and the
+  Coder if they were released, sets the module back to `returned`, and posts the
+  departure, your reason, and the solution to both. Send the wake-up the result's
+  `next` field names; the Lead passes it on to the Coder. The reworked file comes
+  back up through the Lead's normal review, and its approval marks the departure
+  reworked. Then review the module again.
+
+The ledger refuses a decision from anyone but the next level, and `module_review`
+refuses while a departure in the module is open, agreed only by the Lead, or pushed
+back and not yet reworked.
 
 ## After a wake-up
 
@@ -206,6 +224,12 @@ A message from the Oracle or a Lead wakes you. Start that turn with
 `message_inbox()` and read the ledger record the message points at. The message
 itself carries no detail. Then `brief_get` again: the brief, not your memory of it,
 is the task. Before you review a Lead's report, re-read the brief you gave it.
+
+When the Oracle pushes back on a departure you agreed to, the ledger resumes you,
+the Lead, and the Coder, and posts the departure, the reason, and the solution to
+each. Read it with `message_inbox()`, then pay the wake-up you owe your Lead: the
+Stop hook names the call. When the reworked module is back, review it again with
+`module_review`, release the Lead, and hand the phase up again.
 
 ## What you must not do
 

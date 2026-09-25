@@ -72,7 +72,7 @@ Measures for each run, built from the ledger's tables: **(proposed)**
 |---|---|
 | Faster | Run duration, phase duration, time an agent spends blocked or waiting, time from hand-up to review |
 | More efficient | Tokens for each role, file, and phase. Cache read share. Context overflows. Agents replaced. Estimated cost |
-| More accurate | First-pass approval rate. Returns for each file. Issues that reach round 2 and round 3. Full-suite failures at join points. Score gaps between layers. Accepted and denied departures. Escalations to the user |
+| More accurate | First-pass approval rate. Returns for each file. Issues that reach round 2 and round 3. Full-suite failures at join points. Score gaps between layers. Departures agreed and pushed back at each level. Escalations to the user |
 
 - Each run records the plugin version and a snapshot of its settings, so that two runs with different models, runtimes, or prompts can be compared. **(proposed)**
 - Analytics rows are never deleted when a run finishes. **(proposed)**

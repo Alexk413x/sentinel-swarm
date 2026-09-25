@@ -487,6 +487,77 @@ def test_run_finish_refused_while_a_cr_is_open(ledger: Ledger) -> None:
 # -- departures --------------------------------------------------------------------------
 
 
+def _as_session(ledger: Ledger, agent_id: str, session_name: str) -> None:
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET session_name = ? WHERE agent_id = ?", (session_name, agent_id)
+        )
+
+
+def _insert_passing_test_run(ledger: Ledger, agent_id: str, scope: str) -> None:
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "INSERT INTO test_runs (run_id, agent_id, scope, target, command, exit_code, "
+            "passed, failed, skipped, output) VALUES (1, ?, ?, 'x', 'x', 0, 1, 0, 0, '')",
+            (agent_id, scope),
+        )
+
+
+def _hand_off_with_departure(ledger: Ledger, ctx: dict, body: str = "skipped the retry logic"):
+    coder = _spawn_coder(ledger, ctx, "coder-good", "pkg/good.py", "tests/test_good.py")
+    file_id = _latest_file_id(ledger, "pkg/good.py")
+    ledger.score_record(
+        "coder-good", coder["agent_id"], file_id, _all_ratings(), _all_applicable(), "self"
+    )
+    handoff = ledger.handoff_submit("coder-good", coder["agent_id"], file_id, [], [body])
+    departure_id = ledger.conn.execute(
+        "SELECT departure_id FROM departures WHERE handoff_id = ?", (handoff["handoff_id"],)
+    ).fetchone()["departure_id"]
+    return {
+        "coder": coder,
+        "file_id": file_id,
+        "handoff_id": handoff["handoff_id"],
+        "departure_id": departure_id,
+    }
+
+
+def _lead_review(ledger: Ledger, ctx: dict, file_id: int, handoff_id: int) -> None:
+    ledger.score_record(
+        "lead-1", ctx["lead"]["agent_id"], file_id, _all_ratings(), _all_applicable(), "lead"
+    )
+    ledger.review_compare("lead-1", ctx["lead"]["agent_id"], handoff_id)
+
+
+def _decide(ledger: Ledger, name: str, agent_id: str, departure_id: int, **kwargs) -> dict:
+    decision = kwargs.pop("decision", "agree")
+    reason = kwargs.pop("reason", f"{name} is fine with it")
+    return ledger.departure_decide(name, agent_id, departure_id, decision, reason, **kwargs)
+
+
+def _agreed_and_approved(ledger: Ledger, ctx: dict) -> dict:
+    handed = _hand_off_with_departure(ledger, ctx)
+    _lead_review(ledger, ctx, handed["file_id"], handed["handoff_id"])
+    _decide(ledger, "lead-1", ctx["lead"]["agent_id"], handed["departure_id"])
+    ledger.approve("lead-1", ctx["lead"]["agent_id"], handed["handoff_id"])
+    return handed
+
+
+def _departure(ledger: Ledger, departure_id: int) -> sqlite3.Row:
+    return ledger.conn.execute(
+        "SELECT * FROM departures WHERE departure_id = ?", (departure_id,)
+    ).fetchone()
+
+
+def _owed(ledger: Ledger) -> list[tuple[str, str]]:
+    return [
+        (row["from_agent_id"], row["to_agent_id"])
+        for row in ledger.conn.execute(
+            "SELECT * FROM wakeups WHERE sent_at IS NULL AND reason = 'departure_decide' "
+            "ORDER BY wakeup_id"
+        )
+    ]
+
+
 def test_departure_record_by_a_coder_for_its_own_file(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     coder = _spawn_coder(ledger, ctx, "coder-good", "pkg/good.py", "tests/test_good.py")
@@ -495,8 +566,16 @@ def test_departure_record_by_a_coder_for_its_own_file(ledger: Ledger) -> None:
         "coder-good", coder["agent_id"], "skipped the caching layer for now"
     )
     assert departure["state"] == "open"
+    assert departure["level"] == "lead"
     assert departure["kind"] == "departure"
     assert departure["file_id"] == file_id
+    assert departure["decisions"] == []
+
+
+def test_departure_record_by_a_lead_starts_at_the_manager(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    departure = ledger.departure_record("lead-1", ctx["lead"]["agent_id"], "one module, two files")
+    assert (departure["state"], departure["level"]) == ("open", "manager")
 
 
 def test_departure_record_refuses_a_coder_for_another_file(ledger: Ledger) -> None:
@@ -512,145 +591,344 @@ def test_departure_record_refuses_a_coder_for_another_file(ledger: Ledger) -> No
 
 def test_handoff_submit_creates_linked_departure_rows(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-good", "pkg/good.py", "tests/test_good.py")
-    file_id = _latest_file_id(ledger, "pkg/good.py")
-    ledger.score_record(
-        "coder-good", coder["agent_id"], file_id, _all_ratings(), _all_applicable(), "self"
-    )
-    handoff = ledger.handoff_submit(
-        "coder-good", coder["agent_id"], file_id, [], ["skipped input validation for now"]
-    )
+    handed = _hand_off_with_departure(ledger, ctx, "skipped input validation for now")
 
     rows = ledger.conn.execute(
-        "SELECT * FROM departures WHERE handoff_id = ?", (handoff["handoff_id"],)
+        "SELECT * FROM departures WHERE handoff_id = ?", (handed["handoff_id"],)
     ).fetchall()
     assert len(rows) == 1
     assert rows[0]["body"] == "skipped input validation for now"
-    assert rows[0]["state"] == "open"
-    assert rows[0]["file_id"] == file_id
+    assert (rows[0]["state"], rows[0]["level"]) == ("open", "lead")
+    assert rows[0]["file_id"] == handed["file_id"]
 
 
-def test_departure_decide_refuses_a_role_below_the_recorders_parent(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-good", "pkg/good.py", "tests/test_good.py")
-    other_coder = _spawn_coder(ledger, ctx, "coder-other", "pkg/other.py", "tests/test_other.py")
-    departure = ledger.departure_record("coder-good", coder["agent_id"], "skipped it")
-    with pytest.raises(LedgerError, match="may not decide"):
-        ledger.departure_decide(
-            "coder-other",
-            other_coder["agent_id"],
-            departure["departure_id"],
-            "accepted",
-            "not my call",
-        )
-
-
-def test_departure_decide_accepts_by_the_recorders_parent(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-good", "pkg/good.py", "tests/test_good.py")
-    departure = ledger.departure_record("coder-good", coder["agent_id"], "skipped it")
-    decided = ledger.departure_decide(
-        "lead-1", ctx["lead"]["agent_id"], departure["departure_id"], "accepted", "acceptable"
-    )
-    assert decided["state"] == "accepted"
-    assert decided["decided_by"] == ctx["lead"]["agent_id"]
-
-
-def test_departure_decide_denial_needs_a_solution(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-good", "pkg/good.py", "tests/test_good.py")
-    departure = ledger.departure_record("coder-good", coder["agent_id"], "skipped it")
-    with pytest.raises(LedgerError, match="needs a solution"):
-        ledger.departure_decide(
-            "lead-1", ctx["lead"]["agent_id"], departure["departure_id"], "denied", "no"
-        )
-
-
-def test_approve_refused_by_an_open_departure_then_by_a_denied_one(ledger: Ledger) -> None:
+def test_handoff_submit_attaches_a_departure_recorded_before_it(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     coder = _spawn_coder(ledger, ctx, "coder-good", "pkg/good.py", "tests/test_good.py")
     file_id = _latest_file_id(ledger, "pkg/good.py")
+    early = ledger.departure_record("coder-good", coder["agent_id"], "no retries yet")
     ledger.score_record(
         "coder-good", coder["agent_id"], file_id, _all_ratings(), _all_applicable(), "self"
     )
-    handoff = ledger.handoff_submit(
-        "coder-good", coder["agent_id"], file_id, [], ["skipped the retry logic"]
-    )
-    ledger.score_record(
-        "lead-1", ctx["lead"]["agent_id"], file_id, _all_ratings(), _all_applicable(), "lead"
-    )
-    ledger.review_compare("lead-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
-
-    departure_row = ledger.conn.execute(
-        "SELECT * FROM departures WHERE handoff_id = ?", (handoff["handoff_id"],)
-    ).fetchone()
-
-    with pytest.raises(LedgerError, match="decide it with departure_decide"):
-        ledger.approve("lead-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
-
-    ledger.departure_decide(
-        "lead-1",
-        ctx["lead"]["agent_id"],
-        departure_row["departure_id"],
-        "denied",
-        "no",
-        solution="add the retry logic",
-    )
-    with pytest.raises(LedgerError, match="call return_work"):
-        ledger.approve("lead-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
+    handoff = ledger.handoff_submit("coder-good", coder["agent_id"], file_id, [], [])
+    assert _departure(ledger, early["departure_id"])["handoff_id"] == handoff["handoff_id"]
 
 
-def test_departure_decide_late_denial_of_an_accepted_departure_opens_a_deferral(
+def test_departure_decide_refuses_anyone_but_the_next_level(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    handed = _hand_off_with_departure(ledger, ctx)
+    other = _spawn_coder(ledger, ctx, "coder-other", "pkg/other.py", "tests/test_other.py")
+    departure_id = handed["departure_id"]
+
+    with pytest.raises(LedgerError, match=r"waits on the Lead \(lead-1\)"):
+        _decide(ledger, "coder-other", other["agent_id"], departure_id)
+    with pytest.raises(LedgerError, match=r"waits on the Lead \(lead-1\)"):
+        _decide(ledger, "manager-1", ctx["manager"]["agent_id"], departure_id)
+    with pytest.raises(LedgerError, match=r"waits on the Lead \(lead-1\)"):
+        _decide(ledger, "oracle", ctx["oracle_id"], departure_id)
+
+    _decide(ledger, "lead-1", ctx["lead"]["agent_id"], departure_id)
+    with pytest.raises(LedgerError, match=r"waits on the Manager \(manager-1\)"):
+        _decide(ledger, "lead-1", ctx["lead"]["agent_id"], departure_id)
+    with pytest.raises(LedgerError, match=r"waits on the Manager \(manager-1\)"):
+        _decide(ledger, "oracle", ctx["oracle_id"], departure_id)
+
+
+def test_departure_decide_agreement_at_every_level_signs_it_off(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    departure_id = _hand_off_with_departure(ledger, ctx)["departure_id"]
+
+    lead = _decide(ledger, "lead-1", ctx["lead"]["agent_id"], departure_id)
+    assert (lead["state"], lead["level"]) == ("lead_agreed", "manager")
+    manager = _decide(ledger, "manager-1", ctx["manager"]["agent_id"], departure_id)
+    assert (manager["state"], manager["level"]) == ("manager_agreed", "oracle")
+    oracle = _decide(ledger, "oracle", ctx["oracle_id"], departure_id, reason="signed off")
+    assert (oracle["state"], oracle["level"]) == ("signed_off", None)
+    assert oracle["signed_off_at"] is not None
+    assert oracle["next"] is None
+    assert [(d["role"], d["agent_name"], d["decision"]) for d in oracle["decisions"]] == [
+        ("lead", "lead-1", "agree"),
+        ("manager", "manager-1", "agree"),
+        ("oracle", "oracle", "agree"),
+    ]
+
+    with pytest.raises(LedgerError, match="no decision is pending"):
+        _decide(ledger, "oracle", ctx["oracle_id"], departure_id)
+
+
+def test_departure_decide_needs_a_reason_and_a_pushback_needs_a_solution(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    departure_id = _hand_off_with_departure(ledger, ctx)["departure_id"]
+    with pytest.raises(LedgerError, match="non-empty reason"):
+        _decide(ledger, "lead-1", ctx["lead"]["agent_id"], departure_id, reason=" ")
+    with pytest.raises(LedgerError, match="needs a suggested solution"):
+        _decide(ledger, "lead-1", ctx["lead"]["agent_id"], departure_id, decision="push_back")
+    with pytest.raises(LedgerError, match="unknown decision"):
+        _decide(ledger, "lead-1", ctx["lead"]["agent_id"], departure_id, decision="accepted")
+
+
+def test_a_lead_pushback_is_a_return_and_the_approved_rework_marks_it_reworked(
     ledger: Ledger,
 ) -> None:
     ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-good", "pkg/good.py", "tests/test_good.py")
-    file_id = _latest_file_id(ledger, "pkg/good.py")
-    ledger.score_record(
-        "coder-good", coder["agent_id"], file_id, _all_ratings(), _all_applicable(), "self"
-    )
-    handoff = ledger.handoff_submit(
-        "coder-good", coder["agent_id"], file_id, [], ["skipped the retry logic"]
-    )
-    ledger.score_record(
-        "lead-1", ctx["lead"]["agent_id"], file_id, _all_ratings(), _all_applicable(), "lead"
-    )
-    ledger.review_compare("lead-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
-    departure_row = ledger.conn.execute(
-        "SELECT * FROM departures WHERE handoff_id = ?", (handoff["handoff_id"],)
-    ).fetchone()
-    ledger.departure_decide(
-        "lead-1", ctx["lead"]["agent_id"], departure_row["departure_id"], "accepted", "fine for v1"
-    )
-    approved = ledger.approve("lead-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
-    assert approved["state"] == "approved"
+    lead_id = ctx["lead"]["agent_id"]
+    handed = _hand_off_with_departure(ledger, ctx)
+    _lead_review(ledger, ctx, handed["file_id"], handed["handoff_id"])
 
-    with pytest.raises(LedgerError, match="can only be overridden"):
-        ledger.departure_decide(
-            "lead-1",
-            ctx["lead"]["agent_id"],
-            departure_row["departure_id"],
-            "denied",
-            "changed my mind",
-            solution="add the retry logic after all",
+    with pytest.raises(LedgerError, match="decide each with departure_decide"):
+        ledger.approve("lead-1", lead_id, handed["handoff_id"])
+    with pytest.raises(LedgerError, match="decide each with departure_decide"):
+        ledger.return_work("lead-1", lead_id, handed["handoff_id"], ["retry"], [])
+
+    pushed = _decide(
+        ledger,
+        "lead-1",
+        lead_id,
+        handed["departure_id"],
+        decision="push_back",
+        solution="add the retry logic",
+    )
+    assert pushed["state"] == "pushed_back"
+    assert pushed["next"] is None
+    with pytest.raises(LedgerError, match="call return_work"):
+        ledger.approve("lead-1", lead_id, handed["handoff_id"])
+
+    ledger.return_work("lead-1", lead_id, handed["handoff_id"], ["add the retry logic"], [])
+    coder = handed["coder"]
+    again = ledger.handoff_submit("coder-good", coder["agent_id"], handed["file_id"], [], [])
+    _lead_review(ledger, ctx, handed["file_id"], again["handoff_id"])
+    ledger.approve("lead-1", lead_id, again["handoff_id"])
+
+    row = _departure(ledger, handed["departure_id"])
+    assert row["state"] == "reworked"
+    assert row["reworked_by_handoff_id"] == again["handoff_id"]
+
+
+def test_a_manager_pushback_reopens_the_approved_file_for_the_same_agents(
+    ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _bootstrap(ledger)
+    manager_id, lead_id = ctx["manager"]["agent_id"], ctx["lead"]["agent_id"]
+    handed = _agreed_and_approved(ledger, ctx)
+    coder_id = handed["coder"]["agent_id"]
+    for agent_id, name in ((lead_id, "host-r1-lead-1"), (coder_id, "host-r1-coder-good")):
+        _as_session(ledger, agent_id, name)
+    ledger.agent_release("manager-1", manager_id, lead_id)
+
+    pushed = _decide(
+        ledger,
+        "manager-1",
+        manager_id,
+        handed["departure_id"],
+        decision="push_back",
+        reason="the retries belong in this file",
+        solution="add a bounded retry around the call",
+    )
+    assert pushed["state"] == "pushed_back"
+    assert pushed["next"] == 'agent_resume(target_name="lead-1")'
+
+    file_row = ledger.conn.execute(
+        "SELECT * FROM files WHERE file_id = ?", (handed["file_id"],)
+    ).fetchone()
+    assert (file_row["state"], file_row["released_at"]) == ("returned", None)
+    assert ledger.who_owns("pkg/good.py")["owner"] == "coder-good"
+    for agent_id in (lead_id, coder_id):
+        agent = ledger.conn.execute(
+            "SELECT * FROM agents WHERE agent_id = ?", (agent_id,)
+        ).fetchone()
+        assert (agent["state"], agent["ended_at"]) == ("idle", None)
+    assert _owed(ledger) == [(manager_id, lead_id), (lead_id, coder_id)]
+    module = ledger.conn.execute(
+        "SELECT state FROM modules WHERE module_id = ?", (ctx["module_id"],)
+    ).fetchone()
+    assert module["state"] == "returned"
+    attempt = ledger.conn.execute(
+        "SELECT * FROM attempts WHERE file_id = ? ORDER BY attempt_id DESC LIMIT 1",
+        (handed["file_id"],),
+    ).fetchone()
+    assert "add a bounded retry around the call" in attempt["issue_ids_json"]
+    for name in ("lead-1", "coder-good"):
+        inbox = ledger.conn.execute(
+            "SELECT body FROM messages WHERE to_name = ?", (name,)
+        ).fetchall()
+        assert any(
+            "pushed back by manager-1" in m["body"]
+            and "Reason: the retries belong in this file" in m["body"]
+            and "Solution: add a bounded retry around the call" in m["body"]
+            for m in inbox
         )
 
-    denied = ledger.departure_decide(
+    resumed: list[list[str]] = []
+
+    def fake_run(args: list[str], cwd: Path | None = None) -> str:
+        del cwd
+        resumed.append(args)
+        return "[]" if args[:2] == ["agents", "--json"] else ""
+
+    monkeypatch.setattr(sessions, "_run", fake_run)
+    ledger.agent_resume("manager-1", manager_id, "lead-1")
+    assert ["--resume", lead_id] == resumed[-1][:2]
+    assert _owed(ledger) == [(lead_id, coder_id)]
+
+    again = ledger.handoff_submit("coder-good", coder_id, handed["file_id"], [], [])
+    _lead_review(ledger, ctx, handed["file_id"], again["handoff_id"])
+    ledger.approve("lead-1", lead_id, again["handoff_id"])
+    assert _departure(ledger, handed["departure_id"])["state"] == "reworked"
+    _insert_passing_test_run(ledger, manager_id, "phase")
+    reviewed = ledger.module_review("manager-1", manager_id, ctx["module_id"], "accepted", "ok")
+    assert reviewed["outcome"] == "accepted"
+
+
+def test_a_manager_pushback_returns_a_handoff_the_lead_has_not_approved(
+    ledger: Ledger,
+) -> None:
+    ctx = _bootstrap(ledger)
+    lead_id = ctx["lead"]["agent_id"]
+    handed = _hand_off_with_departure(ledger, ctx)
+    coder_id = handed["coder"]["agent_id"]
+    _as_session(ledger, lead_id, "host-r1-lead-1")
+    _as_session(ledger, coder_id, "host-r1-coder-good")
+    _lead_review(ledger, ctx, handed["file_id"], handed["handoff_id"])
+    _decide(ledger, "lead-1", lead_id, handed["departure_id"])
+
+    pushed = _decide(
+        ledger,
         "manager-1",
         ctx["manager"]["agent_id"],
-        departure_row["departure_id"],
-        "denied",
-        "found a better answer",
-        solution="add the retry logic after all",
+        handed["departure_id"],
+        decision="push_back",
+        solution="add the retry logic",
     )
-    assert denied["state"] == "denied"
-
-    deferral = ledger.conn.execute(
-        "SELECT * FROM deferrals WHERE file_id = ? ORDER BY deferral_id DESC LIMIT 1", (file_id,)
+    assert pushed["next"] == 'agent_resume(target_name="lead-1")'
+    handoff = ledger.conn.execute(
+        "SELECT state FROM handoffs WHERE handoff_id = ?", (handed["handoff_id"],)
     ).fetchone()
-    assert deferral is not None
-    assert deferral["state"] == "open"
-    assert deferral["reason"] == "add the retry logic after all"
+    assert handoff["state"] == "returned"
+    file_state = ledger.conn.execute(
+        "SELECT state FROM files WHERE file_id = ?", (handed["file_id"],)
+    ).fetchone()["state"]
+    assert file_state == "returned"
+    coder = ledger.conn.execute("SELECT state FROM agents WHERE agent_id = ?", (coder_id,))
+    assert coder.fetchone()["state"] == "idle"
+    assert _owed(ledger) == [(ctx["manager"]["agent_id"], lead_id), (lead_id, coder_id)]
+    with pytest.raises(LedgerError, match="call return_work"):
+        ledger.approve("lead-1", lead_id, handed["handoff_id"])
+
+
+def test_a_pushback_refuses_to_reopen_a_path_another_claim_holds(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    handed = _agreed_and_approved(ledger, ctx)
+    ledger.claim_file(
+        "lead-1", ctx["lead"]["agent_id"], "pkg/good.py", "tests/test_good.py", "coder-next"
+    )
+    with pytest.raises(LedgerError, match="has a live claim for 'coder-next'"):
+        _decide(
+            ledger,
+            "manager-1",
+            ctx["manager"]["agent_id"],
+            handed["departure_id"],
+            decision="push_back",
+            solution="add the retry logic",
+        )
+    assert _departure(ledger, handed["departure_id"])["state"] == "lead_agreed"
+
+
+def test_an_oracle_pushback_resumes_the_chain_down_to_the_coder(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    manager_id, lead_id = ctx["manager"]["agent_id"], ctx["lead"]["agent_id"]
+    handed = _agreed_and_approved(ledger, ctx)
+    coder_id = handed["coder"]["agent_id"]
+    for agent_id, name in (
+        (manager_id, "host-r1-manager-1"),
+        (lead_id, "host-r1-lead-1"),
+        (coder_id, "host-r1-coder-good"),
+    ):
+        _as_session(ledger, agent_id, name)
+    _decide(ledger, "manager-1", manager_id, handed["departure_id"])
+    _insert_passing_test_run(ledger, manager_id, "phase")
+    ledger.module_review("manager-1", manager_id, ctx["module_id"], "accepted", "ok")
+    ledger.agent_release("manager-1", manager_id, lead_id)
+    ledger.phase_update("manager-1", manager_id, ctx["phase_id"], "handed_up")
+
+    pushed = _decide(
+        ledger,
+        "oracle",
+        ctx["oracle_id"],
+        handed["departure_id"],
+        decision="push_back",
+        reason="the guideline holds here",
+        solution="add the retry logic",
+    )
+    assert pushed["next"] == 'agent_resume(target_name="manager-1")'
+    assert _owed(ledger) == [
+        (ctx["oracle_id"], manager_id),
+        (manager_id, lead_id),
+        (lead_id, coder_id),
+    ]
+    phase = ledger.conn.execute(
+        "SELECT state FROM phases WHERE phase_id = ?", (ctx["phase_id"],)
+    ).fetchone()
+    assert phase["state"] == "working"
+    live = {
+        row["agent_id"]
+        for row in ledger.conn.execute("SELECT agent_id FROM agents WHERE ended_at IS NULL")
+    }
+    assert {manager_id, lead_id, coder_id} <= live
+    assert ledger.who_owns("pkg/good.py")["owner"] == "coder-good"
+    assert [d["role"] for d in pushed["decisions"]] == ["lead", "manager", "oracle"]
+
+
+def test_module_review_refuses_while_a_departure_waits_on_the_manager(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    manager_id = ctx["manager"]["agent_id"]
+    handed = _agreed_and_approved(ledger, ctx)
+    _insert_passing_test_run(ledger, manager_id, "phase")
+
+    with pytest.raises(
+        LedgerError,
+        match=rf"departure\(s\) \[{handed['departure_id']}\] in the module are not decided.*"
+        r"waits on the Manager \(manager-1\)",
+    ):
+        ledger.module_review("manager-1", manager_id, ctx["module_id"], "accepted", "ok")
+
+    _decide(ledger, "manager-1", manager_id, handed["departure_id"])
+    reviewed = ledger.module_review("manager-1", manager_id, ctx["module_id"], "accepted", "ok")
+    assert reviewed["outcome"] == "accepted"
+
+
+def test_phase_review_refuses_until_the_oracle_signs_the_departure_off(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    manager_id = ctx["manager"]["agent_id"]
+    handed = _agreed_and_approved(ledger, ctx)
+    _decide(ledger, "manager-1", manager_id, handed["departure_id"])
+    _insert_passing_test_run(ledger, manager_id, "phase")
+    ledger.module_review("manager-1", manager_id, ctx["module_id"], "accepted", "ok")
+    ledger.agent_release("manager-1", manager_id, ctx["lead"]["agent_id"])
+    ledger.phase_update("manager-1", manager_id, ctx["phase_id"], "handed_up")
+    _insert_passing_test_run(ledger, ctx["oracle_id"], "full")
+
+    with pytest.raises(
+        LedgerError, match=r"not signed off by the Oracle.*waits on the Oracle \(oracle\)"
+    ):
+        ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok")
+
+    _decide(ledger, "oracle", ctx["oracle_id"], handed["departure_id"])
+    reviewed = ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok")
+    assert reviewed["outcome"] == "accepted"
+
+
+def test_run_finish_refused_while_a_departure_is_not_signed_off(ledger: Ledger) -> None:
+    # The phase is approved through SQL: this test isolates run_finish's own departure check.
+    ctx = _bootstrap(ledger)
+    handed = _agreed_and_approved(ledger, ctx)
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE phases SET state = 'approved' WHERE phase_id = ?", (ctx["phase_id"],))
+
+    with pytest.raises(
+        LedgerError,
+        match=rf"departure\(s\) \[{handed['departure_id']}\] are not signed off or reworked",
+    ):
+        ledger.run_finish("oracle", ctx["oracle_id"], "success")
 
 
 # -- shortfalls -----------------------------------------------------------------------
@@ -676,36 +954,34 @@ def test_shortfall_record_needs_no_decision(ledger: Ledger) -> None:
 
 def test_write_report_lists_departures_shortfalls_and_change_requests(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-good", "pkg/good.py", "tests/test_good.py")
-    file_id = _latest_file_id(ledger, "pkg/good.py")
-    ledger.score_record(
-        "coder-good", coder["agent_id"], file_id, _all_ratings(), _all_applicable(), "self"
+    handed = _agreed_and_approved(ledger, ctx)
+    _decide(
+        ledger,
+        "manager-1",
+        ctx["manager"]["agent_id"],
+        handed["departure_id"],
+        decision="push_back",
+        reason="retries are in the guidelines",
+        solution="add the retry logic",
     )
-    handoff = ledger.handoff_submit(
-        "coder-good", coder["agent_id"], file_id, [], ["skipped the retry logic"]
-    )
-    ledger.score_record(
-        "lead-1", ctx["lead"]["agent_id"], file_id, _all_ratings(), _all_applicable(), "lead"
-    )
-    ledger.review_compare("lead-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
-    departure_row = ledger.conn.execute(
-        "SELECT * FROM departures WHERE handoff_id = ?", (handoff["handoff_id"],)
-    ).fetchone()
-    ledger.departure_decide(
-        "lead-1", ctx["lead"]["agent_id"], departure_row["departure_id"], "accepted", "fine for v1"
-    )
-    ledger.approve("lead-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
     ledger.shortfall_record("lead-1", ctx["lead"]["agent_id"], "module works, could be tidier")
-    cr = ledger.cr_open("manager-1", ctx["manager"]["agent_id"], "pkg/good.py", "one more change")
+    cr = ledger.cr_open("manager-1", ctx["manager"]["agent_id"], "pkg/good.py", "one change")
 
     run_id = ledger.conn.execute("SELECT run_id FROM runs LIMIT 1").fetchone()["run_id"]
     report = ledger.write_report(run_id)
     text = report["text"]
 
     assert "## Departures" in text
-    assert "skipped the retry logic" in text
-    assert "accepted by lead-1" in text
-    assert "reason: fine for v1" in text
+    assert (
+        f"- Departure #{handed['departure_id']} on pkg/good.py, recorded by coder-good: "
+        "skipped the retry logic"
+    ) in text
+    assert "  - lead lead-1 agreed: lead-1 is fine with it" in text
+    assert (
+        "  - manager manager-1 pushed back: retries are in the guidelines -- "
+        "solution: add the retry logic"
+    ) in text
+    assert "  - Final state: pushed_back" in text
     assert "## Shortfalls" in text
     assert "module works, could be tidier" in text
     assert "## Change requests" in text

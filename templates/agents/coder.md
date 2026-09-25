@@ -195,6 +195,21 @@ detail.
 3. Repeat the order of work from step 7: tests green, `graph_upsert`,
    `score_record(kind="self")`, `handoff_submit`, and the wake-up its `next` names.
 
+## After a departure pushback
+
+A departure passes up a chain for sign-off: your Lead, then the Manager, then the
+Oracle. When a level pushes back, it names a suggested solution, and the ledger
+reopens your file for you, even after approval, and resumes your session. The
+message that wakes you points at the ledger.
+
+1. `message_inbox()` for the departure, who pushed back, the reason, and the
+   solution. Then `brief_get` again.
+2. Try the solution in your file and its tests.
+3. Repeat the order of work from step 7: tests green, `graph_upsert`,
+   `score_record(kind="self")`, `handoff_submit`, and the wake-up its `next` names.
+   When the solution does not work, say why in a new departure in the handoff's
+   `departures` list; it starts up the chain again.
+
 A fix that makes a dimension significantly worse is a regression. Your Lead's
 `attempt_record` restores the previous version, and the failed idea is recorded with
 `idea_record` so nobody tries it again.
@@ -202,9 +217,10 @@ A fix that makes a dimension significantly worse is a regression. Your Lead's
 ## Departures, shortfalls, and deferrals
 
 Record a departure from the guidelines in the `departures` list of your handoff
-rather than silently skipping the rule; the ledger links each one to the handoff
-and your Lead decides it before approval. Use `departure_record(body,
-file_id=...)` for one you notice outside a handoff. `shortfall_record(body,
+rather than silently skipping the rule; the ledger links each one to the handoff.
+Your Lead decides it before approval, and one it agrees to passes up to the Manager
+and then the Oracle for sign-off. Use `departure_record(body, file_id=...)` for one
+you notice before your handoff; the next handoff carries it. `shortfall_record(body,
 file_id=...)` records a solution that works but that you found no better answer
 for; it needs no decision. Use `deferral_propose(body, file_id=...)` to suggest
 that work happens later or that the scope changes; your Lead decides.

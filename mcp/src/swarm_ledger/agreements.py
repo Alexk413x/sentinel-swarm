@@ -1,20 +1,40 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import AbstractContextManager
 from typing import Literal
 
 from .db import write_tx
 from .identity import Caller, LedgerError, require_role, resolve
-from .review import _PARENT_ROLE, _ROLE_RANK
+from .review import _ROLE_RANK
 from .settings import Settings
 
 _NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 _CR_BLOCKING_STATES = ("open", "accepted", "completed")
+_PENDING_STATES = ("open", "lead_agreed", "manager_agreed")
+_UNSETTLED_STATES = (*_PENDING_STATES, "pushed_back")
+_FIRST_LEVEL = {"coder": "lead", "lead": "manager", "manager": "oracle"}
+_AGREED_STATE = {"lead": "lead_agreed", "manager": "manager_agreed", "oracle": "signed_off"}
+_NEXT_LEVEL = {"lead": "manager", "manager": "oracle", "oracle": None}
+_ROLE_TITLE = {"lead": "Lead", "manager": "Manager", "oracle": "Oracle"}
 
 
 def _rows(cursor: sqlite3.Cursor) -> list[dict]:
     return [dict(row) for row in cursor.fetchall()]
+
+
+def _caller_of(agent: sqlite3.Row) -> Caller:
+    return Caller(
+        agent_id=agent["agent_id"],
+        name=agent["name"],
+        role=agent["role"],
+        run_id=agent["run_id"],
+        phase_id=agent["phase_id"],
+        module_id=agent["module_id"],
+        file_id=agent["file_id"],
+        parent_agent_id=agent["parent_agent_id"],
+    )
 
 
 def _test_run_passed(row: sqlite3.Row) -> bool:
@@ -138,21 +158,64 @@ class AgreementsMixin:
             raise LedgerError(f"change request(s) {ids} on this file are not verified")
 
     def _block_approve_for_departures(self, conn: sqlite3.Connection, handoff_id: int) -> None:
+        self._block_return_for_open_departures(conn, handoff_id)
+        pushed_rows = conn.execute(
+            "SELECT departure_id FROM departures WHERE handoff_id = ? AND state = 'pushed_back'",
+            (handoff_id,),
+        ).fetchall()
+        if pushed_rows:
+            ids = [r["departure_id"] for r in pushed_rows]
+            raise LedgerError(
+                f"departure(s) {ids} are pushed back; a pushed-back departure is a return: "
+                "call return_work"
+            )
+
+    def _block_return_for_open_departures(self, conn: sqlite3.Connection, handoff_id: int) -> None:
         open_rows = conn.execute(
-            "SELECT departure_id FROM departures WHERE handoff_id = ? AND state = 'open'",
+            "SELECT departure_id FROM departures WHERE handoff_id = ? AND state = 'open' "
+            "AND level = 'lead'",
             (handoff_id,),
         ).fetchall()
         if open_rows:
             ids = [r["departure_id"] for r in open_rows]
-            raise LedgerError(f"departure(s) {ids} are open; decide it with departure_decide")
-        denied_rows = conn.execute(
-            "SELECT departure_id FROM departures WHERE handoff_id = ? AND state = 'denied'",
-            (handoff_id,),
-        ).fetchall()
-        if denied_rows:
-            ids = [r["departure_id"] for r in denied_rows]
+            raise LedgerError(f"departure(s) {ids} are open; decide each with departure_decide")
+
+    def _mark_departures_reworked(
+        self, conn: sqlite3.Connection, file_id: int, handoff_id: int
+    ) -> None:
+        conn.execute(
+            f"UPDATE departures SET state = 'reworked', reworked_at = {_NOW}, "
+            "reworked_by_handoff_id = ? WHERE file_id = ? AND kind = 'departure' "
+            "AND state = 'pushed_back'",
+            (handoff_id, file_id),
+        )
+
+    def _block_module_review_for_departures(self, conn: sqlite3.Connection, module_id: int) -> None:
+        rows = [
+            row
+            for row in self._blocking_departures(conn, _UNSETTLED_STATES, module_id=module_id)
+            if row["state"] == "pushed_back" or row["level"] in ("lead", "manager")
+        ]
+        if rows:
             raise LedgerError(
-                f"departure(s) {ids} are denied; a denied departure is a return: call return_work"
+                f"departure(s) {[r['departure_id'] for r in rows]} in the module are not decided "
+                f"by the Manager yet: {self._describe_waits(conn, rows)}"
+            )
+
+    def _block_phase_review_for_departures(self, conn: sqlite3.Connection, phase_id: int) -> None:
+        rows = self._blocking_departures(conn, _UNSETTLED_STATES, phase_id=phase_id)
+        if rows:
+            raise LedgerError(
+                f"departure(s) {[r['departure_id'] for r in rows]} in the phase are not signed "
+                f"off by the Oracle or reworked: {self._describe_waits(conn, rows)}"
+            )
+
+    def _block_run_finish_for_departures(self, conn: sqlite3.Connection, run_id: int) -> None:
+        rows = self._blocking_departures(conn, _UNSETTLED_STATES, run_id=run_id)
+        if rows:
+            raise LedgerError(
+                f"departure(s) {[r['departure_id'] for r in rows]} are not signed off or "
+                f"reworked: {self._describe_waits(conn, rows)}"
             )
 
     def _block_phase_approval_for_cr(self, conn: sqlite3.Connection, phase_id: int) -> None:
@@ -399,6 +462,91 @@ class AgreementsMixin:
 
     # -- Departures and shortfalls --------------------------------------------
 
+    def _departure_scope(
+        self, conn: sqlite3.Connection, row: sqlite3.Row
+    ) -> tuple[int | None, int | None]:
+        if row["file_id"] is not None:
+            scope = conn.execute(
+                "SELECT m.module_id, m.phase_id FROM files f "
+                "JOIN modules m ON m.module_id = f.module_id WHERE f.file_id = ?",
+                (row["file_id"],),
+            ).fetchone()
+            if scope is not None:
+                return scope["module_id"], scope["phase_id"]
+        agent = conn.execute(
+            "SELECT module_id, phase_id FROM agents WHERE agent_id = ?", (row["agent_id"],)
+        ).fetchone()
+        if agent is None:
+            return None, None
+        return agent["module_id"], agent["phase_id"]
+
+    def _blocking_departures(
+        self,
+        conn: sqlite3.Connection,
+        states: tuple[str, ...],
+        *,
+        run_id: int | None = None,
+        module_id: int | None = None,
+        phase_id: int | None = None,
+    ) -> list[sqlite3.Row]:
+        placeholders = ",".join("?" for _ in states)
+        rows = conn.execute(
+            f"SELECT * FROM departures WHERE kind = 'departure' AND state IN ({placeholders}) "
+            "AND (? IS NULL OR run_id = ?) ORDER BY departure_id",
+            (*states, run_id, run_id),
+        ).fetchall()
+        blocking = []
+        for row in rows:
+            # No approval can mark a departure with no file reworked, so its pushback is final.
+            if row["state"] == "pushed_back" and row["file_id"] is None:
+                continue
+            row_module, row_phase = self._departure_scope(conn, row)
+            if module_id is not None and row_module != module_id:
+                continue
+            if phase_id is not None and row_phase != phase_id:
+                continue
+            blocking.append(row)
+        return blocking
+
+    def _level_agent(
+        self, conn: sqlite3.Connection, row: sqlite3.Row, level: str
+    ) -> sqlite3.Row | None:
+        module_id, phase_id = self._departure_scope(conn, row)
+        if level == "lead":
+            scope_column, scope_id = "module_id", module_id
+        elif level == "manager":
+            scope_column, scope_id = "phase_id", phase_id
+        else:
+            scope_column, scope_id = "run_id", row["run_id"]
+        return conn.execute(
+            f"SELECT * FROM agents WHERE role = ? AND {scope_column} = ? AND ended_at IS NULL "
+            "ORDER BY started_at DESC LIMIT 1",
+            (level, scope_id),
+        ).fetchone()
+
+    def _level_label(self, conn: sqlite3.Connection, row: sqlite3.Row, level: str) -> str:
+        agent = self._level_agent(conn, row, level)
+        title = _ROLE_TITLE[level]
+        if agent is None:
+            return f"the {title}, which is not live"
+        return f"the {title} ({agent['name']})"
+
+    def _describe_waits(self, conn: sqlite3.Connection, rows: list[sqlite3.Row]) -> str:
+        waits = []
+        for row in rows:
+            if row["state"] == "pushed_back":
+                waits.append(
+                    f"{row['departure_id']} is pushed back and waits on the reworked file's "
+                    "approval"
+                )
+            else:
+                label = self._level_label(conn, row, row["level"] or "oracle")
+                waits.append(
+                    f"{row['departure_id']} is {row['state']} and waits on {label} to call "
+                    "departure_decide"
+                )
+        return "; ".join(waits)
+
     def departure_record(
         self,
         caller: str,
@@ -439,30 +587,57 @@ class AgreementsMixin:
                 if handoff_row is not None:
                     handoff_id = handoff_row["handoff_id"]
 
-            cur = conn.execute(
-                "INSERT INTO departures (run_id, agent_id, guideline_id, file_id, handoff_id, "
-                "kind, state, body) VALUES (?, ?, ?, ?, ?, 'departure', 'open', ?)",
-                (c.run_id, c.agent_id, guideline_id, file_id, handoff_id, body),
-            )
+            level = _FIRST_LEVEL.get(c.role)
+            if level is None:
+                cur = conn.execute(
+                    "INSERT INTO departures (run_id, agent_id, guideline_id, file_id, handoff_id, "
+                    "kind, state, body, signed_off_at) "
+                    f"VALUES (?, ?, ?, ?, ?, 'departure', 'signed_off', ?, {_NOW})",
+                    (c.run_id, c.agent_id, guideline_id, file_id, handoff_id, body),
+                )
+            else:
+                cur = conn.execute(
+                    "INSERT INTO departures (run_id, agent_id, guideline_id, file_id, handoff_id, "
+                    "kind, state, body, level) VALUES (?, ?, ?, ?, ?, 'departure', 'open', ?, ?)",
+                    (c.run_id, c.agent_id, guideline_id, file_id, handoff_id, body, level),
+                )
             departure_id = cur.lastrowid
 
-        return dict(
+        return self._departure_dict(departure_id)
+
+    def _departure_dict(self, departure_id: int | None) -> dict:
+        result = dict(
             self.conn.execute(
                 "SELECT * FROM departures WHERE departure_id = ?", (departure_id,)
             ).fetchone()
         )
+        result["decisions"] = _rows(
+            self.conn.execute(
+                "SELECT d.*, a.name AS agent_name FROM departure_decisions d "
+                "LEFT JOIN agents a ON a.agent_id = d.agent_id "
+                "WHERE d.departure_id = ? ORDER BY d.decision_id",
+                (departure_id,),
+            )
+        )
+        return result
 
     def departure_decide(
         self,
         caller: str,
         agent_id: str,
         departure_id: int,
-        decision: Literal["accepted", "denied"],
+        decision: Literal["agree", "push_back"],
         reason: str,
         solution: str | None = None,
     ) -> dict:
-        if decision not in ("accepted", "denied"):
-            raise LedgerError(f"unknown decision {decision!r}")
+        if decision not in ("agree", "push_back"):
+            raise LedgerError(f"unknown decision {decision!r}; use 'agree' or 'push_back'")
+        if not reason.strip():
+            raise LedgerError("a decision needs a non-empty reason")
+        if decision == "push_back" and not (solution or "").strip():
+            raise LedgerError("a pushback needs a suggested solution")
+
+        wakeup = None
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
             row = conn.execute(
@@ -472,56 +647,244 @@ class AgreementsMixin:
                 raise LedgerError(f"unknown departure_id {departure_id!r}")
             if row["kind"] != "departure":
                 raise LedgerError(f"departure {departure_id} is a {row['kind']!r}, not a departure")
+            if row["state"] not in _PENDING_STATES or row["level"] is None:
+                raise LedgerError(
+                    f"departure {departure_id} is {row['state']}; no decision is pending"
+                )
 
-            proposer = conn.execute(
-                "SELECT role FROM agents WHERE agent_id = ?", (row["agent_id"],)
-            ).fetchone()
-            proposer_role = proposer["role"] if proposer is not None else "oracle"
-            required_role = _PARENT_ROLE.get(proposer_role, "oracle")
-            required_rank = _ROLE_RANK[required_role]
-            caller_rank = _ROLE_RANK[c.role]
+            level = row["level"]
+            module_id, phase_id = self._departure_scope(conn, row)
+            in_scope = (
+                (level == "lead" and c.module_id == module_id)
+                or (level == "manager" and c.phase_id == phase_id)
+                or (level == "oracle" and c.run_id == row["run_id"])
+            )
+            if c.role != level or not in_scope:
+                raise LedgerError(
+                    f"departure {departure_id} is {row['state']} and waits on "
+                    f"{self._level_label(conn, row, level)}; {caller!r} may not decide it"
+                )
 
-            if row["state"] == "open":
-                if caller_rank < required_rank:
-                    raise LedgerError(
-                        f"role {c.role!r} may not decide a departure recorded by a "
-                        f"{proposer_role!r}"
-                    )
-            elif row["state"] == "accepted":
-                if decision != "denied" or caller_rank <= required_rank:
-                    raise LedgerError(
-                        "an accepted departure can only be overridden by a denial from a "
-                        f"role higher than {required_role!r}"
-                    )
-            else:
-                raise LedgerError(f"departure {departure_id} is already {row['state']}")
-
-            if decision == "denied" and not (solution or "").strip():
-                raise LedgerError("a denial needs a solution")
-
-            was_accepted = row["state"] == "accepted"
             conn.execute(
-                f"UPDATE departures SET state = ?, decided_by = ?, decision_reason = ?, "
-                f"solution = ?, decided_at = {_NOW} WHERE departure_id = ?",
-                (decision, c.agent_id, reason, solution, departure_id),
+                "INSERT INTO departure_decisions (departure_id, role, agent_id, decision, reason, "
+                "solution) VALUES (?, ?, ?, ?, ?, ?)",
+                (departure_id, c.role, c.agent_id, decision, reason, solution),
+            )
+            if decision == "agree":
+                new_state = _AGREED_STATE[level]
+                conn.execute(
+                    "UPDATE departures SET state = ?, level = ?, decided_by = ?, "
+                    f"decision_reason = ?, decided_at = {_NOW}, "
+                    f"signed_off_at = CASE WHEN ? = 'signed_off' THEN {_NOW} END "
+                    "WHERE departure_id = ?",
+                    (new_state, _NEXT_LEVEL[level], c.agent_id, reason, new_state, departure_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE departures SET state = 'pushed_back', level = NULL, decided_by = ?, "
+                    f"decision_reason = ?, solution = ?, decided_at = {_NOW} "
+                    "WHERE departure_id = ?",
+                    (c.agent_id, reason, solution, departure_id),
+                )
+                file_row = (
+                    conn.execute(
+                        "SELECT * FROM files WHERE file_id = ?", (row["file_id"],)
+                    ).fetchone()
+                    if row["file_id"] is not None
+                    else None
+                )
+                lead_returns_it = (
+                    level == "lead" and file_row is not None and file_row["released_at"] is None
+                )
+                if not lead_returns_it:
+                    wakeup = self._resume_chain(
+                        conn, c, row, file_row, phase_id, reason, solution or ""
+                    )
+
+        result = self._departure_dict(departure_id)
+        result["next"] = self.next_step(wakeup)
+        return result
+
+    def _departure_chain(
+        self, conn: sqlite3.Connection, c: Caller, row: sqlite3.Row, file_row: sqlite3.Row | None
+    ) -> list[sqlite3.Row]:
+        start_id = row["agent_id"]
+        if file_row is not None:
+            coder = None
+            if row["handoff_id"] is not None:
+                coder = conn.execute(
+                    "SELECT a.agent_id FROM handoffs h JOIN agents a ON a.agent_id = h.agent_id "
+                    "WHERE h.handoff_id = ?",
+                    (row["handoff_id"],),
+                ).fetchone()
+            if coder is None:
+                coder = conn.execute(
+                    "SELECT agent_id FROM agents WHERE file_id = ? AND role = 'coder' "
+                    "ORDER BY started_at DESC LIMIT 1",
+                    (file_row["file_id"],),
+                ).fetchone()
+            if coder is not None:
+                start_id = coder["agent_id"]
+
+        chain: list[sqlite3.Row] = []
+        agent_id: str | None = start_id
+        while agent_id is not None:
+            agent = conn.execute("SELECT * FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
+            if agent is None or agent["role"] not in _ROLE_RANK:
+                break
+            if _ROLE_RANK[agent["role"]] >= _ROLE_RANK[c.role]:
+                break
+            chain.append(agent)
+            agent_id = agent["parent_agent_id"]
+        chain.reverse()
+        return chain
+
+    def _unrelease_agent(self, conn: sqlite3.Connection, agent: sqlite3.Row, reason: str) -> None:
+        if agent["ended_at"] is None:
+            if agent["state"] == "handed_up":
+                conn.execute(
+                    "UPDATE agents SET state = 'idle' WHERE agent_id = ?", (agent["agent_id"],)
+                )
+                self._log_event(conn, agent["agent_id"], agent["state"], "idle", reason)
+            return
+        clash = conn.execute(
+            "SELECT 1 FROM agents WHERE name = ? AND ended_at IS NULL AND agent_id != ?",
+            (agent["name"], agent["agent_id"]),
+        ).fetchone()
+        if clash is not None:
+            raise LedgerError(
+                f"cannot resume {agent['name']!r}: a live agent already holds that name"
+            )
+        conn.execute(
+            "UPDATE agents SET state = 'idle', ended_at = NULL, end_reason = NULL, "
+            "phase_at_end = NULL WHERE agent_id = ?",
+            (agent["agent_id"],),
+        )
+        self._log_event(conn, agent["agent_id"], agent["state"], "idle", reason)
+
+    def _reopen_file(
+        self, conn: sqlite3.Connection, c: Caller, file_row: sqlite3.Row
+    ) -> int | None:
+        path = file_row["path"]
+        if file_row["state"] == "superseded":
+            raise LedgerError(f"file {file_row['file_id']} ({path}) is superseded by a later claim")
+        if file_row["released_at"] is not None:
+            clash = conn.execute(
+                "SELECT owner_agent_id FROM files WHERE path = ? AND released_at IS NULL "
+                "AND file_id != ?",
+                (path, file_row["file_id"]),
+            ).fetchone()
+            if clash is not None:
+                raise LedgerError(
+                    f"{path!r} has a live claim for {clash['owner_agent_id']!r}; the file "
+                    "cannot reopen for rework until that claim is released"
+                )
+            conn.execute(
+                "UPDATE files SET state = 'returned', released_at = NULL WHERE file_id = ?",
+                (file_row["file_id"],),
+            )
+            return None
+        submitted = conn.execute(
+            "SELECT handoff_id FROM handoffs WHERE file_id = ? AND state = 'submitted' "
+            "ORDER BY handoff_id DESC LIMIT 1",
+            (file_row["file_id"],),
+        ).fetchone()
+        if submitted is None:
+            return None
+        conn.execute(
+            f"UPDATE handoffs SET state = 'returned', decided_at = {_NOW}, decided_by = ? "
+            "WHERE file_id = ? AND state = 'submitted'",
+            (c.agent_id, file_row["file_id"]),
+        )
+        conn.execute(
+            "UPDATE files SET state = 'returned' WHERE file_id = ?", (file_row["file_id"],)
+        )
+        return submitted["handoff_id"]
+
+    def _resume_chain(
+        self,
+        conn: sqlite3.Connection,
+        c: Caller,
+        row: sqlite3.Row,
+        file_row: sqlite3.Row | None,
+        phase_id: int | None,
+        reason: str,
+        solution: str,
+    ) -> dict | None:
+        departure_id = row["departure_id"]
+        chain = self._departure_chain(conn, c, row, file_row)
+        where = f" on {file_row['path']}" if file_row is not None else ""
+        event = f"departure_decide: departure {departure_id} pushed back by {c.name}"
+
+        if file_row is not None:
+            returned_handoff = self._reopen_file(conn, c, file_row)
+            next_round = conn.execute(
+                "SELECT COALESCE(MAX(round), 0) + 1 AS n FROM attempts WHERE file_id = ?",
+                (file_row["file_id"],),
+            ).fetchone()["n"]
+            conn.execute(
+                "INSERT INTO attempts (file_id, handoff_id, issue_ids_json, targeted_json, "
+                "round) VALUES (?, ?, ?, '[]', ?)",
+                (
+                    file_row["file_id"],
+                    returned_handoff or row["handoff_id"],
+                    json.dumps([f"Departure {departure_id} pushed back: {solution}"]),
+                    next_round,
+                ),
+            )
+            conn.execute(
+                "UPDATE modules SET state = 'returned' WHERE module_id = ?",
+                (file_row["module_id"],),
+            )
+        if phase_id is not None:
+            conn.execute(
+                "UPDATE phases SET state = 'working' WHERE phase_id = ? AND state = 'handed_up'",
+                (phase_id,),
             )
 
-            if decision == "denied" and was_accepted and row["file_id"] is not None:
-                file_row = conn.execute(
-                    "SELECT state FROM files WHERE file_id = ?", (row["file_id"],)
-                ).fetchone()
-                if file_row is not None and file_row["state"] == "approved":
-                    conn.execute(
-                        "INSERT INTO deferrals (run_id, file_id, proposed_by, reason, state) "
-                        "VALUES (?, ?, ?, ?, 'open')",
-                        (c.run_id, row["file_id"], c.agent_id, solution),
-                    )
+        for agent in chain:
+            self._unrelease_agent(conn, agent, event)
 
-        return dict(
-            self.conn.execute(
-                "SELECT * FROM departures WHERE departure_id = ?", (departure_id,)
-            ).fetchone()
-        )
+        header = [
+            f"Departure {departure_id}{where} was pushed back by {c.name} ({c.role}).",
+            f"Departure: {row['body']}",
+            f"Reason: {reason}",
+            f"Solution: {solution}",
+        ]
+        wakeup = None
+        upper = c
+        for index, agent in enumerate(chain):
+            child = chain[index + 1] if index + 1 < len(chain) else None
+            if child is not None:
+                action = (
+                    f"Wake {child['name']} as the Stop hook asks; the reworked file comes back "
+                    "up through the normal reviews."
+                )
+                pointer_action = "pass the wake-up down"
+            elif agent["role"] == "coder":
+                action = (
+                    "Try the solution, then follow your normal order of work and hand off again."
+                )
+                pointer_action = "try the solution"
+            else:
+                action = "Apply the solution in your own scope."
+                pointer_action = "apply the solution"
+            conn.execute(
+                "INSERT INTO messages (run_id, from_name, to_name, body) VALUES (?, ?, ?, ?)",
+                (c.run_id, c.name, agent["name"], "\n".join([*header, action])),
+            )
+            owed = self._owe_wakeup(
+                conn,
+                upper,
+                agent["agent_id"],
+                "departure_decide",
+                f"Departure {departure_id}{where} was pushed back by {c.name}; read it with "
+                f"message_inbox and {pointer_action}.",
+            )
+            if index == 0:
+                wakeup = owed
+            upper = _caller_of(agent)
+        return wakeup
 
     def shortfall_record(
         self, caller: str, agent_id: str, body: str, file_id: int | None = None

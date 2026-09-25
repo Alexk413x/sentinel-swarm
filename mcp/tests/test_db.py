@@ -23,6 +23,7 @@ EXPECTED_TABLES = {
     "test_runs",
     "guidelines",
     "departures",
+    "departure_decisions",
     "versions",
     "messages",
     "directives",
@@ -95,6 +96,59 @@ def test_connect_upgrades_an_older_version_1_ledger(tmp_path: Path) -> None:
         assert {"wakeups", "watchdog_findings"} <= tables
         row = conn.execute("SELECT * FROM agents WHERE agent_id = 'a1'").fetchone()
         assert (row["name"], row["session_name"]) == ("lead-1", None)
+    finally:
+        conn.close()
+
+    connect(db_path).close()
+
+
+def test_connect_moves_an_older_ledger_s_departures_onto_the_sign_off_chain(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "ledger.db"
+    old = sqlite3.connect(str(db_path))
+    old.executescript(
+        "CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
+        "version INTEGER NOT NULL);"
+        "INSERT INTO schema_version (id, version) VALUES (1, 1);"
+        "CREATE TABLE agents (agent_id TEXT PRIMARY KEY, name TEXT NOT NULL, "
+        "role TEXT NOT NULL, state TEXT NOT NULL, ended_at TEXT);"
+        "INSERT INTO agents (agent_id, name, role, state) VALUES "
+        "('c1', 'coder-1', 'coder', 'idle'), ('l1', 'lead-1', 'lead', 'idle');"
+        "CREATE TABLE departures (departure_id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL, "
+        "agent_id TEXT, guideline_id INTEGER, kind TEXT NOT NULL, state TEXT NOT NULL, "
+        "body TEXT NOT NULL, created_at TEXT);"
+        "INSERT INTO departures (departure_id, run_id, agent_id, kind, state, body) VALUES "
+        "(1, 1, 'c1', 'departure', 'accepted', 'a'), (2, 1, 'c1', 'departure', 'denied', 'b'), "
+        "(3, 1, 'c1', 'departure', 'open', 'c'), (4, 1, 'l1', 'departure', 'open', 'd'), "
+        "(5, 1, 'c1', 'shortfall', 'recorded', 'e');"
+    )
+    old.close()
+
+    conn = connect(db_path)
+    try:
+        assert {
+            "file_id",
+            "handoff_id",
+            "level",
+            "signed_off_at",
+            "reworked_at",
+            "reworked_by_handoff_id",
+        } <= _columns(conn, "departures")
+        assert {"departure_id", "role", "agent_id", "decision", "reason", "solution"} <= _columns(
+            conn, "departure_decisions"
+        )
+        rows = {
+            row["departure_id"]: (row["state"], row["level"])
+            for row in conn.execute("SELECT * FROM departures")
+        }
+        assert rows == {
+            1: ("lead_agreed", "manager"),
+            2: ("pushed_back", None),
+            3: ("open", "lead"),
+            4: ("open", "manager"),
+            5: ("recorded", None),
+        }
     finally:
         conn.close()
 

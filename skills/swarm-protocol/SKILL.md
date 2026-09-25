@@ -121,7 +121,12 @@ keeps every gate.
   `review_compare` runs for a handoff, blind scoring is closed.
 - `approve` refuses without a comparison, with a lead review that does not pass,
   while the file has an open issue, while a change request on the file is not yet
-  verified, or while a departure on the handoff is open or denied.
+  verified, or while a departure on the handoff is open or pushed back.
+  `return_work` refuses while a departure on the handoff is open.
+- `module_review(accepted)` refuses while a departure in the module waits on the
+  Lead or the Manager, or is pushed back and not yet reworked. `phase_review(accepted)`
+  and `run_finish` refuse while a departure in their scope is neither signed off nor
+  reworked.
 - `tests_run` scopes are role-bound: file to the Coder, module to the Lead, phase to
   the Manager, full to the Oracle.
 - `override_grant` is the Oracle's alone.
@@ -183,12 +188,29 @@ A departure records a break from the guidelines; `handoff_submit`'s `departures`
 list writes one row per string, linked to the handoff, in state `open`.
 `departure_record(body, file_id=None, guideline_id=None)` records one outside a
 handoff: a Coder for its own file, a Lead, Manager, or Oracle for work in its scope.
-`departure_decide(departure_id, decision, reason, solution=None)` is the recorder's
-parent role or higher; a denial needs a solution. `approve` refuses while a
-departure on the handoff is `open` (decide it first) or `denied` (a denied
-departure is a return). A higher role may also deny an already `accepted`
-departure; when the file is already approved, that opens a deferral so the phase
-cannot be approved until someone decides what happens.
+
+A departure passes up a chain for sign-off: the Lead, then the Manager, then the
+Oracle. `departure_decide(departure_id, decision, reason, solution=None)` takes
+`decision="agree"` or `decision="push_back"`, and only the next level may call it:
+
+| State | Waits on | `agree` moves it to |
+|---|---|---|
+| `open` | The file's Lead, or the recorder's parent for a Lead's or a Manager's own departure | `lead_agreed`, or the next state up |
+| `lead_agreed` | The phase's Manager | `manager_agreed` |
+| `manager_agreed` | The Oracle | `signed_off` |
+
+Every decision needs a reason, and `departure_decisions` keeps each one. A pushback
+needs a suggested solution and sets the state to `pushed_back`:
+
+- From the Lead, it is a return: the Lead calls `return_work`.
+- From the Manager or the Oracle, the ledger resumes the chain below the decider. It
+  reopens the file for the same Coder, un-releases the agents below the decider,
+  records a fix attempt, posts the departure, the decider, the reason, and the
+  solution to each of them, sets the module back to `returned` and a handed-up phase
+  back to `working`, and owes a wake-up from each level to the next, down to the
+  Coder. The result's `next` is the decider's wake-up.
+
+The approval of the reworked file's next handoff marks the departure `reworked`.
 
 A shortfall records a solution that works but that nobody found better.
 `shortfall_record(body, file_id=None)` is any role, state `recorded`, and needs no

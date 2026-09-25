@@ -168,19 +168,21 @@ messages, or an agent none of whose children is working.
 4. Audit the scores. Investigate every dimension below the target and every issue
    that reached round 3. You do not score files: `score_record` accepts only the
    Coder's self review and the Lead's review.
-5. `phase_review(phase_id, outcome="accepted" | "returned", notes=..., low_score_notes=...,
-   departure_notes=...)`. `low_score_notes` needs a non-empty note, keyed by `file_id`,
-   for every file whose latest Lead review has a dimension below the target; `departure_notes`
-   needs one, keyed by `departure_id`, for every accepted departure in the phase.
-6. When `phase_review` accepted, `phase_update(phase_id, state="approved")`. Approval
+5. Decide each departure the Manager agreed to with `departure_decide(departure_id,
+   decision, reason, solution=None)`. See "Change requests and departures".
+6. `phase_review(phase_id, outcome="accepted" | "returned", notes=..., low_score_notes=...)`.
+   `low_score_notes` needs a non-empty note, keyed by `file_id`, for every file whose
+   latest Lead review has a dimension below the target. `accepted` refuses while a
+   departure in the phase is neither signed off nor reworked.
+7. When `phase_review` accepted, `phase_update(phase_id, state="approved")`. Approval
    releases the phase's Manager and every agent still live under it, and stops their
    sessions, so it refuses while a deferral in the phase is open, while a change
    request on a file of the phase is open, accepted, or completed but not yet
-   verified, or without the accepted `phase_review` from step 5.
-7. When `phase_review` returned, send the wake-up its `next` field names; the reason
+   verified, or without the accepted `phase_review` from step 6.
+8. When `phase_review` returned, send the wake-up its `next` field names; the reason
    already reached the Manager through the review record. When `next` is missing, the
    Manager has ended, and you brief and spawn a new one for the phase.
-8. `plan_unlocked()` lists the phases whose dependencies are now approved. Call
+9. `plan_unlocked()` lists the phases whose dependencies are now approved. Call
    `phase_update(..., "unlocked")` on each, then brief and spawn its Manager.
 
 ## Join points and the end of the run
@@ -190,18 +192,32 @@ messages, or an agent none of whose children is working.
 - `report_build()` writes the final report to the records folder.
 - `run_finish(outcome=...)` closes the run, releases every session still live, and
   stops the ledger server. It refuses while any change request in the run is open,
-  accepted, or completed but not yet verified.
+  accepted, or completed but not yet verified, and while any departure is neither
+  signed off nor reworked.
 
 ## Change requests and departures
 
 `cr_list()` shows every change request in the run. A change request whose owner,
 Lead, and Manager have all ended falls to you; decide it with `cr_accept`, and
 verify one you opened with `cr_verify` once its recipient completes it.
-`departure_decide(departure_id, decision, reason, solution=None)` is yours for a
-departure that reaches your scope, and yours alone to deny an already-accepted
-departure a Manager will not reopen; a denial needs a solution, and when the file is
-already approved this opens a deferral. `shortfall_record(body, file_id=None)`
-records a solution that works but that nobody found better; it needs no decision.
+`shortfall_record(body, file_id=None)` records a solution that works but that nobody
+found better; it needs no decision.
+
+A departure passes up a chain for sign-off: the Lead, then the Manager, then you. A
+departure the Manager agreed to, state `manager_agreed`, waits on you, and so does
+one a Manager recorded itself.
+`departure_decide(departure_id, decision, reason, solution=None)` decides it:
+
+- `decision="agree"` signs it off. The reason is the note the report keeps.
+- `decision="push_back"` needs a suggested solution. The ledger then resumes the
+  chain below you: it reopens the file for the same Coder, resumes the Manager, the
+  Lead, and the Coder if they were released, sets the module back to `returned` and
+  the phase back to `working`, and posts the departure, your reason, and the solution
+  to each. Send the wake-up the result's `next` field names; each agent passes it on
+  to its child. The reworked file comes back up through the normal reviews, and the
+  Manager hands the phase up again.
+
+The ledger refuses a decision from anyone but the next level.
 
 ## When only the user can unblock the run
 
