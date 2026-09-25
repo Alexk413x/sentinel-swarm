@@ -779,3 +779,22 @@ def test_report_build_shows_the_pause_reason_and_the_run_total(ledger: Ledger) -
     assert "Paused: the API key is missing" in text
     assert "cache_write=7" in text
     assert "Run total: tokens in=11 out=7 cache_read=100 cache_write=10" in text
+    assert "Duration: " in text and " so far" in text
+    assert "est. cost" in text
+    assert "Costs are estimates at list prices" in text
+
+
+def test_report_cost_uses_list_prices_per_model() -> None:
+    from swarm_ledger import review
+
+    tokens = {
+        "input_tokens": 1_000_000,
+        "output_tokens": 1_000_000,
+        "cache_read_tokens": 1_000_000,
+        "cache_write_tokens": 1_000_000,
+    }
+    assert review._cost("sonnet", tokens) == 2.0 + 10.0 + 0.20 + 4.0
+    assert review._cost("claude-haiku-4-5", tokens) == 1.0 + 5.0 + 0.10 + 2.0
+    assert review._cost(None, tokens) is None
+    assert review._duration("2026-09-25T02:00:00.000Z", "2026-09-25T02:35:10.000Z") == "35m 10s"
+    assert review._duration("2026-09-25T02:00:00.000Z", "2026-09-25T03:05:00.000Z") == "1h 5m"

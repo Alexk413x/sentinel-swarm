@@ -594,7 +594,8 @@ def test_write_report_lists_manager_and_oracle_reviews_and_the_repo_check(ledger
 
     text = ledger.report_build("oracle", ctx["oracle_id"])["text"]
     assert "## Repo" in text
-    assert "Last repo_check:" in text
+    assert "Last repo_check: on " in text
+    assert '"obvious_start"' not in text
     assert "## Manager and Oracle reviews" in text
     assert "[manager]" in text
     assert "[oracle]" in text

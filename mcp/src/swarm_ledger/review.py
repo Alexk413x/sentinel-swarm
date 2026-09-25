@@ -4,6 +4,7 @@ import json
 import re
 import sqlite3
 from contextlib import AbstractContextManager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -38,6 +39,72 @@ def _parse_rating(raw: object) -> Rating:
 _SCOPE_ROLE = {"file": "coder", "module": "lead", "phase": "manager", "full": "oracle"}
 _PARENT_ROLE = {"manager": "oracle", "lead": "manager", "coder": "lead"}
 _ROLE_RANK = {"coder": 0, "lead": 1, "manager": 2, "oracle": 3}
+# USD per million tokens at list price: input, output, cache read, 1-hour cache write.
+_PRICES = {
+    "fable": (10.0, 50.0, 0.25, 20.0),
+    "opus": (4.0, 20.0, 0.20, 8.0),
+    "sonnet": (2.0, 10.0, 0.20, 4.0),
+    "haiku": (1.0, 5.0, 0.10, 2.0),
+}
+
+
+def _cost(model: str | None, tokens: dict) -> float | None:
+    prices = next((p for name, p in _PRICES.items() if name in (model or "").lower()), None)
+    if prices is None:
+        return None
+    counts = (
+        tokens["input_tokens"],
+        tokens["output_tokens"],
+        tokens["cache_read_tokens"],
+        tokens["cache_write_tokens"],
+    )
+    return (
+        sum((count or 0) * price for count, price in zip(counts, prices, strict=True)) / 1_000_000
+    )
+
+
+def _run_cost(agents: list[dict]) -> float | None:
+    costs = [_cost(a["model"], a) for a in agents]
+    return None if any(c is None for c in costs) else sum(c for c in costs if c is not None)
+
+
+def _money(value: float | None) -> str:
+    return "unknown" if value is None else f"${value:.2f}"
+
+
+def _stamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _duration(start: str | None, end: str | None) -> str:
+    begin = _stamp(start)
+    if begin is None:
+        return "not started"
+    finish = _stamp(end)
+    seconds = int(((finish or datetime.now(timezone.utc)) - begin).total_seconds())
+    hours, rest = divmod(seconds, 3600)
+    text = f"{hours}h {rest // 60}m" if hours else f"{rest // 60}m {rest % 60}s"
+    return text if finish is not None else f"{text} so far"
+
+
+def _repo_line(raw: str | None) -> str:
+    if not raw:
+        return "(none)"
+    check = json.loads(raw)
+    tree = "clean" if check.get("clean") else f"dirty: {', '.join(check.get('dirty_paths') or [])}"
+    parts = [
+        f"on {check.get('branch')}",
+        tree,
+        f"base {check.get('base_branch')}",
+        f"{check.get('ahead_of_base')} ahead, {check.get('behind_base')} behind",
+    ]
+    if check.get("advice"):
+        parts.append(f"advice: {check['advice']}")
+    return "; ".join(parts)
+
+
 _SELECT_RE = re.compile(r"(?is)^\s*select\b")
 
 _CRITERION_TEXT: dict[tuple[str, str], str] = {
@@ -1094,19 +1161,23 @@ class ReviewMixin:
         run = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
 
         lines = ["# Run report", "", f"Outcome: {run['outcome'] or run['state']}"]
+        lines.append(f"Duration: {_duration(run['started_at'], run['ended_at'])}")
         if run["state"] == "paused":
             lines.append(f"Paused: {self.pause_reason(run_id)}")
         lines.append("")
 
         lines.append("## Repo")
         lines.append(f"- Branch: {run['branch'] or '(none)'}")
-        lines.append(f"- Last repo_check: {run['repo_check_json'] or '(none)'}")
+        lines.append(f"- Last repo_check: {_repo_line(run['repo_check_json'])}")
         lines.append("")
 
         for phase in conn.execute(
             "SELECT * FROM phases WHERE run_id = ? ORDER BY ordinal", (run_id,)
         ).fetchall():
-            lines.append(f"## Phase: {phase['name']} ({phase['state']})")
+            lines.append(
+                f"## Phase: {phase['name']} ({phase['state']}, "
+                f"{_duration(phase['started_at'], phase['ended_at'])})"
+            )
             for module in conn.execute(
                 "SELECT * FROM modules WHERE phase_id = ? ORDER BY module_id",
                 (phase["phase_id"],),
@@ -1279,7 +1350,8 @@ class ReviewMixin:
                 f"tokens in={a['input_tokens']} out={a['output_tokens']} "
                 f"cache_read={a['cache_read_tokens']} cache_write={a['cache_write_tokens']}, "
                 f"elapsed_ms={a['elapsed_ms']}, tool_uses={a['tool_uses']}, "
-                f"context_overflow_count={a['context_overflow_count']}"
+                f"context_overflow_count={a['context_overflow_count']}, "
+                f"est. cost {_money(_cost(a['model'], a))}"
             )
         totals = {
             column: sum(a[column] or 0 for a in agents)
@@ -1293,7 +1365,11 @@ class ReviewMixin:
         lines.append(
             f"- Run total: tokens in={totals['input_tokens']} out={totals['output_tokens']} "
             f"cache_read={totals['cache_read_tokens']} "
-            f"cache_write={totals['cache_write_tokens']}"
+            f"cache_write={totals['cache_write_tokens']}, "
+            f"est. cost {_money(_run_cost(agents))}"
+        )
+        lines.append(
+            "- Costs are estimates at list prices, with cache writes priced at the 1-hour rate."
         )
 
         text = "\n".join(lines) + "\n"
