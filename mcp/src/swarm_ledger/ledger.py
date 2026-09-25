@@ -1057,6 +1057,15 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
                 is not None
             ):
                 raise LedgerError(f"path {path!r} already has a live claim")
+            held = conn.execute(
+                "SELECT path FROM files WHERE owner_agent_id = ? AND released_at IS NULL",
+                (for_name,),
+            ).fetchone()
+            if held is not None:
+                raise LedgerError(
+                    f"{for_name!r} already holds the live claim on {held['path']!r}; "
+                    "one Coder owns one file, so claim this path for a new Coder name"
+                )
 
             cur = conn.execute(
                 "INSERT INTO files (module_id, path, test_path, owner_agent_id, state, "

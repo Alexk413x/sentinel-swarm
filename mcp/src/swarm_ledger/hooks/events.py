@@ -483,11 +483,16 @@ def _block_coder_stop_once(ledger: Ledger, caller: dict, data: dict) -> dict | N
             "VALUES (?, ?, 'stop_blocked', 'stop')",
             (caller["agent_id"], caller["state"]),
         )
+    lead = ledger.conn.execute(
+        "SELECT name FROM agents WHERE agent_id = ?", (caller["parent_agent_id"],)
+    ).fetchone()
+    lead_name = json.dumps(lead["name"] if lead is not None else "<your Lead>")
     return {
         "decision": "block",
         "reason": (
-            "Your file has no handoff on record. Call handoff_submit, "
-            "or message your Lead with the blocker, then stop."
+            "Your file has no handoff on record. Call handoff_submit. If a blocker stops you, "
+            f"call message_post(to_name={lead_name}, body=<the blocker>) and make the "
+            "SendMessage call its next field names, then stop."
         ),
     }
 

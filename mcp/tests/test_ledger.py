@@ -507,6 +507,18 @@ def test_claim_file_refuses_a_duplicate_live_claim(ledger: Ledger) -> None:
         ledger.claim_file(lead_name, lead_id, "src/a.py", "tests/test_a.py", "coder-2")
 
 
+def test_claim_file_refuses_a_second_live_claim_for_one_coder(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    lead_name, lead_id = "lead-1", ctx["lead"]["agent_id"]
+    ledger.claim_file(lead_name, lead_id, "src/a.py", "tests/test_a.py", "coder-1")
+    with pytest.raises(LedgerError, match="one Coder owns one file"):
+        ledger.claim_file(lead_name, lead_id, ".gitignore", None, "coder-1")
+    ledger.release_file(lead_name, lead_id, "src/a.py")
+    assert ledger.claim_file(lead_name, lead_id, ".gitignore", None, "coder-1")["path"] == (
+        ".gitignore"
+    )
+
+
 def test_who_owns_and_release_file(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     ledger.claim_file("lead-1", ctx["lead"]["agent_id"], "src/a.py", "tests/test_a.py", "coder-1")

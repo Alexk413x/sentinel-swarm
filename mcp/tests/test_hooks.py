@@ -361,8 +361,9 @@ def test_stop_blocks_a_working_coder_once_and_not_twice(ledger: Ledger) -> None:
     assert first == {
         "decision": "block",
         "reason": (
-            "Your file has no handoff on record. Call handoff_submit, "
-            "or message your Lead with the blocker, then stop."
+            "Your file has no handoff on record. Call handoff_submit. If a blocker stops you, "
+            'call message_post(to_name="lead-1", body=<the blocker>) and make the '
+            "SendMessage call its next field names, then stop."
         ),
     }
 

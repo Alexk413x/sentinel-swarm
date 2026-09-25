@@ -349,6 +349,27 @@ def test_a_run_with_no_running_session_and_pending_work_is_stalled(
     assert _scan(ledger, claude, now) == []
 
 
+def test_live_sessions_that_all_sit_idle_with_pending_work_are_stalled(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _agent(ledger, "sess-lead-1", "lead", "idle", started=now)
+    ledger.message_post("oracle", ORACLE, "lead-1", "Module 1 changed.")
+    claude.run(ORACLE, "host-oracle", status="idle")
+    claude.run("sess-lead-1", status="idle")
+    later = now + timedelta(minutes=3)
+
+    findings = _scan(ledger, claude, later)
+
+    assert _kinds(findings) == [("oracle", "stalled")]
+    assert findings[0].detail.startswith("no agent of the run has worked for 2 minutes")
+    assert 'SendMessage(to="host-r1-lead-1")' in findings[0].next_step
+
+    assert _scan(ledger, claude, now + timedelta(minutes=1)) == []
+    claude.listing[1]["status"] = "busy"
+    assert _scan(ledger, claude, later) == []
+
+
 def test_an_empty_stalled_run_still_needs_the_oracle(
     ledger: Ledger, claude: FakeClaude, now: datetime
 ) -> None:

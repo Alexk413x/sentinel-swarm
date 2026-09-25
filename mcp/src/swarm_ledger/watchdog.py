@@ -27,6 +27,7 @@ WAKE_STATE = "watchdog_wake"
 PAUSE_REASON = "the watchdog could not wake the Oracle"
 _MEMBER_ROLES = ("manager", "lead", "coder")
 _WINDOW_1M = 1_000_000
+IDLE_STALL = timedelta(minutes=2)
 _WINDOW_HAIKU = 200_000
 _TAIL_BLOCK = 256 * 1024
 
@@ -103,7 +104,7 @@ def scan(
         if context is not None:
             findings.append(_finding(agent, "context_high", context, _context_step(agent, names)))
 
-    stalled = _stalled(conn, run, agents, by_session)
+    stalled = _stalled(conn, run, agents, by_session, now)
     if stalled is not None:
         findings.append(stalled)
     return findings
@@ -280,20 +281,43 @@ def _context_step(agent: dict, names: dict[str, str]) -> str:
     )
 
 
+def _last_activity(conn: sqlite3.Connection, run_id: int) -> datetime | None:
+    row = conn.execute(
+        "SELECT MAX(at) AS at FROM ("
+        "SELECT MAX(e.at) AS at FROM agent_events e JOIN agents a ON a.agent_id = e.agent_id "
+        "WHERE a.run_id = ? "
+        "UNION ALL SELECT MAX(created_at) FROM messages WHERE run_id = ? "
+        "UNION ALL SELECT MAX(created_at) FROM test_runs WHERE run_id = ?)",
+        (run_id, run_id, run_id),
+    ).fetchone()
+    return parse_stamp(row["at"]) if row is not None else None
+
+
 def _stalled(
-    conn: sqlite3.Connection, run: sqlite3.Row, agents: list[dict], by_session: dict[str, dict]
+    conn: sqlite3.Connection,
+    run: sqlite3.Row,
+    agents: list[dict],
+    by_session: dict[str, dict],
+    now: datetime,
 ) -> Finding | None:
-    if any(
-        sessions.is_running(by_session[a["agent_id"]])
-        for a in agents
-        if a["agent_id"] in by_session
-    ):
-        return None
     oracle = next((a for a in agents if a["role"] == "oracle"), None)
     if oracle is None:
         return None
     run_id = run["run_id"]
     members = [a for a in agents if a["role"] != "oracle"]
+    live = [
+        by_session[a["agent_id"]]
+        for a in agents
+        if a["agent_id"] in by_session and sessions.is_running(by_session[a["agent_id"]])
+    ]
+    if live:
+        if any(str(e.get("status") or "").lower() == "busy" for e in live):
+            return None
+        if any(a["state"] == "working" for a in members):
+            return None
+        last = _last_activity(conn, run_id)
+        if last is not None and now - last < IDLE_STALL:
+            return None
     handoffs = conn.execute(
         "SELECT h.handoff_id, f.path, coder.parent_agent_id AS reviewer_id FROM handoffs h "
         "JOIN files f ON f.file_id = h.file_id "
@@ -335,19 +359,43 @@ def _stalled(
         ).fetchone()
         if unread is not None and agent["name"] not in targets:
             targets.append(agent["name"])
+    for issue in conn.execute(
+        "SELECT coder.parent_agent_id AS lead_id FROM issues i "
+        "JOIN files f ON f.file_id = i.file_id "
+        "LEFT JOIN agents coder ON coder.name = f.owner_agent_id AND coder.run_id = i.run_id "
+        "WHERE i.run_id = ? AND i.state = 'open'",
+        (run_id,),
+    ).fetchall():
+        lead = by_id.get(issue["lead_id"])
+        if lead is not None and lead["name"] not in targets:
+            targets.append(lead["name"])
 
-    if pending:
-        detail = f"no session of the run is running, and work is pending: {', '.join(pending)}"
+    if live:
+        where = (
+            f"no agent of the run has worked for {int(IDLE_STALL.total_seconds() // 60)} minutes"
+        )
     else:
-        detail = "no session of the run is running, and the run is not finished"
+        where = "no session of the run is running"
+    if pending:
+        detail = f"{where}, and work is pending: {', '.join(pending)}"
+    else:
+        detail = f"{where}, and the run is not finished"
     if targets:
-        calls = ", ".join(f"agent_resume(target_name={json.dumps(t)})" for t in targets)
-        step = f"Resume the agent whose work is pending: {calls}."
+        by_name = {a["name"]: a for a in members}
+        calls = ", ".join(_wake_call(by_name[t], by_session) for t in targets)
+        step = f"Wake the agent whose work is pending: {calls}."
     elif pending:
         step = "Continue the plan: resume or spawn the agent that owns the pending work."
     else:
         step = "Continue the plan, or call run_finish."
     return _finding(oracle, "stalled", detail, step)
+
+
+def _wake_call(agent: dict, by_session: dict[str, dict]) -> str:
+    entry = by_session.get(agent["agent_id"])
+    if entry is not None and sessions.is_running(entry) and agent["session_name"]:
+        return f"SendMessage(to={json.dumps(agent['session_name'])})"
+    return f"agent_resume(target_name={json.dumps(agent['name'])})"
 
 
 def directive_body(finding: Finding) -> str:
