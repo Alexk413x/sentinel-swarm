@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from . import graph, rubric, versions
+from . import graph, pricing, rubric, versions
 from .db import ledger_path, write_tx
 from .identity import Caller, LedgerError, require_role, resolve
 from .rubric import Rating
@@ -39,32 +39,16 @@ def _parse_rating(raw: object) -> Rating:
 _SCOPE_ROLE = {"file": "coder", "module": "lead", "phase": "manager", "full": "oracle"}
 _PARENT_ROLE = {"manager": "oracle", "lead": "manager", "coder": "lead"}
 _ROLE_RANK = {"coder": 0, "lead": 1, "manager": 2, "oracle": 3}
-# USD per million tokens at list price: input, output, cache read, 1-hour cache write.
-_PRICES = {
-    "fable": (10.0, 50.0, 0.25, 20.0),
-    "opus": (4.0, 20.0, 0.20, 8.0),
-    "sonnet": (2.0, 10.0, 0.20, 4.0),
-    "haiku": (1.0, 5.0, 0.10, 2.0),
-}
 
 
-def _cost(model: str | None, tokens: dict) -> float | None:
-    prices = next((p for name, p in _PRICES.items() if name in (model or "").lower()), None)
-    if prices is None:
-        return None
-    counts = (
-        tokens["input_tokens"],
-        tokens["output_tokens"],
-        tokens["cache_read_tokens"],
-        tokens["cache_write_tokens"],
-    )
-    return (
-        sum((count or 0) * price for count, price in zip(counts, prices, strict=True)) / 1_000_000
-    )
+def _agent_cost(agent: dict) -> float | None:
+    if agent.get("cost_usd") is not None:
+        return agent["cost_usd"]
+    return pricing.estimate(agent["model"], agent)
 
 
 def _run_cost(agents: list[dict]) -> float | None:
-    costs = [_cost(a["model"], a) for a in agents]
+    costs = [_agent_cost(a) for a in agents]
     return None if any(c is None for c in costs) else sum(c for c in costs if c is not None)
 
 
@@ -1351,7 +1335,7 @@ class ReviewMixin:
                 f"cache_read={a['cache_read_tokens']} cache_write={a['cache_write_tokens']}, "
                 f"elapsed_ms={a['elapsed_ms']}, tool_uses={a['tool_uses']}, "
                 f"context_overflow_count={a['context_overflow_count']}, "
-                f"est. cost {_money(_cost(a['model'], a))}"
+                f"cost {_money(_agent_cost(a))}"
             )
         totals = {
             column: sum(a[column] or 0 for a in agents)
@@ -1366,10 +1350,10 @@ class ReviewMixin:
             f"- Run total: tokens in={totals['input_tokens']} out={totals['output_tokens']} "
             f"cache_read={totals['cache_read_tokens']} "
             f"cache_write={totals['cache_write_tokens']}, "
-            f"est. cost {_money(_run_cost(agents))}"
+            f"cost {_money(_run_cost(agents))}"
         )
         lines.append(
-            "- Costs are estimates at list prices, with cache writes priced at the 1-hour rate."
+            "- Costs are at list prices, from each response's usage in the agent's transcript."
         )
 
         text = "\n".join(lines) + "\n"

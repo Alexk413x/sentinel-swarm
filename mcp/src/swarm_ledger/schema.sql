@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS agents (
     output_tokens INTEGER,
     cache_read_tokens INTEGER,
     cache_write_tokens INTEGER,
+    cost_usd REAL,
     context_pct_peak REAL,
     context_pct_at_end REAL,
     context_overflow_count INTEGER DEFAULT 0,

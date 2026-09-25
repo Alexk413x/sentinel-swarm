@@ -28,7 +28,7 @@ Status on 2026-09-20: first draft. Bullets marked **(proposed)** are Claude's ad
 
 | Role | `runtime` **(proposed default)** | `models` (approved list, Alex's defaults) |
 |---|---|---|
-| Oracle | session | fable, opus |
+| Oracle | session | opus, fable |
 | Manager | session | opus |
 | Lead | session | opus, sonnet |
 | Coder | session | sonnet, haiku |

@@ -12,6 +12,7 @@ _GITDIR_PREFIX = "gitdir:"
 _ADDED_COLUMNS = (
     ("agents", "session_name", "TEXT"),
     ("agents", "bg_id", "TEXT"),
+    ("agents", "cost_usd", "REAL"),
     ("runs", "watch_heartbeat_at", "TEXT"),
     ("runs", "watch_expires_at", "TEXT"),
     ("runs", "watch_owner", "TEXT"),

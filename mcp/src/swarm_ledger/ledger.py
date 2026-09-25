@@ -26,6 +26,7 @@ _TOKEN_COLUMNS = (
     "output_tokens",
     "cache_read_tokens",
     "cache_write_tokens",
+    "cost_usd",
     "context_pct_peak",
     "context_pct_at_end",
     "context_overflow_count",

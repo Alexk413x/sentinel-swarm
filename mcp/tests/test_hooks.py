@@ -726,7 +726,7 @@ def test_stop_after_run_finish_records_the_oracle_tokens_and_rebuilds_the_report
     events.handle_stop(ledger, {"agent_id": ctx["oracle_id"], "transcript_path": str(transcript)})
 
     report = (host / ".sentinel-swarm" / "report.md").read_text(encoding="utf-8")
-    assert "- oracle (oracle, fable): tokens in=7 out=3" in report
+    assert "- oracle (oracle, opus): tokens in=7 out=3" in report
 
 
 # -- sessions: owed wake-ups and wake hints ------------------------------------------------
@@ -872,3 +872,48 @@ def test_post_shell_flags_only_paths_no_claim_in_the_run_covers(
         )
     ]
     assert reasons == ["changed files outside its claim: stray.txt"]
+
+
+def test_token_totals_count_each_response_once_and_price_its_model(tmp_path: Path) -> None:
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 1_000_000,
+        "cache_read_input_tokens": 100,
+        "cache_creation_input_tokens": 0,
+    }
+    lines = [
+        {
+            "message": {
+                "id": "msg-1",
+                "model": "claude-sonnet-5",
+                "usage": usage,
+                "content": [{"type": "text", "text": "Reading."}],
+            }
+        },
+        {
+            "message": {
+                "id": "msg-1",
+                "model": "claude-sonnet-5",
+                "usage": usage,
+                "content": [{"type": "tool_use", "name": "Read", "input": {}}],
+            }
+        },
+        {
+            "message": {
+                "id": "msg-2",
+                "model": "<synthetic>",
+                "usage": {"input_tokens": 0},
+                "content": [],
+            }
+        },
+    ]
+    path = tmp_path / "t.jsonl"
+    path.write_text("\n".join(json.dumps(line) for line in lines), encoding="utf-8")
+
+    totals = events._sum_tokens(str(path))
+
+    assert totals is not None
+    assert totals["output_tokens"] == 1_000_000
+    assert totals["input_tokens"] == 10
+    assert totals["tool_uses"] == 1
+    assert totals["cost_usd"] == pytest.approx((10 * 2 + 1_000_000 * 10 + 100 * 0.2) / 1e6)

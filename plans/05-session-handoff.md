@@ -39,6 +39,7 @@ Status on 2026-09-24: written by session `sentinel-swarm-a8`, updated by `sentin
 - A change request is a ledger record plus a wake-up message to the right agent: the file's Coder, else its Lead, else its Manager, else the Oracle. It closes only with verified evidence. The run report lists each change request with its reason, decision, work done, evidence, and verification, and each Lead return with its issues, targeted dimensions, and outcome.
 - The context window follows the model: 1,000,000 tokens for Sonnet, Opus, and Fable, 200,000 for Haiku. `context_window` in the settings overrides it.
 - A file with no code, such as a README or a config file, may be claimed without a test file; its handoff runs no tests and the reviews judge it. Before the Oracle accepts a phase, `phase_review` refuses any file that the code graph maps with functions or classes but that has no test file.
+- The Oracle's default model is Opus, with Fable as the other approved choice (changed 2026-09-24).
 - No role runs subagents or workflows. The Oracle starts Managers, a Manager starts Leads, a Lead starts Coders, and a Lead reviews its Coders' work itself.
 
 - A departure passes up for sign-off: Lead, then Manager, then Oracle. A pushback carries a suggested solution and resumes the chain below the decider, down to the same Coder, which tries it. The late-denial deferral is gone. Design choices the build made are marked **(proposed)** in `04-mcp-and-hooks.md`.

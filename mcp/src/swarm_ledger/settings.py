@@ -16,7 +16,7 @@ _DEFAULT_RUNTIME = {
     "coder": "session",
 }
 _DEFAULT_MODELS = {
-    "oracle": ["fable", "opus"],
+    "oracle": ["opus", "fable"],
     "manager": ["opus"],
     "lead": ["opus", "sonnet"],
     "coder": ["sonnet", "haiku"],

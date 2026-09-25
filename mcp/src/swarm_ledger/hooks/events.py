@@ -8,7 +8,7 @@ import subprocess
 from datetime import timedelta
 from pathlib import Path
 
-from .. import sessions
+from .. import pricing, sessions
 from ..db import ensure_git_exclude, write_tx
 from ..identity import ROLES, LedgerError
 from ..ledger import Ledger
@@ -452,8 +452,9 @@ def _sum_tokens(transcript_path: str | None) -> dict | None:
             "cache_write_tokens": 0,
             "tool_uses": 0,
         }
+        responses: dict[object, tuple[str | None, dict]] = {}
         with path.open("r", encoding="utf-8") as handle:
-            for line in handle:
+            for number, line in enumerate(handle):
                 line = line.strip()
                 if not line:
                     continue
@@ -461,10 +462,10 @@ def _sum_tokens(transcript_path: str | None) -> dict | None:
                 message = record.get("message") or {}
                 usage = message.get("usage")
                 if usage:
-                    totals["input_tokens"] += usage.get("input_tokens") or 0
-                    totals["output_tokens"] += usage.get("output_tokens") or 0
-                    totals["cache_read_tokens"] += usage.get("cache_read_input_tokens") or 0
-                    totals["cache_write_tokens"] += usage.get("cache_creation_input_tokens") or 0
+                    # One response is written as one line per content block, each repeating
+                    # its usage, so only the last line of each response id counts.
+                    key = message.get("id") or record.get("uuid") or number
+                    responses[key] = (message.get("model"), usage)
                 content = message.get("content")
                 if isinstance(content, list):
                     totals["tool_uses"] += sum(
@@ -472,7 +473,25 @@ def _sum_tokens(transcript_path: str | None) -> dict | None:
                         for block in content
                         if isinstance(block, dict) and block.get("type") == "tool_use"
                     )
-        return totals
+        cost: float | None = 0.0
+        for model, usage in responses.values():
+            totals["input_tokens"] += usage.get("input_tokens") or 0
+            totals["output_tokens"] += usage.get("output_tokens") or 0
+            totals["cache_read_tokens"] += usage.get("cache_read_input_tokens") or 0
+            totals["cache_write_tokens"] += usage.get("cache_creation_input_tokens") or 0
+            priced = pricing.response_cost(model, usage)
+            if priced is None and not any(
+                usage.get(k)
+                for k in (
+                    "input_tokens",
+                    "output_tokens",
+                    "cache_read_input_tokens",
+                    "cache_creation_input_tokens",
+                )
+            ):
+                continue
+            cost = None if cost is None or priced is None else cost + priced
+        return totals | {"cost_usd": cost}
     except (OSError, json.JSONDecodeError, AttributeError, TypeError):
         return None
 

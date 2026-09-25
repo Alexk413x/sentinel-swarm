@@ -108,7 +108,7 @@ def test_template_name_and_description(repo_root: Path, role: str):
 @pytest.mark.parametrize(
     "role,color,model,mode",
     [
-        ("oracle", "cyan", "fable", "default"),
+        ("oracle", "cyan", "opus", "default"),
         ("manager", "green", "opus", "default"),
         ("lead", "purple", "sonnet", "default"),
         ("coder", "orange", "sonnet", "acceptEdits"),

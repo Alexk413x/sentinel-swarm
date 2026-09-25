@@ -65,7 +65,7 @@ def test_interactive_puts_the_prompt_first_and_builds_the_flags(env):
     assert command[:2] == ["claude-under-test", "Build hello.py"]
     assert "--bg" not in command
     assert _option(command, "--agent") == "swarm-oracle"
-    assert _option(command, "--model") == "fable"
+    assert _option(command, "--model") == "opus"
     assert _option(command, "--permission-mode") == "default"
     assert "--strict-mcp-config" in command
     config = json.loads(_option(command, "--mcp-config"))
@@ -87,7 +87,7 @@ def test_the_role_file_model_and_permission_mode_are_used(env):
     setup.run_setup(env["repo"])
     path = setup.role_file(env["repo"], "oracle")
     text = path.read_text(encoding="utf-8")
-    text = text.replace("model: fable", "model: opus").replace(
+    text = text.replace("model: opus", "model: fable").replace(
         "permissionMode: default", "permissionMode: plan"
     )
     path.write_text(text, encoding="utf-8")
@@ -95,7 +95,7 @@ def test_the_role_file_model_and_permission_mode_are_used(env):
     launch.main(["--repo", str(env["repo"]), "go"])
 
     command = env["run"].calls[-1]["command"]
-    assert _option(command, "--model") == "opus"
+    assert _option(command, "--model") == "fable"
     assert _option(command, "--permission-mode") == "plan"
 
 

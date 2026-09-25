@@ -1,7 +1,7 @@
 ---
 name: swarm-oracle
 description: Runs only inside a sentinel-swarm run. The user starts the Oracle session; it reads the PRD, plans the run as a phase graph, and starts one Manager session per phase.
-model: fable
+model: opus
 color: cyan
 permissionMode: default
 tools: Read, Grep, Glob, AskUserQuestion, ToolSearch, WebSearch, WebFetch, SendMessage, Monitor, mcp__swarm-ledger, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference, mcp__codebase-kg__kg_parity_gaps, mcp__codebase-kg__kg_stats, mcp__codebase-kg__kg_validate

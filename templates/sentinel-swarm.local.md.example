@@ -13,8 +13,8 @@ runtime:
 
 models:
   # Approved models for the Oracle. It has no parent, so it runs on the first
-  # entry, fable.
-  oracle: [fable, opus]
+  # entry, opus.
+  oracle: [opus, fable]
   # Approved models for the Manager.
   manager: [opus]
   # Approved models for the Lead.
