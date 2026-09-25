@@ -1,0 +1,120 @@
+# Hooks and enforcement
+
+## Where the hooks live
+
+- Each role's hooks live in the frontmatter of its project agent file,
+  `.claude/agents/swarm-<role>.md`. `hooks/hooks.json` carries no hooks, so no hook
+  runs twice.
+- Claude Code runs an agent file's frontmatter hooks only in a trusted folder.
+- The hooks are the user's to edit, and a user can weaken a hook gate in their own
+  project. The ledger tools' gates apply whatever the files say. A rerun of setup
+  restores every ledger hook the template has.
+
+| Event | Matcher | Ledger hook event | Roles |
+|---|---|---|---|
+| `SessionStart` | all | `session_start` | all |
+| `PreToolUse` | `Agent` | `pre_agent` | all |
+| `PreToolUse` | `Write\|Edit\|MultiEdit\|NotebookEdit` | `pre_write` | all |
+| `PreToolUse` | `Bash\|PowerShell` | `pre_shell` | all |
+| `PreToolUse` | `Monitor` | `pre_monitor` | all |
+| `PreToolUse` | `mcp__swarm-ledger__.*` | `pre_ledger` | all |
+| `PostToolUse` | all | `post_any` | all |
+| `PostToolUse` | `Bash\|PowerShell` | `post_shell` | Coder |
+| `PreCompact` | all | `pre_compact` | all |
+| `Stop` | all | `stop` | all |
+| `SessionEnd` | all | `session_end` | all |
+
+## The shim
+
+Every hook command is
+`python3 .sentinel-swarm/hook.py hook <event> || python .sentinel-swarm/hook.py hook <event>`.
+`.sentinel-swarm/hook.py` is a standard-library shim that setup copies from
+`templates/hook_shim.py`. It has three commands:
+
+- `hook <event>` finds the sentinel-swarm install for this repo in
+  `~/.claude/plugins/installed_plugins.json` (scope `local`, then `project` with a
+  matching `projectPath`, then `user`), and runs
+  `uv run --project <installPath>/mcp --frozen --no-dev python -m swarm_ledger.hooks <event>`
+  with stdin and stdout passed through. A plugin upgrade changes the registry, not the
+  agent files.
+- `mcp <plugin_id> <server>` starts another plugin's MCP server the same way, from its
+  `.mcp.json`, with `${CLAUDE_PLUGIN_ROOT}` and `${VAR:-default}` expanded.
+- `watch` runs `python -m swarm_ledger.watch` and passes each line through with no
+  timeout.
+
+When the registry, the install, `uv`, or the ledger hook fails, or a hook runs longer
+than 50 seconds, a gating event (`pre_agent`, `pre_write`, `pre_shell`, `pre_monitor`,
+`pre_ledger`) answers `deny` with the reason, and every event adds a `systemMessage`
+that says to run `/sentinel-swarm:setup`. The shim exits 0.
+
+## Rules every ledger hook follows
+
+- A hook blocks by printing a JSON decision and exiting 0. It never uses exit code 2.
+  **(proposed)**
+- A broken ledger hook allows: `swarm_ledger.hooks` catches every exception, writes one
+  line to stderr, and prints nothing.
+- A hook ignores a caller the registry does not know, so a non-swarm session in the
+  same repo passes. **(proposed)**
+
+## What each hook does
+
+- `session_start`: for a swarm session, records the transcript path and sets an idle
+  agent to working. For any other session, it reports an active or paused run, reports
+  a missing `knowledge/code_graph.db`, and adds `.sentinel-swarm/` to the git excludes.
+- `pre_agent`: denies `Agent` to every swarm session.
+- `pre_write`: while a run is active or paused, denies anyone a write into the records
+  folder. Denies a write by any role but the Coder, and a Coder's write outside its
+  claimed path and test path, naming the owner. An override of rule `write` lets one
+  write through.
+- `pre_shell`: while a run is active or paused, denies the shell to every role but the
+  Coder. A Coder may run a command that starts with the profile's test, build, or lint
+  command, or read-only git (`status`, `diff`, `log`, `show`, `ls-files`, `branch`). A
+  command with `;`, `&`, `|`, `<`, `>`, a backtick, a newline, or `$(` is denied. An
+  override of rule `shell` lets one command through.
+- `pre_monitor`: allows exactly one `Monitor` call from a swarm session, the Oracle's
+  watchdog call. It denies every other one and names the allowed call. A session not
+  yet in the ledger counts as a swarm session when its `agent_type` is `swarm-<role>`.
+- `pre_ledger`: stamps `agent_id`, and denies `override_grant` to anyone but the
+  Oracle.
+- `post_any`: writes the heartbeat and current activity, sets an idle agent to working,
+  records the transcript path, records the watchdog arm time, clears owed wake-ups on a
+  `SendMessage`, and after a Coder's write marks its file stale, so the handoff needs a
+  newer self review.
+- `post_shell`: after a Coder's shell call, lists changed paths with `git status`.
+  A change outside the Coder's claim, other claimed files of the run, the records
+  folder, and `knowledge/` is recorded as a `violation` event and posted to its Lead.
+- `pre_compact`: adds one to the agent's `context_overflow_count`.
+- `stop`: records tokens and cost from the transcript, then applies the stop rules in
+  "Sessions". After a run finishes, the Oracle's stop refreshes the report.
+- `session_end`: records tokens and cost and the end reason. After a run finishes, it
+  refreshes the report.
+
+## Rule-to-enforcement map
+
+| Rule | Enforced by |
+|---|---|
+| Only the Coder writes project files | `pre_write`, and no write tool or shell in the other agent files |
+| A Coder writes only its own file and test file | `pre_write` for edit tools; `pre_shell` and `post_shell` for the shell |
+| Nobody edits the records by hand | `pre_write` |
+| A role starts only its own child role | `brief_create` and `agent_spawn`; `pre_agent` denies `Agent` |
+| A model comes from the approved list | `brief_create` |
+| No agent starts without a brief | `agent_spawn` and `brief_ack` |
+| No agent fakes its identity | `pre_ledger` stamps `agent_id`; every tool matches `caller` to it |
+| A handoff needs passing tests and a current graph | `handoff_submit` |
+| No approval without a handoff and two sets of scores | `approve` |
+| The Lead scores before it sees the Coder's scores | `score_record` refuses a Lead review after `review_compare` |
+| A rule gives way only to the Oracle | `override_grant`, consumed by `pre_write` and `pre_shell` |
+| Look in the graph before writing | codebase-kg's own search gate hook |
+| A message goes to an agent of the run | `message_post` |
+| Only the owner's chain escalates an issue | `issue_escalate` |
+| A finished Lead or Manager is released | `phase_update(handed_up)` refuses a live Lead; `phase_update(approved)` releases the phase; `run_finish` releases the rest |
+| A non-owner requests, the owner changes | `cr_open` routing and the write gate |
+| A change request closes with evidence | `cr_complete` and `cr_verify`; gates on `handoff_submit`, `approve`, `phase_update(approved)`, `run_finish` |
+| A departure is signed off or reworked | `departure_decide`; gates on `approve`, `return_work`, `accept_incomplete`, `module_review`, `phase_review`, `run_finish` |
+| The Oracle checks the repo before a Manager starts | `agent_spawn` |
+| A phase hands up only after every module review | `phase_update(handed_up)` |
+| A phase is approved only after the Oracle reviews it | `phase_update(approved)` |
+| Code the graph maps has a test file by the end | `phase_review(accepted)` |
+| A child wakes its parent after each step | The Stop hook, from the owed wake-ups |
+| The Oracle keeps working while the run has work | The Oracle's Stop hook |
+| The Oracle's watchdog listener stays armed | The Oracle's Stop hook and `pre_monitor` |

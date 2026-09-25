@@ -1,8 +1,10 @@
 # sentinel-swarm
 
-Read `SPEC.md` first. It is the source of truth for how sentinel-swarm works: the
-roles, the ledger and its gates, sessions, hooks, the watchdog, the report, setup, and
-testing. `plans/` holds only plans for work not built yet.
+Read `knowledge/prd/README.md` first. The `knowledge/prd/` folder is the source of
+truth for how sentinel-swarm works, one document per subject: roles, the run lifecycle,
+scoring, agreements, sessions, the ledger server, hooks, the watchdog, MCP servers, the
+report, setup, and testing. The code graph maps every document, so `kg_search` finds
+the one for a subject. `plans/` holds only plans for work not built yet.
 
 ## Layout
 
@@ -18,16 +20,16 @@ testing. `plans/` holds only plans for work not built yet.
 - `mcp/` — the swarm-ledger Python server. A separate project; see `mcp/README.md`.
   `python -m swarm_ledger.setup` prepares a host repo, and `python -m
   swarm_ledger.launch` starts the Oracle session.
-- `knowledge/` — `code_graph.db`, the codebase-kg map of this repo. Committed.
+- `knowledge/` — `code_graph.db`, the codebase-kg map of this repo, and `prd/`, the
+  source-of-truth documents with their index in `prd/README.md`. Both committed.
 - `scripts/smoke.sh` — the smoke test. It rebuilds `runs/hello/` (git-ignored) on each run
   and starts the Oracle through the installed copy's launcher: interactive by default,
   `--bg` for a background session, `--headless` for `claude -p`. `--prd <name>` uses
   `scripts/prds/<name>.md` as the prompt: `modules` (three waves: two independent phases,
-  a subclass that depends on one, then a command that uses all three) or `textstats` (two dependent phases, about 10 files; about
-  $12).
+  a subclass that depends on one, then a command that uses all three) or `textstats`
+  (two dependent phases, about 10 files; about $12).
 - `.githooks/` — the codebase-kg staleness hooks. Run `sh .githooks/install.sh` once per
   clone.
-- `SPEC.md` — the source of truth. Items marked **(proposed)** are not reviewed.
 - `plans/` — plans for work not built yet, such as `driver-agent.md`.
 
 ## Conventions shared with the sibling plugins
@@ -52,9 +54,11 @@ testing. `plans/` holds only plans for work not built yet.
   not in agent prompt text. An agent's system prompt describes what it must not do; a
   hook or a ledger gate is what actually stops it. `hooks/hooks.json` carries no hooks,
   so no hook runs twice.
-- Mark any design addition that Alex has not reviewed as **(proposed)** in
-  `SPEC.md`. Record each decision Alex makes in `SPEC.md` as a plain rule and in its
-  "Key decisions" list.
+- Mark any design addition that Alex has not reviewed as **(proposed)** in the
+  matching `knowledge/prd/` document, and list it in `15-proposed.md`. Record each
+  decision Alex makes as a plain rule in the document for its subject, and add a dated
+  line to `14-key-decisions.md`. When you add or rename a document, update the table in
+  `knowledge/prd/README.md` and refresh the code graph.
 - Before committing, run the four checks from `mcp/`: `uv run pytest`, `uv run
   pyright`, `uv run ruff check`, `uv run ruff format --check`.
 - `mcp/tests/test_plugin_surface.py` guards the surface contract described here:

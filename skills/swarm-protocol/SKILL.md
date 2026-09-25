@@ -263,4 +263,4 @@ Coder writes to the graph, and only through the ledger's `graph_upsert`.
 
 ## Source of truth
 
-The design lives in `SPEC.md` in the sentinel-swarm repository.
+The design lives in `knowledge/prd/` in the sentinel-swarm repository.

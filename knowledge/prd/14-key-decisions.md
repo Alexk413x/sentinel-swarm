@@ -1,0 +1,55 @@
+# Key decisions
+
+- 2026-09-20: Four roles: Oracle, Manager, Lead, Coder, with their colors.
+- 2026-09-20: One Manager per phase; phases without a dependency between them run at the same time.
+- 2026-09-20: Test-first is the ideal, not a gate; the hard check is tests that exist and pass at handoff.
+- 2026-09-20: Escalation is 3 rounds of 3 non-improving attempts, a budget of 9.
+- 2026-09-20: The registry records each agent's activity, times, tokens, context use, and overflows.
+- 2026-09-20: The settings hold a list of approved models per role; the parent picks by task complexity.
+- 2026-09-20: Enforcement is a hard block, and only the Oracle overrides.
+- 2026-09-20: Tracking is the local ledger only.
+- 2026-09-20: codebase-kg is required; other sibling plugins are optional.
+- 2026-09-20: No shell above the Coder; Oracle, Manager, and Lead work through MCP tools only.
+- 2026-09-20: The Coder's shell is gated, and ledger claims are the file locks.
+- 2026-09-20: The Oracle's Stop hook keeps it working until every item passes, stalls, or waits on the user.
+- 2026-09-20: The Lead scores blind, before it sees the Coder's scores.
+- 2026-09-20: Each dimension is scored separately, every time.
+- 2026-09-21: The ledger identity is the agent's name.
+- 2026-09-21: Directives steer the Oracle from any source, carry full authority, and carry watchdog reports.
+- 2026-09-21: Every piece is tested alone before the smoke test.
+- 2026-09-21: The graph hash is a review signal; `handoff_submit` checks anchors and coverage only.
+- 2026-09-21: `graph_upsert` is a ledger tool that takes the lock and applies the upsert in one call.
+- 2026-09-21: No telephone game: every plan and task is a ledger record.
+- 2026-09-22: Each role keeps a fixed `tools` allowlist in its agent file.
+- 2026-09-22: The allowlist defaults to the plugins enabled at the host's project scope; user-level plugins and connectors never join.
+- 2026-09-22: Each host gets its own role files in `.claude/agents/`, generated from the templates.
+- 2026-09-22: The smoke test runs in `runs/hello/` and must leave a `hello_world.txt` made by running the code.
+- 2026-09-22: `message_post` refuses a name not registered in the run.
+- 2026-09-22: Only the file owner's chain escalates an issue.
+- 2026-09-22: A persona from the user's own settings may appear in messages to the user.
+- 2026-09-23: Every role runs as its own session in the one working tree.
+- 2026-09-23: Each role's hooks live in its project agent file's frontmatter.
+- 2026-09-23: A child wakes its parent with a cross-session `SendMessage`, and hooks enforce it.
+- 2026-09-23: The ledger names which idle agent to wake.
+- 2026-09-23: A blocked run pauses with `run_pause`, and a resume continues it from the ledger.
+- 2026-09-23: A finished Lead or Manager is released, which stops its session.
+- 2026-09-23: Runs are interactive by default.
+- 2026-09-23: No parallelism cap by default.
+- 2026-09-23: A swarm session starts only the MCP servers its role needs.
+- 2026-09-23: One swarm runs per repo.
+- 2026-09-24: No role runs subagents or workflows; each role starts only the role below it.
+- 2026-09-24: A Lead reviews its Coders' work itself.
+- 2026-09-24: The settings file holds the approved models; each agent file holds the role's default model.
+- 2026-09-24: The Oracle's default model is Opus, with Fable approved.
+- 2026-09-24: Every role has swarm-ledger and codebase-kg; a11y joins when the host has it installed; only the Driver gets the driver plugins.
+- 2026-09-24: The Driver's responsibilities, with its mechanics still to design.
+- 2026-09-24: The watchdog resumes the Oracle when it can and reports every other failure to the Oracle.
+- 2026-09-24: The ledger server exits when the run finishes, and after `idle_exit_minutes` on an abandoned or paused run.
+- 2026-09-24: A finished run leaves nothing running; the server stops the Oracle's background session.
+- 2026-09-24: The context window follows the model; `context_window` overrides it.
+- 2026-09-24: A rerun of setup restores every ledger hook.
+- 2026-09-24: A change request is a ledger record plus a wake-up, routed owner, Lead, Manager, Oracle, and closed only with verified evidence.
+- 2026-09-24: The run report lists each change request and each Lead return.
+- 2026-09-24: A file with no code may be claimed without a test file; `phase_review` refuses mapped code with no test file.
+- 2026-09-24: Departures pass up the Lead, Manager, Oracle sign-off chain; a pushback carries a solution and resumes the chain down to the same Coder.
+- 2026-09-24: The Manager accepts a module, and the Oracle a phase or the run, only after every departure is decided.

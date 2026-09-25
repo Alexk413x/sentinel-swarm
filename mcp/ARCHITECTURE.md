@@ -1,6 +1,6 @@
 # swarm-ledger: implementation layout
 
-The design lives in `SPEC.md` at the repo root. This file maps the design onto modules so that each
+The design lives in `knowledge/prd/` at the repo root. This file maps the design onto modules so that each
 piece can be built and tested alone.
 
 ## Modules

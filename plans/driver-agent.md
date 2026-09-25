@@ -1,6 +1,6 @@
 # Plan: the Driver role
 
-Status: not built. The responsibilities below are Alex's, decided on 2026-09-24. Everything under "Proposed shape" is **(proposed)**. Settle the open questions before building. `SPEC.md` describes the system this role joins.
+Status: not built. The responsibilities below are Alex's, decided on 2026-09-24. Everything under "Proposed shape" is **(proposed)**. Settle the open questions before building. `knowledge/prd/` describes the system this role joins.
 
 ## What the Driver does
 
