@@ -9,21 +9,21 @@ requires recorded evidence, not a claim.
 
 Pre-release. A small run works from start to finish: the hello-world smoke test
 passes with every role as its own background session, and a stopped session resumes
-and finishes its work. `plans/05-session-handoff.md` lists what is not built yet and
+and finishes its work. `SPEC.md` "Open items" lists what is not built yet and
 what comes next.
 
 ## Roles
 
 | Role | Color | Default model | Created by |
 |---|---|---|---|
-| Oracle | cyan | fable | The user |
+| Oracle | cyan | opus | The user |
 | Manager | green | opus | Oracle |
 | Lead | purple | sonnet | Manager |
 | Coder | orange | sonnet | Lead |
 
 Each parent-child pair follows the same cycle: brief, work, self-review, hand up,
 review, then approve, return, or accept as incomplete. Only the Coder writes
-project files. See `plans/01-roles.md` for what each role owns and must not do.
+project files. See `SPEC.md` for what each role owns and must not do.
 
 Every role runs as its own Claude Code session, listed in agent view. A parent starts
 its child with the ledger tool `agent_spawn`; no role has the `Agent` tool.
@@ -57,7 +57,8 @@ hooks/            hooks.json, which carries no hooks, and the per-role hook tabl
 templates/        agents/<role>.md role templates, hook_shim.py, and the settings example
 mcp/              the swarm-ledger Python server (separate project, see below)
 scripts/          smoke.sh, the end-to-end smoke test
-plans/            design documents; the source of truth for every role
+SPEC.md           the source of truth for how the swarm works
+plans/            plans for work not built yet
 ```
 
 The plugin ships no `agents/` folder. Setup writes the four role files into the host
@@ -78,6 +79,5 @@ uv run ruff format --check
 
 ## Design documents
 
-Read `plans/CLAUDE.md` first, then `plans/01-roles.md`, `plans/02-rubric.md`,
-`plans/03-ledger.md`, and `plans/04-mcp-and-hooks.md`. Anything marked
-**(proposed)** in those files has not been reviewed and is not final.
+Read `SPEC.md`. Anything marked **(proposed)** in it has not been reviewed and is not
+final. `plans/` holds plans for work not built yet.

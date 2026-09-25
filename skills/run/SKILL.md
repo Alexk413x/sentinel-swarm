@@ -27,7 +27,7 @@ Starts a full sentinel-swarm run: a PRD in, built and reviewed code out.
 ## Start the run
 
 Run the launcher from the host repo root. It starts the repo's ledger server, then
-starts the Oracle as a background session named `<repo>-oracle`:
+starts the Oracle as a background session named `<repo>-oracle-<MMDD-HHMMSS>`:
 
 ```bash
 uv run --project "${CLAUDE_PLUGIN_ROOT}/mcp" --frozen --no-dev \

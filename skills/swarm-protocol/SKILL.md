@@ -26,9 +26,9 @@ an `Agent` call from any swarm session.
   project agent file, `.claude/agents/swarm-<role>.md` in the host repo. `setup`
   writes the files from the plugin's templates, and the user edits them.
 - Every session runs in the host repo root, in one shared working tree.
-- Every session starts with only two MCP servers: the repo's shared ledger server
-  over HTTP, and codebase-kg. The launcher and `agent_spawn` pass them with
-  `--strict-mcp-config`.
+- Every session starts with the repo's shared ledger server over HTTP and codebase-kg,
+  plus the a11y servers when the host has a11y installed. The launcher and
+  `agent_spawn` pass them with `--strict-mcp-config`, so no other server loads.
 - A child that finishes a step wakes its parent with a cross-session `SendMessage`.
   A parent that has started its children ends its turn instead of waiting in it.
 - Release stops a session. A crashed session is resumed with `agent_resume`, which
@@ -48,7 +48,7 @@ The child's prompt starts with it: `You are <name>.` The child passes that name 
 `caller` on every ledger call and never passes `agent_id`; a hook stamps the real id.
 
 Each session also has a session name, which is unique on the machine:
-`<repo slug>-r<run id>-<name>`, and `<repo slug>-oracle` for the Oracle. `SendMessage`
+`<repo slug>-r<run id>-<name>`, and `<repo slug>-oracle-<MMDD-HHMMSS>` for the Oracle. `SendMessage`
 addresses a session only by its session name. The ledger maps each session name to
 its agent.
 
@@ -99,7 +99,7 @@ it connects.
 | Role | Order |
 |---|---|
 | Oracle | `ToolSearch` → `ledger_info` → `run_start` → `repo_check` → `repo_branch_create` or ask the user → `profile_set` → `guidelines_set` → `phase_add` per phase → `phase_update(unlocked)` → per phase: `brief_create` + `agent_spawn` → review: `status_tree`, `run_status`, `issue_list` → `tests_run(full)` → `phase_review` → `phase_update(approved)` → `plan_unlocked` → `directive_inbox` at safe points → `run_pause(reason)` when only the user can unblock the run → `report_build` → `run_finish` |
-| Manager | `ToolSearch` → `brief_get` → `brief_ack` → `guidelines_get` → `module_add` per module → per Lead: `brief_create` + `agent_spawn` → review the Lead reports → `tests_run(module)` → `module_review` → `agent_release` the Lead → `tests_run(phase)` → `phase_update(handed_up)` (a Manager sets only its own phase, to `working` or `handed_up`) → `message_post` to the Oracle → the `SendMessage` that `next` names |
+| Manager | `ToolSearch` → `brief_get` → `brief_ack` → `guidelines_get` → `module_add` per module → per Lead: `brief_create` + `agent_spawn` → review the Lead reports → `tests_run(phase)` on the module's target → `module_review` → `agent_release` the Lead → `tests_run(phase)` → `phase_update(handed_up)` (a Manager sets only its own phase, to `working` or `handed_up`) → `message_post` to the Oracle → the `SendMessage` that `next` names |
 | Lead | `ToolSearch` → `brief_get` → `brief_ack` → `guidelines_get` → per file: `claim_file` then `brief_create` then `agent_spawn` → on a handoff: `score_record(kind="lead")` then `review_compare` then `approve` / `return_work` / `accept_incomplete` → after a return: `score_record(lead)`, `review_compare`, `attempt_record`, decide → `tests_run(module)` → `message_post` to the Manager → the `SendMessage` that `next` names |
 | Coder | `ToolSearch` → `brief_get` → `brief_ack` → `kg_search` → write the test file → write the source file → `tests_run(scope="file")` until green → `graph_upsert` → `score_record(kind="self")` → `handoff_submit` → the `SendMessage` that `next` names |
 
@@ -141,8 +141,9 @@ keeps every gate.
 
 `handoff_submit` is the hard check for a Coder. It refuses when:
 
-- The tests fail, are missing, or are skipped.
-- The file has no `test_path`.
+- The tests fail, are missing, or are skipped. A file claimed with no `test_path`,
+  such as an empty `__init__.py` or a config file, runs no tests; `phase_review` later
+  refuses any such file that the code graph maps with functions or classes.
 - The code graph is not current for the file: no node, an anchor that does not
   resolve, or a symbol in the file that no node maps.
 - The self review is missing or older than the last edit.
@@ -262,6 +263,4 @@ Coder writes to the graph, and only through the ledger's `graph_upsert`.
 
 ## Source of truth
 
-The design lives in the `plans/` folder of the sentinel-swarm repository:
-`01-roles.md`, `02-rubric.md`, `03-ledger.md`, `04-mcp-and-hooks.md`, and
-`06-sessions-plan.md`.
+The design lives in `SPEC.md` in the sentinel-swarm repository.

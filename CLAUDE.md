@@ -1,8 +1,8 @@
 # sentinel-swarm
 
-Read `plans/CLAUDE.md` first. It indexes the design documents and their review
-status; `01-roles.md`, `02-rubric.md`, `03-ledger.md`, and `04-mcp-and-hooks.md`
-are the source of truth for every role's responsibilities.
+Read `SPEC.md` first. It is the source of truth for how sentinel-swarm works: the
+roles, the ledger and its gates, sessions, hooks, the watchdog, the report, setup, and
+testing. `plans/` holds only plans for work not built yet.
 
 ## Layout
 
@@ -27,8 +27,8 @@ are the source of truth for every role's responsibilities.
   $12).
 - `.githooks/` — the codebase-kg staleness hooks. Run `sh .githooks/install.sh` once per
   clone.
-- `plans/` — design documents. Do not treat anything outside `plans/` as settled
-  until the matching plan document says so.
+- `SPEC.md` — the source of truth. Items marked **(proposed)** are not reviewed.
+- `plans/` — plans for work not built yet, such as `driver-agent.md`.
 
 ## Conventions shared with the sibling plugins
 
@@ -52,10 +52,11 @@ are the source of truth for every role's responsibilities.
   not in agent prompt text. An agent's system prompt describes what it must not do; a
   hook or a ledger gate is what actually stops it. `hooks/hooks.json` carries no hooks,
   so no hook runs twice.
-- Mark any design addition that Alex has not reviewed as **(proposed)** in the
-  `plans/` documents.
-- Before committing, run the three checks from `mcp/`: `uv run pytest`, `uv run
-  pyright`, `uv run ruff check`.
+- Mark any design addition that Alex has not reviewed as **(proposed)** in
+  `SPEC.md`. Record each decision Alex makes in `SPEC.md` as a plain rule and in its
+  "Key decisions" list.
+- Before committing, run the four checks from `mcp/`: `uv run pytest`, `uv run
+  pyright`, `uv run ruff check`, `uv run ruff format --check`.
 - `mcp/tests/test_plugin_surface.py` guards the surface contract described here:
   the role templates' frontmatter and hooks, the empty `hooks.json`, and the plugin
   manifest fields.
