@@ -141,6 +141,26 @@ def _top_level_py_symbols(source: str) -> list[str]:
     return names
 
 
+def code_symbols_for(repo_root: Path, rel_path: str) -> list[str]:
+    graph_path = repo_root / "knowledge" / "code_graph.db"
+    if not graph_path.is_file():
+        return []
+    conn = sqlite3.connect(f"file:{graph_path.as_posix()}?mode=ro", uri=True)
+    try:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(anchor)")}
+        if "symbol" not in columns:
+            return []
+        return [
+            row[0]
+            for row in conn.execute(
+                "SELECT symbol FROM anchor WHERE path = ? AND symbol IS NOT NULL AND symbol != ''",
+                (rel_path,),
+            )
+        ]
+    finally:
+        conn.close()
+
+
 def graph_current_for(repo_root: Path, rel_path: str) -> tuple[bool, list[str]]:
     graph_path = repo_root / "knowledge" / "code_graph.db"
     if not graph_path.is_file():

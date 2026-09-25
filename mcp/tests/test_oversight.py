@@ -145,7 +145,9 @@ def _bootstrap(ledger: Ledger) -> dict:
     }
 
 
-def _spawn_coder(ledger: Ledger, ctx: dict, coder_name: str, path: str, test_path: str) -> dict:
+def _spawn_coder(
+    ledger: Ledger, ctx: dict, coder_name: str, path: str, test_path: str | None
+) -> dict:
     claimed = ledger.claim_file("lead-1", ctx["lead"]["agent_id"], path, test_path, coder_name)
     ledger.brief_create(
         "lead-1",
@@ -180,7 +182,7 @@ def _approve_file(
     ctx: dict,
     coder_name: str,
     path: str,
-    test_path: str,
+    test_path: str | None,
     lead_overrides: dict[str, int] | None = None,
 ) -> int:
     coder = _spawn_coder(ledger, ctx, coder_name, path, test_path)
@@ -410,6 +412,37 @@ def test_phase_review_accepted_succeeds(ledger: Ledger) -> None:
     result = ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ship it")
     assert result["outcome"] == "accepted"
     assert result["kind"] == "oracle"
+
+
+def test_phase_review_refuses_code_the_graph_maps_without_a_test_file(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    _approve_file(ledger, ctx, "coder-good", "pkg/good.py", None)
+    _accept_module_and_hand_up(ledger, ctx)
+    _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+
+    with pytest.raises(LedgerError, match=r"maps functions or classes in \['pkg/good.py'\]"):
+        ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok")
+
+
+def test_a_file_without_code_in_the_graph_needs_no_test_file(ledger: Ledger, host: Path) -> None:
+    (host / "pkg" / "notes.txt").write_text("notes\n", encoding="utf-8")
+    conn = sqlite3.connect(str(host / "knowledge" / "code_graph.db"))
+    try:
+        conn.execute("INSERT INTO node (id, kind, description) VALUES ('notes', 'doc', 'Notes.')")
+        conn.execute(
+            "INSERT INTO anchor (node_id, ord, path, base, symbol) "
+            "VALUES ('notes', 0, 'pkg/notes.txt', 'notes.txt', NULL)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    ctx = _bootstrap(ledger)
+    _approve_file(ledger, ctx, "coder-notes", "pkg/notes.txt", None)
+    _accept_module_and_hand_up(ledger, ctx)
+    _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+
+    result = ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok")
+    assert result["outcome"] == "accepted"
 
 
 def test_phase_review_refuses_missing_low_score_notes(ledger: Ledger) -> None:

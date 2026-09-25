@@ -435,13 +435,14 @@ class ReviewMixin:
             raise LedgerError(f"unknown file_id {file_id!r}")
         if file_row["owner_agent_id"] != c.name:
             raise LedgerError(f"{caller!r} does not own file {file_id!r}")
-        if not file_row["test_path"]:
-            raise LedgerError("file has no test_path; a handoff needs one")
         self._block_handoff_for_open_cr(self.conn, file_id)
 
-        test_result = self.tests_run(caller, agent_id, "file", file_row["test_path"])
-        if not test_result["ok"]:
-            raise LedgerError(f"tests are not passing: {test_result['reason']}")
+        test_run_id = None
+        if file_row["test_path"]:
+            test_result = self.tests_run(caller, agent_id, "file", file_row["test_path"])
+            if not test_result["ok"]:
+                raise LedgerError(f"tests are not passing: {test_result['reason']}")
+            test_run_id = test_result["test_run_id"]
 
         graph_ok, graph_reasons = graph.graph_current_for(self.repo_root, file_row["path"])
         if not graph_ok:
@@ -464,8 +465,12 @@ class ReviewMixin:
         path_version = versions.save_version(
             records_dir, file_id, agent_id, self.repo_root / file_row["path"]
         )
-        test_version = versions.save_version(
-            records_dir, file_id, agent_id, self.repo_root / file_row["test_path"]
+        test_version = (
+            versions.save_version(
+                records_dir, file_id, agent_id, self.repo_root / file_row["test_path"]
+            )
+            if file_row["test_path"]
+            else None
         )
 
         with write_tx(self.conn) as conn:
@@ -481,18 +486,20 @@ class ReviewMixin:
                 ),
             )
             version_id = cur.lastrowid
-            cur = conn.execute(
-                "INSERT INTO versions (file_id, agent_id, content, sha256, stored_path) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (
-                    file_id,
-                    agent_id,
-                    test_version["content"],
-                    test_version["sha256"],
-                    test_version["stored_path"],
-                ),
-            )
-            test_version_id = cur.lastrowid
+            test_version_id = None
+            if test_version is not None:
+                cur = conn.execute(
+                    "INSERT INTO versions (file_id, agent_id, content, sha256, stored_path) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (
+                        file_id,
+                        agent_id,
+                        test_version["content"],
+                        test_version["sha256"],
+                        test_version["stored_path"],
+                    ),
+                )
+                test_version_id = cur.lastrowid
 
             cur = conn.execute(
                 "INSERT INTO handoffs (file_id, agent_id, test_run_id, version_id, "
@@ -501,7 +508,7 @@ class ReviewMixin:
                 (
                     file_id,
                     agent_id,
-                    test_result["test_run_id"],
+                    test_run_id,
                     version_id,
                     test_version_id,
                     self_review["review_id"],

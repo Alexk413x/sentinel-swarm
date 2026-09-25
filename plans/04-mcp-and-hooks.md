@@ -95,6 +95,7 @@ All hooks live in the plugin's `hooks/hooks.json`, because plugin agents ignore 
 | A departure is decided before its handoff is approved, and a denial is a return | `approve` refuses while a departure on the handoff is `open` or `denied`. `departure_decide` requires the recorder's parent role or higher, and a denial needs a solution; a higher role may also deny an already `accepted` departure, opening a deferral when the file is already approved. **(proposed)** |
 | The Oracle checks the repo before a Manager starts | `agent_spawn` refuses a Manager until the run has a recorded `repo_check`. It does not require `obvious_start`: a not-obvious start is the Oracle's call, made by asking the user, not a block. **(proposed)** |
 | A phase hands up only after its Manager reviews every module | `phase_update(handed_up)` refuses unless every module of the phase has an accepted `module_review` newer than its last change. **(proposed)** |
+| Code that the graph maps has a test file by the end | `claim_file` accepts `test_path=None` for a file with no code, and its `handoff_submit` runs no tests. `phase_review(accepted)` refuses while any approved or incomplete file of the phase has no test file and the code graph anchors a function or class in it. Decided by Alex on 2026-09-24 |
 | A phase is approved only after the Oracle reviews it | `phase_update(approved)` refuses without an accepted `phase_review` of the phase recorded since it was handed up. **(proposed)** |
 
 ## One file, start to finish

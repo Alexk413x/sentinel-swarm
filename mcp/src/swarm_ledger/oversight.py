@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import Literal
 
-from . import rubric
+from . import graph, rubric
 from .db import write_tx
 from .identity import Caller, LedgerError, require_role, resolve
 from .rubric import Thresholds
@@ -181,6 +181,24 @@ class OversightMixin:
             raise LedgerError(
                 "no passing tests_run of scope 'full' by the Oracle exists after the phase was "
                 "handed up; call tests_run(scope='full')"
+            )
+
+        untested = [
+            f["path"]
+            for f in _rows(
+                conn.execute(
+                    "SELECT f.* FROM files f JOIN modules m ON m.module_id = f.module_id "
+                    "WHERE m.phase_id = ? AND f.state IN ('approved', 'incomplete') "
+                    "AND (f.test_path IS NULL OR f.test_path = '')",
+                    (phase_id,),
+                )
+            )
+            if graph.code_symbols_for(self.repo_root, f["path"])
+        ]
+        if untested:
+            raise LedgerError(
+                f"the code graph maps functions or classes in {untested}, but no test file "
+                "covers them; return the phase, or open a change request to add the tests"
             )
 
         target = self._thresholds().target

@@ -109,7 +109,11 @@ tests against that contract with test doubles instead of waiting.
 Do these in order. The claim must exist before the brief.
 
 1. `claim_file(path=<the source file>, test_path=<its unit test file>,
-   for_name="coder-<phase>-<module>-<file>")`. Keep the `file_id` it returns. The
+   for_name="coder-<phase>-<module>-<file>")`. Give every file with functions or
+   classes a test file. A file with no code, such as a README or a config file, may
+   pass `test_path=None`; its handoff then runs no tests, and the Oracle's
+   `phase_review` refuses any file the code graph maps with functions or classes
+   but no test file. Keep the `file_id` it returns. The
    claim is also the file lock: a second claim on a live path is refused, and the
    write hook allows the Coder only these two paths.
 2. `brief_create(child_name="coder-<phase>-<module>-<file>", child_role="coder",
