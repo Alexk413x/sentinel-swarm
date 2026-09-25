@@ -1,6 +1,6 @@
 # Plan: the Driver role
 
-Status: not built. The responsibilities below are Alex's, decided on 2026-09-24. Everything under "Proposed shape" is **(proposed)**. Settle the open questions before building. `knowledge/prd/` describes the system this role joins.
+Status: not built. Every question below is settled as of 2026-09-25; the plan is ready to build. Items marked **(proposed)** are details Alex has not reviewed. `knowledge/prd/` describes the system this role joins.
 
 ## What the Driver does
 
@@ -32,14 +32,17 @@ Status: not built. The responsibilities below are Alex's, decided on 2026-09-24.
 
 ## Proposed shape **(proposed)**
 
-1. A fifth role, `driver`, with its template in `templates/agents/driver.md`. It has no Write or Edit tool, and a shell limited to the driver CLIs and the build command.
-2. One Driver per run. The ledger starts it when the Oracle's first `drive_request` arrives, and stops it when the exploration ends, before the next wave starts.
-3. A ledger tool `drive_request(focus)` that only the Oracle may call, when the previous exploration's fixes have all finished. `focus` lists what to explore: the PRD's features, the last wave's changes, and earlier issues to recheck.
-4. The Driver builds with `build_command`, launches the app, explores the focus list, and saves evidence under `.sentinel-swarm/evidence/<request_id>/`.
-5. A ledger tool `drive_issue(request_id, issue, evidence)` records each issue as the Driver finds it and owes the Oracle a wake-up at once; `drive_done(request_id)` ends the exploration.
-6. The Oracle starts fixes for each issue as it arrives, and requests the next exploration once the exploration and every fix have finished.
-7. The run finishes after an exploration that records no issue, or once the loop stops on lack of progress and the user decides what to do with the issues left.
-8. The run report lists each exploration, its issues, the wave that fixed each one, and links to the evidence.
+The build, fitted to the decisions below.
+
+1. **Role.** A fifth role, `driver`, yellow, Sonnet by default, with its template in `templates/agents/driver.md`. It exists only when the host has cartographer and a driver plugin installed. It has no Write or Edit tool. Its tools are cartographer's skills and MCP tools, `build_command` through the shell gate, and the Agent tool limited by a hook to cartographer's `map-driver` and `map-reviewer`.
+2. **Request.** `drive_request(focus)`, a ledger tool only the Oracle may call once the previous exploration and its fixes have finished. The ledger starts one Driver session, `driver-e<n>`.
+3. **Explore.** The Driver builds with `build_command`, boots the device, replays recorded routes with `map-test` to recheck earlier issues, then runs `map-explore` with the focus list as its goal. cartographer records the run and its evidence in `knowledge/cartographer/runs/<run-id>/`.
+4. **Report issues as found.** `drive_issue(request_id, finding)` records each finding in the fixed shape, as a ledger issue linked to cartographer's evidence, and owes the Oracle a wake-up at once. A failed build is the first issue.
+5. **Check in.** `drive_checkin(request_id, covered, steps, notes)` every 30 minutes. The Oracle reviews it, starts fixes for problems that aren't obvious bugs, and stops a stuck Driver.
+6. **Fix while exploring.** The Oracle starts fixes for each issue as it arrives: a Coder joins a running fix phase through its Manager and Lead, or a new Manager, Lead, and Coder start for a separate bug.
+7. **Finish the exploration.** `drive_done(request_id)` ends it. The Driver shuts the device down and its session stops.
+8. **Loop.** When the exploration and every fix have finished, the Oracle requests the next exploration with a new focus list. The loop stops on a clean exploration, or on the stop rules: 3 attempts in a row with no progress on a bug, 5 in all, 3 fix waves in a row that fix nothing, or a detected pattern.
+9. **Report.** The run report lists each exploration, its issues, and the fix for each.
 
 ## Decisions
 
@@ -71,6 +74,9 @@ Status: not built. The responsibilities below are Alex's, decided on 2026-09-24.
 - Decided by Alex on 2026-09-25: the Driver is the one role allowed subagents, and only cartographer's own: `map-driver` and `map-reviewer`. Every other role still has no Agent tool. The Oracle does not run them, so its context stays small over a long run.
   - **(proposed)** detail: the Oracle's focus list becomes `map-explore`'s goal; a recheck after a fix wave replays the recorded routes with `map-test` first, then explores only what changed.
   - **(proposed)** detail: cartographer's regression signals replace most of the fingerprint design above; the Driver keeps the fingerprint only to match an issue across explorations.
+- Decided by Alex on 2026-09-25: the Driver exists only when the host has cartographer and a driver plugin installed, as with a11y. When they are missing or fail to load, the run skips the exploration steps. No special report entry is needed.
+- Decided by Alex on 2026-09-25: the Driver runs on Sonnet by default, as cartographer's `map-driver` does. **(proposed)** detail: the settings file lists its approved models, `driver: [sonnet, opus]`.
+- Decided by Alex on 2026-09-25: the role is `driver`, colored yellow in agent view. Each session is named `driver-e<exploration number>`, for example `myapp-r1-driver-e2`.
 - Decided by Alex on 2026-09-25: only the Oracle sends requests. The Driver explores, tests, and records issues; the Oracle starts a new wave of fixes from them; this repeats until everything works. Every other role does unit testing only, because the app cannot build while other edits are in progress.
 
 ## Questions to settle before building
@@ -102,7 +108,7 @@ Ask these one at a time.
 14. ~~Should Driver evidence count toward the accessibility dimension?~~ Settled: cartographer already runs the a11y checks on every capture; its a11y findings become issues like any other.
 
 ### Setup
-15. Are the driver plugins loaded only when the host has them installed, like a11y?
-16. Which model does the Driver run on?
+15. ~~Are the plugins loaded only when the host has them installed?~~ Decided: yes; when they fail to load, the run skips the exploration steps.
+16. ~~Which model does the Driver run on?~~ Decided: Sonnet by default, with the approved list in settings (`driver: [sonnet, opus]`).
 17. ~~How should the watchdog treat a long driving session?~~ Settled: the 30-minute check-ins show it is alive, and the Oracle judges whether it is stuck.
-18. What is the Driver's session name and color?
+18. ~~What is the Driver's session name and color?~~ Decided: yellow; sessions named `driver-e<exploration number>`.
