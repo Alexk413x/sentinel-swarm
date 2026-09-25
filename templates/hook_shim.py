@@ -321,7 +321,9 @@ def serve_entry(port: int, script: str, args: list[str]) -> int:
         raise ShimError(f"{point.module} has no server named mcp with a run method")
 
     def run_http(*_args: object, **kwargs: object) -> object:
-        kwargs.update(transport="http", host=HTTP_HOST, port=port)
+        # Stateless: the ledger restarts a crashed server on the same port, and a stateful
+        # server answers a session id that its previous run issued with 404.
+        kwargs.update(transport="http", host=HTTP_HOST, port=port, stateless_http=True)
         return run(**kwargs)
 
     server.run = run_http

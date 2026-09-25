@@ -57,6 +57,20 @@ Status: not built. The responsibilities below are Alex's, decided on 2026-09-24.
   - **(proposed)** detail: each Driver issue carries a fingerprint (the check, the location, and the symptom), so an exploration can mark every earlier issue fixed, still there, or new. The patterns are: a regression (a fixed bug returns); fixes causing bugs (new issues in the files the last fix wave touched, at least as many as it fixed); and ping-pong (two bugs that take turns coming back).
 - Decided by Alex on 2026-09-25: every wave starts from a new plan and new agents, including a fix wave planned from a Driver exploration. A review fix inside a wave, such as a return or a pushback, resumes the existing agents, as today. **(proposed)** detail: the Oracle groups the issues by module, one fix phase per module, and each Coder's brief carries the issue and its evidence and re-claims the file.
 - Decided by Alex on 2026-09-25: each request carries a focus list the Oracle writes. The first exploration covers every PRD feature. Each later one covers the features the last wave touched, every open issue to recheck, and a quick smoke pass over everything else. The final clean exploration is a full pass.
+- Decided by Alex on 2026-09-25: the Driver boots the emulator, Simulator, or browser at the start of each exploration and shuts it down when the exploration ends, so no device holds memory between explorations.
+- Decided by Alex on 2026-09-25: Android first, then web, then iOS once a Mac is available.
+- Decided by Alex on 2026-09-25: every finding has a fixed shape, filled as fully as possible:
+  - a fingerprint (the check, the location, and what it saw), used to spot repeats and patterns;
+  - a title;
+  - the steps to reproduce;
+  - the expected and actual result;
+  - a severity: blocker, major, or minor;
+  - the area: the screen, and the module or file when the Driver can tell;
+  - the evidence: screenshots before and after, the UI tree, and log excerpts.
+- Decided by Alex on 2026-09-25: the Driver works through cartographer instead of driving the device itself. cartographer already explores toward a goal (`map-explore`), records each run with its evidence in `knowledge/cartographer/runs/<run-id>/`, replays recorded routes with no AI (`map-test`), diffs against functional, visual, and performance baselines, and diagnoses failures (`map-heal`). The Driver turns cartographer's findings into ledger issues for the Oracle.
+- Decided by Alex on 2026-09-25: the Driver is the one role allowed subagents, and only cartographer's own: `map-driver` and `map-reviewer`. Every other role still has no Agent tool. The Oracle does not run them, so its context stays small over a long run.
+  - **(proposed)** detail: the Oracle's focus list becomes `map-explore`'s goal; a recheck after a fix wave replays the recorded routes with `map-test` first, then explores only what changed.
+  - **(proposed)** detail: cartographer's regression signals replace most of the fingerprint design above; the Driver keeps the fingerprint only to match an issue across explorations.
 - Decided by Alex on 2026-09-25: only the Oracle sends requests. The Driver explores, tests, and records issues; the Oracle starts a new wave of fixes from them; this repeats until everything works. Every other role does unit testing only, because the app cannot build while other edits are in progress.
 
 ## Questions to settle before building
@@ -77,15 +91,15 @@ Ask these one at a time.
 
 ### Build and devices
 7. ~~Who runs the build?~~ Settled: the Driver, with `build_command`, since nothing is editing.
-8. Who boots and shuts down the emulator, Simulator, or browser? Does the device stay up between requests?
-9. Which platforms come first? Android only, then web, then iOS once there's a Mac?
+8. ~~Who boots and shuts down the device?~~ Decided: the Driver boots it at the start of each exploration and shuts it down when the exploration ends.
+9. ~~Which platform comes first?~~ Decided: Android, then web, then iOS on a Mac.
 
 ### Reports and gates
-10. What does a finding contain: a pass or fail per check, a severity, a screenshot reference?
-11. Where does evidence live, how long is it kept, and is there a size limit?
+10. ~~What does a finding contain?~~ Decided: a fixed shape, filled as fully as the Driver can.
+11. ~~Where does evidence live?~~ Settled: in cartographer's run folders, `knowledge/cartographer/runs/<run-id>/`, with its committed baselines.
 12. ~~Does any gate require a Driver report?~~ Settled: `run_finish` requires a final exploration with no issue, or the user's decision once the loop stops.
 13. ~~Does a failed check open an issue?~~ Settled: every finding is recorded as an issue for the fix wave.
-14. Should Driver evidence count toward the accessibility dimension of the rubric?
+14. ~~Should Driver evidence count toward the accessibility dimension?~~ Settled: cartographer already runs the a11y checks on every capture; its a11y findings become issues like any other.
 
 ### Setup
 15. Are the driver plugins loaded only when the host has them installed, like a11y?

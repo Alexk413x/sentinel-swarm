@@ -274,7 +274,9 @@ def serve(repo_root: Path) -> None:
     server.on_run_finish = lambda oracle_session_id: finish_later(path, oracle_session_id)
     _start_watchdog(root, path)
     shared.start_in_background(
-        root, lambda servers: write_server_info(path, {**info, "servers": servers})
+        root,
+        lambda servers: write_server_info(path, {**info, "servers": servers}),
+        lambda name, detail: report_shared_down(root, name, detail),
     )
     try:
         server.mcp.run(
@@ -287,6 +289,26 @@ def serve(repo_root: Path) -> None:
         )
     finally:
         _shut_down(path)
+
+
+def report_shared_down(root: Path, name: str, detail: str) -> int | None:
+    from . import env, watchdog
+    from .db import connect
+
+    conn = connect(env.db_path_for(root))
+    try:
+        directive_id = watchdog.report_shared_server(conn, name, detail, watchdog.utcnow())
+    finally:
+        conn.close()
+    if directive_id is None:
+        print(f"no run is live to report shared MCP server {name} to", file=sys.stderr, flush=True)
+    else:
+        print(
+            f"reported shared MCP server {name} as directive {directive_id}",
+            file=sys.stderr,
+            flush=True,
+        )
+    return directive_id
 
 
 def _start_watchdog(root: Path, path: Path) -> None:

@@ -25,6 +25,7 @@ WAKE_EVERY = timedelta(minutes=5)
 MAX_WAKES = 3
 WAKE_STATE = "watchdog_wake"
 PAUSE_REASON = "the watchdog could not wake the Oracle"
+SHARED_SERVER_DOWN = "shared_server_down"
 _MEMBER_ROLES = ("manager", "lead", "coder")
 _WINDOW_1M = 1_000_000
 IDLE_STALL = timedelta(minutes=2)
@@ -427,6 +428,37 @@ def directive_body(finding: Finding) -> str:
         f"{finding.detail}. Next: {finding.next_step} Then resolve this directive with "
         "directive_resolve."
     )
+
+
+def shared_server_body(name: str, detail: str) -> str:
+    return (
+        f"Watchdog finding {SHARED_SERVER_DOWN}: the shared MCP server {name} {detail}. "
+        "The ledger stopped restarting it and removed its URL from server.json. A session "
+        f"spawned from now on starts its own stdio {name}. A session that is running, or that "
+        f"resumes, keeps the dead URL and has no {name} tools. Next: if an agent needs {name}, "
+        "have its parent release it and brief a fresh agent that continues from the ledger "
+        "records. If the Oracle needs it, record where the run stands, call run_pause, and "
+        "continue in a fresh Oracle session with /sentinel-swarm:resume. Then resolve this "
+        "directive with directive_resolve."
+    )
+
+
+def report_shared_server(
+    conn: sqlite3.Connection, name: str, detail: str, now: datetime
+) -> int | None:
+    with write_tx(conn):
+        run = conn.execute(
+            "SELECT run_id FROM runs WHERE state IN ('active', 'paused') "
+            "ORDER BY run_id DESC LIMIT 1"
+        ).fetchone()
+        if run is None:
+            return None
+        cur = conn.execute(
+            "INSERT INTO directives (run_id, source, sender_name, body, created_at) "
+            "VALUES (?, 'watchdog', 'watchdog', ?, ?)",
+            (run["run_id"], shared_server_body(name, detail), stamp(now)),
+        )
+        return cur.lastrowid
 
 
 def _needs_confirmation(kind: str) -> bool:

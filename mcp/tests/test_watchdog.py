@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from swarm_ledger import serve, sessions, watch, watchdog
+from swarm_ledger import serve, sessions, shared, watch, watchdog
 from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import events
 from swarm_ledger.hooks.__main__ import _HANDLERS
@@ -952,3 +952,52 @@ def test_watchdog_settings_come_from_the_local_settings_file(host: Path) -> None
     path.write_text(text, encoding="utf-8")
     assert load_settings(host).watchdog.stuck_minutes == 40
     assert load_settings(host).watchdog.context_window == 500_000
+
+
+class _Exited:
+    pid = 4242
+    returncode = 1
+
+    def poll(self) -> int:
+        return self.returncode
+
+
+def test_a_shared_server_the_ledger_gives_up_on_reaches_the_oracle(
+    ledger: Ledger, host: Path, now: datetime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("SENTINEL_SWARM_LEDGER_DB", raising=False)
+    monkeypatch.setattr(shared, "_running", [])
+    monkeypatch.setattr(shared, "_stopping", False)
+    monkeypatch.setattr(shared, "stop_tree", lambda server: None)
+    _run_id(ledger)
+    path = serve.server_info_path(host)
+    info = {"url": "http://127.0.0.1:1/mcp", "port": 1, "pid": os.getpid()}
+    urls = {"codebase-kg": shared.server_url(5001), "a11y-kg": shared.server_url(5002)}
+    serve.write_server_info(path, {**info, "servers": urls})
+    dead = shared.SharedServer("codebase-kg@codebase-kg", "codebase-kg", 5001, _Exited())  # type: ignore[arg-type]
+    supervisor = shared.Supervisor(
+        host,
+        [dead],
+        urls,
+        lambda servers: serve.write_server_info(path, {**info, "servers": servers}),
+        lambda name, detail: serve.report_shared_down(host, name, detail),
+        shared.RestartPolicy(delays_s=()),
+    )
+
+    supervisor.tick()
+
+    recorded = serve.read_server_info(host)
+    assert recorded is not None and recorded["servers"] == {"a11y-kg": urls["a11y-kg"]}
+    detail = "exited with code 1 after 0 restart(s) in 5 minutes"
+    body = watchdog.shared_server_body("codebase-kg", detail)
+    assert "codebase-kg exited with code 1 after 0 restart(s)" in body
+    assert watch.poll(ledger.conn, now) == (True, [f"Watchdog directive 1: {body}"])
+    row = ledger.conn.execute("SELECT source, sender_name, state FROM directives").fetchone()
+    assert tuple(row) == ("watchdog", "watchdog", "open")
+
+
+def test_a_shared_server_give_up_with_no_live_run_files_no_directive(
+    ledger: Ledger, now: datetime
+) -> None:
+    assert watchdog.report_shared_server(ledger.conn, "a11y-kg", "exited", now) is None
+    assert ledger.conn.execute("SELECT COUNT(*) FROM directives").fetchone()[0] == 0

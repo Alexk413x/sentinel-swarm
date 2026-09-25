@@ -56,6 +56,46 @@ Decided by Alex on 2026-09-25: build the HTTP change first. The mechanism below 
   launcher, and Python) and 5 for each a11y server in the `uvx` form (shim, `uvx`,
   `uv`, and two Python processes), measured on Windows on 2026-09-25. With shared
   servers, a session runs none, and the repo runs one set of trees.
+- `mcp-entry` runs each server with `stateless_http=True`, so the server issues no MCP
+  session id. A restarted server answers a client that initialized against the
+  server's previous process. A stateful server answers that client's old session id
+  with 404 "Session not found". **(proposed)**
+- codebase-kg 0.8.0 runs `${CLAUDE_PLUGIN_ROOT}/bin/kg-shim` in place of `uv run`.
+  `mcp-http` cannot wrap that command, so the ledger logs that codebase-kg did not
+  start, and sessions use its stdio entry. That entry runs codebase-kg's own shim,
+  which, by its documentation, relays to one codebase-kg server per machine. The a11y
+  servers still use the `uvx` form.
+
+### Restarts
+
+The ledger restarts a shared server that dies, on the port it had, so its URL in
+`server.json` and in every running session stays valid. The mechanism is
+**(proposed)**.
+
+- A supervisor thread in the ledger server checks each server every 2 seconds. A server
+  counts as dead when its process exited, or when its URL has not answered for 30
+  seconds.
+- It stops the dead server's whole tree, then starts the server again through the same
+  path as at start: the shim's `mcp-http`, a job object on Windows, and a process group
+  on POSIX.
+- Back-off: the first restart starts at once, the second after 5 seconds, and the third
+  after 15 seconds. A restart that does not answer within 60 seconds is stopped and
+  counts as an attempt.
+- Give-up: when a server dies after 3 restarts in 5 minutes, the ledger stops restarting
+  it. It removes the server from `servers` in `server.json`, so a new session uses the
+  stdio entry, and it files a watchdog directive for the Oracle.
+- Each restart and give-up goes to `server.log`, with a UTC time stamp.
+- A restart files no directive. The URL stays valid, so the Oracle has nothing to do,
+  and every directive must be resolved before `run_finish`. A give-up files one,
+  because a running or resumed session keeps the dead URL and has no tools from that
+  server. The directive names that consequence and the next step: replace an agent that
+  needs the server.
+- `stop_all` signals the supervisor to stop before it stops the servers. Once stopping
+  starts, the supervisor restarts nothing, and a start that races the stop is stopped.
+- The Claude Code docs say that a remote server that drops is reconnected up to 5
+  times, 1 second apart at first and doubling each time, and then marked failed. The
+  2-second check and the immediate first restart keep a restart inside that window
+  when the server starts in a few seconds. No live session has tested this.
 
 ## The code graph
 

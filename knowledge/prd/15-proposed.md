@@ -62,6 +62,11 @@ Ledger and sessions:
 - The shared HTTP MCP servers: the shim's `mcp-http` and `mcp-entry` commands, the
   saved ports, `servers` in `server.json`, the stdio fallback, the 60-second start
   limit, and process-tree shutdown through job objects and process groups.
+- Shared server restarts: stateless HTTP in `mcp-entry`; a supervisor that checks every
+  2 seconds, counts a server dead when its process exits or its URL is silent for 30
+  seconds, and restarts it on the same port after 0, 5, and 15 seconds; a give-up after
+  3 restarts in 5 minutes that removes the URL from `server.json`; and a watchdog
+  directive on a give-up only, never on a restart.
 - `parallelism_cap` counts the run's live agents. Not built: counting other swarms'
   sessions on the machine.
 - A lock record for runs that span several repos. Not built.

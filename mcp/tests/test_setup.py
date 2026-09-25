@@ -560,7 +560,9 @@ def test_shim_serve_entry_runs_main_over_http_with_the_original_arguments(
     assert shim.serve_entry(5123, "fake-kg", ["/p/graph.json"]) == 0
 
     assert seen["argv"] == ["fake-kg", "/p/graph.json"]
-    assert module.mcp.calls == [{"transport": "http", "host": "127.0.0.1", "port": 5123}]
+    assert module.mcp.calls == [
+        {"transport": "http", "host": "127.0.0.1", "port": 5123, "stateless_http": True}
+    ]
 
 
 def test_shim_serve_entry_overrides_a_transport_the_server_passes(
@@ -572,7 +574,13 @@ def test_shim_serve_entry_overrides_a_transport_the_server_passes(
     shim.serve_entry(5123, "fake-kg", [])
 
     assert module.mcp.calls == [
-        {"transport": "http", "host": "127.0.0.1", "port": 5123, "show_banner": False}
+        {
+            "transport": "http",
+            "host": "127.0.0.1",
+            "port": 5123,
+            "stateless_http": True,
+            "show_banner": False,
+        }
     ]
 
 

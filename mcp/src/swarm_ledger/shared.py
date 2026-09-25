@@ -11,7 +11,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any
 
@@ -40,8 +40,9 @@ class SharedServerError(Exception):
     pass
 
 
-@dataclass
+@dataclass(eq=False)
 class SharedServer:
+    plugin_id: str
     name: str
     port: int
     process: subprocess.Popen[bytes]
@@ -52,9 +53,26 @@ class SharedServer:
         return server_url(self.port)
 
 
+@dataclass(frozen=True)
+class RestartPolicy:
+    check_every_s: float = 2.0
+    delays_s: tuple[float, ...] = (0.0, 5.0, 15.0)
+    window_s: float = 300.0
+    hung_after_s: float = 30.0
+    start_timeout_s: float = START_TIMEOUT_S
+
+    @property
+    def max_restarts(self) -> int:
+        return len(self.delays_s)
+
+
+DEFAULT_POLICY = RestartPolicy()
+
+
 _lock = threading.Lock()
 _running: list[SharedServer] = []
 _stopping = False
+_supervisor: Supervisor | None = None
 
 
 def server_url(port: int) -> str:
@@ -159,7 +177,7 @@ def spawn_tree(
 
 def launch(repo_root: Path, plugin_id: str, name: str, port: int, log: IO[bytes]) -> SharedServer:
     process, job = spawn_tree(server_command(repo_root, plugin_id, name, port), repo_root, log)
-    server = SharedServer(name, port, process, job)
+    server = SharedServer(plugin_id, name, port, process, job)
     with _lock:
         if not _stopping:
             _running.append(server)
@@ -315,15 +333,44 @@ def stop_all() -> None:
         _stopping = True
         servers = list(_running)
         _running.clear()
+        supervisor = _supervisor
+    if supervisor is not None:
+        supervisor.signal_stop()
     for server in servers:
         try:
             stop_tree(server)
         except Exception as exc:
             _note(f"shared MCP server {server.name} not stopped: {exc}")
+    if supervisor is not None:
+        supervisor.join()
+
+
+def _retire(server: SharedServer) -> bool:
+    with _lock:
+        if _stopping:
+            return False
+        if server in _running:
+            _running.remove(server)
+    stop_tree(server)
+    return True
 
 
 def _note(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
+
+
+def _event(message: str) -> None:
+    _note(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {message}")
+
+
+def log_path(repo_root: Path) -> Path:
+    return ledger_path(repo_root).parent / LOG_FILE
+
+
+def _open_log(repo_root: Path) -> IO[bytes]:
+    path = log_path(repo_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path.open("ab")
 
 
 def _save_ports(repo_root: Path, ports: Mapping[str, int]) -> None:
@@ -369,9 +416,7 @@ def start_shared(
     previous = saved_ports(root)
     ports: dict[str, int] = {}
     started: list[SharedServer] = []
-    log_path = ledger_path(root).parent / LOG_FILE
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("ab") as log:
+    with _open_log(root) as log:
         for plugin_id, name in planned_servers(root):
             try:
                 port = free_port(previous.get(name), set(ports.values()))
@@ -389,10 +434,192 @@ def start_shared(
     return urls
 
 
-def start_in_background(repo_root: Path, record: Callable[[dict[str, str]], None]) -> None:
+@dataclass(eq=False)
+class _Watch:
+    server: SharedServer
+    restarts: list[float] = field(default_factory=list)
+    silent_since: float | None = None
+    due_at: float | None = None
+
+
+class Supervisor:
+    def __init__(
+        self,
+        repo_root: Path,
+        servers: list[SharedServer],
+        urls: Mapping[str, str],
+        record: Callable[[dict[str, str]], None],
+        report: Callable[[str, str], object],
+        policy: RestartPolicy = DEFAULT_POLICY,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.repo_root = repo_root
+        self.policy = policy
+        self._record = record
+        self._report = report
+        self._clock = clock
+        self._urls = dict(urls)
+        self._watches = {server.name: _Watch(server) for server in servers if server.name in urls}
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    @property
+    def urls(self) -> dict[str, str]:
+        return dict(self._urls)
+
+    @property
+    def alive(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def server(self, name: str) -> SharedServer | None:
+        watch = self._watches.get(name)
+        return watch.server if watch is not None else None
+
+    def start(self) -> None:
+        self._thread = threading.Thread(
+            target=self._loop, name="shared-mcp-supervisor", daemon=True
+        )
+        self._thread.start()
+
+    def _stopping(self) -> bool:
+        return self._stop.is_set() or _stopping
+
+    def signal_stop(self) -> None:
+        self._stop.set()
+
+    def join(self, timeout: float = 2 * STOP_GRACE_S + _PROBE_TIMEOUT_S) -> None:
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout)
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self.policy.check_every_s):
+            try:
+                self.tick()
+            except Exception as exc:
+                _event(f"shared MCP server supervisor pass failed: {type(exc).__name__}: {exc}")
+
+    def tick(self) -> None:
+        for watch in list(self._watches.values()):
+            if self._stopping():
+                return
+            if watch.due_at is None:
+                fault = self._fault(watch)
+                if fault is None or not _retire(watch.server):
+                    continue
+                if not self._schedule(watch, fault):
+                    continue
+            if watch.due_at is not None and self._clock() >= watch.due_at:
+                self._restart(watch)
+
+    def _fault(self, watch: _Watch) -> str | None:
+        code = watch.server.process.poll()
+        if code is not None:
+            return f"exited with code {code}"
+        if is_answering(watch.server.url):
+            watch.silent_since = None
+            return None
+        now = self._clock()
+        if watch.silent_since is None:
+            watch.silent_since = now
+        if now - watch.silent_since < self.policy.hung_after_s:
+            return None
+        return f"did not answer for {self.policy.hung_after_s:.0f}s"
+
+    def _schedule(self, watch: _Watch, fault: str) -> bool:
+        now = self._clock()
+        watch.restarts = [at for at in watch.restarts if now - at < self.policy.window_s]
+        watch.silent_since = None
+        if len(watch.restarts) >= self.policy.max_restarts:
+            watch.due_at = None
+            self._give_up(watch, fault)
+            return False
+        delay = self.policy.delays_s[len(watch.restarts)]
+        watch.due_at = now + delay
+        server = watch.server
+        _event(
+            f"shared MCP server {server.name} {fault}; restarting it on port {server.port} "
+            f"in {delay:.0f}s"
+        )
+        return True
+
+    def _restart(self, watch: _Watch) -> None:
+        old = watch.server
+        watch.due_at = None
+        watch.restarts.append(self._clock())
+        try:
+            with _open_log(self.repo_root) as log:
+                server = launch(self.repo_root, old.plugin_id, old.name, old.port, log)
+        except (OSError, SharedServerError) as exc:
+            if not self._stopping():
+                self._schedule(watch, f"did not restart: {exc}")
+            return
+        watch.server = server
+        if self._await(server):
+            _event(f"shared MCP server {server.name} restarted on port {server.port}")
+        elif _retire(server):
+            self._schedule(watch, "did not answer after a restart")
+
+    def _await(self, server: SharedServer) -> bool:
+        deadline = self._clock() + self.policy.start_timeout_s
+        while not self._stopping():
+            if is_answering(server.url):
+                return True
+            if server.process.poll() is not None or self._clock() >= deadline:
+                return False
+            self._stop.wait(_POLL_S)
+        return False
+
+    def _give_up(self, watch: _Watch, fault: str) -> None:
+        name = watch.server.name
+        del self._watches[name]
+        self._urls.pop(name, None)
+        minutes = self.policy.window_s / 60
+        detail = f"{fault} after {len(watch.restarts)} restart(s) in {minutes:.0f} minutes"
+        _event(
+            f"shared MCP server {name} {detail}; not restarting it again, and new sessions "
+            "use its stdio entry"
+        )
+        with _lock:
+            if _stopping:
+                return
+            try:
+                self._record(self.urls)
+            except Exception as exc:
+                _event(f"shared MCP server URLs not recorded: {exc}")
+        try:
+            self._report(name, detail)
+        except Exception as exc:
+            _event(f"shared MCP server {name} give-up not reported: {exc}")
+
+
+def supervise(
+    repo_root: Path,
+    urls: Mapping[str, str],
+    record: Callable[[dict[str, str]], None],
+    report: Callable[[str, str], object],
+    policy: RestartPolicy = DEFAULT_POLICY,
+) -> Supervisor | None:
+    global _supervisor
+    with _lock:
+        if _stopping:
+            return None
+        servers = [server for server in _running if server.name in urls]
+        supervisor = Supervisor(repo_root.resolve(), servers, urls, record, report, policy)
+        _supervisor = supervisor
+        supervisor.start()
+    return supervisor
+
+
+def start_in_background(
+    repo_root: Path,
+    record: Callable[[dict[str, str]], None],
+    report: Callable[[str, str], object],
+) -> None:
     def run() -> None:
         try:
-            start_shared(repo_root, record)
+            urls = start_shared(repo_root, record)
+            supervise(repo_root, urls, record, report)
         except Exception as exc:
             _note(f"shared MCP servers did not start: {exc}")
 

@@ -37,8 +37,14 @@ Built on 2026-09-25. What remains:
 - Measure memory and process counts in a live run. The per-session count drops from 4
   (codebase-kg) or 14 (with both a11y servers in the `uvx` form) MCP server processes
   to 0.
-- A shared server that crashes mid-run is not restarted. New sessions fall back to
-  stdio, but a running session keeps its dead URL until the ledger restarts.
+- Built on 2026-09-25 **(proposed)**: the ledger restarts a shared server that crashes,
+  on the same port, and runs each server stateless so that a restarted server accepts
+  a client from before the restart. After 3 restarts in 5 minutes it gives up, removes
+  the URL from `server.json`, and files a watchdog directive. See "Restarts" in
+  `knowledge/prd/09-mcp-servers-and-code-graph.md`. Still unprobed: whether a live
+  Claude Code session keeps using a restarted server, or marks it failed.
+- codebase-kg 0.8.0 runs its own `kg-shim` relay to one server per machine, which
+  `mcp-http` cannot wrap. Decide whether the ledger still shares codebase-kg.
 - Run the smoke test on macOS to check the POSIX process-group and owner-watch paths
   live.
 - Run codebase-kg, and a11y when the host has it, as one HTTP server per host repo, as the ledger runs. Sessions list them by URL in `--mcp-config`.

@@ -28,9 +28,14 @@
   - The server starts each shared server with the ledger's pid. On Windows it starts
     hidden (`CREATE_NO_WINDOW`), in a job object with `KILL_ON_JOB_CLOSE`. On POSIX it
     starts in its own session and process group.
+  - A supervisor thread restarts a shared server that dies, on the same port. After 3
+    restarts in 5 minutes, it gives up: it removes the server from `servers` in
+    `server.json` and files a watchdog directive for the Oracle. See "Restarts" in
+    [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
   - Every exit path stops every shared server's whole process tree. `run_finish`, the
-    idle exit, and a signal that uvicorn handles call `stop_all`. On Windows that
-    terminates each job. On POSIX it sends `SIGTERM` to the process group, waits 2
+    idle exit, and a signal that uvicorn handles call `stop_all`. It signals the
+    supervisor to stop before it stops the servers. On Windows it terminates each
+    job. On POSIX it sends `SIGTERM` to the process group, waits 2
     seconds, and sends `SIGKILL`. When the ledger dies without cleanup, Windows closes
     its job handles and kills each job. On POSIX, `mcp-entry` watches the ledger's pid
     and exits within about 1 second of its death.

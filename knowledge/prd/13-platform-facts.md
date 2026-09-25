@@ -71,6 +71,23 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
 - codebase-kg 0.7.0 and a11y 0.6.2 serve over FastMCP's HTTP transport when their
   `mcp.run` is replaced before `main()` runs. `uvx --from <path> python` runs Python in
   the tool's environment. (2026-09-25)
+- A FastMCP 4.0.5 HTTP server in its default stateful mode answers a client that uses
+  the `2025-06-18` handshake with an `mcp-session-id`. After the server restarts on the
+  same port, it answers that session id with 404 "Session not found", and a request
+  with no session id with 400. With `stateless_http=True` it issues no session id, and
+  after a restart it answers both requests with 200, with no new `initialize`.
+  (2026-09-25)
+- A FastMCP 4 `Client` negotiates a protocol version that uses no session id. One
+  `Client` object kept working across a server restart, stateful or stateless, when it
+  made no call while the server was down. A call while the server was down closed its
+  session, and the `Client` did not reconnect. (2026-09-25)
+- a11y-kg 0.6.2 (FastMCP 3.4.5) and codebase-kg 0.7.0 (FastMCP 4.0.3) accept
+  `stateless_http=True` in `mcp.run`. Through `mcp-entry` and the supervisor, each
+  came back on the same port after its whole tree was killed, and a `Client` opened
+  before the kill made its next call without error. (2026-09-25)
+- codebase-kg 0.8.0 declares its server as `${CLAUDE_PLUGIN_ROOT}/bin/kg-shim`, a
+  standard-library relay, not `uv run`. The shim's `mcp-http` refuses that command.
+  (2026-09-25)
 - On Windows, `python3` on `PATH` can be the Microsoft Store stub, which only prints a
   hint. Setup writes `python` for MCP server commands on Windows. (noted 2026-09-21,
   not measured)
