@@ -193,7 +193,7 @@ class OversightMixin:
             )
 
         untested = [
-            f["path"]
+            f"file {f['file_id']} ({f['path']})"
             for f in _rows(
                 conn.execute(
                     "SELECT f.* FROM files f JOIN modules m ON m.module_id = f.module_id "
@@ -206,8 +206,11 @@ class OversightMixin:
         ]
         if untested:
             raise LedgerError(
-                f"the code graph maps functions or classes in {untested}, but no test file "
-                "covers them; return the phase, or open a change request to add the tests"
+                f"{', '.join(untested)} contain functions or classes in the code graph but were "
+                "claimed with no test_path, so the ledger never ran tests for them. Test anchors "
+                "in the graph do not count. Return the phase so the module's Lead re-claims each "
+                "path with claim_file(path, test_path=<its test file>) for a new Coder; the new "
+                "claim supersedes the old one"
             )
 
         target = self._thresholds().target

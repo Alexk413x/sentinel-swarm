@@ -421,7 +421,7 @@ def test_phase_review_refuses_code_the_graph_maps_without_a_test_file(ledger: Le
     _accept_module_and_hand_up(ledger, ctx)
     _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
 
-    with pytest.raises(LedgerError, match=r"maps functions or classes in \['pkg/good.py'\]"):
+    with pytest.raises(LedgerError, match=r"\(pkg/good.py\) contain functions .* no test_path"):
         ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok")
 
 
