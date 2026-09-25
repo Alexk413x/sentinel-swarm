@@ -644,6 +644,22 @@ def test_stop_allows_when_the_run_is_paused(ledger: Ledger) -> None:
     assert events.handle_stop(ledger, {"agent_id": ctx["oracle_id"]}) is None
 
 
+def test_stop_allows_while_a_directive_waits_on_the_user_until_the_reply(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    _go_idle(ledger, ctx["lead"]["agent_id"])
+    _go_idle(ledger, ctx["manager"]["agent_id"])
+    assert events.handle_stop(ledger, {"agent_id": ctx["oracle_id"]}) is not None
+
+    asked = ledger.directive_submit("user-chat", "alex", "Drop the CLI?")
+    ledger.directive_resolve(
+        "oracle", ctx["oracle_id"], asked["directive_id"], "needs_user", "Keep the flags?"
+    )
+    assert events.handle_stop(ledger, {"agent_id": ctx["oracle_id"]}) is None
+
+    ledger.directive_submit("user-chat", "alex", "Keep them.", reply_to=asked["directive_id"])
+    assert events.handle_stop(ledger, {"agent_id": ctx["oracle_id"]}) is not None
+
+
 def test_stop_allows_while_an_agent_is_working(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     coder = _spawn_coder(ledger, ctx, "coder-busy", "src/mine.py", "tests/test_mine.py")

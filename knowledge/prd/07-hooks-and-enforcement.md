@@ -111,10 +111,12 @@ that says to run `/sentinel-swarm:setup`. The shim exits 0.
 | A non-owner requests, the owner changes | `cr_open` routing and the write gate |
 | A change request closes with evidence | `cr_complete` and `cr_verify`; gates on `handoff_submit`, `approve`, `phase_update(approved)`, `run_finish` |
 | A departure is signed off or reworked | `departure_decide`; gates on `approve`, `return_work`, `accept_incomplete`, `module_review`, `phase_review`, `run_finish` |
+| A deferral is decided by a high enough role in its scope | `agreement_decide`; gates on `phase_update(approved)` and `run_finish` |
+| A directive outcome is one of the four values | `directive_resolve` |
 | The Oracle checks the repo before a Manager starts | `agent_spawn` |
 | A phase hands up only after every module review | `phase_update(handed_up)` |
 | A phase is approved only after the Oracle reviews it | `phase_update(approved)` |
 | Code the graph maps has a test file by the end | `phase_review(accepted)` |
 | A child wakes its parent after each step | The Stop hook, from the owed wake-ups |
-| The Oracle keeps working while the run has work | The Oracle's Stop hook |
+| The Oracle keeps working while the run has work, unless a directive waits on the user | The Oracle's Stop hook |
 | The Oracle's watchdog listener stays armed | The Oracle's Stop hook and `pre_monitor` |

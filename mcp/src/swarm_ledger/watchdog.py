@@ -314,6 +314,11 @@ def _stalled(
     if oracle is None:
         return None
     run_id = run["run_id"]
+    if conn.execute(
+        "SELECT 1 FROM directives WHERE run_id = ? AND state = 'open' AND outcome = 'needs_user'",
+        (run_id,),
+    ).fetchone():
+        return None
     members = [a for a in agents if a["role"] != "oracle"]
     live = [
         by_session[a["agent_id"]]

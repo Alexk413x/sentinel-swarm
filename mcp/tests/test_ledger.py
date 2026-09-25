@@ -173,6 +173,30 @@ def test_run_start_binds_the_oracle(ledger: Ledger) -> None:
     assert oracle["runtime"] == "session"
 
 
+def _write_oracle_file(repo: Path, model_line: str) -> None:
+    path = repo / ".claude" / "agents" / "swarm-oracle.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"---\nname: swarm-oracle\n{model_line}---\n\nBody.\n", encoding="utf-8")
+
+
+def test_run_start_records_the_oracle_files_model(ledger: Ledger, fake_repo: Path) -> None:
+    _write_oracle_file(fake_repo, "model: fable\n")
+    assert ledger.run_start(prd="Build X", session_id="sess-1")["oracle"]["model"] == "fable"
+
+    ledger.agent_stop("sess-1", end_reason="exit")
+    _write_oracle_file(fake_repo, "model: sonnet\n")
+    resumed = ledger.run_start(prd="ignored", session_id="sess-2")
+    assert resumed["oracle"]["model"] == "sonnet"
+
+
+def test_run_start_falls_back_to_the_approved_list_without_a_file_model(
+    ledger: Ledger, fake_repo: Path
+) -> None:
+    _write_oracle_file(fake_repo, "")
+    started = ledger.run_start(prd="Build X", session_id="sess-1")
+    assert started["oracle"]["model"] == ledger.settings.models["oracle"][0]
+
+
 def test_run_start_twice_keeps_one_active_run(ledger: Ledger) -> None:
     first = ledger.run_start(prd="Build X", session_id="sess-1")
     second = ledger.run_start(prd="Build Y", session_id="sess-2")
@@ -583,6 +607,57 @@ def test_directive_inbox_and_resolve_are_oracle_only(ledger: Ledger) -> None:
         ledger.directive_resolve(
             "manager-1", ctx["manager"]["agent_id"], directive["directive_id"], "applied", "ok"
         )
+
+
+def test_a_needs_user_directive_stays_open_until_the_user_replies(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    asked = ledger.directive_submit("user-chat", "alex", "Use Postgres or SQLite?")
+
+    waiting = ledger.directive_resolve(
+        "oracle", ctx["oracle_id"], asked["directive_id"], "needs_user", "Which database?"
+    )
+    assert (waiting["state"], waiting["outcome"]) == ("open", "needs_user")
+    assert waiting["resolved_at"] is None
+    inbox = ledger.directive_inbox("oracle", ctx["oracle_id"])
+    assert asked["directive_id"] in {d["directive_id"] for d in inbox}
+
+    reply = ledger.directive_submit(
+        "outside-session", "alex", "SQLite.", reply_to=asked["directive_id"]
+    )
+    parent = ledger.conn.execute(
+        "SELECT * FROM directives WHERE directive_id = ?", (asked["directive_id"],)
+    ).fetchone()
+    assert (parent["state"], parent["outcome"]) == ("resolved", "needs_user")
+    assert parent["resolved_at"] is not None
+    inbox = ledger.directive_inbox("oracle", ctx["oracle_id"])
+    assert [d["directive_id"] for d in inbox] == [reply["directive_id"]]
+    assert inbox[0]["reply_to"] == asked["directive_id"]
+
+
+def test_a_needs_user_directive_can_be_resolved_again_by_the_oracle(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    asked = ledger.directive_submit("user-chat", "alex", "Add a CLI?")
+    ledger.directive_resolve("oracle", ctx["oracle_id"], asked["directive_id"], "needs_user", "?")
+
+    done = ledger.directive_resolve(
+        "oracle", ctx["oracle_id"], asked["directive_id"], "scheduled", "Phase 3."
+    )
+    assert (done["state"], done["outcome"]) == ("resolved", "scheduled")
+
+
+def test_directive_resolve_refuses_an_unknown_outcome(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    directive = ledger.directive_submit("user-chat", "alex", "Rename it.")
+    with pytest.raises(LedgerError, match="unknown directive outcome 'needs-user'"):
+        ledger.directive_resolve(
+            "oracle", ctx["oracle_id"], directive["directive_id"], "needs-user", "?"
+        )
+
+
+def test_directive_submit_refuses_a_reply_to_an_unknown_directive(ledger: Ledger) -> None:
+    _bootstrap(ledger)
+    with pytest.raises(LedgerError, match="reply_to 99"):
+        ledger.directive_submit("user-chat", "alex", "Yes.", reply_to=99)
 
 
 # -- overrides --------------------------------------------------------------------

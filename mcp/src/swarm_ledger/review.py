@@ -1015,6 +1015,17 @@ class ReviewMixin:
             raise LedgerError(
                 f"role {c.role!r} may not decide a deferral proposed by a {proposer_role!r}"
             )
+        module_id, phase_id = self._deferral_scope(row)
+        in_scope = c.run_id == row["run_id"] and (
+            c.role == "oracle"
+            or (c.role == "manager" and c.phase_id == phase_id)
+            or (c.role == "lead" and c.module_id == module_id)
+        )
+        if not in_scope:
+            raise LedgerError(
+                f"deferral {deferral_id} is outside the {c.role} scope of {caller!r}; "
+                "the Lead of its module, the Manager of its phase, or the Oracle decides it"
+            )
 
         with write_tx(self.conn) as conn:
             conn.execute(
@@ -1028,6 +1039,22 @@ class ReviewMixin:
                 "SELECT * FROM deferrals WHERE deferral_id = ?", (deferral_id,)
             ).fetchone()
         )
+
+    def _deferral_scope(self, row: sqlite3.Row) -> tuple[int | None, int | None]:
+        if row["file_id"] is not None:
+            scope = self.conn.execute(
+                "SELECT m.module_id, m.phase_id FROM files f "
+                "JOIN modules m ON m.module_id = f.module_id WHERE f.file_id = ?",
+                (row["file_id"],),
+            ).fetchone()
+            if scope is not None:
+                return scope["module_id"], scope["phase_id"]
+        agent = self.conn.execute(
+            "SELECT module_id, phase_id FROM agents WHERE agent_id = ?", (row["proposed_by"],)
+        ).fetchone()
+        if agent is None:
+            return None, None
+        return agent["module_id"], agent["phase_id"]
 
     # -- Versions -----------------------------------------------------------------
 

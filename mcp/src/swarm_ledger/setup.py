@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import os
 import re
@@ -9,26 +8,20 @@ import shutil
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import ModuleType
 from typing import Any
-
-import yaml
 
 from .db import _main_git_dir
 
 ROLES = ("oracle", "manager", "lead", "coder")
-PLUGIN_ID = "sentinel-swarm@sentinel-swarm"
 PLUGIN_ROOT = Path(__file__).resolve().parents[3]
 TEMPLATES_DIR = PLUGIN_ROOT / "templates"
 SHIM_TEMPLATE = TEMPLATES_DIR / "hook_shim.py"
 SHIM_PATH = Path(".sentinel-swarm") / "hook.py"
 SETTINGS_LOCAL_PATH = Path(".claude") / "settings.local.json"
-PROJECT_SETTINGS_PATH = Path(".claude") / "settings.json"
 EXCLUDE_LINES = (".sentinel-swarm/", ".claude/agents/swarm-*.md")
 WORKTREE_SETTINGS: dict[str, Any] = {"worktree": {"bgIsolation": "none"}}
 
 _KEY_LINE = re.compile(r"^([A-Za-z_][\w-]*)\s*:")
-_PLAIN_NAME = re.compile(r"[A-Za-z0-9_.-]+")
 _HOOK_EVENT_LINE = re.compile(r"^  ([A-Za-z]+):\s*$")
 _HOOK_ITEM_LINE = re.compile(r"^    - ")
 _LEDGER_HOOK = re.compile(r"hook\.py hook (\w+)")
@@ -58,17 +51,6 @@ def role_file(repo: Path, role: str) -> Path:
 
 def template_file(role: str) -> Path:
     return TEMPLATES_DIR / "agents" / f"{role}.md"
-
-
-def load_shim() -> ModuleType:
-    # The shim holds the only copy of the registry lookup. It must stay a standalone,
-    # standard-library file, so setup loads it from the template instead of importing a module.
-    spec = importlib.util.spec_from_file_location("sentinel_swarm_hook_shim", SHIM_TEMPLATE)
-    if spec is None or spec.loader is None:
-        raise SetupError(f"cannot load {SHIM_TEMPLATE}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def split_document(text: str) -> tuple[str, str]:
@@ -162,10 +144,6 @@ def merge_role_file(existing: str, template: str) -> tuple[str, list[str], bool]
     return _join_document(frontmatter, template_body), added, user_body != template_body
 
 
-def _yaml_name(name: str) -> str:
-    return name if _PLAIN_NAME.fullmatch(name) else json.dumps(name)
-
-
 def python_command() -> str:
     # On Windows, python3 on PATH is often the Microsoft Store stub, which only prints a hint.
     if os.name == "nt":
@@ -173,68 +151,8 @@ def python_command() -> str:
     return "python3" if shutil.which("python3") else "python"
 
 
-def shim_server_entry(plugin_id: str, server: str) -> str:
-    args = json.dumps([SHIM_PATH.as_posix(), "mcp", plugin_id, server])
-    return f"  - {_yaml_name(server)}:\n      command: {python_command()}\n      args: {args}\n"
-
-
-def render_default(template: str, servers: list[tuple[str, str]]) -> str:
-    template = template.replace("      command: python\n", f"      command: {python_command()}\n")
-    if not servers:
-        return template
-    frontmatter, body = split_document(template)
-    blocks = key_blocks(frontmatter)
-    parsed = yaml.safe_load(frontmatter) or {}
-    tools = [t.strip() for t in str(parsed.get("tools") or "").split(",") if t.strip()]
-    for _, server in servers:
-        tool = f"mcp__{server}"
-        if tool not in tools:
-            tools.append(tool)
-    blocks["tools"] = f"tools: {', '.join(tools)}\n"
-    entries = "".join(shim_server_entry(plugin_id, server) for plugin_id, server in servers)
-    blocks["mcpServers"] = blocks.get("mcpServers", "mcpServers:\n") + entries
-    return _join_document("".join(blocks.values()), body)
-
-
-def _template_server_names(template: str) -> set[str]:
-    frontmatter, _ = split_document(template)
-    value = (yaml.safe_load(frontmatter) or {}).get("mcpServers")
-    names: set[str] = set()
-    if isinstance(value, dict):
-        names.update(str(name) for name in value)
-    elif isinstance(value, list):
-        for entry in value:
-            if isinstance(entry, dict):
-                names.update(str(name) for name in entry)
-            elif isinstance(entry, str):
-                names.add(entry)
-    return names
-
-
-def project_plugin_servers(repo: Path, report: SetupReport) -> list[tuple[str, str]]:
-    path = repo / PROJECT_SETTINGS_PATH
-    if not path.is_file():
-        return []
-    try:
-        enabled = json.loads(path.read_text(encoding="utf-8")).get("enabledPlugins") or {}
-    except (OSError, ValueError, AttributeError) as exc:
-        report.add(f"could not read {PROJECT_SETTINGS_PATH.as_posix()}: {exc}")
-        return []
-    if not isinstance(enabled, dict):
-        return []
-    shim = load_shim()
-    found: list[tuple[str, str]] = []
-    for plugin_id, on in enabled.items():
-        if on is not True or plugin_id == PLUGIN_ID:
-            continue
-        try:
-            install = shim.find_install(plugin_id, repo)
-            servers = shim.plugin_servers(install)
-        except shim.ShimError as exc:
-            report.add(f"skipped the MCP servers of {plugin_id}: {exc}")
-            continue
-        found.extend((plugin_id, name) for name in servers)
-    return found
+def render_default(template: str) -> str:
+    return template.replace("      command: python\n", f"      command: {python_command()}\n")
 
 
 def _write_text(path: Path, text: str) -> None:
@@ -243,21 +161,13 @@ def _write_text(path: Path, text: str) -> None:
 
 
 def write_role_files(repo: Path, report: SetupReport) -> None:
-    servers: list[tuple[str, str]] | None = None
     for role in ROLES:
         target = role_file(repo, role)
         shown = target.relative_to(repo).as_posix()
         template = template_file(role).read_text(encoding="utf-8")
         if not target.is_file():
-            if servers is None:
-                servers = project_plugin_servers(repo, report)
-            known = _template_server_names(template)
-            extra = [(plugin, name) for plugin, name in servers if name not in known]
-            _write_text(target, render_default(template, extra))
+            _write_text(target, render_default(template))
             report.add(f"wrote {shown}")
-            if extra:
-                names = ", ".join(f"{name} ({plugin})" for plugin, name in extra)
-                report.add(f"  added project plugin MCP servers: {names}")
             continue
         existing = target.read_text(encoding="utf-8")
         try:

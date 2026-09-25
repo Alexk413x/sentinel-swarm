@@ -1,0 +1,62 @@
+# Plan: Channels and HTTP MCP servers
+
+Status: research done on 2026-09-25, nothing built. Everything under "Proposed design" is **(proposed)**. Alex asked for two changes: MCP servers over HTTP instead of stdio, and a push-based, event-driven ledger that every agent registers with, which could replace the watchdog's Monitor watcher.
+
+## What the docs say
+
+Sources: https://code.claude.com/docs/en/channels, https://code.claude.com/docs/en/channels-reference, https://code.claude.com/docs/en/mcp.
+
+### Channels
+- A channel is an MCP server that pushes events into a session. The server declares the capability `experimental: {"claude/channel": {}}` and sends `notifications/claude/channel`. The event arrives in the model's context as a `channel` tag with its source.
+- A session opts in at launch: `--channels plugin:<name>@<marketplace>`. On Team and Enterprise plans an admin must allow channels with `channelsEnabled`. Channels are a research preview.
+- A channel can be two-way. It exposes tools, such as a reply tool, that the session calls. It can also relay permission prompts, through the capability `claude/channel/permission`.
+- Events that arrive while the session is busy queue, and they are delivered together on its next turn.
+- A channel connects over stdio: it is one server process per session. The docs describe no way for one server to push to many sessions or address one.
+- Channels do not run in `-p` mode.
+
+### HTTP servers
+- `.mcp.json` and an agent's MCP config accept `{"type": "http", "url": "..."}`, with `${VAR}` and `${VAR:-default}` expansion.
+- A server has no documented way to tell which session is calling, except headers the caller sets.
+- The ledger already works this way: one HTTP server per host repo, and every session connects by URL.
+
+## Unknowns to probe live
+
+1. **Does a channel event wake an idle background session?** Start `claude --bg` with a test channel, let the session go idle, push one event, and check whether a new turn starts. Everything below depends on this.
+2. **Does `--channels` work with `claude --bg --agent`, and with a plugin installed at project scope?** Also, is there a development flag for a channel that is not in a marketplace?
+3. **Can codebase-kg serve over HTTP, and share one server between sessions?** Checked on 2026-09-25: its entry point is a FastMCP server that calls `mcp.run()` with the default stdio transport, and it has no transport option. FastMCP supports HTTP, so either the shim runs `codebase_kg.server.mcp.run(transport="http", ...)` inside the plugin's own environment, with no codebase-kg change, or codebase-kg gains a `--transport` flag. It still needs a probe that two sessions can share one instance, including `kg_upsert_node` writes under the ledger's graph lock.
+4. **What does one channel bridge cost per session** in memory and startup time, compared with the processes it replaces?
+
+## Proposed design **(proposed)**
+
+### HTTP: one shared server per repo
+- Run codebase-kg, and a11y when the host has it, as one HTTP server per host repo, as the ledger runs. Sessions list them by URL in `--mcp-config`.
+- This saves about 5 processes per session. On 2026-09-25 each session ran 15 to 20 MCP-related processes, and a run keeps up to 7 sessions alive.
+- The ledger server, or a small supervisor next to it, starts and stops them, with the same lifetime as the ledger: they exit after `run_finish` or after the idle timeout.
+- Decided by Alex on 2026-09-25: build the HTTP change first, then plan Channels.
+- codebase-kg, `a11y-tools`, and `a11y-kg` are all FastMCP servers whose `main()` calls `mcp.run()`. One generic wrapper serves any of them over HTTP without changing the plugins. It runs in the plugin's own environment, resolves the server's console script, for example `codebase-kg` → `codebase_kg.server:main`, and replaces `mcp.run` with a call that passes `transport="http"`, `host="127.0.0.1"`, and a port. Then it calls the server's own `main()`, so the server's argument handling, such as a11y-kg's graph path, still works.
+- The ledger server starts each shared server when it starts, records its URL in `server.json`, and stops the whole process tree when it exits. `agent_spawn` and the launcher list each server by URL, and fall back to the stdio shim when a shared server did not start.
+- Swarm roles use only codebase-kg's read tools, and graph writes go through the ledger's `graph_upsert` command, so sessions sharing one server is safe.
+
+### Channels: a per-session bridge to the ledger
+- Each swarm session starts with one channel, `swarm-events`, run through the shim. It holds one connection to the ledger server and subscribes as its agent.
+- The ledger pushes that agent's events: a wake-up owed to it, a new message, a returned handoff, a pushback, a watchdog finding for the Oracle, and a directive.
+- This would replace:
+  - the Oracle's `Monitor` watcher and its heartbeat rules, since findings arrive as channel events;
+  - most `SendMessage` wake-ups, since the ledger pushes directly and the Stop hook's owed-wake-up rule becomes a delivery the ledger does itself;
+  - `SendMessage` session-name addressing, and the risk of a guessed name, which is item 13 in `plans/unbuilt-features.md`.
+- It would keep `agent_resume` for a session that has stopped, because a channel reaches only a running session.
+- It would keep the watchdog's detection, which runs in the ledger server. Only its delivery changes.
+- The reply tool is not needed: agents answer through ledger tools, as today.
+
+### Rollout, if the probes pass
+1. Build a minimal channel server and run probes 1 and 2.
+2. Move the Oracle's watchdog delivery to the channel, and remove the `Monitor` requirement.
+3. Move wake-ups owed to channel delivery. Keep `SendMessage` as a fallback while both paths are proven.
+4. Move codebase-kg and a11y to shared HTTP servers.
+5. Update `knowledge/prd/` for each step.
+
+## Questions for Alex
+
+1. Channels are a research preview and may change. Is that acceptable for the swarm's core wake path, with `SendMessage` kept as a fallback?
+2. If an admin setting ever blocks channels, should the swarm fall back to today's Monitor and `SendMessage` path automatically?
+3. HTTP first, or Channels first? HTTP saves memory without changing behavior. Channels change how every role wakes.

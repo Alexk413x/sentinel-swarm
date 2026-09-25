@@ -20,6 +20,7 @@ _NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 _RESUME_POINTER = "Re-read your brief and your inbox in the ledger."
 _PHASE_STATES = ("planned", "unlocked", "working", "handed_up", "approved")
 _DIRECTIVE_SOURCES = ("user-chat", "outside-session", "skill", "watchdog")
+_DIRECTIVE_OUTCOMES = ("applied", "scheduled", "declined", "needs_user")
 _LIVE_RUN = "state IN ('active', 'paused')"
 _TOKEN_COLUMNS = (
     "input_tokens",
@@ -143,7 +144,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
                     session_id,
                     oracle_name,
                     self.settings.runtime.get("oracle"),
-                    self.settings.models.get("oracle", [None])[0],
+                    agentfiles.oracle_model(self.repo_root, self.settings.models.get("oracle", [])),
                     run_id,
                     session_name,
                 ),
@@ -217,7 +218,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
                     session_id,
                     oracle["name"],
                     oracle["runtime"],
-                    oracle["model"],
+                    agentfiles.oracle_model(self.repo_root, self.settings.models.get("oracle", [])),
                     oracle["effort"],
                     oracle["settings_json"],
                     run["run_id"],
@@ -1191,6 +1192,18 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
             )
         with write_tx(self.conn) as conn:
             run = self._active_run(conn)
+            if reply_to is not None:
+                parent = conn.execute(
+                    "SELECT 1 FROM directives WHERE directive_id = ? AND run_id = ?",
+                    (reply_to, run["run_id"]),
+                ).fetchone()
+                if parent is None:
+                    raise LedgerError(f"reply_to {reply_to!r} names no directive of this run")
+                conn.execute(
+                    f"UPDATE directives SET state = 'resolved', resolved_at = {_NOW} "
+                    "WHERE directive_id = ? AND state = 'open' AND outcome = 'needs_user'",
+                    (reply_to,),
+                )
             cur = conn.execute(
                 "INSERT INTO directives (run_id, source, sender_name, body, reply_to) "
                 "VALUES (?, ?, ?, ?, ?)",
@@ -1241,6 +1254,10 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
     def directive_resolve(
         self, caller: str, agent_id: str, directive_id: int, outcome: str, resolution: str
     ) -> dict:
+        if outcome not in _DIRECTIVE_OUTCOMES:
+            raise LedgerError(
+                f"unknown directive outcome {outcome!r}; use one of {list(_DIRECTIVE_OUTCOMES)}"
+            )
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
             require_role(c, "oracle")
@@ -1251,11 +1268,18 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
                 is None
             ):
                 raise LedgerError(f"unknown directive_id {directive_id!r}")
-            conn.execute(
-                f"UPDATE directives SET state = 'resolved', outcome = ?, resolution = ?, "
-                f"resolved_at = {_NOW} WHERE directive_id = ?",
-                (outcome, resolution, directive_id),
-            )
+            if outcome == "needs_user":
+                conn.execute(
+                    "UPDATE directives SET state = 'open', outcome = ?, resolution = ?, "
+                    "resolved_at = NULL WHERE directive_id = ?",
+                    (outcome, resolution, directive_id),
+                )
+            else:
+                conn.execute(
+                    f"UPDATE directives SET state = 'resolved', outcome = ?, resolution = ?, "
+                    f"resolved_at = {_NOW} WHERE directive_id = ?",
+                    (outcome, resolution, directive_id),
+                )
 
         return dict(
             self.conn.execute(

@@ -6,7 +6,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from . import setup
 
@@ -19,10 +19,11 @@ def _ensure_server(repo: Path) -> str:
     return ensure_server(repo)
 
 
-def _read_agent_file(repo: Path, role: str) -> dict[str, Any]:
-    from .agentfiles import read_agent_file
+def _oracle_model(repo: Path) -> str | None:
+    from .agentfiles import oracle_model
+    from .settings import load_settings
 
-    return read_agent_file(repo, role)
+    return oracle_model(repo, load_settings(repo).models.get("oracle", []))
 
 
 def _session_options(repo: Path, role: str, model: str | None, ledger_url: str) -> list[str]:
@@ -51,8 +52,7 @@ def oracle_session_name(repo: Path, started: float | None = None) -> str:
 def oracle_command(
     repo: Path, prompt: str, ledger_url: str, mode: Mode, name: str | None = None
 ) -> list[str]:
-    model = _read_agent_file(repo, "oracle").get("model")
-    options = _session_options(repo, "oracle", str(model) if model else None, ledger_url)
+    options = _session_options(repo, "oracle", _oracle_model(repo), ledger_url)
     claude = _claude_binary()
     if mode == "headless":
         return [claude, "-p", *options, "--output-format", "stream-json", "--verbose"]

@@ -11,3 +11,6 @@
 - **Ledger server early exit.** Once, the server exited about a minute after it started,
   with no error in its log. It has not recurred.
 - **The Driver role.** Planned, not built. See `plans/driver-agent.md`.
+- **Directive source names.** The directive sources `user-chat` and `outside-session`
+  use hyphens, against the snake_case rule for ledger enum values. Renaming them
+  changes the value that `directive_submit` accepts.

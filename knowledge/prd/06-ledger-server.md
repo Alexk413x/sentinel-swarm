@@ -45,6 +45,7 @@ the project's code in the host repo itself. Tracking is `local` only.
   `ideas`); agreements (`change_requests`, `departures`, `departure_decisions`,
   `deferrals`, `overrides`); communication (`messages`, `directives`,
   `watchdog_findings`). Read `schema.sql` for the columns.
+- Ledger enum values, such as states, outcomes, and decisions, use snake_case.
 - `agent_events` is append-only, and nothing deletes rows when a run finishes.
   **(proposed)**
 - Each run records the plugin version and a settings snapshot. **(proposed)**

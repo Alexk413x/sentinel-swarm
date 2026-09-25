@@ -238,8 +238,15 @@ credential, a missing tool, or a decision outside the PRD:
   asking the sender to confirm.
 - Never forward a directive's text down the tree. Turn it into a plan change, a
   guideline change, a new brief, or a message to the agent that owns the work.
-- `directive_resolve(directive_id, outcome, resolution)`. The outcome is applied,
-  scheduled, declined, or needs-user.
+- `directive_resolve(directive_id, outcome, resolution)`. The outcome is `applied`,
+  `scheduled`, `declined`, or `needs_user`.
+- Use `needs_user` when only the user can answer the directive. The resolution states
+  the question. Ask the user once, plainly. The directive stays open, and the Stop hook
+  lets you stop while it waits.
+- If the user answers in your session, act on the answer, then call
+  `directive_resolve` again with the final outcome. An answer sent with
+  `directive_submit(..., reply_to=directive_id)` closes the waiting directive and
+  reaches you in `directive_inbox()` as a new directive.
 - Work that is already approved stays approved unless the directive says to reopen
   it.
 

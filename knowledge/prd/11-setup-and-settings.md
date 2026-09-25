@@ -18,6 +18,8 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
   `swarm-coder.md` from `templates/agents/<role>.md`. For an existing file it keeps the
   user's frontmatter, adds any key the template has that the file lacks, adds every
   ledger hook the template has that the file lacks, and replaces the prompt body.
+- Adds no MCP server beyond the template's. See "MCP servers per role" in
+  [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
 - Writes the shim to `.sentinel-swarm/hook.py`, overwriting local edits.
 - Merges `{"worktree": {"bgIsolation": "none"}}` into `.claude/settings.local.json`.
 - Adds `.sentinel-swarm/` and `.claude/agents/swarm-*.md` to `.git/info/exclude`.
@@ -35,7 +37,8 @@ or the `/sentinel-swarm:run` skill.
 - It runs setup when the shim or a role file is missing.
 - `--bg` refuses an untrusted repo and prints the trust command.
 - It starts the ledger server, then the Oracle with its agent file's model and the same
-  flags as `agent_spawn`.
+  flags as `agent_spawn`. If the file has no `model`, it uses the first entry of the
+  Oracle's approved list.
 - Interactive by default. `--bg` starts a background session. `--headless` runs
   `claude -p` with a stream-json transcript and the prompt on stdin. Nobody answers
   questions in a headless run, so the Oracle records each assumption in the guidelines.

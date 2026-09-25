@@ -396,6 +396,20 @@ def test_an_empty_stalled_run_still_needs_the_oracle(
     assert findings[0].next_step == "Continue the plan, or call run_finish."
 
 
+def test_a_run_waiting_on_the_user_is_not_stalled(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _agent(ledger, "sess-lead-1", "lead", "idle", started=now)
+    asked = ledger.directive_submit("user-chat", "alex", "Which database?")
+    ledger.directive_resolve("oracle", ORACLE, asked["directive_id"], "needs_user", "Ask Alex.")
+
+    assert _scan(ledger, claude, now) == []
+
+    ledger.directive_submit("user-chat", "alex", "SQLite.", reply_to=asked["directive_id"])
+    assert _kinds(_scan(ledger, claude, now)) == [("oracle", "stalled")]
+
+
 def _directives(ledger: Ledger) -> list[dict]:
     return [dict(r) for r in ledger.conn.execute("SELECT * FROM directives ORDER BY directive_id")]
 

@@ -20,7 +20,7 @@ listing skips one pass.
 | `waiting_permission` | The session waits on a permission prompt. Not also reported as stuck | Tell the user to open that session and answer |
 | `spinning` | The agent's last `spin_failures` test runs for one scope and target all failed | Ask its parent to `return_work` or `issue_escalate` |
 | `context_high` | The latest request of the agent, the Oracle included, fills `context_pct` of its window | Have its parent replace it. For the Oracle: `run_pause`, then resume in a fresh session |
-| `stalled` | No session of the run runs; or sessions run, but no member session is busy, no member is `working`, and nothing changed for 2 minutes | Wake the agent whose work is pending: the reviewer of a submitted handoff, an agent with unread messages, or the Lead of a file with an open issue |
+| `stalled` | No session of the run runs; or sessions run, but no member session is busy, no member is `working`, and nothing changed for 2 minutes. Not reported while a directive waits on the user | Wake the agent whose work is pending: the reviewer of a submitted handoff, an agent with unread messages, or the Lead of a file with an open issue |
 
 - The context size is the input, cache read, and cache creation tokens of the last
   assistant response in the agent's transcript. The window is 200,000 tokens when the

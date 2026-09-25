@@ -652,6 +652,52 @@ def test_agreement_decide_refuses_a_decider_below_the_proposers_parent_role(
         )
 
 
+def test_agreement_decide_refuses_a_decider_outside_the_deferrals_scope(
+    ledger: Ledger,
+) -> None:
+    ctx = _bootstrap(ledger)
+    coder = _spawn_coder(ledger, ctx, "coder-scope", "pkg/good.py", "tests/test_good.py")
+    file_id = _file_id_for(ledger, "pkg/good.py")
+    deferral = ledger.deferral_propose("coder-scope", coder["agent_id"], "later", file_id)
+
+    module_2 = ledger.module_add("manager-1", "mgr-agent", ctx["phase_id"], "module-2")
+    ledger.brief_create(
+        "manager-1",
+        "mgr-agent",
+        "lead-2",
+        "lead",
+        "sonnet",
+        "Own module-2.",
+        module_id=module_2["module_id"],
+    )
+    ledger.agent_register_start("lead-2-agent", "lead", parent_agent_id="mgr-agent")
+    ledger.brief_ack("lead-2", "lead-2-agent")
+
+    phase_2 = ledger.phase_add("oracle", ctx["oracle_id"], "phase-2")
+    ledger.phase_update("oracle", ctx["oracle_id"], phase_2["phase_id"], "unlocked")
+    ledger.brief_create(
+        "oracle",
+        ctx["oracle_id"],
+        "manager-2",
+        "manager",
+        "opus",
+        "Own phase-2.",
+        phase_id=phase_2["phase_id"],
+    )
+    ledger.agent_register_start("mgr-2-agent", "manager", parent_agent_id=ctx["oracle_id"])
+    ledger.brief_ack("manager-2", "mgr-2-agent")
+
+    with pytest.raises(LedgerError, match="outside the lead scope"):
+        ledger.agreement_decide("lead-2", "lead-2-agent", deferral["deferral_id"], "agreed", "ok")
+    with pytest.raises(LedgerError, match="outside the manager scope"):
+        ledger.agreement_decide("manager-2", "mgr-2-agent", deferral["deferral_id"], "agreed", "ok")
+
+    decided = ledger.agreement_decide(
+        "lead-1", ctx["lead"]["agent_id"], deferral["deferral_id"], "agreed", "ok"
+    )
+    assert decided["state"] == "agreed"
+
+
 # -- analytics_query and report_build ------------------------------------------------------
 
 

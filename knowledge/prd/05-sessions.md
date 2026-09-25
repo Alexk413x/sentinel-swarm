@@ -75,6 +75,8 @@ wake-up the caller owes, and returns a `next` field with the exact call to make.
 - It never blocks while the run is paused.
 - It does not block for pending work while any Manager, Lead, or Coder is working:
   waiting on running children is a valid stop. **(proposed)**
+- It does not block for pending work while a directive waits on the user, with outcome
+  `needs_user`. **(proposed)**
 - Otherwise it blocks while the run has unlocked phases, submitted handoffs, live file
   claims, handed-up phases without an accepted review, or live agents none of which is
   working. The reason names each idle agent to wake and the call to wake it, and

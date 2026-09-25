@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -214,30 +215,23 @@ def test_not_a_git_checkout_is_reported(tmp_path: Path, config_dir: Path):
     assert any(line.startswith("not a git checkout") for line in report.lines)
 
 
-def test_project_plugin_servers_join_new_role_files(tmp_path: Path, repo: Path, config_dir: Path):
-    extra = _plugin(
+def test_enabled_project_plugins_do_not_join_new_role_files(
+    tmp_path: Path, repo: Path, config_dir: Path
+):
+    a11y = _plugin(
         tmp_path, "a11y", {"a11y-tools": {"command": "uv"}, "a11y-kg": {"command": "uv"}}
     )
-    kg = _plugin(tmp_path, "kg", {"codebase-kg": {"command": "uv"}})
-    off = _plugin(tmp_path, "off", {"off-server": {"command": "uv"}})
-    other_repo = tmp_path / "elsewhere"
+    driver = _plugin(tmp_path, "web-driver", {"web-driver-kg": {"command": "uv"}})
     _register(
         config_dir,
         "a11y@accessibility-tools",
-        [
-            {"scope": "project", "projectPath": str(other_repo), "installPath": str(off)},
-            {"scope": "project", "projectPath": str(repo), "installPath": str(extra)},
-        ],
+        [{"scope": "project", "projectPath": str(repo), "installPath": str(a11y)}],
     )
     _register(
         config_dir,
-        "codebase-kg@codebase-kg",
-        [
-            {"scope": "project", "projectPath": str(repo), "installPath": str(kg)},
-        ],
+        "web-driver@web-driver",
+        [{"scope": "project", "projectPath": str(repo), "installPath": str(driver)}],
     )
-    _register(config_dir, "off@x", [{"scope": "user", "installPath": str(off)}])
-    _register(config_dir, "missing@x", [])
     settings = repo / ".claude" / "settings.json"
     settings.parent.mkdir(parents=True)
     settings.write_text(
@@ -245,10 +239,8 @@ def test_project_plugin_servers_join_new_role_files(tmp_path: Path, repo: Path, 
             {
                 "enabledPlugins": {
                     "a11y@accessibility-tools": True,
-                    "codebase-kg@codebase-kg": True,
+                    "web-driver@web-driver": True,
                     "sentinel-swarm@sentinel-swarm": True,
-                    "off@x": False,
-                    "missing@x": True,
                 }
             }
         ),
@@ -257,20 +249,11 @@ def test_project_plugin_servers_join_new_role_files(tmp_path: Path, repo: Path, 
 
     report = setup.run_setup(repo)
 
-    fields = _frontmatter(setup.role_file(repo, "manager"))
-    tools = [t.strip() for t in fields["tools"].split(",")]
-    assert "mcp__a11y-tools" in tools and "mcp__a11y-kg" in tools
-    assert "mcp__codebase-kg" not in tools
-    assert "mcp__off-server" not in tools
-    servers = {name: config for entry in fields["mcpServers"] for name, config in entry.items()}
-    assert set(servers) == {"codebase-kg", "a11y-tools", "a11y-kg"}
-    assert servers["a11y-tools"] == {
-        "command": "python",
-        "args": [".sentinel-swarm/hook.py", "mcp", "a11y@accessibility-tools", "a11y-tools"],
-    }
-    assert "hooks" in fields
-    assert _body(setup.role_file(repo, "manager")) == _body(setup.template_file("manager"))
-    assert any("skipped the MCP servers of missing@x" in line for line in report.lines)
+    for role in setup.ROLES:
+        written = setup.role_file(repo, role).read_text(encoding="utf-8")
+        template = setup.template_file(role).read_text(encoding="utf-8")
+        assert written == setup.render_default(template)
+    assert not any("MCP servers" in line for line in report.lines)
 
 
 def test_trust_is_read_from_claude_json(repo: Path, config_dir: Path):
@@ -312,7 +295,12 @@ def test_check_trust_prints_only_the_trust_command(
 
 @pytest.fixture
 def shim():
-    return setup.load_shim()
+    # The shim is a standalone standard-library file, not a module of the package.
+    spec = importlib.util.spec_from_file_location("sentinel_swarm_hook_shim", setup.SHIM_TEMPLATE)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_shim_lookup_prefers_local_then_project_then_user(tmp_path: Path, config_dir: Path, shim):

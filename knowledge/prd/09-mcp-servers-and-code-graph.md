@@ -8,9 +8,9 @@
   has `a11y@accessibility-tools` installed at user scope or for the host's path.
   `agent_spawn` and the launcher check the installed-plugins registry and add the
   servers through the shim, and their tools to `--allowedTools`.
-- `setup` also adds the MCP servers of every plugin that the host's
-  `.claude/settings.json` enables to a newly written role file's `mcpServers` and
-  `tools`. User-level plugins, user MCP servers, and claude.ai connectors never join.
+- `setup` writes each role file with the template's `mcpServers` and `tools` only. A
+  plugin that the host's `.claude/settings.json` enables does not join a role file.
+  User-level plugins, user MCP servers, and claude.ai connectors never join.
 - Only the future Driver will load the driver plugins.
 - Tool names: `mcp__swarm-ledger__<tool>` and `mcp__codebase-kg__<tool>`.
 - Each role keeps a fixed `tools` allowlist in its agent file.

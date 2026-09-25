@@ -33,19 +33,23 @@ Status: not built. The responsibilities below are Alex's, decided on 2026-09-24.
 ## Proposed shape **(proposed)**
 
 1. A fifth role, `driver`, with its template in `templates/agents/driver.md`. It has no Write or Edit tool, and a shell limited to the driver CLIs and the build command.
-2. One Driver per run, started by the Oracle when the PRD touches a UI, and released at `run_finish`.
+2. One Driver per run. The ledger starts it on the first `drive_request` and stops it when the wave ends.
 3. A ledger tool `drive_request(checks, build=True)` from any role. It adds a row to a `drive_requests` queue and owes the Driver a wake-up.
 4. The Driver takes requests in order. For each one, it builds if asked, refreshes the app, runs the checks, and saves evidence under `.sentinel-swarm/evidence/<request_id>/`.
 5. A ledger tool `drive_report(request_id, findings, evidence)` records the result and owes the requester a wake-up. The requester reads it with `message_inbox` or a `drive_result` tool.
 6. The run report lists each request, its findings, and links to its evidence.
+
+## Decisions
+
+- Decided by Alex on 2026-09-25: the Driver starts when the first request arrives, and it shuts down when a wave ends. A request in the next wave starts it again. **(proposed)** detail: it finishes the requests already in its queue before it stops.
 
 ## Questions to settle before building
 
 Ask these one at a time.
 
 ### Lifecycle
-1. Who starts the Driver, and when? One per run, one per platform, or one per phase?
-2. Who stops it? Should it stop when its queue is empty and restart on the next request, to save memory?
+1. ~~Who starts the Driver, and when?~~ Decided: on the first request.
+2. ~~Who stops it?~~ Decided: it stops when a wave ends.
 
 ### Requests
 3. Which roles may send requests? Can a Coder ask before its handoff, to check its own work?

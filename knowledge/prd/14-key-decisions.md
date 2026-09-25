@@ -53,3 +53,4 @@
 - 2026-09-24: A file with no code may be claimed without a test file; `phase_review` refuses mapped code with no test file.
 - 2026-09-24: Departures pass up the Lead, Manager, Oracle sign-off chain; a pushback carries a solution and resumes the chain down to the same Coder.
 - 2026-09-24: The Manager accepts a module, and the Oracle a phase or the run, only after every departure is decided.
+- 2026-09-25: Ledger enum values use snake_case.

@@ -99,6 +99,17 @@ def test_the_role_file_model_and_permission_mode_are_used(env):
     assert _option(command, "--permission-mode") == "plan"
 
 
+def test_an_oracle_file_without_a_model_uses_the_approved_list(env):
+    setup.run_setup(env["repo"])
+    path = setup.role_file(env["repo"], "oracle")
+    path.write_text(path.read_text(encoding="utf-8").replace("model: opus\n", ""), encoding="utf-8")
+
+    launch.main(["--repo", str(env["repo"]), "go"])
+
+    command = env["run"].calls[-1]["command"]
+    assert _option(command, "--model") == "opus"
+
+
 def test_a_broken_role_file_is_reported(env, capsys: pytest.CaptureFixture[str]):
     setup.run_setup(env["repo"])
     setup.role_file(env["repo"], "oracle").write_text("no frontmatter\n", encoding="utf-8")

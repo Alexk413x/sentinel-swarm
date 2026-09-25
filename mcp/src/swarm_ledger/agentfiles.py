@@ -81,6 +81,16 @@ def read_agent_file(repo_root: Path, role: str) -> dict[str, Any]:
     return {**data, "body": body}
 
 
+def oracle_model(repo_root: Path, approved: list[str]) -> str | None:
+    try:
+        model = read_agent_file(repo_root, "oracle").get("model")
+    except LedgerError:
+        model = None
+    if model:
+        return str(model)
+    return approved[0] if approved else None
+
+
 def tool_list(agent_file: dict[str, Any]) -> list[str]:
     raw = agent_file.get("tools")
     if raw is None:

@@ -75,6 +75,10 @@ outside the run.
 - A suggestion takes effect only when the responsible level agrees.
   `agreement_decide(deferral_id, "agreed" | "denied", reason)` needs a caller whose role
   ranks at or above the proposer's parent role.
+- The deferral must also sit in the caller's scope: a Lead decides only in its own
+  module, a Manager only in its own phase, and the Oracle anywhere in its run. The
+  deferral's file sets its module and phase. A deferral with no file takes the
+  proposer's. **(proposed)**
 - An open deferral on a file blocks `phase_update(approved)` for that file's phase. Any
   open deferral blocks `run_finish`.
 
@@ -111,9 +115,17 @@ The responsible level **(proposed)**:
   or a message. It never forwards a directive's text down the tree.
 - Every directive carries full authority, whatever its source. The Oracle acts without
   a confirmation step.
-- `directive_resolve(directive_id, outcome, resolution)` closes it. The Oracle's
-  outcomes are applied, scheduled, declined, or needs-user. **(proposed)** The report
-  lists each directive with its source and outcome.
+- `directive_resolve(directive_id, outcome, resolution)` closes it. The outcome is
+  `applied`, `scheduled`, `declined`, or `needs_user`, and the ledger refuses any other
+  value. **(proposed)** The report lists each directive with its source and outcome.
+- A `needs_user` outcome keeps the directive open, and its resolution states the
+  question for the user. While a directive waits on the user, the Oracle's Stop hook
+  lets the Oracle stop, and the watchdog reports no stall. **(proposed)**
+- A directive whose `reply_to` names a waiting directive resolves the waiting one. The
+  reply reaches the Oracle through `directive_inbox()` as a new open directive. The
+  Oracle can also call `directive_resolve` again on a waiting directive, for example
+  after the user answers in the Oracle's session. `directive_submit` refuses a
+  `reply_to` that names no directive of the run. **(proposed)**
 - `run_finish` refuses while a directive is open.
 
 ## What the Oracle tells the user

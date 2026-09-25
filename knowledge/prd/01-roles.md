@@ -75,14 +75,16 @@
 - The settings file holds the approved models per role. `brief_create` refuses a model
   outside the child role's list.
 - Each agent file's `model` key is the role's default. The launcher starts the Oracle on
-  its file's model. `agent_spawn` passes the brief's model with `--model`.
+  its file's model, or on the first entry of the Oracle's approved list when the file
+  has no `model`. `agent_spawn` passes the brief's model with `--model`.
 - The parent picks the child's model from the child role's list, by the complexity of
   the task, and the brief records the choice. Ideally, work reaches a Coder broken down
   far enough to run on the cheaper model.
 - Escalation can raise the model: a fresh Coder in round 2 or 3 can run on the stronger
   model in its list. **(proposed)**
 - The registry records the model of each agent. **(proposed)** For the Oracle's row,
-  `run_start` records the first entry of the Oracle's approved list.
+  `run_start` records the model the launcher uses, by the same rule. A new Oracle
+  session that resumes the run records it the same way.
 
 ### Oracle
 

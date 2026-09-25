@@ -374,7 +374,10 @@ def message_inbox(caller: str, agent_id: str | None = None) -> list[dict[str, An
 def directive_submit(
     source: str, sender_name: str | None, body: str, reply_to: int | None = None
 ) -> dict[str, Any]:
-    """Submits a directive to the run from chat, a skill, or the watchdog; no identity required."""
+    """Submits a directive to the run from chat, a skill, or the watchdog; no identity required.
+
+    A reply_to that names a needs_user directive resolves that directive.
+    """
     return _call(
         _ledger().directive_submit,
         source=source,
@@ -398,7 +401,11 @@ def directive_resolve(
     resolution: str,
     agent_id: str | None = None,
 ) -> dict[str, Any]:
-    """Resolves an open directive with an outcome; the Oracle calls this."""
+    """Resolves an open directive with an outcome; the Oracle calls this.
+
+    Outcomes: applied, scheduled, declined, needs_user. A needs_user directive stays open
+    until a directive_submit with reply_to answers it, or the Oracle resolves it again.
+    """
     return _call(
         _ledger().directive_resolve,
         caller=caller,

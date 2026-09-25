@@ -6,7 +6,7 @@ Principles and roles:
 
 - No state lives only in an agent.
 - The name patterns, and a name as the unique address stored in the registry.
-- The registry records each agent's model.
+- The registry records each agent's model, and the Oracle's from its agent file.
 - Escalation can raise a fresh Coder's model in rounds 2 and 3.
 - Arbitration duties: the Oracle between Managers, a Manager between Leads and module
   contracts, a Lead between Coders.
@@ -23,6 +23,8 @@ Principles and roles:
 - An issue a Manager finds starts at round 2. Not built: the ledger opens every issue at
   round 1.
 - The responsible-level table for deferrals and scope changes.
+- The scope check on `agreement_decide`: a Lead in its module, a Manager in its phase,
+  the Oracle in its run.
 - Overrides: recorded with a reason, narrow and single-use, never used by the Oracle to
   write a file.
 - While the run waits on the user, the phases the problem does not block keep going.
@@ -68,9 +70,10 @@ Ledger and sessions:
   on `return_work` and `accept_incomplete`, a pushback returning a submitted handoff, a
   pushback on a departure with no file, and a departure the Oracle records being signed
   off at once.
-- The directive mechanics: fields, the Oracle as the only reader, the outcomes, safe
-  points, and the source and sender in the report. A `reply_to` reply closing its
-  notification is not built: the ledger stores `reply_to` only.
+- The directive mechanics: fields, the Oracle as the only reader, the outcomes and the
+  refusal of any other value, safe points, and the source and sender in the report.
+- A `needs_user` directive stays open; the Oracle's Stop hook lets the Oracle stop and
+  the watchdog reports no stall while it waits; a `reply_to` reply resolves it.
 - Waiting on running children is a valid stop for the Oracle.
 - A hook blocks through JSON and exits 0; hooks ignore callers the registry does not
   know.
