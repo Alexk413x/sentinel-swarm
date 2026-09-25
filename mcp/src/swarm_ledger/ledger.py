@@ -1048,6 +1048,8 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
     def claim_file(
         self, caller: str, agent_id: str, path: str, test_path: str | None, for_name: str
     ) -> dict:
+        if test_path is not None and test_path.strip().lower() in ("", "none", "null"):
+            test_path = None
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
             require_role(c, "lead")

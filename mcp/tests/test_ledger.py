@@ -823,3 +823,10 @@ def test_report_times_a_phase_from_its_first_manager_start(ledger: Ledger) -> No
         )
     text = ledger.report_build("oracle", ctx["oracle_id"])["text"]
     assert "## Phase: phase-1 (unlocked, 6m 0s)" in text
+
+
+@pytest.mark.parametrize("given", ["None", "null", "", "  "])
+def test_claim_file_reads_a_text_null_test_path_as_no_test_file(ledger: Ledger, given: str) -> None:
+    ctx = _bootstrap(ledger)
+    claimed = ledger.claim_file("lead-1", ctx["lead"]["agent_id"], "pkg/__init__.py", given, "c-1")
+    assert claimed["test_path"] is None

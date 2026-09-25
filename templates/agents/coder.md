@@ -119,7 +119,9 @@ instead of waiting in it.
    - `description`: under 240 characters, present tense, describing what the code is,
      not what changed.
    - `anchors`: `"<path>#<Symbol>"` for every top-level function and class in the
-     file.
+     file. A file with none, such as an empty `__init__.py` or a config file, is
+     anchored by its path alone: `"anchors": ["<path>"]`. Never add code to a file
+     only to give it an anchor.
    - `edges`: only ids that already exist in the graph. Omit the key when the file
      depends on nothing mapped.
    The ledger refuses an anchor that points outside the file and its test file, and
