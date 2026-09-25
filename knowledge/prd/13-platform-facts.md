@@ -98,3 +98,4 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   receive messages meant for a new session with that name. (2026-09-23)
 - A session run with `--agent` loads the user's global `CLAUDE.md`, so a persona from
   it can appear in messages to the user. (2026-09-22)
+- On Windows, Python 3.12's `shutil.which` returns an extensionless file before its `.cmd` twin. A plugin that ships a POSIX launcher beside a `.cmd`, such as codebase-kg 0.8.0's `bin/kg-shim`, then fails with WinError 193. The shim prefers the PATHEXT variants. Verified 2026-09-25.

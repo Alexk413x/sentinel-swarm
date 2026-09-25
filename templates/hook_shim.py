@@ -231,10 +231,21 @@ def server_command(plugin_id: str, server: str) -> tuple[list[str], dict[str, st
     command = expand(entry["command"], root, os.environ)
     args = entry.get("args")
     args = [expand(str(arg), root, os.environ) for arg in args] if isinstance(args, list) else []
-    executable = shutil.which(command, path=env.get("PATH"))
+    executable = find_executable(command, env.get("PATH"))
     if executable is None:
         raise ShimError(f"{command} is not on PATH")
     return [executable, *args], env
+
+
+def find_executable(command: str, path: str | None) -> str | None:
+    # Python 3.12's shutil.which returns an extensionless file first on Windows, and a
+    # plugin's POSIX launcher beside its .cmd twin fails there with WinError 193.
+    if os.name == "nt" and not Path(command).suffix:
+        for ext in os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(os.pathsep):
+            found = shutil.which(command + ext, path=path)
+            if found is not None:
+                return found
+    return shutil.which(command, path=path)
 
 
 def _script_index(args: list[str], start: int) -> int:

@@ -616,3 +616,14 @@ def test_shim_mcp_http_refuses_a_bad_port_and_an_unwrappable_server(
     assert unwrappable.returncode == 1
     assert "cannot serve the MCP server srv over HTTP" in unwrappable.stderr
     assert "only a uv run or uvx command" in unwrappable.stderr
+
+
+@pytest.mark.skipif(os.name != "nt", reason="PATHEXT resolution is Windows only")
+def test_shim_prefers_a_cmd_twin_over_an_extensionless_script(tmp_path: Path, shim):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "kg-shim").write_text("#!/bin/sh\n", encoding="utf-8")
+    (bin_dir / "kg-shim.cmd").write_text("@echo off\n", encoding="utf-8")
+    found = shim.find_executable(str(bin_dir / "kg-shim"), None)
+    assert found is not None
+    assert Path(found).name.lower() == "kg-shim.cmd"
