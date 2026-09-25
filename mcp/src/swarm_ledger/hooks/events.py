@@ -363,7 +363,7 @@ def handle_post_shell(ledger: Ledger, data: dict) -> None:
 
     try:
         result = subprocess.run(
-            ["git", "status", "--porcelain"],
+            ["git", "status", "--porcelain", "--untracked-files=all"],
             cwd=ledger.repo_root,
             capture_output=True,
             text=True,
@@ -381,11 +381,22 @@ def handle_post_shell(ledger: Ledger, data: dict) -> None:
         (caller["file_id"],),
     ).fetchone()
     owned = {claim["path"], claim["test_path"]} if claim is not None else set()
+    others = {
+        p
+        for row in ledger.conn.execute(
+            "SELECT f.path, f.test_path FROM files f JOIN modules m ON m.module_id = f.module_id "
+            "JOIN phases ph ON ph.phase_id = m.phase_id WHERE ph.run_id = ?",
+            (caller["run_id"],),
+        )
+        for p in (row["path"], row["test_path"])
+        if p
+    }
 
     violations = [
         p
         for p in changed
         if p not in owned
+        and p not in others
         and not p.startswith(f"{_RECORDS_DIR}/")
         and not p.startswith("knowledge/")
     ]

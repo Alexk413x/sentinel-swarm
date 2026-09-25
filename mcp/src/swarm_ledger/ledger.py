@@ -1074,9 +1074,10 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
             )
             file_id = cur.lastrowid
             conn.execute(
-                "UPDATE files SET state = 'superseded' WHERE module_id = ? AND path = ? "
-                "AND state = 'released' AND file_id != ?",
-                (c.module_id, path, file_id),
+                "UPDATE files SET state = 'superseded' WHERE path = ? AND file_id != ? "
+                "AND released_at IS NOT NULL AND module_id IN (SELECT m.module_id FROM modules m "
+                "JOIN phases p ON p.phase_id = m.phase_id WHERE p.run_id = ?)",
+                (path, file_id, c.run_id),
             )
 
         return dict(

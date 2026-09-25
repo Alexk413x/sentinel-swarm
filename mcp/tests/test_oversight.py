@@ -425,6 +425,22 @@ def test_phase_review_refuses_code_the_graph_maps_without_a_test_file(ledger: Le
         ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok")
 
 
+def test_re_claiming_an_approved_untested_file_with_a_test_clears_the_gate(
+    ledger: Ledger,
+) -> None:
+    ctx = _bootstrap(ledger)
+    first = _approve_file(ledger, ctx, "coder-good", "pkg/good.py", None)
+    second = _approve_file(ledger, ctx, "coder-good-r2", "pkg/good.py", "tests/test_good.py")
+    _accept_module_and_hand_up(ledger, ctx)
+    _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+
+    states = dict(ledger.conn.execute("SELECT file_id, state FROM files").fetchall())
+    assert states[first] == "superseded"
+    assert states[second] == "approved"
+    result = ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok")
+    assert result["outcome"] == "accepted"
+
+
 def test_a_file_without_code_in_the_graph_needs_no_test_file(ledger: Ledger, host: Path) -> None:
     (host / "pkg" / "notes.txt").write_text("notes\n", encoding="utf-8")
     conn = sqlite3.connect(str(host / "knowledge" / "code_graph.db"))

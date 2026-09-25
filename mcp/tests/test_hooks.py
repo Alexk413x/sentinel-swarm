@@ -847,3 +847,28 @@ def test_stop_does_not_block_the_oracle_for_its_own_debts(ledger: Ledger) -> Non
     ledger.message_post("oracle", ctx["oracle_id"], "manager-1", "Change of plan.")
     ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
     assert events.handle_stop(ledger, {"session_id": ctx["oracle_id"]}) is None
+
+
+def test_post_shell_flags_only_paths_no_claim_in_the_run_covers(
+    ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _bootstrap(ledger)
+    coder = _spawn_coder(ledger, ctx, "coder-a", "src/a.py", "tests/test_a.py")
+    ledger.claim_file("lead-1", ctx["lead"]["agent_id"], "src/b.py", "tests/test_b.py", "coder-b")
+    porcelain = "?? src/a.py\n?? src/b.py\n?? tests/test_b.py\n?? stray.txt\n"
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        assert "--untracked-files=all" in args
+        return subprocess.CompletedProcess(args, 0, stdout=porcelain, stderr="")
+
+    monkeypatch.setattr(events.subprocess, "run", fake_run)
+    events.handle_post_shell(ledger, {"session_id": coder["agent_id"]})
+
+    reasons = [
+        row["reason"]
+        for row in ledger.conn.execute(
+            "SELECT reason FROM agent_events WHERE agent_id = ? AND to_state = 'violation'",
+            (coder["agent_id"],),
+        )
+    ]
+    assert reasons == ["changed files outside its claim: stray.txt"]
