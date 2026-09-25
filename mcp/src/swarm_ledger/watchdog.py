@@ -293,6 +293,16 @@ def _last_activity(conn: sqlite3.Connection, run_id: int) -> datetime | None:
     return parse_stamp(row["at"]) if row is not None else None
 
 
+def _transcript_written(agent: dict) -> datetime | None:
+    raw = agent.get("transcript_path")
+    if not raw:
+        return None
+    try:
+        return datetime.fromtimestamp(Path(raw).stat().st_mtime, tz=timezone.utc)
+    except OSError:
+        return None
+
+
 def _stalled(
     conn: sqlite3.Connection,
     run: sqlite3.Row,
@@ -311,11 +321,18 @@ def _stalled(
         if a["agent_id"] in by_session and sessions.is_running(by_session[a["agent_id"]])
     ]
     if live:
-        if any(str(e.get("status") or "").lower() == "busy" for e in live):
+        # Not the Oracle's status: its armed watchdog Monitor keeps its session "busy" while
+        # it is idle, so its transcript's last write says whether it is working.
+        if any(
+            str(by_session[a["agent_id"]].get("status") or "").lower() == "busy"
+            for a in members
+            if a["agent_id"] in by_session
+        ):
             return None
         if any(a["state"] == "working" for a in members):
             return None
-        last = _last_activity(conn, run_id)
+        stamps = [_last_activity(conn, run_id), _transcript_written(oracle)]
+        last = max((s for s in stamps if s is not None), default=None)
         if last is not None and now - last < IDLE_STALL:
             return None
     handoffs = conn.execute(

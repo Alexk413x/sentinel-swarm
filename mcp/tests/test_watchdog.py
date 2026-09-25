@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import socket
 import threading
 from datetime import datetime, timedelta
@@ -350,14 +351,22 @@ def test_a_run_with_no_running_session_and_pending_work_is_stalled(
 
 
 def test_live_sessions_that_all_sit_idle_with_pending_work_are_stalled(
-    ledger: Ledger, claude: FakeClaude, now: datetime
+    ledger: Ledger, claude: FakeClaude, now: datetime, tmp_path: Path
 ) -> None:
     _run_id(ledger)
     _agent(ledger, "sess-lead-1", "lead", "idle", started=now)
     ledger.message_post("oracle", ORACLE, "lead-1", "Module 1 changed.")
-    claude.run(ORACLE, "host-oracle", status="idle")
+    claude.run(ORACLE, "host-oracle", status="busy")
     claude.run("sess-lead-1", status="idle")
+    transcript = tmp_path / "oracle.jsonl"
+    transcript.write_text("{}\n", encoding="utf-8")
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET transcript_path = ? WHERE agent_id = ?", (str(transcript), ORACLE)
+        )
     later = now + timedelta(minutes=3)
+    old = (now - timedelta(minutes=10)).timestamp()
+    os.utime(transcript, (old, old))
 
     findings = _scan(ledger, claude, later)
 
@@ -366,6 +375,10 @@ def test_live_sessions_that_all_sit_idle_with_pending_work_are_stalled(
     assert 'SendMessage(to="host-r1-lead-1")' in findings[0].next_step
 
     assert _scan(ledger, claude, now + timedelta(minutes=1)) == []
+    fresh = (later - timedelta(seconds=30)).timestamp()
+    os.utime(transcript, (fresh, fresh))
+    assert _scan(ledger, claude, later) == []
+    os.utime(transcript, (old, old))
     claude.listing[1]["status"] = "busy"
     assert _scan(ledger, claude, later) == []
 
