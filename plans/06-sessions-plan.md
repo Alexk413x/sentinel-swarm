@@ -243,4 +243,6 @@ The launcher and setup:
 
 ## Open questions
 
-1. Where the model settings live: the `models` lists in `.claude/sentinel-swarm.local.md`, the `model` key in each agent file, or both.
+Decided by Alex on 2026-09-24: both. The `models` lists in `.claude/sentinel-swarm.local.md` are the approved models per role, and `brief_create` refuses a model outside the child's list. The `model` key in each agent file is the role's default: the Oracle starts on it, and `agent_spawn` passes the brief's model with `--model`.
+
+No open questions.
