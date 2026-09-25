@@ -821,7 +821,7 @@ def test_a_pushback_refuses_to_reopen_a_path_another_claim_holds(ledger: Ledger)
     ledger.claim_file(
         "lead-1", ctx["lead"]["agent_id"], "pkg/good.py", "tests/test_good.py", "coder-next"
     )
-    with pytest.raises(LedgerError, match="has a live claim for 'coder-next'"):
+    with pytest.raises(LedgerError, match="superseded by a later claim"):
         _decide(
             ledger,
             "manager-1",
