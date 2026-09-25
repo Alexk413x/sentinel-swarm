@@ -21,7 +21,10 @@ are the source of truth for every role's responsibilities.
 - `knowledge/` — `code_graph.db`, the codebase-kg map of this repo. Committed.
 - `scripts/smoke.sh` — the smoke test. It rebuilds `runs/hello/` (git-ignored) on each run
   and starts the Oracle through the installed copy's launcher: interactive by default,
-  `--bg` for a background session, `--headless` for `claude -p`.
+  `--bg` for a background session, `--headless` for `claude -p`. `--prd <name>` uses
+  `scripts/prds/<name>.md` as the prompt: `modules` (two parallel phases, then a command
+  that uses both; about $5) or `textstats` (two dependent phases, about 10 files; about
+  $12).
 - `.githooks/` — the codebase-kg staleness hooks. Run `sh .githooks/install.sh` once per
   clone.
 - `plans/` — design documents. Do not treat anything outside `plans/` as settled

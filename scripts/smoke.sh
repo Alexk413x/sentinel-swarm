@@ -8,8 +8,15 @@ case "${1:-}" in
     shift
     ;;
 esac
-prompt="${1:-Create hello.py. When it runs, it writes the text Hello, world! to hello_world.txt in the current folder.}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
+if [ "${1:-}" = --prd ]; then
+  prd_file="$root/scripts/prds/${2:?--prd needs a name from scripts/prds}.md"
+  [ -f "$prd_file" ] || { echo "no PRD at $prd_file" >&2; exit 1; }
+  prompt="$(cat "$prd_file")"
+  shift 2
+else
+  prompt="${1:-Create hello.py. When it runs, it writes the text Hello, world! to hello_world.txt in the current folder.}"
+fi
 run_dir="$root/runs/hello"
 host="$run_dir/host"
 claude_bin="${CLAUDE_BIN:-claude}"
@@ -20,9 +27,11 @@ kg_dir="${KG_PLUGIN_DIR:-$(ls -d "$HOME"/.claude/plugins/cache/codebase-kg/codeb
 win() { if command -v cygpath >/dev/null; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
 
 report_results() {
-  if [ -f "$host/hello.py" ]; then
-    (cd "$host" && python hello.py) || echo "python hello.py exited with status $?" >&2
-  fi
+  for script in hello.py hello_world.py; do
+    if [ -f "$host/$script" ]; then
+      (cd "$host" && python "$script") || echo "python $script exited with status $?" >&2
+    fi
+  done
   if [ -f "$host/hello_world.txt" ]; then
     echo "hello_world.txt: $(cat "$host/hello_world.txt")"
   else

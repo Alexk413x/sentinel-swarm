@@ -1140,6 +1140,13 @@ class ReviewMixin:
             raise LedgerError(f"{caller!r} has no run")
         return self.write_report(c.run_id)
 
+    def _phase_work_start(self, phase: sqlite3.Row) -> str | None:
+        row = self.conn.execute(
+            "SELECT MIN(started_at) AS at FROM agents WHERE phase_id = ? AND role = 'manager'",
+            (phase["phase_id"],),
+        ).fetchone()
+        return row["at"] if row is not None and row["at"] else phase["started_at"]
+
     def write_report(self, run_id: int) -> dict:
         conn = self.conn
         run = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
@@ -1160,7 +1167,7 @@ class ReviewMixin:
         ).fetchall():
             lines.append(
                 f"## Phase: {phase['name']} ({phase['state']}, "
-                f"{_duration(phase['started_at'], phase['ended_at'])})"
+                f"{_duration(self._phase_work_start(phase), phase['ended_at'])})"
             )
             for module in conn.execute(
                 "SELECT * FROM modules WHERE phase_id = ? ORDER BY module_id",

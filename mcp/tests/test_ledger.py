@@ -807,3 +807,19 @@ def test_report_cost_uses_list_prices_per_model() -> None:
     assert pricing.response_cost("claude-opus-5-5", usage) == 4.0 + 5.0 + 8.0
     assert review._duration("2026-09-25T02:00:00.000Z", "2026-09-25T02:35:10.000Z") == "35m 10s"
     assert review._duration("2026-09-25T02:00:00.000Z", "2026-09-25T03:05:00.000Z") == "1h 5m"
+
+
+def test_report_times_a_phase_from_its_first_manager_start(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE phases SET started_at = '2026-09-25T06:00:00.000Z', "
+            "ended_at = '2026-09-25T06:16:00.000Z' WHERE phase_id = ?",
+            (ctx["phase_id"],),
+        )
+        conn.execute(
+            "UPDATE agents SET started_at = '2026-09-25T06:10:00.000Z' WHERE agent_id = ?",
+            (ctx["manager"]["agent_id"],),
+        )
+    text = ledger.report_build("oracle", ctx["oracle_id"])["text"]
+    assert "## Phase: phase-1 (unlocked, 6m 0s)" in text
