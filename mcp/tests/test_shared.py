@@ -56,6 +56,9 @@ def _fake_server(name: str, port: int, process: FakeProcess, job: int | None = N
     return shared.SharedServer("p@m", name, port, process, job)  # type: ignore[arg-type]
 
 
+CODEBASE_KG = ("codebase-kg@codebase-kg", "codebase-kg")
+
+
 def _registry(config_dir: Path, plugins: dict[str, list[dict]]) -> None:
     path = config_dir / "plugins" / "installed_plugins.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -67,11 +70,10 @@ def test_planned_servers_add_a11y_only_when_the_host_has_it(
 ) -> None:
     config_dir = tmp_path / "config"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
-    assert shared.planned_servers(host) == [("codebase-kg@codebase-kg", "codebase-kg")]
+    assert shared.planned_servers(host) == []
 
     _registry(config_dir, {"a11y@accessibility-tools": [{"scope": "user"}]})
     assert shared.planned_servers(host) == [
-        ("codebase-kg@codebase-kg", "codebase-kg"),
         ("a11y@accessibility-tools", "a11y-tools"),
         ("a11y@accessibility-tools", "a11y-kg"),
     ]
@@ -163,7 +165,7 @@ def test_start_shared_records_only_the_servers_that_answer(
 def test_start_shared_without_the_shim_records_no_servers(
     host: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(shared, "planned_servers", lambda root: [shared.CODEBASE_KG])
+    monkeypatch.setattr(shared, "planned_servers", lambda root: [CODEBASE_KG])
     recorded: list[dict[str, str]] = []
     assert shared.start_shared(host, recorded.append) == {}
     assert recorded == [{}]
@@ -287,7 +289,7 @@ def test_closing_the_job_handle_stops_the_tree(tmp_path: Path) -> None:
 
 @pytest.fixture
 def kg_only(kg_host: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setattr(shared, "planned_servers", lambda root: [shared.CODEBASE_KG])
+    monkeypatch.setattr(shared, "planned_servers", lambda root: [CODEBASE_KG])
     return kg_host
 
 

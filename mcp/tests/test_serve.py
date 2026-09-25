@@ -239,24 +239,25 @@ def _stop_ledger_hard(pid: int) -> None:
         os.kill(pid, signal.SIGKILL)
 
 
-async def _kg_stats(url: str) -> dict[str, Any]:
+async def _graph_stats(url: str) -> Any:
     async with Client(url) as client:
-        return (await client.call_tool("kg_stats", {})).data
+        return (await client.call_tool("kg_graph_stats", {})).data
 
 
 @pytest.mark.integration
 @pytest.mark.parametrize("ending", ["run_finish", "killed"])
-def test_the_ledger_shares_codebase_kg_and_stops_it_on_exit(kg_host: Path, ending: str) -> None:
+def test_the_ledger_shares_a11y_and_stops_it_on_exit(a11y_kg_host: Path, ending: str) -> None:
+    kg_host = a11y_kg_host
     url = serve.ensure_server(kg_host, timeout=60, shared_wait=150)
     info = serve.read_server_info(kg_host)
     assert info is not None
     try:
-        kg_url = info["servers"]["codebase-kg"]
+        assert "codebase-kg" not in info["servers"]
+        kg_url = info["servers"]["a11y-kg"]
         assert kg_url.startswith("http://127.0.0.1:") and kg_url.endswith("/mcp")
-        assert asyncio.run(_kg_stats(kg_url))["nodes"] > 0
-        assert json.loads(shared.ports_path(kg_host).read_text(encoding="utf-8")) == {
-            "codebase-kg": int(kg_url.split(":")[2].split("/")[0])
-        }
+        assert asyncio.run(_graph_stats(kg_url))
+        ports = json.loads(shared.ports_path(kg_host).read_text(encoding="utf-8"))
+        assert ports["a11y-kg"] == int(kg_url.split(":")[2].split("/")[0])
 
         if ending == "run_finish":
             asyncio.run(_start_and_finish(url))

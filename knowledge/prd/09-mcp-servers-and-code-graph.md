@@ -22,10 +22,18 @@
 Decided by Alex on 2026-09-25: build the HTTP change first. The mechanism below is
 **(proposed)**.
 
-- The ledger server runs one shared HTTP instance of `codebase-kg` per host repo, and of
-  `a11y-tools` and `a11y-kg` when the host has `a11y@accessibility-tools` installed.
-  Every session connects to them by URL, so a session starts no MCP server process of
-  its own.
+- The ledger server runs one shared HTTP instance of `a11y-tools` and of `a11y-kg` per
+  host repo, when the host has `a11y@accessibility-tools` installed. Every session
+  connects to them by URL, so a session starts no a11y server process of its own.
+- codebase-kg shares itself. Decided by Alex on 2026-09-25: the ledger does not run a
+  shared codebase-kg. From codebase-kg 0.8.0, each session's stdio entry runs
+  codebase-kg's own relay, `bin/kg-shim`, one small process that connects to one
+  codebase-kg server per machine and plugin version. The relay's handshake sends the
+  session's working folder and any explicit graph path, and the shared server resolves
+  each tool call's graph from that connection, so every session reads its own host's
+  `knowledge/code_graph.db`. When the shared server cannot be reached within 10 seconds,
+  the relay starts a private server for that session. Verified in codebase-kg 0.8.0's
+  `shim.py`, `daemon.py`, and `server.py` on 2026-09-25.
 - Each server runs in its plugin's own environment, from its plugin's `.mcp.json`, with
   no change to the plugin. The ledger runs the shim:
   `python .sentinel-swarm/hook.py mcp-http <plugin_id> <server> <port> <ledger pid>`.
@@ -44,14 +52,13 @@ Decided by Alex on 2026-09-25: build the HTTP change first. The mechanism below 
   script name and the remaining arguments, and calls the server's own `main()`. The
   server keeps its argument handling, such as a11y-kg's graph path, and FastMCP's
   default path `/mcp`.
-- The server runs with the host repo root as its working directory, so codebase-kg
-  finds `knowledge/code_graph.db` there.
 - `session_options` lists a server as `{"type": "http", "url": ...}` when
   `server.json` records its URL and the URL answers. Otherwise the session keeps the
-  shim's stdio entry. The server names stay `codebase-kg`, `a11y-tools`, and
-  `a11y-kg`, so the tool allowlists stay the same.
-- Sharing one codebase-kg is safe: swarm roles call only its read tools, and graph
-  writes go through `graph_upsert` under the ledger's lock.
+  shim's stdio entry. The server names stay `a11y-tools` and `a11y-kg`, so the tool
+  allowlists stay the same.
+- Graph writes go through `graph_upsert`, which runs codebase-kg's CLI with the host
+  graph's explicit path under the ledger's lock, so the shared codebase-kg server only
+  ever serves reads.
 - Per session, the stdio entries ran 4 processes for codebase-kg (shim, `uv`, the venv
   launcher, and Python) and 5 for each a11y server in the `uvx` form (shim, `uvx`,
   `uv`, and two Python processes), measured on Windows on 2026-09-25. With shared
@@ -60,11 +67,8 @@ Decided by Alex on 2026-09-25: build the HTTP change first. The mechanism below 
   session id. A restarted server answers a client that initialized against the
   server's previous process. A stateful server answers that client's old session id
   with 404 "Session not found". **(proposed)**
-- codebase-kg 0.8.0 runs `${CLAUDE_PLUGIN_ROOT}/bin/kg-shim` in place of `uv run`.
-  `mcp-http` cannot wrap that command, so the ledger logs that codebase-kg did not
-  start, and sessions use its stdio entry. That entry runs codebase-kg's own shim,
-  which, by its documentation, relays to one codebase-kg server per machine. The a11y
-  servers still use the `uvx` form.
+- The `uv run` rewrite still works for any FastMCP plugin in that form, such as
+  codebase-kg 0.7.0; its tests pin that version explicitly.
 
 ### Restarts
 

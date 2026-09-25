@@ -54,3 +54,4 @@
 - 2026-09-24: Departures pass up the Lead, Manager, Oracle sign-off chain; a pushback carries a solution and resumes the chain down to the same Coder.
 - 2026-09-24: The Manager accepts a module, and the Oracle a phase or the run, only after every departure is decided.
 - 2026-09-25: Ledger enum values use snake_case.
+- 2026-09-25: The ledger does not share codebase-kg; codebase-kg 0.8.0 shares one server per machine through its own relay.

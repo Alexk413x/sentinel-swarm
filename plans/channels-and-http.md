@@ -70,7 +70,7 @@ Built on 2026-09-25. What remains:
 1. Build a minimal channel server and run probes 1 and 2.
 2. Move the Oracle's watchdog delivery to the channel, and remove the `Monitor` requirement.
 3. Move wake-ups owed to channel delivery. Keep `SendMessage` as a fallback while both paths are proven.
-4. Move codebase-kg and a11y to shared HTTP servers. Built on 2026-09-25.
+4. Move a11y to shared HTTP servers. Built on 2026-09-25. codebase-kg shares itself from 0.8.0 through its own relay, so the ledger does not share it.
 5. Update `knowledge/prd/` for each step.
 
 ## Questions for Alex

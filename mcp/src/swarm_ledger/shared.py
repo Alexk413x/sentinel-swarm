@@ -23,7 +23,6 @@ HOST = "127.0.0.1"
 MCP_PATH = "/mcp"
 PORTS_FILE = "shared-ports.json"
 LOG_FILE = "server.log"
-CODEBASE_KG = ("codebase-kg@codebase-kg", "codebase-kg")
 START_TIMEOUT_S = 60.0
 STOP_GRACE_S = 2.0
 _PROBE_TIMEOUT_S = 2.0
@@ -80,7 +79,8 @@ def server_url(port: int) -> str:
 
 
 def planned_servers(repo_root: Path) -> list[tuple[str, str]]:
-    servers: list[tuple[str, str]] = [CODEBASE_KG]
+    # Not codebase-kg: from 0.8.0 it shares one server per machine through its own relay.
+    servers: list[tuple[str, str]] = []
     for plugin_id, names in OPTIONAL_SERVERS.items():
         if plugin_installed(repo_root, plugin_id):
             servers += [(plugin_id, name) for name in names]
