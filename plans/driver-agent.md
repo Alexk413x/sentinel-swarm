@@ -5,9 +5,9 @@ Status: not built. The responsibilities below are Alex's, decided on 2026-09-24.
 ## What the Driver does
 
 - Runs the app and tests changes on it with the driver plugins: android-driver, ios-driver, and web-driver.
-- Takes requests from any role. A request can ask for a build and a refresh, then names the checks to run.
-- Keeps a queue of requested work, explores each item, and reports back to the agent that asked, with its findings and the evidence.
-- The requester then fixes or tweaks its work and asks again, or records its work as complete.
+- Takes requests from the Oracle only, between waves, when no Coder is editing. It builds the app, explores and tests it, and records every issue it finds, with evidence.
+- The Oracle turns the issues into a new wave of fixes. Managers, Leads, and Coders work that wave with unit tests only.
+- The loop repeats until the Driver finds nothing: wave, explore, fix wave, explore.
 - It does not edit project files. It observes and reports.
 - It is the only role that loads the driver plugins.
 
@@ -33,40 +33,45 @@ Status: not built. The responsibilities below are Alex's, decided on 2026-09-24.
 ## Proposed shape **(proposed)**
 
 1. A fifth role, `driver`, with its template in `templates/agents/driver.md`. It has no Write or Edit tool, and a shell limited to the driver CLIs and the build command.
-2. One Driver per run. The ledger starts it on the first `drive_request` and stops it when the wave ends.
-3. A ledger tool `drive_request(checks, build=True)` from any role. It adds a row to a `drive_requests` queue and owes the Driver a wake-up.
-4. The Driver takes requests in order. For each one, it builds if asked, refreshes the app, runs the checks, and saves evidence under `.sentinel-swarm/evidence/<request_id>/`.
-5. A ledger tool `drive_report(request_id, findings, evidence)` records the result and owes the requester a wake-up. The requester reads it with `message_inbox` or a `drive_result` tool.
-6. The run report lists each request, its findings, and links to its evidence.
+2. One Driver per run. The ledger starts it when the Oracle's first `drive_request` arrives, and stops it when the exploration ends, before the next wave starts.
+3. A ledger tool `drive_request(focus)` that only the Oracle may call, and only while no phase is working. `focus` lists what to explore: the PRD's features, the last wave's changes, and earlier issues to recheck.
+4. The Driver builds with `build_command`, launches the app, explores the focus list, and saves evidence under `.sentinel-swarm/evidence/<request_id>/`.
+5. A ledger tool `drive_report(request_id, issues, evidence)` records each issue as a ledger issue with its evidence, and owes the Oracle a wake-up.
+6. The Oracle plans a fix wave from the open Driver issues, as new phases, and requests another exploration when that wave ends.
+7. The run finishes only after an exploration that records no new issue.
+8. The run report lists each exploration, its issues, the wave that fixed each one, and links to the evidence.
 
 ## Decisions
 
-- Decided by Alex on 2026-09-25: the Driver starts when the first request arrives, and it shuts down when a wave ends. A request in the next wave starts it again. **(proposed)** detail: it finishes the requests already in its queue before it stops.
+- Decided by Alex on 2026-09-25: the Driver starts when a request arrives, and it shuts down when its exploration ends, so it never runs while a wave edits files.
+- Decided by Alex on 2026-09-25: only the Oracle sends requests. The Driver explores, tests, and records issues; the Oracle starts a new wave of fixes from them; this repeats until everything works. Every other role does unit testing only, because the app cannot build while other edits are in progress.
 
 ## Questions to settle before building
 
 Ask these one at a time.
 
 ### Lifecycle
-1. ~~Who starts the Driver, and when?~~ Decided: on the first request.
-2. ~~Who stops it?~~ Decided: it stops when a wave ends.
+1. ~~Who starts the Driver, and when?~~ Decided: when the Oracle requests it, between waves.
+2. ~~Who stops it?~~ Decided: it stops when its exploration ends.
 
 ### Requests
-3. Which roles may send requests? Can a Coder ask before its handoff, to check its own work?
-4. What does a request contain: free text, a fixed list of check types, or both?
-5. How should the queue work? Options: first in, first out, priorities, and merging identical requests. The device can serve one request at a time.
-6. What happens when a request times out, or the build fails?
+3. ~~Which roles may send requests?~~ Decided: the Oracle only.
+4. What does the Oracle's request contain: the whole PRD to explore, only the last wave's changes, or a focus list it writes?
+5. ~~How should the queue work?~~ Settled: one requester, one exploration at a time.
+6. What happens when the build fails, or an exploration runs too long? A failed build could itself become the first issue of the fix wave.
+6a. When does the loop stop: when an exploration finds no new issue, or after a maximum number of fix waves, with the rest reported to the user?
+6b. How does the Oracle turn issues into a fix wave: new phases grouped by module, or reopening the files that caused them?
 
 ### Build and devices
-7. Who runs the build: the Driver, using `build_command`, or the requester?
+7. ~~Who runs the build?~~ Settled: the Driver, with `build_command`, since nothing is editing.
 8. Who boots and shuts down the emulator, Simulator, or browser? Does the device stay up between requests?
 9. Which platforms come first? Android only, then web, then iOS once there's a Mac?
 
 ### Reports and gates
 10. What does a finding contain: a pass or fail per check, a severity, a screenshot reference?
 11. Where does evidence live, how long is it kept, and is there a size limit?
-12. Does any gate require a Driver report? For example, `approve` for a UI file, or `phase_review`.
-13. Does a failed check open an issue automatically, or only a report the requester acts on?
+12. ~~Does any gate require a Driver report?~~ Settled: `run_finish` requires a final exploration with no new issue, if the loop-stop rule in 6a says so.
+13. ~~Does a failed check open an issue?~~ Settled: every finding is recorded as an issue for the fix wave.
 14. Should Driver evidence count toward the accessibility dimension of the rubric?
 
 ### Setup
