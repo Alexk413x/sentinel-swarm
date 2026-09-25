@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 from fastmcp import Client
 
-from swarm_ledger import serve
+from swarm_ledger import serve, shared
 from swarm_ledger.identity import LedgerError
 
 
@@ -81,7 +81,8 @@ def test_ensure_server_starts_one_server_per_repo_and_it_exits_after_run_finish(
     url = serve.ensure_server(host, timeout=60)
     info = serve.read_server_info(host)
     assert info is not None
-    assert set(info) == {"url", "port", "pid", "started_at"}
+    assert set(info) == {"url", "port", "pid", "started_at", "servers"}
+    assert info["servers"] == {}
     assert url == info["url"] == f"http://127.0.0.1:{info['port']}/mcp"
 
     assert serve.ensure_server(host) == url
@@ -199,3 +200,71 @@ def test_no_recorded_oracle_stops_nothing(monkeypatch: pytest.MonkeyPatch) -> No
     stopped = _fake_sessions(monkeypatch, [[_oracle("idle")]])
     assert serve.stop_finished_oracle(None) == "no Oracle session recorded"
     assert stopped == []
+
+
+def test_write_server_info_replaces_the_record(tmp_path: Path) -> None:
+    host = tmp_path
+    path = serve.server_info_path(host)
+    path.parent.mkdir(parents=True)
+    serve.write_server_info(path, {"url": "http://127.0.0.1:5/mcp", "port": 5, "servers": None})
+    serve.write_server_info(path, {"url": "http://127.0.0.1:5/mcp", "port": 5, "servers": {}})
+    assert serve.read_server_info(host) == {
+        "url": "http://127.0.0.1:5/mcp",
+        "port": 5,
+        "servers": {},
+    }
+    assert [p.name for p in path.parent.iterdir()] == ["server.json"]
+
+
+@pytest.mark.parametrize(
+    ("servers", "waits"),
+    [({"servers": None}, True), ({"servers": {}}, False), ({}, False)],
+)
+def test_ensure_server_waits_only_while_shared_servers_start(
+    tmp_path: Path, servers: dict, waits: bool
+) -> None:
+    host = tmp_path
+    path = serve.server_info_path(host)
+    path.parent.mkdir(parents=True)
+    serve.write_server_info(path, {"url": "http://127.0.0.1:5/mcp", "port": 5, **servers})
+    started = time.monotonic()
+    serve._wait_for_shared(host, 0.5)
+    assert (time.monotonic() - started >= 0.5) is waits
+
+
+def _stop_ledger_hard(pid: int) -> None:
+    if sys.platform == "win32":
+        os.kill(pid, signal.SIGTERM)
+    else:
+        os.kill(pid, signal.SIGKILL)
+
+
+async def _kg_stats(url: str) -> dict[str, Any]:
+    async with Client(url) as client:
+        return (await client.call_tool("kg_stats", {})).data
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("ending", ["run_finish", "killed"])
+def test_the_ledger_shares_codebase_kg_and_stops_it_on_exit(kg_host: Path, ending: str) -> None:
+    url = serve.ensure_server(kg_host, timeout=60, shared_wait=150)
+    info = serve.read_server_info(kg_host)
+    assert info is not None
+    try:
+        kg_url = info["servers"]["codebase-kg"]
+        assert kg_url.startswith("http://127.0.0.1:") and kg_url.endswith("/mcp")
+        assert asyncio.run(_kg_stats(kg_url))["nodes"] > 0
+        assert json.loads(shared.ports_path(kg_host).read_text(encoding="utf-8")) == {
+            "codebase-kg": int(kg_url.split(":")[2].split("/")[0])
+        }
+
+        if ending == "run_finish":
+            asyncio.run(_start_and_finish(url))
+        else:
+            _stop_ledger_hard(int(info["pid"]))
+        assert _wait_for(lambda: not shared.is_answering(kg_url, timeout=0.5))
+    finally:
+        try:
+            os.kill(int(info["pid"]), signal.SIGTERM)
+        except OSError:
+            pass

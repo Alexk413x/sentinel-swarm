@@ -17,7 +17,10 @@ claude "You are <name>. Read your brief from the swarm ledger and follow it." --
 - The prompt goes before the options, because `--allowedTools` takes a space-separated
   list and swallows a prompt that follows it.
 - `<config>` holds the ledger's HTTP URL, the agent file's `mcpServers`, and the a11y
-  servers when the host has a11y installed.
+  servers when the host has a11y installed. A server with a shared HTTP URL in
+  `server.json` that answers is listed by that URL; any other server keeps the shim's
+  stdio entry. **(proposed)** See "Shared HTTP servers" in
+  [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
 - It waits up to 15 seconds for the session to appear in `claude agents --json`, then
   records the child's row: `agent_id` = the session id, `session_name`, `bg_id`, state
   `registered`. A session that does not appear is stopped and the call fails.
@@ -110,6 +113,7 @@ wake-up the caller owes, and returns a `next` field with the exact call to make.
 | `run_finish` | Every agent still live except the Oracle |
 | About 3 seconds after `run_finish` | The server waits up to 5 minutes for the Oracle's last turn to end, stops the Oracle's background session, and exits. An interactive Oracle is the user's terminal and keeps running |
 | `idle_exit_minutes` with no active run, or a paused run, and no session of the run running | The ledger server |
+| The ledger server's exit, by any path | Every shared MCP server's process tree **(proposed)** |
 | A run that is not `active`, or a newer listener | The watchdog listener |
 
 ## Parallelism
@@ -119,3 +123,5 @@ wake-up the caller owes, and returns a `next` field with the exact call to make.
   run's live agents, the Oracle included. The parent tries again after a release.
   **(proposed)**
 - A swarm session starts only its role's MCP servers, about 300 MB of memory each.
+- With shared HTTP servers, a session starts no MCP server process: codebase-kg and the
+  a11y servers run once per repo. **(proposed)**

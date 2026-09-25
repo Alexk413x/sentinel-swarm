@@ -7,7 +7,8 @@
 - A role also gets the a11y plugin's servers, `a11y-tools` and `a11y-kg`, when the host
   has `a11y@accessibility-tools` installed at user scope or for the host's path.
   `agent_spawn` and the launcher check the installed-plugins registry and add the
-  servers through the shim, and their tools to `--allowedTools`.
+  servers, and their tools to `--allowedTools`. Each server is the shared HTTP server
+  when one answers, and the shim's stdio entry otherwise. See "Shared HTTP servers".
 - `setup` writes each role file with the template's `mcpServers` and `tools` only. A
   plugin that the host's `.claude/settings.json` enables does not join a role file.
   User-level plugins, user MCP servers, and claude.ai connectors never join.
@@ -15,6 +16,46 @@
 - Tool names: `mcp__swarm-ledger__<tool>` and `mcp__codebase-kg__<tool>`.
 - Each role keeps a fixed `tools` allowlist in its agent file.
 - `cartographer` is an optional dependency for end-to-end testing outside the run.
+
+## Shared HTTP servers
+
+Decided by Alex on 2026-09-25: build the HTTP change first. The mechanism below is
+**(proposed)**.
+
+- The ledger server runs one shared HTTP instance of `codebase-kg` per host repo, and of
+  `a11y-tools` and `a11y-kg` when the host has `a11y@accessibility-tools` installed.
+  Every session connects to them by URL, so a session starts no MCP server process of
+  its own.
+- Each server runs in its plugin's own environment, from its plugin's `.mcp.json`, with
+  no change to the plugin. The ledger runs the shim:
+  `python .sentinel-swarm/hook.py mcp-http <plugin_id> <server> <port> <ledger pid>`.
+- The shim rewrites the plugin's command so that the plugin's environment runs the shim
+  again, in the internal mode `mcp-entry`, in place of the console script:
+  - `uv run --project <root>/mcp --frozen --no-dev codebase-kg` becomes
+    `uv run --project <root>/mcp --frozen --no-dev python <shim> mcp-entry <port> <pid>
+    codebase-kg`.
+  - `uvx --from <root>/mcp-kg a11y-kg <graph>` becomes
+    `uvx --from <root>/mcp-kg python <shim> mcp-entry <port> <pid> a11y-kg <graph>`.
+  - A `uvx` command with no `--from` gets `--from <script>`. Any other command form
+    stays on stdio.
+- `mcp-entry` finds the console script's entry point in `console_scripts`, imports its
+  module, and replaces the module's `mcp.run` with a call that passes
+  `transport="http"`, `host="127.0.0.1"`, and the port. It sets `sys.argv` to the
+  script name and the remaining arguments, and calls the server's own `main()`. The
+  server keeps its argument handling, such as a11y-kg's graph path, and FastMCP's
+  default path `/mcp`.
+- The server runs with the host repo root as its working directory, so codebase-kg
+  finds `knowledge/code_graph.db` there.
+- `session_options` lists a server as `{"type": "http", "url": ...}` when
+  `server.json` records its URL and the URL answers. Otherwise the session keeps the
+  shim's stdio entry. The server names stay `codebase-kg`, `a11y-tools`, and
+  `a11y-kg`, so the tool allowlists stay the same.
+- Sharing one codebase-kg is safe: swarm roles call only its read tools, and graph
+  writes go through `graph_upsert` under the ledger's lock.
+- Per session, the stdio entries ran 4 processes for codebase-kg (shim, `uv`, the venv
+  launcher, and Python) and 5 for each a11y server in the `uvx` form (shim, `uvx`,
+  `uv`, and two Python processes), measured on Windows on 2026-09-25. With shared
+  servers, a session runs none, and the repo runs one set of trees.
 
 ## The code graph
 

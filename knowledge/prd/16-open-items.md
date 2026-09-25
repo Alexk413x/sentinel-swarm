@@ -10,6 +10,8 @@
   fills its context.
 - **Ledger server early exit.** Once, the server exited about a minute after it started,
   with no error in its log. It has not recurred.
+- **Shared HTTP servers in a live run.** No real session has connected to a shared
+  codebase-kg or a11y server yet. See `plans/channels-and-http.md`.
 - **The Driver role.** Planned, not built. See `plans/driver-agent.md`.
 - **Directive source names.** The directive sources `user-chat` and `outside-session`
   use hyphens, against the snake_case rule for ledger enum values. Renaming them

@@ -9,6 +9,8 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -16,7 +18,43 @@ PLUGIN_ID = "sentinel-swarm@sentinel-swarm"
 GATING_EVENTS = frozenset({"pre_agent", "pre_write", "pre_shell", "pre_ledger", "pre_monitor"})
 HOOK_TIMEOUT_SECONDS = 50
 SCOPES = ("local", "project", "user")
-USAGE = "usage: hook.py hook <event> | hook.py mcp <plugin_id> <server> | hook.py watch\n"
+USAGE = (
+    "usage: hook.py hook <event> | hook.py mcp <plugin_id> <server> | "
+    "hook.py mcp-http <plugin_id> <server> <port> [<owner_pid>] | hook.py watch\n"
+)
+HTTP_HOST = "127.0.0.1"
+_UV_VALUE_OPTIONS = frozenset(
+    {
+        "--project",
+        "--directory",
+        "--from",
+        "--with",
+        "-w",
+        "--with-editable",
+        "--with-requirements",
+        "--python",
+        "-p",
+        "--package",
+        "--extra",
+        "--group",
+        "--only-group",
+        "--no-group",
+        "--env-file",
+        "--index",
+        "--default-index",
+        "--index-url",
+        "-i",
+        "--extra-index-url",
+        "--find-links",
+        "-f",
+        "--cache-dir",
+        "--config-file",
+        "--color",
+    }
+)
+_SYNCHRONIZE = 0x00100000
+_ERROR_INVALID_PARAMETER = 87
+_INFINITE = 0xFFFFFFFF
 _VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 
@@ -176,17 +214,13 @@ def hook_main(event: str) -> int:
     return 0
 
 
-def mcp_main(plugin_id: str, server: str) -> int:
-    try:
-        install = find_install(plugin_id, repo_root())
-        entry = plugin_servers(install).get(server)
-        if entry is None:
-            raise ShimError(f"{plugin_id} at {install} has no MCP server named {server}")
-        if not isinstance(entry.get("command"), str) or not entry["command"]:
-            raise ShimError(f"the MCP server {server} of {plugin_id} has no command to run")
-    except ShimError as exc:
-        sys.stderr.write(f"sentinel-swarm cannot start the MCP server {server}: {exc}\n")
-        return 1
+def server_command(plugin_id: str, server: str) -> tuple[list[str], dict[str, str]]:
+    install = find_install(plugin_id, repo_root())
+    entry = plugin_servers(install).get(server)
+    if entry is None:
+        raise ShimError(f"{plugin_id} at {install} has no MCP server named {server}")
+    if not isinstance(entry.get("command"), str) or not entry["command"]:
+        raise ShimError(f"the MCP server {server} of {plugin_id} has no command to run")
     root = str(install)
     env = dict(os.environ)
     env["CLAUDE_PLUGIN_ROOT"] = root
@@ -199,17 +233,140 @@ def mcp_main(plugin_id: str, server: str) -> int:
     args = [expand(str(arg), root, os.environ) for arg in args] if isinstance(args, list) else []
     executable = shutil.which(command, path=env.get("PATH"))
     if executable is None:
-        sys.stderr.write(
-            f"sentinel-swarm cannot start the MCP server {server} of {plugin_id}: "
-            f"{command} is not on PATH\n"
+        raise ShimError(f"{command} is not on PATH")
+    return [executable, *args], env
+
+
+def _script_index(args: list[str], start: int) -> int:
+    index = start
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            if index + 1 < len(args):
+                return index + 1
+            break
+        if not arg.startswith("-"):
+            return index
+        index += 2 if "=" not in arg and arg in _UV_VALUE_OPTIONS else 1
+    raise ShimError("the command names no console script to run")
+
+
+def http_command(command: list[str], port: int, owner_pid: int) -> list[str]:
+    executable, args = command[0], command[1:]
+    name = Path(executable).name.lower()
+    tool = name[:-4] if name.endswith(".exe") else name
+    if tool == "uv" and args[:1] == ["run"]:
+        index = _script_index(args, 1)
+    elif tool == "uvx":
+        index = _script_index(args, 0)
+    else:
+        raise ShimError(
+            f"only a uv run or uvx command can be served over HTTP, not {Path(executable).name}"
         )
+    script, head = args[index], args[:index]
+    if tool == "uvx" and not any(arg == "--from" or arg.startswith("--from=") for arg in head):
+        head = ["--from", script, *head]
+    entry = ["python", str(Path(__file__).resolve()), "mcp-entry", str(port), str(owner_pid)]
+    return [executable, *head, *entry, script, *args[index + 1 :]]
+
+
+def mcp_main(plugin_id: str, server: str) -> int:
+    try:
+        command, env = server_command(plugin_id, server)
+    except ShimError as exc:
+        sys.stderr.write(f"sentinel-swarm cannot start the MCP server {server}: {exc}\n")
         return 1
     try:
-        return subprocess.call([executable, *args], env=env)
+        return subprocess.call(command, env=env)
     except OSError as exc:
         sys.stderr.write(
             f"sentinel-swarm cannot start the MCP server {server} of {plugin_id}: {exc}\n"
         )
+        return 1
+
+
+def mcp_http_main(plugin_id: str, server: str, port: int, owner_pid: int) -> int:
+    try:
+        command, env = server_command(plugin_id, server)
+        command = http_command(command, port, owner_pid)
+    except ShimError as exc:
+        sys.stderr.write(f"sentinel-swarm cannot serve the MCP server {server} over HTTP: {exc}\n")
+        return 1
+    try:
+        return subprocess.call(command, env=env)
+    except OSError as exc:
+        sys.stderr.write(
+            f"sentinel-swarm cannot serve the MCP server {server} of {plugin_id}: {exc}\n"
+        )
+        return 1
+
+
+def console_script(script: str):
+    from importlib import metadata
+
+    for point in metadata.entry_points(group="console_scripts"):
+        if point.name == script:
+            return point
+    raise ShimError(f"{sys.executable} has no console script named {script}")
+
+
+def serve_entry(port: int, script: str, args: list[str]) -> int:
+    import importlib
+
+    point = console_script(script)
+    module = importlib.import_module(point.module)
+    server = getattr(module, "mcp", None)
+    run = getattr(server, "run", None)
+    if server is None or not callable(run):
+        raise ShimError(f"{point.module} has no server named mcp with a run method")
+
+    def run_http(*_args: object, **kwargs: object) -> object:
+        kwargs.update(transport="http", host=HTTP_HOST, port=port)
+        return run(**kwargs)
+
+    server.run = run_http
+    sys.argv = [script, *args]
+    result = point.load()()
+    return result if isinstance(result, int) else 0
+
+
+def owner_gone(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        handle = kernel32.OpenProcess(_SYNCHRONIZE, 0, pid)
+        if not handle:
+            return ctypes.get_last_error() == _ERROR_INVALID_PARAMETER
+        kernel32.WaitForSingleObject(handle, _INFINITE)
+        return True
+    while True:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            pass
+        time.sleep(1.0)
+
+
+def _exit_with_owner(pid: int) -> None:
+    if owner_gone(pid):
+        os._exit(0)
+
+
+def entry_main(port: int, owner_pid: int, script: str, args: list[str]) -> int:
+    # The owner watch stops a server whose ledger died without stopping it: on POSIX,
+    # nothing kills a process group when the process that started it dies.
+    if owner_pid > 0:
+        threading.Thread(target=_exit_with_owner, args=(owner_pid,), daemon=True).start()
+    try:
+        return serve_entry(port, script, args)
+    except ShimError as exc:
+        sys.stderr.write(f"sentinel-swarm cannot serve {script} over HTTP: {exc}\n")
         return 1
 
 
@@ -238,6 +395,11 @@ def main(argv: list[str]) -> int:
         return hook_main(argv[1])
     if len(argv) == 3 and argv[0] == "mcp":
         return mcp_main(argv[1], argv[2])
+    if len(argv) in (4, 5) and argv[0] == "mcp-http" and all(a.isdigit() for a in argv[3:]):
+        owner = int(argv[4]) if len(argv) == 5 else 0
+        return mcp_http_main(argv[1], argv[2], int(argv[3]), owner)
+    if len(argv) >= 4 and argv[0] == "mcp-entry" and argv[1].isdigit() and argv[2].isdigit():
+        return entry_main(int(argv[1]), int(argv[2]), argv[3], argv[4:])
     if argv == ["watch"]:
         return watch_main()
     sys.stderr.write(USAGE)

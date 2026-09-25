@@ -29,7 +29,7 @@
 Every hook command is
 `python3 .sentinel-swarm/hook.py hook <event> || python .sentinel-swarm/hook.py hook <event>`.
 `.sentinel-swarm/hook.py` is a standard-library shim that setup copies from
-`templates/hook_shim.py`. It has three commands:
+`templates/hook_shim.py`. It has these commands:
 
 - `hook <event>` finds the sentinel-swarm install for this repo in
   `~/.claude/plugins/installed_plugins.json` (scope `local`, then `project` with a
@@ -39,6 +39,11 @@ Every hook command is
   agent files.
 - `mcp <plugin_id> <server>` starts another plugin's MCP server the same way, from its
   `.mcp.json`, with `${CLAUDE_PLUGIN_ROOT}` and `${VAR:-default}` expanded.
+- `mcp-http <plugin_id> <server> <port> [<owner_pid>]` serves that server over HTTP in
+  its own environment, through the internal command `mcp-entry`. The ledger server
+  runs it. See "Shared HTTP servers" in
+  [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
+  **(proposed)**
 - `watch` runs `python -m swarm_ledger.watch` and passes each line through with no
   timeout.
 

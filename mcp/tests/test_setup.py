@@ -487,3 +487,124 @@ def test_shim_mcp_reports_a_command_it_cannot_start(tmp_path: Path, repo: Path, 
     assert "no MCP server named other" in missing_server.stderr
     assert missing_binary.returncode == 1
     assert "no-such-binary-sentinel is not on PATH" in missing_binary.stderr
+
+
+def test_shim_http_command_wraps_a_uv_run_server(shim):
+    command = ["/bin/uv", "run", "--project", "/p/mcp", "--frozen", "--no-dev", "codebase-kg"]
+    wrapped = shim.http_command(command, 5000, 42)
+    entry = ["python", str(Path(shim.__file__).resolve()), "mcp-entry", "5000", "42"]
+    assert wrapped == [*command[:6], *entry, "codebase-kg"]
+
+    equals = ["C:/uv/uv.EXE", "run", "--project=/p/mcp", "kg", "graph.db"]
+    assert shim.http_command(equals, 1, 0) == [*equals[:3], *entry[:3], "1", "0", "kg", "graph.db"]
+
+
+def test_shim_http_command_wraps_a_uvx_server(shim):
+    command = ["/bin/uvx", "--from", "/p/mcp-kg", "a11y-kg", "/p/mcp-kg/data/graph.json"]
+    wrapped = shim.http_command(command, 5000, 42)
+    entry = ["python", str(Path(shim.__file__).resolve()), "mcp-entry", "5000", "42"]
+    assert wrapped == [*command[:3], *entry, "a11y-kg", "/p/mcp-kg/data/graph.json"]
+
+    assert shim.http_command(["uvx", "pkg"], 5000, 42) == ["uvx", "--from", "pkg", *entry, "pkg"]
+
+
+@pytest.mark.parametrize(
+    "command, problem",
+    [
+        (["node", "server.js"], "only a uv run or uvx command"),
+        (["uv", "pip", "install"], "only a uv run or uvx command"),
+        (["uv", "run", "--project", "/p", "--frozen"], "names no console script"),
+    ],
+)
+def test_shim_http_command_refuses_what_it_cannot_wrap(shim, command: list[str], problem: str):
+    with pytest.raises(shim.ShimError, match=problem):
+        shim.http_command(command, 5000, 0)
+
+
+class _FakeFastMCP:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def run(self, transport: str | None = None, **kwargs: Any) -> None:
+        self.calls.append({"transport": transport, **kwargs})
+
+
+def _fake_server_module(monkeypatch: pytest.MonkeyPatch, shim, with_mcp: bool = True):
+    import importlib.metadata
+    import types
+
+    module = types.ModuleType("sentinel_fake_kg_server")
+    seen: dict[str, Any] = {}
+    if with_mcp:
+        module.mcp = _FakeFastMCP()  # type: ignore[attr-defined]
+
+    def main() -> None:
+        seen["argv"] = list(sys.argv)
+        module.mcp.run()  # type: ignore[attr-defined]
+
+    module.main = main  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    point = importlib.metadata.EntryPoint(
+        name="fake-kg", value=f"{module.__name__}:main", group="console_scripts"
+    )
+    monkeypatch.setattr(shim, "console_script", lambda script: point)
+    monkeypatch.setattr(sys, "argv", ["hook.py"])
+    return module, seen
+
+
+def test_shim_serve_entry_runs_main_over_http_with_the_original_arguments(
+    shim, monkeypatch: pytest.MonkeyPatch
+):
+    module, seen = _fake_server_module(monkeypatch, shim)
+
+    assert shim.serve_entry(5123, "fake-kg", ["/p/graph.json"]) == 0
+
+    assert seen["argv"] == ["fake-kg", "/p/graph.json"]
+    assert module.mcp.calls == [{"transport": "http", "host": "127.0.0.1", "port": 5123}]
+
+
+def test_shim_serve_entry_overrides_a_transport_the_server_passes(
+    shim, monkeypatch: pytest.MonkeyPatch
+):
+    module, _ = _fake_server_module(monkeypatch, shim)
+    monkeypatch.setattr(module, "main", lambda: module.mcp.run("stdio", show_banner=False))
+
+    shim.serve_entry(5123, "fake-kg", [])
+
+    assert module.mcp.calls == [
+        {"transport": "http", "host": "127.0.0.1", "port": 5123, "show_banner": False}
+    ]
+
+
+def test_shim_serve_entry_refuses_a_module_without_a_server(shim, monkeypatch: pytest.MonkeyPatch):
+    _fake_server_module(monkeypatch, shim, with_mcp=False)
+    with pytest.raises(shim.ShimError, match="no server named mcp"):
+        shim.serve_entry(5123, "fake-kg", [])
+
+
+def test_shim_console_script_names_a_missing_script(shim):
+    with pytest.raises(shim.ShimError, match="no console script named no-such-script-sentinel"):
+        shim.console_script("no-such-script-sentinel")
+
+
+def test_shim_owner_gone_is_true_for_an_exited_process(shim):
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait()
+    assert shim.owner_gone(process.pid) is True
+
+
+def test_shim_mcp_http_refuses_a_bad_port_and_an_unwrappable_server(
+    tmp_path: Path, repo: Path, config_dir: Path
+):
+    setup.run_setup(repo)
+    install = _plugin(tmp_path, "srv", {"srv": {"command": sys.executable, "args": ["-V"]}})
+    _register(config_dir, "srv@m", [{"scope": "user", "installPath": str(install)}])
+
+    bad_port = _run_shim(repo, config_dir, "mcp-http", "srv@m", "srv", "port")
+    unwrappable = _run_shim(repo, config_dir, "mcp-http", "srv@m", "srv", "5000", "1")
+
+    assert bad_port.returncode == 1
+    assert bad_port.stderr.startswith("usage:")
+    assert unwrappable.returncode == 1
+    assert "cannot serve the MCP server srv over HTTP" in unwrappable.stderr
+    assert "only a uv run or uvx command" in unwrappable.stderr

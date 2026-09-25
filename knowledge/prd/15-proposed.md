@@ -59,6 +59,9 @@ Ledger and sessions:
 - The session mechanics: `agent_spawn`, owed wake-ups and `next`, the Stop hook's
   wake-up rule, `agent_resume`, release that stops the session, the shared HTTP server,
   and the project agent file details.
+- The shared HTTP MCP servers: the shim's `mcp-http` and `mcp-entry` commands, the
+  saved ports, `servers` in `server.json`, the stdio fallback, the 60-second start
+  limit, and process-tree shutdown through job objects and process groups.
 - `parallelism_cap` counts the run's live agents. Not built: counting other swarms'
   sessions on the machine.
 - A lock record for runs that span several repos. Not built.

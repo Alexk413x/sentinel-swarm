@@ -34,16 +34,29 @@ Status: not built. The responsibilities below are Alex's, decided on 2026-09-24.
 
 1. A fifth role, `driver`, with its template in `templates/agents/driver.md`. It has no Write or Edit tool, and a shell limited to the driver CLIs and the build command.
 2. One Driver per run. The ledger starts it when the Oracle's first `drive_request` arrives, and stops it when the exploration ends, before the next wave starts.
-3. A ledger tool `drive_request(focus)` that only the Oracle may call, and only while no phase is working. `focus` lists what to explore: the PRD's features, the last wave's changes, and earlier issues to recheck.
+3. A ledger tool `drive_request(focus)` that only the Oracle may call, when the previous exploration's fixes have all finished. `focus` lists what to explore: the PRD's features, the last wave's changes, and earlier issues to recheck.
 4. The Driver builds with `build_command`, launches the app, explores the focus list, and saves evidence under `.sentinel-swarm/evidence/<request_id>/`.
-5. A ledger tool `drive_report(request_id, issues, evidence)` records each issue as a ledger issue with its evidence, and owes the Oracle a wake-up.
-6. The Oracle plans a fix wave from the open Driver issues, as new phases, and requests another exploration when that wave ends.
-7. The run finishes only after an exploration that records no new issue.
+5. A ledger tool `drive_issue(request_id, issue, evidence)` records each issue as the Driver finds it and owes the Oracle a wake-up at once; `drive_done(request_id)` ends the exploration.
+6. The Oracle starts fixes for each issue as it arrives, and requests the next exploration once the exploration and every fix have finished.
+7. The run finishes after an exploration that records no issue, or once the loop stops on lack of progress and the user decides what to do with the issues left.
 8. The run report lists each exploration, its issues, the wave that fixed each one, and links to the evidence.
 
 ## Decisions
 
-- Decided by Alex on 2026-09-25: the Driver starts when a request arrives, and it shuts down when its exploration ends, so it never runs while a wave edits files.
+- Decided by Alex on 2026-09-25: the Driver starts when a request arrives, and it shuts down when its exploration ends.
+- Decided by Alex on 2026-09-25: fixes start while the Driver still explores. The Oracle sees each issue as the Driver records it and starts work on it at once. When a fix phase for that module is already running, a Coder joins it; otherwise the Oracle starts a new Manager, Lead, and Coder for that bug. When the exploration ends and every fix agent has finished, the Driver builds and retests.
+  - **(proposed)** detail: the Oracle asks a running module for a new Coder through its Manager, which asks the Lead, so the spawn order holds.
+  - **(proposed)** detail: the Driver tests the app it built at the start of the exploration, while Coders edit the source. It must test a built snapshot, never a dev server that reloads on edits.
+  - **(proposed)** detail: a failed build is recorded at once as an issue with the build log, which ends that exploration; the fixes start from it, and the retest starts with a build.
+- Decided by Alex on 2026-09-25: no time limit on an exploration. Every 30 minutes the Driver reports its progress to the Oracle and keeps working. The Oracle reviews the testing done and the steps taken so far, looking for problems that are not obvious bugs, and starts fixes for them. It also decides whether the Driver is stuck; if so, it stops the Driver and starts a fix for whatever blocked it.
+  - **(proposed)** detail: a `drive_checkin(request_id, covered, steps, notes)` ledger tool records the check-in and owes the Oracle a wake-up; the watchdog does not report a Driver as stuck while its check-ins arrive on time.
+- Decided by Alex on 2026-09-25: the loop stops on lack of progress, not a fixed count.
+  - A bug that is still there after 3 fix attempts in a row stops getting fixes and goes to the user with its evidence. A bug gets at most 5 fix attempts in all.
+  - The loop stops when 3 fix waves in a row fix nothing, and the Oracle reports what is left to the user.
+  - The loop also watches for patterns of bugs, and on one the Oracle pauses fixes in that area and reports it.
+  - **(proposed)** detail: each Driver issue carries a fingerprint (the check, the location, and the symptom), so an exploration can mark every earlier issue fixed, still there, or new. The patterns are: a regression (a fixed bug returns); fixes causing bugs (new issues in the files the last fix wave touched, at least as many as it fixed); and ping-pong (two bugs that take turns coming back).
+- Decided by Alex on 2026-09-25: every wave starts from a new plan and new agents, including a fix wave planned from a Driver exploration. A review fix inside a wave, such as a return or a pushback, resumes the existing agents, as today. **(proposed)** detail: the Oracle groups the issues by module, one fix phase per module, and each Coder's brief carries the issue and its evidence and re-claims the file.
+- Decided by Alex on 2026-09-25: each request carries a focus list the Oracle writes. The first exploration covers every PRD feature. Each later one covers the features the last wave touched, every open issue to recheck, and a quick smoke pass over everything else. The final clean exploration is a full pass.
 - Decided by Alex on 2026-09-25: only the Oracle sends requests. The Driver explores, tests, and records issues; the Oracle starts a new wave of fixes from them; this repeats until everything works. Every other role does unit testing only, because the app cannot build while other edits are in progress.
 
 ## Questions to settle before building
@@ -56,11 +69,11 @@ Ask these one at a time.
 
 ### Requests
 3. ~~Which roles may send requests?~~ Decided: the Oracle only.
-4. What does the Oracle's request contain: the whole PRD to explore, only the last wave's changes, or a focus list it writes?
+4. ~~What does the Oracle's request contain?~~ Decided: a focus list the Oracle writes.
 5. ~~How should the queue work?~~ Settled: one requester, one exploration at a time.
-6. What happens when the build fails, or an exploration runs too long? A failed build could itself become the first issue of the fix wave.
-6a. When does the loop stop: when an exploration finds no new issue, or after a maximum number of fix waves, with the rest reported to the user?
-6b. How does the Oracle turn issues into a fix wave: new phases grouped by module, or reopening the files that caused them?
+6. ~~What happens when the build fails, or an exploration runs long?~~ Decided: a failed build is an issue, fixed at once. No time limit: the Driver checks in every 30 minutes, and the Oracle reviews and decides whether to stop it.
+6a. ~~When does the loop stop?~~ Decided: on lack of progress. See Decisions: 3 attempts in a row per bug, 5 in all, 3 waves in a row with no fix, and bug patterns.
+6b. ~~How does the Oracle turn issues into a fix wave?~~ Decided: new agents for a fix wave; resumed agents for a review fix.
 
 ### Build and devices
 7. ~~Who runs the build?~~ Settled: the Driver, with `build_command`, since nothing is editing.
@@ -70,12 +83,12 @@ Ask these one at a time.
 ### Reports and gates
 10. What does a finding contain: a pass or fail per check, a severity, a screenshot reference?
 11. Where does evidence live, how long is it kept, and is there a size limit?
-12. ~~Does any gate require a Driver report?~~ Settled: `run_finish` requires a final exploration with no new issue, if the loop-stop rule in 6a says so.
+12. ~~Does any gate require a Driver report?~~ Settled: `run_finish` requires a final exploration with no issue, or the user's decision once the loop stops.
 13. ~~Does a failed check open an issue?~~ Settled: every finding is recorded as an issue for the fix wave.
 14. Should Driver evidence count toward the accessibility dimension of the rubric?
 
 ### Setup
 15. Are the driver plugins loaded only when the host has them installed, like a11y?
 16. Which model does the Driver run on?
-17. How should the watchdog treat a long driving session, which can look stuck?
+17. ~~How should the watchdog treat a long driving session?~~ Settled: the 30-minute check-ins show it is alive, and the Oracle judges whether it is stuck.
 18. What is the Driver's session name and color?

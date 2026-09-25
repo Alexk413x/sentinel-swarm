@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from swarm_ledger import shared
 from swarm_ledger.agentfiles import (
     SESSION_SETTINGS,
     agent_file_path,
@@ -168,3 +169,59 @@ def test_session_options_add_a11y_only_when_the_host_has_it(
     servers, tools = a11y_parts()
     assert {"a11y-tools", "a11y-kg"} <= servers
     assert tools.endswith(",mcp__a11y-tools,mcp__a11y-kg")
+
+
+def _record_shared(root: Path, servers: object) -> None:
+    info = {"url": "http://127.0.0.1:1/mcp", "port": 1, "pid": 1, "servers": servers}
+    path = root / ".sentinel-swarm" / "server.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(info), encoding="utf-8")
+
+
+def _servers(root: Path) -> dict:
+    options = session_options(root, "coder", None, "http://127.0.0.1:1/mcp")
+    return json.loads(options[options.index("--mcp-config") + 1])["mcpServers"]
+
+
+def test_session_options_use_a_shared_server_that_answers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = tmp_path / "host"
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    _registry(config_dir, [{"scope": "user"}])
+    _write(host, "coder", _CODER)
+    live = {"http://127.0.0.1:7001/mcp", "http://127.0.0.1:7002/mcp"}
+    monkeypatch.setattr(shared, "is_answering", lambda url: url in live)
+    _record_shared(
+        host,
+        {
+            "codebase-kg": "http://127.0.0.1:7001/mcp",
+            "a11y-kg": "http://127.0.0.1:7002/mcp",
+            "a11y-tools": "http://127.0.0.1:7003/mcp",
+            "not-in-the-role": "http://127.0.0.1:7001/mcp",
+        },
+    )
+
+    servers = _servers(host)
+
+    assert servers["codebase-kg"] == {"type": "http", "url": "http://127.0.0.1:7001/mcp"}
+    assert servers["a11y-kg"] == {"type": "http", "url": "http://127.0.0.1:7002/mcp"}
+    assert servers["a11y-tools"]["args"] == [
+        ".sentinel-swarm/hook.py",
+        "mcp",
+        "a11y@accessibility-tools",
+        "a11y-tools",
+    ]
+    assert "not-in-the-role" not in servers
+    assert servers["swarm-ledger"] == {"type": "http", "url": "http://127.0.0.1:1/mcp"}
+
+
+@pytest.mark.parametrize("servers", [None, {}, "broken"])
+def test_session_options_keep_stdio_without_a_shared_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, servers: object
+) -> None:
+    monkeypatch.setattr(shared, "is_answering", lambda url: True)
+    _write(tmp_path, "coder", _CODER)
+    _record_shared(tmp_path, servers)
+    assert _servers(tmp_path)["codebase-kg"]["command"] == "python"

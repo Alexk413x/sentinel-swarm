@@ -65,6 +65,12 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
 - On Windows, a process started with `DETACHED_PROCESS` opens a terminal window for
   every console program it runs. `CREATE_NO_WINDOW` does not. (2026-09-24)
 - On Windows, stopping a `Monitor` does not kill its child processes. (2026-09-24)
+- On Windows, killing a `uv run` process leaves its Python child and grandchild
+  running. A job object with `KILL_ON_JOB_CLOSE` stops the whole tree, both on
+  `TerminateJobObject` and when its last handle closes. (2026-09-25)
+- codebase-kg 0.7.0 and a11y 0.6.2 serve over FastMCP's HTTP transport when their
+  `mcp.run` is replaced before `main()` runs. `uvx --from <path> python` runs Python in
+  the tool's environment. (2026-09-25)
 - On Windows, `python3` on `PATH` can be the Microsoft Store stub, which only prints a
   hint. Setup writes `python` for MCP server commands on Windows. (noted 2026-09-21,
   not measured)

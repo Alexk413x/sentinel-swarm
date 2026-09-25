@@ -5,13 +5,35 @@
   required: `graph_upsert` protects the code graph with a lock inside it.
 - `python -m swarm_ledger.serve [--repo <root>]` binds the port saved in
   `.sentinel-swarm/server.port`, or a free port when that one is taken, and writes
-  `.sentinel-swarm/server.json` with `url`, `port`, `pid`, and `started_at`. A second
+  `.sentinel-swarm/server.json` with `url`, `port`, `pid`, `started_at`, and `servers`. A second
   start finds the first one answering, prints its URL, and exits 0. The saved port
   lets a resumed session reach the ledger at the URL it started with.
 - `serve.ensure_server(repo_root)` starts the server detached when it does not answer,
   waits until it answers, and returns its URL. On Windows it starts with a hidden
   console (`CREATE_NO_WINDOW`).
 - Errors go to `.sentinel-swarm/server.log`.
+- Shared MCP servers **(proposed)**. At start, a background thread in the server starts
+  one shared HTTP instance of codebase-kg, and of a11y-tools and a11y-kg when the host
+  has a11y. See "Shared HTTP servers" in
+  [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
+  - Each server gets the port saved for it in `.sentinel-swarm/shared-ports.json`, or a
+    free port when that one is taken. The saved port lets a resumed session reach the
+    server at the URL it started with.
+  - `server.json` holds `servers: null` while they start. When every server answers,
+    fails, or passes the 60-second limit, `servers` maps each server that answers to
+    its URL. A server that fails is logged to `server.log` and left out, and sessions
+    use its stdio entry.
+  - `ensure_server` waits up to 65 seconds for `servers` to be set, so the Oracle's
+    session gets the shared URLs. A record with no `servers` key does not wait.
+  - The server starts each shared server with the ledger's pid. On Windows it starts
+    hidden (`CREATE_NO_WINDOW`), in a job object with `KILL_ON_JOB_CLOSE`. On POSIX it
+    starts in its own session and process group.
+  - Every exit path stops every shared server's whole process tree. `run_finish`, the
+    idle exit, and a signal that uvicorn handles call `stop_all`. On Windows that
+    terminates each job. On POSIX it sends `SIGTERM` to the process group, waits 2
+    seconds, and sends `SIGKILL`. When the ledger dies without cleanup, Windows closes
+    its job handles and kills each job. On POSIX, `mcp-entry` watches the ledger's pid
+    and exits within about 1 second of its death.
 - Tool calls run one at a time under one lock, on one SQLite connection.
 - The server loads the settings file once, at start. `profile_set` changes the commands
   for the server process and the run's settings snapshot, not the file. The hooks read
@@ -20,14 +42,16 @@
 - Lifetime: the launcher starts the server before the Oracle. It exits after
   `run_finish`, and after `idle_exit_minutes` with no active run, or a paused run, and
   no session of the run running. A ledger tool call restarts the idle clock. A failed
-  `claude agents --json` counts as no session running.
+  `claude agents --json` counts as no session running. The shared MCP servers stop
+  with it. **(proposed)**
 - The plugin's `.mcp.json` also declares a stdio `swarm-ledger` entry. Swarm sessions
   do not use it, because they start with `--strict-mcp-config`.
 
 ## Records folder
 
 `.sentinel-swarm/` at the root of the main checkout holds `ledger.db`, `versions/`,
-`report.md`, `server.json`, `server.port`, `server.log`, and the hook shim `hook.py`.
+`report.md`, `server.json`, `server.port`, `shared-ports.json`, `server.log`, and the
+hook shim `hook.py`.
 A worktree's `.git` file resolves to the main checkout, so every worktree shares one
 ledger. The folder is excluded through `.git/info/exclude`, never the host's
 `.gitignore`. **(proposed)** One ledger holds every run in the repo. The swarm writes

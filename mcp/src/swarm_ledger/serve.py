@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import sessions
+from . import sessions, shared
 from .db import ledger_path
 from .identity import LedgerError
 
@@ -27,6 +27,7 @@ LOG_FILE = "server.log"
 EXIT_DELAY_S = 3.0
 ORACLE_TURN_WAIT_S = 300.0
 START_TIMEOUT_S = 30.0
+SHARED_WAIT_S = shared.START_TIMEOUT_S + 5.0
 _PROBE_TIMEOUT_S = 2.0
 _POLL_S = 0.2
 
@@ -117,10 +118,22 @@ def _answering_url(repo_root: Path) -> str | None:
     return None
 
 
-def ensure_server(repo_root: Path, timeout: float = START_TIMEOUT_S) -> str:
+def _wait_for_shared(repo_root: Path, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        info = read_server_info(repo_root)
+        if info is None or info.get("servers", {}) is not None:
+            return
+        time.sleep(_POLL_S)
+
+
+def ensure_server(
+    repo_root: Path, timeout: float = START_TIMEOUT_S, shared_wait: float = SHARED_WAIT_S
+) -> str:
     root = repo_root.resolve()
     url = _answering_url(root)
     if url is not None:
+        _wait_for_shared(root, shared_wait)
         return url
 
     log_path = records_dir(root) / LOG_FILE
@@ -153,6 +166,7 @@ def ensure_server(repo_root: Path, timeout: float = START_TIMEOUT_S) -> str:
     while time.monotonic() < deadline:
         url = _answering_url(root)
         if url is not None:
+            _wait_for_shared(root, shared_wait)
             return url
         exit_code = process.poll()
         if exit_code is not None and exit_code != 0:
@@ -172,8 +186,28 @@ def _remove_if_ours(path: Path) -> None:
         pass
 
 
-def _exit_now(path: Path) -> None:
+def write_server_info(path: Path, info: dict[str, Any]) -> None:
+    text = json.dumps(info)
+    temp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    temp.write_text(text, encoding="utf-8", newline="\n")
+    for _ in range(20):
+        try:
+            os.replace(temp, path)
+            return
+        except PermissionError:
+            # Windows refuses to replace a file that a reader holds open.
+            time.sleep(0.05)
+    temp.unlink(missing_ok=True)
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
+def _shut_down(path: Path) -> None:
+    shared.stop_all()
     _remove_if_ours(path)
+
+
+def _exit_now(path: Path) -> None:
+    _shut_down(path)
     # os._exit, not sys.exit: this runs on a timer thread, and uvicorn owns the main thread.
     os._exit(0)
 
@@ -229,7 +263,7 @@ def serve(repo_root: Path) -> None:
         "pid": os.getpid(),
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
-    path.write_text(json.dumps(info), encoding="utf-8", newline="\n")
+    write_server_info(path, {**info, "servers": None})
 
     @server.mcp.custom_route(HEALTH_PATH, methods=["GET"])
     async def health(request: Request) -> JSONResponse:
@@ -239,6 +273,9 @@ def serve(repo_root: Path) -> None:
     server.configure(root)
     server.on_run_finish = lambda oracle_session_id: finish_later(path, oracle_session_id)
     _start_watchdog(root, path)
+    shared.start_in_background(
+        root, lambda servers: write_server_info(path, {**info, "servers": servers})
+    )
     try:
         server.mcp.run(
             transport="http",
@@ -249,7 +286,7 @@ def serve(repo_root: Path) -> None:
             sockets=[sock],
         )
     finally:
-        _remove_if_ours(path)
+        _shut_down(path)
 
 
 def _start_watchdog(root: Path, path: Path) -> None:

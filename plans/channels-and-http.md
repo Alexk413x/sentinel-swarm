@@ -1,6 +1,6 @@
 # Plan: Channels and HTTP MCP servers
 
-Status: research done on 2026-09-25, nothing built. Everything under "Proposed design" is **(proposed)**. Alex asked for two changes: MCP servers over HTTP instead of stdio, and a push-based, event-driven ledger that every agent registers with, which could replace the watchdog's Monitor watcher.
+Status: the HTTP half is built (2026-09-25) and described in `knowledge/prd/09-mcp-servers-and-code-graph.md` under "Shared HTTP servers", and in `06-ledger-server.md`. Channels are not built. Everything under "Proposed design" is **(proposed)**. Alex asked for two changes: MCP servers over HTTP instead of stdio, and a push-based, event-driven ledger that every agent registers with, which could replace the watchdog's Monitor watcher.
 
 ## What the docs say
 
@@ -23,12 +23,24 @@ Sources: https://code.claude.com/docs/en/channels, https://code.claude.com/docs/
 
 1. **Does a channel event wake an idle background session?** Start `claude --bg` with a test channel, let the session go idle, push one event, and check whether a new turn starts. Everything below depends on this.
 2. **Does `--channels` work with `claude --bg --agent`, and with a plugin installed at project scope?** Also, is there a development flag for a channel that is not in a marketplace?
-3. **Can codebase-kg serve over HTTP, and share one server between sessions?** Checked on 2026-09-25: its entry point is a FastMCP server that calls `mcp.run()` with the default stdio transport, and it has no transport option. FastMCP supports HTTP, so either the shim runs `codebase_kg.server.mcp.run(transport="http", ...)` inside the plugin's own environment, with no codebase-kg change, or codebase-kg gains a `--transport` flag. It still needs a probe that two sessions can share one instance, including `kg_upsert_node` writes under the ledger's graph lock.
+3. **Can codebase-kg serve over HTTP, and share one server between sessions?** Answered for HTTP on 2026-09-25: the shim's `mcp-http` wrapper serves codebase-kg, a11y-tools, and a11y-kg over HTTP with no plugin change. Sharing between live sessions is still unprobed. Earlier note: its entry point is a FastMCP server that calls `mcp.run()` with the default stdio transport, and it has no transport option. FastMCP supports HTTP, so either the shim runs `codebase_kg.server.mcp.run(transport="http", ...)` inside the plugin's own environment, with no codebase-kg change, or codebase-kg gains a `--transport` flag. It still needs a probe that two sessions can share one instance, including `kg_upsert_node` writes under the ledger's graph lock.
 4. **What does one channel bridge cost per session** in memory and startup time, compared with the processes it replaces?
 
 ## Proposed design **(proposed)**
 
 ### HTTP: one shared server per repo
+
+Built on 2026-09-25. What remains:
+- Probe a live run: two or more swarm sessions share one codebase-kg over HTTP, and a
+  resumed session reaches it at its saved port. The tests start the servers and call
+  `kg_stats`, but no real `claude` session has connected to a shared server yet.
+- Measure memory and process counts in a live run. The per-session count drops from 4
+  (codebase-kg) or 14 (with both a11y servers in the `uvx` form) MCP server processes
+  to 0.
+- A shared server that crashes mid-run is not restarted. New sessions fall back to
+  stdio, but a running session keeps its dead URL until the ledger restarts.
+- Run the smoke test on macOS to check the POSIX process-group and owner-watch paths
+  live.
 - Run codebase-kg, and a11y when the host has it, as one HTTP server per host repo, as the ledger runs. Sessions list them by URL in `--mcp-config`.
 - This saves about 5 processes per session. On 2026-09-25 each session ran 15 to 20 MCP-related processes, and a run keeps up to 7 sessions alive.
 - The ledger server, or a small supervisor next to it, starts and stops them, with the same lifetime as the ledger: they exit after `run_finish` or after the idle timeout.
@@ -52,7 +64,7 @@ Sources: https://code.claude.com/docs/en/channels, https://code.claude.com/docs/
 1. Build a minimal channel server and run probes 1 and 2.
 2. Move the Oracle's watchdog delivery to the channel, and remove the `Monitor` requirement.
 3. Move wake-ups owed to channel delivery. Keep `SendMessage` as a fallback while both paths are proven.
-4. Move codebase-kg and a11y to shared HTTP servers.
+4. Move codebase-kg and a11y to shared HTTP servers. Built on 2026-09-25.
 5. Update `knowledge/prd/` for each step.
 
 ## Questions for Alex

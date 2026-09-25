@@ -109,16 +109,27 @@ def mcp_servers(agent_file: dict[str, Any]) -> dict[str, Any]:
     return servers
 
 
+def shared_servers(repo_root: Path) -> dict[str, Any]:
+    # Imported here, not at the top: serve and shared import this module.
+    from .serve import read_server_info
+    from .shared import answering_urls
+
+    info = read_server_info(repo_root)
+    urls = answering_urls(info.get("servers") if info else None)
+    return {name: {"type": "http", "url": url} for name, url in urls.items()}
+
+
 def session_options(repo_root: Path, role: str, model: str | None, ledger_url: str) -> list[str]:
     agent_file = read_agent_file(repo_root, role)
     extra = optional_servers(repo_root)
-    config = {
-        "mcpServers": {
-            LEDGER_SERVER: {"type": "http", "url": ledger_url},
-            **mcp_servers(agent_file),
-            **extra,
-        }
+    servers = {
+        LEDGER_SERVER: {"type": "http", "url": ledger_url},
+        **mcp_servers(agent_file),
+        **extra,
     }
+    shared = shared_servers(repo_root)
+    servers.update({name: entry for name, entry in shared.items() if name in servers})
+    config = {"mcpServers": servers}
     options = ["--agent", f"swarm-{role}"]
     if model:
         options += ["--model", model]
