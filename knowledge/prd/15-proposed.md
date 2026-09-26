@@ -20,15 +20,14 @@ Principles and roles:
 - A lower layer adds guideline detail and never contradicts a higher one; a departure is
   recorded at hand-up.
 - The Manager's round-2 resources, including structural changes.
-- An issue a Manager finds starts at round 2. Not built: the ledger opens every issue at
-  round 1.
+- An issue a Manager finds starts at round 2, and one the Oracle finds at round 3.
 - The responsible-level table for deferrals and scope changes.
 - The scope check on `agreement_decide`: a Lead in its module, a Manager in its phase,
   the Oracle in its run.
 - Overrides: recorded with a reason, narrow and single-use, never used by the Oracle to
   write a file.
 - While the run waits on the user, the phases the problem does not block keep going.
-  Not built: `run_pause` pauses the whole run.
+  Built as a scoped pause: `run_pause(reason, phases=[...])` and `phase_resume`.
 - A notification states what is blocked, what the user must do, and what resumes.
 - The final report's contents.
 - The git workflow's examples and consequences: no worktrees, one graph copy, versions
@@ -42,7 +41,7 @@ Rubric:
 - The improvement loop: saved versions, improved, plateau, and regression, restore on
   regression, and the attempt counting rule.
 - A file that ends the last round at or above the floor passes with each shortfall
-  recorded. Not built: `approve` requires the target on every dimension.
+  recorded. "The last round" is the file's attempts reaching `rounds * attempts_per_round`.
 - No self-approval, and tool output as supporting evidence only.
 - Scored module and phase reviews on completeness, integration, and open items. Not
   built: `module_review` and `phase_review` record an outcome and notes, not scores.
@@ -67,10 +66,9 @@ Ledger and sessions:
   seconds, and restarts it on the same port after 0, 5, and 15 seconds; a give-up after
   3 restarts in 5 minutes that removes the URL from `server.json`; and a watchdog
   directive on a give-up only, never on a restart.
-- `parallelism_cap` counts the run's live agents. Not built: counting other swarms'
-  sessions on the machine.
-- A lock record for runs that span several repos. Not built.
-- A hook that refuses a `SendMessage` to a session outside the caller's run. Not built.
+- `parallelism_cap` counts the run's live agents and other swarms' live sessions, matched by the swarm session-name shape `<slug>-r<run_id>-<name>`; `role_parallelism_cap.<role>` caps a role.
+- A machine-level lock per repo under `<CLAUDE_CONFIG_DIR or ~/.claude>/sentinel-swarm/locks/`, keyed by the main checkout (`git rev-parse --git-common-dir`), holding the run id and server pid; a dead pid's lock is taken.
+- `pre_send_message` refuses a `SendMessage` to a session outside the caller's run; the valid targets are every session name recorded for the run, live or not.
 - `repo_check`, `repo_branch_create`, and the Manager spawn gate on `repo_check`.
 - `module_review`, `phase_review`, and the hand-up and approval gates, apart from the
   departure rules Alex decided.
@@ -89,7 +87,17 @@ Ledger and sessions:
 - The `graph_upsert` mechanism, multi-file nodes through the Lead, graph search at each
   role's level, recording graph gaps, and setup building a missing graph.
 - The watchdog mechanics in "Watchdog", apart from Alex's rules.
-- Plugin features to consider: `monitors/monitors.json`, `subagentStatusLine` and
-  `agent` in the plugin's `settings.json`, and `userConfig`. Not built.
-- The smoke test's ledger checklist, and a check that every brief body is complete and
-  no spawn prompt carries task detail. Not automated.
+- Plugin features: `userConfig` prompts for the test command at install. `monitors`, `subagentStatusLine`, and a plugin `agent` are not used, because each would run in every session of a user who installs the plugin.
+- The smoke test's ledger checklist, automated as `python -m swarm_ledger.checklist`: success means an outcome starting with `success`; files must be `approved`; a live watchdog finding fails and a cleared one warns; the session and server checks warn when `claude` is missing. The brief-completeness check is not automated.
+
+Built on 2026-09-25, choices Alex has not reviewed:
+
+- Module and phase reviews score completeness, integration, and open items, 1 to 10 with a reason below 9, stored in the review's `details_json`.
+- Blind scoring hides from the Lead the issues a Coder's self review opened (those with a dimension and criterion, opened by a Coder) until the Lead scores the file's current handoff.
+- `issue_escalate` and a round advance both owe the receiver a wake-up.
+- `override_grant` refuses a target that names the Oracle; only the `write` and `shell` rules are ever overridable.
+- A `reply_to` directive resolves the directive it answers whatever its outcome; `directives.question` keeps a `needs_user` question after a later resolve.
+- The report's decided deferrals, notifications, final test run, and measures sections, and a report per run with `report.md` as the latest copy.
+- Directive sources `user_chat` and `outside_session`, with the old spellings accepted and normalized.
+- Per-role `effort` (the `--effort` flag) and `prompt_cache_ttl` (the `promptCacheTtl` setting).
+- Smoke runs install as `0.0.1-dev.<epoch seconds>` and remove older dev copies.

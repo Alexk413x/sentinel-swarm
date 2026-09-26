@@ -55,3 +55,4 @@
 - 2026-09-24: The Manager accepts a module, and the Oracle a phase or the run, only after every departure is decided.
 - 2026-09-25: Ledger enum values use snake_case.
 - 2026-09-25: The ledger does not share codebase-kg; codebase-kg 0.8.0 shares one server per machine through its own relay.
+- 2026-09-25: Build every designed but unbuilt feature, the snake_case directive sources, the Driver, then Channels (`plans/build-order.md`).

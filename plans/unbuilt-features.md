@@ -1,6 +1,6 @@
 # Plan: designed but not built
 
-Status: every item here was designed and marked **(proposed)**, or described in an old plan, but the code does not do it. `knowledge/prd/` describes what the code does now. For each item, Alex decides: **build**, **drop**, or **later**. A dropped item leaves the PRD; a built one moves into the PRD as a rule.
+Status: built on 2026-09-25 in round 1 of `plans/build-order.md`, all twenty items. Item 20 built `userConfig`; `monitors`, `subagentStatusLine`, and a plugin `agent` were judged not to fit, with the reasons in `knowledge/prd/11-setup-and-settings.md`. This file remains as the record of the choices; `knowledge/prd/` describes the built behavior. Originally: every item here was designed and marked **(proposed)**, or described in an old plan, but the code did not do it. `knowledge/prd/` describes what the code does now. For each item, Alex decides: **build**, **drop**, or **later**. A dropped item leaves the PRD; a built one moves into the PRD as a rule.
 
 Recommendations are mine, **(proposed)**.
 
