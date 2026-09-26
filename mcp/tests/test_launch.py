@@ -42,9 +42,6 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(launch, "_ensure_server", ensure_server)
     recorder = Recorder()
     monkeypatch.setattr(launch.subprocess, "run", recorder)
-    monkeypatch.setattr(
-        launch, "_open_terminal", lambda root, title, command: recorder(command, cwd=root)
-    )
     return {"repo": repo, "config": config, "servers": servers, "run": recorder}
 
 
@@ -173,10 +170,9 @@ def test_bg_names_the_oracle_session_after_the_repo(env, capsys: pytest.CaptureF
 
     assert code == 0
     command = env["run"].calls[-1]["command"]
-    assert command[:3] == ["claude-under-test", "Build hello.py", "--name"]
-    assert "--bg" not in command
-    assert re.fullmatch(r"my-host-oracle-\d{4}-\d{6}", command[3])
-    assert command[3] in capsys.readouterr().out
+    assert command[:4] == ["claude-under-test", "Build hello.py", "--bg", "--name"]
+    assert re.fullmatch(r"my-host-oracle-\d{4}-\d{6}", command[4])
+    assert command[4] in capsys.readouterr().out
 
 
 def test_headless_pipes_the_prompt_into_the_transcript(env, tmp_path: Path):

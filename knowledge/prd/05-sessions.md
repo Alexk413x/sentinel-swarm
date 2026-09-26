@@ -5,27 +5,15 @@
 `agent_spawn(caller, child_name)` refuses unless the caller is the parent named in the
 child's unacknowledged brief. It also refuses a Manager before a `repo_check`, a child
 that is already registered, a session name a running session holds, and a start past
-`parallelism_cap` when the user set one. It then opens a new terminal tab and runs,
-in the repo root, an interactive session:
+`parallelism_cap` when the user set one. It then runs, in the repo root:
 
 ```
-claude "You are <name>. Read your brief from the swarm ledger and follow it." \
+claude "You are <name>. Read your brief from the swarm ledger and follow it." --bg \
   --name <session name> --agent swarm-<role> --model <brief model> \
   --permission-mode <file value> --strict-mcp-config --mcp-config <config> \
   --allowedTools <file tools> --settings '{"worktree":{"bgIsolation":"none"}}'
 ```
 
-- Every role runs as an interactive session, not `claude --bg`, because Claude Code reads
-  `--dangerously-load-development-channels` only in an interactive session. A `--bg`
-  role could never receive a channel event.
-- The terminal is a Windows Terminal tab in a window named `sentinel-swarm`, or a new
-  console when Windows Terminal is missing; Terminal.app on macOS; a `tmux` window in a
-  session named `sentinel-swarm`, else `x-terminal-emulator`, on Linux. The tab runs
-  `python -m swarm_ledger.terminal <spec>`, which reads the command from a spec file
-  under `.sentinel-swarm/sessions/`, deletes the file, and runs `claude`.
-- The tab's `claude` drops the variables a parent Claude Code session sets, such as
-  `CLAUDE_CODE_CHILD_SESSION`. With them, the new session registers as that session's
-  child: `claude agents` leaves it out and it saves no transcript.
 - The prompt goes before the options, because `--allowedTools` takes a space-separated
   list and swallows a prompt that follows it.
 - `<config>` holds the ledger's HTTP URL, the agent file's `mcpServers`, and the a11y
@@ -33,10 +21,9 @@ claude "You are <name>. Read your brief from the swarm ledger and follow it." \
   `server.json` that answers is listed by that URL; any other server keeps the shim's
   stdio entry. **(proposed)** See "Shared HTTP servers" in
   [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
-- It waits up to 15 seconds for a session with that name to appear in `claude agents
-  --json`, then records the child's row: `agent_id` = the session id, `session_name`,
-  state `registered`. `bg_id` stays empty for an interactive session. A session that
-  does not appear fails the call; its tab stays open for the user to read.
+- It waits up to 15 seconds for the session to appear in `claude agents --json`, then
+  records the child's row: `agent_id` = the session id, `session_name`, `bg_id`, state
+  `registered`. A session that does not appear is stopped and the call fails.
 - The parent ends its turn after its spawns. A child's message wakes it.
 - The claude binary is `SENTINEL_SWARM_CLAUDE` when set, else `claude`.
 - Development channels: when the environment variable `CLAUDE_DEV_CHANNELS` is not empty,
@@ -46,10 +33,9 @@ claude "You are <name>. Read your brief from the swarm ledger and follow it." \
   `plugin:<name>@<marketplace>` or `server:<name>`. The flag goes last because it takes
   several values and swallows anything after it. This matches Alex's `claude` wrapper,
   which the launcher bypasses by calling the binary directly. The variable is empty
-  today. Claude Code 2.1.283 reads the flag only in an interactive session, which is
-  why every role runs as one; see [13-platform-facts.md](13-platform-facts.md). With
-  the variable set, each new tab first shows the development-channels prompt, which the
-  user confirms with Enter.
+  today. Claude Code 2.1.283 reads the flag only in an interactive session, so today it
+  takes effect only for an interactive Oracle; see
+  [13-platform-facts.md](13-platform-facts.md).
 - The Oracle starts a Driver with `drive_request(focus)` instead of `brief_create` and
   `agent_spawn`: the tool performs both steps itself, under the child name
   `driver-e<ordinal>`, and returns the loop's status alongside the spawned agent. See
@@ -123,15 +109,14 @@ wake-up the caller owes, and returns a `next` field with the exact call to make.
   state are not `stopped`, `exited`, `crashed`, `failed`, `killed`, `dead`, or
   `completed`. State `done` counts as running.
 - `agent_resume(target_name)` resumes a live agent of the run whose session is not
-  running. It opens a new tab running `claude --resume <session id> "<pointer>" --name
-  <session name>` and the role's launch options, because `--resume` restores the
-  conversation but not the name or the launch flags. The pointer is the text
+  running, with `claude --resume <session id> --bg "<pointer>" --name <session name>`
+  and the role's launch options, because `--resume` restores the conversation but not
+  the name or the launch flags. The pointer is the text
   of every wake-up the caller owes the target, or "Re-read your brief and your inbox in
   the ledger." It refuses a running session, because a resume of a running session
   starts a second copy. Any live agent of the run may call it, except on itself.
-- Release sets the row `released` and stops the session: `claude stop <id>` for a
-  background session, or ends the process tree of an interactive one, which closes its
-  tab. The Oracle's session is never stopped this way.
+- Release sets the row `released` and stops the session with `claude stop <bg_id>`,
+  which frees its memory. The Oracle's session is never stopped this way.
 - `agent_release(target_agent_id)` releases a child of the caller. The other releases
   are automatic.
 
@@ -144,7 +129,7 @@ wake-up the caller owes, and returns a `next` field with the exact call to make.
 | `phase_update(approved)` | The phase's Manager and every live agent under it |
 | `drive_done` | The Driver's own session |
 | `run_finish` | Every agent still live except the Oracle |
-| About 3 seconds after `run_finish` | The server waits up to 5 minutes for the Oracle's last turn to end, stops the Oracle's session if it is a background session or the tab `launch --bg` opened, and exits. An Oracle in the user's own terminal keeps running |
+| About 3 seconds after `run_finish` | The server waits up to 5 minutes for the Oracle's last turn to end, stops the Oracle's background session, and exits. An interactive Oracle is the user's terminal and keeps running |
 | `idle_exit_minutes` with no active run, or a paused run, and no session of the run running | The ledger server |
 | The ledger server's exit, by any path | Every shared MCP server's process tree **(proposed)** |
 | A run that is not `active`, or a newer listener | The watchdog listener |

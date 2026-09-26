@@ -62,8 +62,8 @@ listing skips one pass.
 - `directive_inbox` marks the directives it returns as notified.
 - When a watchdog directive stays unnotified for one interval and the Oracle's session
   is not running, the server runs
-  `claude --resume <Oracle session> "The watchdog reported N finding(s). Read directive_inbox."`
-  in a new tab, with the Oracle's name and launch options,
+  `claude --resume <Oracle session> --bg "The watchdog reported N finding(s). Read directive_inbox."`
+  with the Oracle's session name and launch options,
   at most once every 5 minutes. After 3 attempts with no Oracle heartbeat since the
   first, it pauses the run with the reason "the watchdog could not wake the Oracle".
 

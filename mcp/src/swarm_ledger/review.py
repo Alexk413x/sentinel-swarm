@@ -229,8 +229,8 @@ class ReviewMixin:
             (phase_name, target_agent_id),
         )
         self._log_event(conn, target_agent_id, row["state"], "released", reason)
-        if row["session_name"] and row["role"] != "oracle":
-            self._pending_stops.append((target_agent_id, row["session_name"]))
+        if row["bg_id"] and row["role"] != "oracle":
+            self._pending_stops.append((target_agent_id, row["bg_id"]))
 
     # -- Tests --------------------------------------------------------------
 

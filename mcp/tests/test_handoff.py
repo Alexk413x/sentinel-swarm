@@ -456,26 +456,20 @@ def test_approve_releases_the_claim_and_the_coder(ledger: Ledger) -> None:
 def test_handoff_next_wakes_the_lead_and_approve_stops_the_coders_session(
     ledger: Ledger, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    killed: list[int] = []
-    listing = [{"pid": 9, "sessionId": "lead-agent", "name": "host-r1-lead-1", "status": "idle"}]
+    calls: list[list[str]] = []
+    lead_session = {"pid": 9, "sessionId": "lead-agent", "name": "host-r1-lead-1", "status": "idle"}
 
     def fake_run(args: list[str], cwd: Path | None = None) -> str:
         del cwd
-        return json.dumps(listing) if args[:2] == ["agents", "--json"] else ""
+        calls.append(list(args))
+        return json.dumps([lead_session]) if args[:2] == ["agents", "--json"] else ""
 
     monkeypatch.setattr(sessions, "_run", fake_run)
-    monkeypatch.setattr(sessions, "_kill", killed.append)
     ctx = _bootstrap(ledger)
     coder = _spawn_coder(ledger, ctx, "coder-next", "pkg/good.py", "tests/test_good.py")
-    coder_name = "host-r1-coder-next"
-    listing.append(
-        {"pid": 12, "sessionId": coder["agent_id"], "name": coder_name, "status": "idle"}
-    )
     with write_tx(ledger.conn) as conn:
         conn.execute("UPDATE agents SET session_name = 'host-r1-lead-1' WHERE name = 'lead-1'")
-        conn.execute(
-            "UPDATE agents SET session_name = ? WHERE agent_id = ?", (coder_name, coder["agent_id"])
-        )
+        conn.execute("UPDATE agents SET bg_id = 'coderbg' WHERE agent_id = ?", (coder["agent_id"],))
     file_id = _file_id_for(ledger, "pkg/good.py")
     ledger.score_record(
         "coder-next", coder["agent_id"], file_id, _all_ratings(10), _all_applicable(), "self"
@@ -492,7 +486,7 @@ def test_handoff_next_wakes_the_lead_and_approve_stops_the_coders_session(
     ledger.score_record("lead-1", lead_id, file_id, _all_ratings(10), _all_applicable(), "lead")
     ledger.review_compare("lead-1", lead_id, handoff["handoff_id"])
     ledger.approve("lead-1", lead_id, handoff["handoff_id"])
-    assert killed == [12]
+    assert ["stop", "coderbg"] in calls
 
 
 # -- return, a second handoff, and attempt_record ------------------------------------------

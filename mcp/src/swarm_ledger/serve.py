@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import lock, sessions, shared, terminal
+from . import lock, sessions, shared
 from .db import ledger_path
 from .identity import LedgerError
 
@@ -213,9 +213,7 @@ def _exit_now(path: Path, repo_root: Path) -> None:
     os._exit(0)
 
 
-def stop_finished_oracle(
-    session_id: str | None, wait_s: float = ORACLE_TURN_WAIT_S, tab_name: str | None = None
-) -> str:
+def stop_finished_oracle(session_id: str | None, wait_s: float = ORACLE_TURN_WAIT_S) -> str:
     if session_id is None:
         return "no Oracle session recorded"
     deadline = time.monotonic() + wait_s
@@ -226,23 +224,17 @@ def stop_finished_oracle(
             return f"Oracle session not checked: {exc}"
         if entry is None or not sessions.is_running(entry):
             return "Oracle session already ended"
-        own_tab = tab_name is not None and entry.get("name") == tab_name
-        if entry.get("kind") != "background" and not own_tab:
+        if entry.get("kind") != "background":
             return "Oracle session is interactive; left running"
         if str(entry.get("status") or "").lower() != "busy" or time.monotonic() >= deadline:
-            if entry.get("id"):
-                sessions.stop(str(entry["id"]))
-            else:
-                sessions.stop_session(session_id)
-            return f"Oracle session {entry.get('id') or entry.get('name')} stopped"
+            sessions.stop(str(entry["id"]))
+            return f"Oracle session {entry['id']} stopped"
         time.sleep(_POLL_S)
 
 
 def _finish(path: Path, repo_root: Path, oracle_session_id: str | None) -> None:
     try:
-        tab_name = terminal.oracle_tab_name(repo_root)
-        outcome = stop_finished_oracle(oracle_session_id, tab_name=tab_name)
-        print(outcome, file=sys.stderr, flush=True)
+        print(stop_finished_oracle(oracle_session_id), file=sys.stderr, flush=True)
     except Exception as exc:
         print(f"Oracle session not stopped: {exc}", file=sys.stderr, flush=True)
     finally:

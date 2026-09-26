@@ -13,8 +13,8 @@ Starts a full sentinel-swarm run: a PRD in, built and reviewed code out.
    installed and enabled; sentinel-swarm declares it as a required dependency.
 2. `/sentinel-swarm:setup` has run in this repo. It writes the role files in
    `.claude/agents/`, the hook shim, and the settings the sessions need.
-3. The host repo is trusted. Claude Code runs the role files' hooks only in a trusted
-   folder, and the launcher refuses an untrusted one.
+3. The host repo is trusted. A background session refuses to start in an untrusted
+   folder, and Claude Code runs the role files' hooks only in a trusted folder.
    `setup` reports this and prints the command to fix it.
 4. `.claude/sentinel-swarm.local.md` exists and its `test_command` is filled in. The
    command must contain `{target}`, for example
@@ -27,8 +27,7 @@ Starts a full sentinel-swarm run: a PRD in, built and reviewed code out.
 ## Start the run
 
 Run the launcher from the host repo root. It starts the repo's ledger server, then
-opens the Oracle as an interactive session in its own terminal tab, named
-`<repo>-oracle-<MMDD-HHMMSS>`. Every role the swarm starts opens in a tab of its own:
+starts the Oracle as a background session named `<repo>-oracle-<MMDD-HHMMSS>`:
 
 ```bash
 uv run --project "${CLAUDE_PLUGIN_ROOT}/mcp" --frozen --no-dev \

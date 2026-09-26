@@ -7,8 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from swarm_ledger import sessions
-
 
 @pytest.fixture(scope="session")
 def repo_root() -> Path:
@@ -23,8 +21,6 @@ def _isolated_claude_config(
     # touch the real ~/.claude. A fixture that needs the real registry sets its own value.
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path_factory.mktemp("claude-config")))
     monkeypatch.delenv("CLAUDE_DEV_CHANNELS", raising=False)
-    # Tests never open a terminal: a launch goes to whatever runner the test installed.
-    monkeypatch.setattr(sessions, "_open", lambda args, cwd, title: sessions._run(args, cwd=cwd))
 
 
 def installed_plugin(plugin_id: str, marker: str) -> Path | None:

@@ -24,7 +24,7 @@ the one for a subject. `plans/` holds only plans for work not built yet.
   source-of-truth documents with their index in `prd/README.md`. Both committed.
 - `scripts/smoke.sh` — the smoke test. It rebuilds `runs/hello/` (git-ignored) on each run
   and starts the Oracle through the installed copy's launcher: interactive by default,
-  `--bg` for an interactive Oracle in its own terminal tab, `--headless` for `claude -p`. `--prd <name>` uses
+  `--bg` for a background session, `--headless` for `claude -p`. `--prd <name>` uses
   `scripts/prds/<name>.md` as the prompt: `modules` (three waves: two independent phases,
   a subclass that depends on one, then a command that uses all three) or `textstats`
   (two dependent phases, about 10 files; about $12).

@@ -4,15 +4,12 @@ import json
 import os
 import re
 import shutil
-import signal
 import subprocess
-import sys
 import tempfile
 import time
 from collections.abc import Sequence
 from pathlib import Path
 
-from . import terminal
 from .identity import LedgerError
 
 CLAUDE_VAR = "SENTINEL_SWARM_CLAUDE"
@@ -112,26 +109,26 @@ def live_names(sessions: list[dict]) -> set[str]:
     return {str(s["name"]) for s in sessions if s.get("name") and is_running(s)}
 
 
-def _open(args: list[str], cwd: Path, title: str) -> None:
-    terminal.open_session(cwd, title, [claude_binary(), *args])
-
-
-def spawn(prompt: str, name: str, options: list[str], cwd: Path) -> tuple[str | None, str]:
-    # Interactive, not --bg: Claude Code reads --dangerously-load-development-channels only in
-    # an interactive session, so a --bg role could never receive a channel event.
-    _open([prompt, "--name", name, *options, *dev_channel_args()], cwd, name)
+def spawn(prompt: str, name: str, options: list[str], cwd: Path) -> tuple[str, str]:
+    output = _run([prompt, "--bg", "--name", name, *options, *dev_channel_args()], cwd=cwd)
+    bg_id = parse_bg_id(output)
+    if bg_id is None:
+        raise LedgerError(f"claude --bg printed no background id: {_strip_ansi(output).strip()!r}")
     deadline = time.monotonic() + _SPAWN_WAIT_S
     while True:
-        entry = next((s for s in list_sessions() if s.get("name") == name), None)
+        entry = next((s for s in list_sessions() if s.get("id") == bg_id), None)
         if entry is not None and entry.get("sessionId"):
-            bg_id = entry.get("id")
-            return (str(bg_id) if bg_id else None), str(entry["sessionId"])
+            return bg_id, str(entry["sessionId"])
         if time.monotonic() >= deadline:
             break
         time.sleep(_POLL_S)
+    try:
+        stop(bg_id)
+    except LedgerError:
+        pass
     raise LedgerError(
-        f"session {name} did not appear in claude agents --json within {_SPAWN_WAIT_S:.0f}s; "
-        "check its terminal tab"
+        f"session {name} ({bg_id}) did not appear in claude agents --json "
+        f"within {_SPAWN_WAIT_S:.0f}s, so it was stopped"
     )
 
 
@@ -139,37 +136,15 @@ def stop(bg_id: str) -> None:
     _run(["stop", bg_id])
 
 
-def _kill(pid: int) -> None:
-    if sys.platform == "win32":
-        subprocess.run(
-            ["taskkill", "/PID", str(pid), "/T", "/F"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    else:
-        os.kill(pid, signal.SIGTERM)
-
-
-def stop_session(session_id: str) -> bool:
-    entry = find_session(list_sessions(), session_id)
-    if entry is None or not is_running(entry):
-        return False
-    if entry.get("id"):
-        stop(str(entry["id"]))
-    else:
-        _kill(int(entry["pid"]))
-    return True
-
-
 def resume(
     session_id: str,
     message: str,
-    cwd: Path,
+    cwd: Path | None = None,
     name: str | None = None,
     options: Sequence[str] = (),
-) -> None:
+) -> str | None:
     # --resume restores the conversation only: the name and launch flags are passed again, or
     # the session comes back under a generated name without its MCP config.
     named = ["--name", name] if name else []
-    args = ["--resume", session_id, message, *named, *options, *dev_channel_args()]
-    _open(args, cwd, name or session_id[:8])
+    args = ["--resume", session_id, "--bg", message, *named, *options, *dev_channel_args()]
+    return parse_bg_id(_run(args, cwd=cwd))

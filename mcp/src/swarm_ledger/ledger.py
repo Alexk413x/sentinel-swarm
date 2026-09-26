@@ -91,12 +91,12 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
 
     def _stop_released_sessions(self) -> None:
         pending, self._pending_stops = self._pending_stops, []
-        for agent_id, label in pending:
+        for agent_id, bg_id in pending:
             try:
-                stopped = sessions.stop_session(agent_id)
-                outcome = f"session {label} {'stopped' if stopped else 'had already ended'}"
+                sessions.stop(bg_id)
+                outcome = f"session {bg_id} stopped"
             except Exception as exc:
-                outcome = f"session {label} was not stopped: {exc}"
+                outcome = f"session {bg_id} was not stopped: {exc}"
             with write_tx(self.conn) as conn:
                 self._log_event(conn, agent_id, "released", "released", outcome)
 
@@ -1055,7 +1055,9 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                     bg_id,
                 ),
             )
-            self._log_event(conn, session_id, None, "registered", f"agent_spawn: {session_name}")
+            self._log_event(
+                conn, session_id, None, "registered", f"agent_spawn: {session_name} ({bg_id})"
+            )
 
         return self._agent_dict(session_id)
 
@@ -1108,7 +1110,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
             )
         )
         message = " ".join(w["pointer"] for w in owed) or _RESUME_POINTER
-        sessions.resume(
+        bg_id = sessions.resume(
             target["agent_id"],
             message,
             cwd=self.repo_root,
@@ -1117,6 +1119,10 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
         )
 
         with write_tx(self.conn) as conn:
+            if bg_id is not None and bg_id != target["bg_id"]:
+                conn.execute(
+                    "UPDATE agents SET bg_id = ? WHERE agent_id = ?", (bg_id, target["agent_id"])
+                )
             conn.execute(
                 f"UPDATE wakeups SET sent_at = {_NOW} WHERE from_agent_id = ? "
                 "AND to_agent_id = ? AND sent_at IS NULL",

@@ -185,8 +185,7 @@ refuses, when the host has a Driver available, while no exploration has ended cl
 since the last fix wave, unless the loop stopped on a stop rule whose directive is
 resolved: see "Explorations" below. It then sets the run to `finished`, releases every
 live agent except the Oracle, builds the report, and closes the Oracle's row. The
-ledger server then stops the Oracle's session, unless it runs in the user's own
-terminal, and exits. See "What stops
+ledger server then stops the Oracle's background session and exits. See "What stops
 when" in [05-sessions.md](05-sessions.md).
 
 ## Explorations
