@@ -58,7 +58,8 @@ its agent.
    role's approved list, and the brief.
 2. The parent calls `agent_spawn(caller=<its name>, child_name=<the child's name>)`.
    It checks the role, the model, the brief, and the parallelism cap when the user
-   set one, then starts the child's session with `claude --bg --agent swarm-<role>`
+   set one, then opens the child's interactive session in a new terminal tab with
+   `claude --agent swarm-<role>`
    and the prompt:
 
    ```

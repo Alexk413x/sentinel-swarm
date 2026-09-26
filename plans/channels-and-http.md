@@ -49,7 +49,7 @@ The probe was repackaged as a plugin (`probe-channel@probe-marketplace`, project
   - Three events pushed about 0.6 seconds apart all arrived, in order.
 - Per the agent-view docs, a session sent to the background with `/bg` or `←` resumes in a fresh process, and the supervisor stops a background session's process after about an hour idle unless it is pinned with `Ctrl+T`. That stop would end the channel server too. The changelog notes a fix for channel connections dropping after `/bg`. Not probed.
 
-**Recommendation (proposed): a channel works only in an interactive session.** An interactive session with the development flag, confirmed once at the prompt, receives channel events and wakes on them. A swarm role today is a `--bg` session, which discards the flag, and sentinel-swarm is not on the channels allowlist, so a `swarm-events` channel would connect and never deliver to a role. Keep `SendMessage`, the Oracle's `Monitor` listener, and `agent_resume`. Revisit when either change ships: `--dangerously-load-development-channels` works in `--bg` sessions, or a user-level setting can allowlist a plugin. The retest is the probe above: check the debug log for `Channel notifications skipped`.
+**Result: a channel works only in an interactive session, so every role now runs as one.** An interactive session with the development flag, confirmed once at the prompt, receives channel events and wakes on them. Decided by Alex on 2026-09-26: every role, and `launch --bg` for the Oracle, opens as an interactive session in its own terminal tab; see "Starting a child" in `knowledge/prd/05-sessions.md`. `SendMessage`, the Oracle's `Monitor` listener, and `agent_resume` stay until a channel carries the wake-ups in a live run.
 
 ## Proposed design **(proposed)**
 

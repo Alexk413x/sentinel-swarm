@@ -105,4 +105,5 @@ Built on 2026-09-25, choices Alex has not reviewed:
 - The exact stop-rule math in `compute_loop_status` (`mcp/src/swarm_ledger/drive.py`): the attempt streak and total, the three-exploration stall, fixes causing bugs, and ping-pong.
 - The report's Explorations section marks each finding as recurred in a later exploration or not seen again; the ledger does not link a finding to the fix that closed it.
 - The watchdog reports a Driver whose check-in is overdue (`driver_overdue`) and does not report it as stuck or spinning.
-- Channels are not built: the swarm keeps `SendMessage`, the Monitor listener, and `agent_resume` until a channel can deliver to a `--bg` session for a plugin outside the allowlist.
+- The swarm keeps `SendMessage`, the Monitor listener, and `agent_resume` alongside channels until a channel carries the wake-ups in a live run.
+- A role whose session never appears fails `agent_spawn` and leaves its tab open for the user to read, rather than closing it.

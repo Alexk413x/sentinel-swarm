@@ -196,6 +196,17 @@ def test_an_interactive_or_ended_oracle_is_left_alone(
     assert stopped == []
 
 
+def test_an_oracle_in_its_own_tab_is_stopped(monkeypatch: pytest.MonkeyPatch) -> None:
+    entry = {"sessionId": "sess-o", "pid": 7, "kind": "interactive", "status": "idle"}
+    entry["name"] = "host-oracle-0926-120000"
+    stopped_sessions: list[str] = []
+    _fake_sessions(monkeypatch, [[entry]])
+    monkeypatch.setattr(serve.sessions, "stop_session", stopped_sessions.append)
+    outcome = serve.stop_finished_oracle("sess-o", tab_name="host-oracle-0926-120000")
+    assert outcome == "Oracle session host-oracle-0926-120000 stopped"
+    assert stopped_sessions == ["sess-o"]
+
+
 def test_no_recorded_oracle_stops_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     stopped = _fake_sessions(monkeypatch, [[_oracle("idle")]])
     assert serve.stop_finished_oracle(None) == "no Oracle session recorded"

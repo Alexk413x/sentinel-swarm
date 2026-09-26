@@ -31,8 +31,8 @@ are missing in a session, run `/reload-plugins`.
   setup, commits, and starts the Oracle through the installed copy's launcher. Each run
   also removes any older `*-dev.*` copy from the plugin cache, skipping one a live
   session still has open, so a run never replaces a cached copy another session holds.
-- No flag opens an interactive Oracle. `--bg` checks trust first, then starts a
-  background session; `bash scripts/smoke.sh --results` prints the results and then the
+- No flag opens an interactive Oracle. `--bg` checks trust first, then opens the
+  Oracle in its own terminal tab; `bash scripts/smoke.sh --results` prints the results and then the
   automated checklist below, with a non-zero exit if a check fails. `--headless` runs
   `claude -p` and writes `runs/hello/transcript.jsonl`.
 - The default prompt asks for `hello.py`, which writes `Hello, world!` to

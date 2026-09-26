@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Literal
 
 from . import setup
+from .identity import LedgerError
+from .terminal import record_oracle_tab
 
 Mode = Literal["interactive", "bg", "headless"]
 
@@ -47,6 +49,12 @@ def _claude_binary() -> str:
     return claude_binary()
 
 
+def _open_terminal(repo: Path, title: str, command: list[str]) -> None:
+    from .terminal import open_session
+
+    open_session(repo, title, command)
+
+
 def _dev_channel_args() -> list[str]:
     from .sessions import dev_channel_args
 
@@ -76,7 +84,7 @@ def oracle_command(
     # prompt that follows it.
     head = [claude, prompt]
     if mode == "bg":
-        head += ["--bg", "--name", name or oracle_session_name(repo)]
+        head += ["--name", name or oracle_session_name(repo)]
     return [*head, *options, *dev]
 
 
@@ -113,22 +121,28 @@ def launch(repo: Path, prompt: str, mode: Mode, transcript: Path | None = None) 
     except Exception as exc:
         sys.stderr.write(f"cannot start the Oracle: {exc}\n")
         return 1
+    if mode == "bg":
+        try:
+            _open_terminal(repo, name, command)
+            record_oracle_tab(repo, name)
+        except LedgerError as exc:
+            sys.stderr.write(f"cannot start the Oracle: {exc}\n")
+            return 1
+        print(f"The Oracle runs in its own terminal tab as {name}.")
+        print("Watch it in agent view or with: claude agents")
+        return 0
     try:
-        code = _run(command, repo, prompt, mode, transcript)
+        return _run(command, repo, prompt, mode, transcript)
     except OSError as exc:
         sys.stderr.write(f"cannot start {command[0]}: {exc}. Set SENTINEL_SWARM_CLAUDE.\n")
         return 1
-    if mode == "bg" and code == 0:
-        print(f"The Oracle runs in the background as {name}.")
-        print("Watch it in agent view or with: claude agents")
-    return code
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m swarm_ledger.launch")
     parser.add_argument("--repo", type=Path, default=None, help="host repo root; default: cwd")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--bg", action="store_true", help="start the Oracle as a background session")
+    group.add_argument("--bg", action="store_true", help="start the Oracle in its own terminal tab")
     group.add_argument("--headless", action="store_true", help="run the Oracle with claude -p")
     parser.add_argument("--transcript", type=Path, help="with --headless: the stream-json file")
     parser.add_argument("prompt")

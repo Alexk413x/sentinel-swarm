@@ -42,10 +42,13 @@ or the `/sentinel-swarm:run` skill.
 
 - It runs setup when the shim or a role file is missing.
 - `--bg` refuses an untrusted repo and prints the trust command.
+- `--bg` opens the Oracle as an interactive session in its own terminal tab, the same
+  way `agent_spawn` opens a role, and records the session name in
+  `.sentinel-swarm/oracle-tab` so the server can stop that tab after `run_finish`.
 - It starts the ledger server, then the Oracle with its agent file's model and the same
   flags as `agent_spawn`. If the file has no `model`, it uses the first entry of the
   Oracle's approved list.
-- Interactive by default. `--bg` starts a background session. `--headless` runs
+- Interactive in the current terminal by default. `--bg` uses a new tab. `--headless` runs
   `claude -p` with a stream-json transcript and the prompt on stdin. Nobody answers
   questions in a headless run, so the Oracle records each assumption in the guidelines.
 

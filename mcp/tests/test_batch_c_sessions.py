@@ -520,7 +520,7 @@ def test_agent_spawn_passes_the_role_s_effort_and_cache_ttl(
     spawn_ledger.settings.prompt_cache_ttl = {"manager": "1h"}
     spawn_ledger.agent_spawn("oracle", ctx["oracle_id"], "manager-1")
 
-    spawn_calls = [args for args, _ in claude.calls if "--bg" in args]
+    spawn_calls = [args for args, _ in claude.calls if "--name" in args]
     options = spawn_calls[-1]
     assert options[options.index("--effort") + 1] == "xhigh"
     settings_json = options[options.index("--settings") + 1]

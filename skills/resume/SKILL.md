@@ -69,9 +69,9 @@ The Oracle calls `run_start` in the new session, as it does for a new run.
 2. `message_inbox()` and `directive_inbox()` for anything that arrived while the
    session was gone.
 3. For each agent the ledger counts as live whose session is not running:
-   `agent_resume(caller="oracle", target_name=<its name>)`. It runs `claude --resume
-   <session id> --bg "<pointer>"`, which continues the same session and its
-   conversation. `agent_resume` refuses a session that is still running, because a
+   `agent_resume(caller="oracle", target_name=<its name>)`. It opens a new terminal tab
+   running `claude --resume <session id> "<pointer>"` with the session's name, which
+   continues the same session and its conversation. `agent_resume` refuses a session that is still running, because a
    resume of a live session starts a copy.
 4. A session that is waiting for a permission answer is not dead. Tell the user which
    row in agent view is waiting, and do not resume it.

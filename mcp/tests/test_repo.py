@@ -28,7 +28,8 @@ class _FakeClaude:
         self._count += 1
         session_id = f"{self._count:08x}-aaaa-bbbb-cccc-dddddddddddd"
         bg_id = session_id[:8]
-        self.listing.append({"pid": 100 + self._count, "sessionId": session_id, "id": bg_id})
+        entry = {"pid": 100 + self._count, "sessionId": session_id, "id": bg_id, "name": name}
+        self.listing.append(entry)
         return f"backgrounded · {bg_id} · {name}\n"
 
 

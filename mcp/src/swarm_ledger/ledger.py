@@ -84,12 +84,12 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
 
     def _stop_released_sessions(self) -> None:
         pending, self._pending_stops = self._pending_stops, []
-        for agent_id, bg_id in pending:
+        for agent_id, label in pending:
             try:
-                sessions.stop(bg_id)
-                outcome = f"session {bg_id} stopped"
+                stopped = sessions.stop_session(agent_id)
+                outcome = f"session {label} {'stopped' if stopped else 'had already ended'}"
             except Exception as exc:
-                outcome = f"session {bg_id} was not stopped: {exc}"
+                outcome = f"session {label} was not stopped: {exc}"
             with write_tx(self.conn) as conn:
                 self._log_event(conn, agent_id, "released", "released", outcome)
 
@@ -1025,14 +1025,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                     f"{role} sessions); call agent_spawn again after a release frees a slot"
                 )
 
-        options = agentfiles.session_options(
-            self.repo_root,
-            role,
-            brief["model"],
-            serve.server_url(self.repo_root),
-            effort=self.settings.effort.get(role),
-            prompt_cache_ttl=self.settings.prompt_cache_ttl.get(role),
-        )
+        options = self._session_options(role, brief["model"])
         prompt = f"You are {child_name}. Read your brief from the swarm ledger and follow it."
         bg_id, session_id = sessions.spawn(prompt, session_name, options, cwd=self.repo_root)
 
@@ -1055,11 +1048,27 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                     bg_id,
                 ),
             )
-            self._log_event(
-                conn, session_id, None, "registered", f"agent_spawn: {session_name} ({bg_id})"
-            )
+            self._log_event(conn, session_id, None, "registered", f"agent_spawn: {session_name}")
 
         return self._agent_dict(session_id)
+
+    def _session_options(self, role: str, model: str | None) -> list[str]:
+        return agentfiles.session_options(
+            self.repo_root,
+            role,
+            model,
+            serve.server_url(self.repo_root),
+            effort=self.settings.effort.get(role),
+            prompt_cache_ttl=self.settings.prompt_cache_ttl.get(role),
+        )
+
+    def _resume_options(self, role: str, model: str | None) -> list[str]:
+        # A resume still goes ahead without them: the host's installed plugin supplies the
+        # ledger server, and a wake-up matters more than the exact launch flags.
+        try:
+            return self._session_options(role, model)
+        except LedgerError:
+            return []
 
     def agent_resume(self, caller: str, agent_id: str, target_name: str) -> dict:
         c = resolve(self.conn, caller, agent_id)
@@ -1086,13 +1095,15 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
             )
         )
         message = " ".join(w["pointer"] for w in owed) or _RESUME_POINTER
-        bg_id = sessions.resume(target["agent_id"], message, cwd=self.repo_root)
+        sessions.resume(
+            target["agent_id"],
+            message,
+            cwd=self.repo_root,
+            name=target["session_name"],
+            options=self._resume_options(target["role"], target["model"]),
+        )
 
         with write_tx(self.conn) as conn:
-            if bg_id is not None and bg_id != target["bg_id"]:
-                conn.execute(
-                    "UPDATE agents SET bg_id = ? WHERE agent_id = ?", (bg_id, target["agent_id"])
-                )
             conn.execute(
                 f"UPDATE wakeups SET sent_at = {_NOW} WHERE from_agent_id = ? "
                 "AND to_agent_id = ? AND sent_at IS NULL",

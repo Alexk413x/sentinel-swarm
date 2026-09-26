@@ -38,7 +38,7 @@ class FakeClaude:
         if args[0] == "--resume":
             if self.fail_resume:
                 raise LedgerError("claude --resume failed")
-            self.resumed.append((args[1], args[3]))
+            self.resumed.append((args[1], args[2]))
             return f"backgrounded · {args[1][:8]} · resumed\n"
         raise AssertionError(f"unexpected claude call: {args}")
 

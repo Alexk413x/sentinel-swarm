@@ -255,33 +255,59 @@ def test_is_live_reads_status_and_pid(claude: FakeClaude) -> None:
     assert sessions.live_names(claude.listing) == {"a"}
 
 
-def test_spawn_puts_the_prompt_first_and_returns_both_ids(claude: FakeClaude, tmp_path: Path):
+def test_spawn_opens_an_interactive_session_and_finds_it_by_name(
+    claude: FakeClaude, tmp_path: Path
+) -> None:
     bg_id, session_id = sessions.spawn("You are x.", "n-1", ["--agent", "swarm-lead"], tmp_path)
     args, cwd = claude.calls[0]
-    assert args == ["You are x.", "--bg", "--name", "n-1", "--agent", "swarm-lead"]
+    assert args == ["You are x.", "--name", "n-1", "--agent", "swarm-lead"]
     assert cwd == tmp_path
-    assert session_id.startswith(bg_id)
+    assert bg_id is not None and session_id.startswith(bg_id)
     assert claude.entry(session_id) is not None
 
 
-def test_spawn_stops_a_session_that_never_appears(
+def test_spawn_fails_when_the_session_never_appears(
     claude: FakeClaude, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(sessions, "_SPAWN_WAIT_S", 0.0)
     claude.appear = False
     with pytest.raises(LedgerError, match="did not appear"):
         sessions.spawn("You are x.", "n-1", [], tmp_path)
-    assert claude.commands("stop") == [["stop", "00000001"]]
+    assert claude.commands("stop") == []
 
 
 def test_stop_and_resume_run_the_documented_commands(claude: FakeClaude, tmp_path: Path) -> None:
     sessions.stop("3378dc08")
-    assert sessions.resume("3378dc08-full-id", "Re-read.", cwd=tmp_path) == "3378dc08"
+    sessions.resume("3378dc08-full-id", "Re-read.", cwd=tmp_path)
     assert [args for args, _ in claude.calls] == [
         ["stop", "3378dc08"],
-        ["--resume", "3378dc08-full-id", "--bg", "Re-read."],
+        ["--resume", "3378dc08-full-id", "Re-read."],
     ]
     assert claude.calls[1][1] == tmp_path
+
+
+def test_stop_session_kills_an_interactive_session(
+    claude: FakeClaude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    killed: list[int] = []
+    monkeypatch.setattr(sessions, "_kill", killed.append)
+    entry = claude.add("int-1", "n-1")
+    entry["status"] = "idle"
+    del entry["state"]
+    assert sessions.stop_session("int-1") is True
+    assert killed == [entry["pid"]]
+    assert claude.commands("stop") == []
+
+
+def test_stop_session_uses_claude_stop_for_a_background_session(claude: FakeClaude) -> None:
+    claude.add("bg-session-1", "n-1", bg_id="bg1")
+    assert sessions.stop_session("bg-session-1") is True
+    assert claude.commands("stop") == [["stop", "bg1"]]
+
+
+def test_stop_session_skips_a_session_that_already_ended(claude: FakeClaude) -> None:
+    assert sessions.stop_session("gone") is False
+    assert claude.commands("stop") == []
 
 
 # -- agent_spawn ------------------------------------------------------------------------------
@@ -291,16 +317,15 @@ def test_agent_spawn_starts_the_session_with_the_role_files_flags(
     ledger: Ledger, claude: FakeClaude, host: Path
 ) -> None:
     ctx = _bootstrap(ledger, claude)
-    spawn_calls = [(args, cwd) for args, cwd in claude.calls if "--bg" in args]
+    spawn_calls = [(args, cwd) for args, cwd in claude.calls if "--name" in args]
     args, cwd = spawn_calls[-1]
     assert cwd == host
-    assert args[:4] == [
+    assert args[:3] == [
         "You are lead-1. Read your brief from the swarm ledger and follow it.",
-        "--bg",
         "--name",
         f"my-host-r{ctx.run_id}-lead-1",
     ]
-    options = args[4:]
+    options = args[3:]
     assert options[:8] == [
         "--agent",
         "swarm-lead",
@@ -450,7 +475,13 @@ def test_agent_resume_continues_a_stopped_session_with_the_owed_pointer(
     assert resumed["message"].startswith(pointer)
     assert resumed["wakeups_sent"] == 1
     args, cwd = [(a, c) for a, c in claude.calls if a[0] == "--resume"][0]
-    assert args == ["--resume", ctx.manager[1], "--bg", resumed["message"]]
+    assert args[:5] == [
+        "--resume",
+        ctx.manager[1],
+        resumed["message"],
+        "--name",
+        "my-host-r1-manager-1",
+    ]
     assert cwd == host
     assert ledger.owed_wakeups(ctx.lead[1]) == []
 
@@ -560,11 +591,12 @@ def test_a_debt_to_a_released_agent_is_no_longer_owed(ledger: Ledger, claude: Fa
 
 def test_agent_release_stops_the_childs_session(ledger: Ledger, claude: FakeClaude) -> None:
     ctx = _bootstrap(ledger, claude)
-    bg_id = _row(ledger, ctx.lead[1])["bg_id"]
+    row = _row(ledger, ctx.lead[1])
     released = ledger.agent_release(*ctx.manager, ctx.lead[1])
     assert released["state"] == "released"
-    assert claude.commands("stop") == [["stop", bg_id]]
-    assert any(e["reason"] == f"session {bg_id} stopped" for e in ledger.events(ctx.lead[1]))
+    assert claude.commands("stop") == [["stop", row["bg_id"]]]
+    reason = f"session {row['session_name']} stopped"
+    assert any(e["reason"] == reason for e in ledger.events(ctx.lead[1]))
 
 
 def test_a_failed_stop_does_not_fail_the_release(ledger: Ledger, claude: FakeClaude) -> None:
@@ -684,4 +716,4 @@ def test_dev_channels_go_last_on_spawn_and_resume(
     sessions.resume("3378dc08-full-id", "Re-read.", cwd=tmp_path)
     tail = ["--dangerously-load-development-channels", "plugin:q@m"]
     assert claude.calls[0][0][-2:] == tail
-    assert claude.calls[-1][0] == ["--resume", "3378dc08-full-id", "--bg", "Re-read.", *tail]
+    assert claude.calls[-1][0] == ["--resume", "3378dc08-full-id", "Re-read.", *tail]

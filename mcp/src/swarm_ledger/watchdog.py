@@ -681,7 +681,13 @@ class Watchdog:
 
         message = f"The watchdog reported {waiting} finding(s). Read directive_inbox."
         try:
-            sessions.resume(oracle["agent_id"], message, cwd=self.repo_root)
+            sessions.resume(
+                oracle["agent_id"],
+                message,
+                cwd=self.repo_root,
+                name=oracle["session_name"],
+                options=self._oracle_options(oracle["model"]),
+            )
             reason = f"the watchdog woke the Oracle: {message}"
         except LedgerError as exc:
             reason = f"the watchdog could not resume the Oracle: {exc}"
@@ -692,6 +698,24 @@ class Watchdog:
                 (oracle["agent_id"], oracle["state"], WAKE_STATE, reason, stamp(now)),
             )
         self._log(reason)
+
+    def _oracle_options(self, model: str | None) -> list[str]:
+        from .agentfiles import session_options
+        from .serve import server_url
+        from .settings import load_settings
+
+        settings = load_settings(self.repo_root)
+        try:
+            return session_options(
+                self.repo_root,
+                "oracle",
+                model,
+                server_url(self.repo_root),
+                effort=settings.effort.get("oracle"),
+                prompt_cache_ttl=settings.prompt_cache_ttl.get("oracle"),
+            )
+        except LedgerError:
+            return []
 
     def _pause(self, run: sqlite3.Row, oracle: sqlite3.Row, now: datetime) -> None:
         with write_tx(self.conn) as conn:
