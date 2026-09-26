@@ -31,5 +31,12 @@
       "name": "cartographer",
       "marketplace": "cartographer"
     }
-  ]
+  ],
+  "userConfig": {
+    "test_command": {
+      "type": "string",
+      "title": "Test command",
+      "description": "The command sentinel-swarm runs for a file, module, or phase, with {target} in place of what is being tested, for example 'python -m pytest -q -p no:cacheprovider {target}'. Setup uses this value verbatim instead of detecting it from the host repo's stack. Leave it blank to keep detection."
+    }
+  }
 }

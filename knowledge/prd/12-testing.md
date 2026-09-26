@@ -26,11 +26,15 @@ are missing in a session, run `/reload-plugins`.
 - It empties `runs/hello/` (git-ignored), builds a host repo in `runs/hello/host/` with
   a README, a `pyproject.toml`, a settings file with the pytest test command, a
   one-node code graph, and `git init -b main`. It copies the plugin to a fresh temp
-  folder, installs it at project scope, runs setup, commits, and starts the Oracle
-  through the installed copy's launcher.
+  folder, rewrites that copy's version to a dev version such as `0.0.1-dev.<epoch
+  seconds>` **(proposed)**, installs it at project scope under that version, runs
+  setup, commits, and starts the Oracle through the installed copy's launcher. Each run
+  also removes any older `*-dev.*` copy from the plugin cache, skipping one a live
+  session still has open, so a run never replaces a cached copy another session holds.
 - No flag opens an interactive Oracle. `--bg` checks trust first, then starts a
-  background session; `bash scripts/smoke.sh --results` prints the results when it
-  finishes. `--headless` runs `claude -p` and writes `runs/hello/transcript.jsonl`.
+  background session; `bash scripts/smoke.sh --results` prints the results and then the
+  automated checklist below, with a non-zero exit if a check fails. `--headless` runs
+  `claude -p` and writes `runs/hello/transcript.jsonl`.
 - The default prompt asks for `hello.py`, which writes `Hello, world!` to
   `hello_world.txt`. After the run, `smoke.sh` runs `hello.py` or `hello_world.py` and
   prints the file, because the shell gate lets the swarm run only test commands.
@@ -53,8 +57,28 @@ are missing in a session, run `/reload-plugins`.
 
 ## After a run
 
-Judge a run from `runs/hello/host/.sentinel-swarm/ledger.db`, not from the transcript.
-Check that:
+`bash scripts/smoke.sh --results` runs `python -m swarm_ledger.checklist` against the
+finished run's ledger and prints `PASS`, `WARN`, or `FAIL` for each check below, then
+exits non-zero if any check fails. **(proposed)** It expects the run to have ended in a
+clean, success-like outcome, the shape a default hello-world run should reach; a
+`--prd` run that legitimately defers or leaves a file incomplete does not fit this
+checklist, and needs the manual judgment below instead.
+
+- The run is `finished` with an outcome that starts with `success`.
+- Every phase is `approved`.
+- Every file is `approved`, ignoring a `superseded` row.
+- Every agent is `released`.
+- The run's last full-scope test run has `exit_code = 0`.
+- No directive is `open`.
+- No `watchdog_findings` row is live (`cleared_at IS NULL`); a finding reported and
+  cleared during the run is a `WARN`, not a `FAIL`, because the run recovered from it.
+- `report.md` exists next to the ledger.
+- No session the run recorded is still running in `claude agents --json`, and the
+  ledger server at `.sentinel-swarm/server.json` no longer answers. Both are skipped,
+  cleanly, when `claude` is not on `PATH`.
+
+Judge any other run from `runs/hello/host/.sentinel-swarm/ledger.db`, not from the
+transcript. Check that:
 
 - The run is `finished` with outcome `success`, and every phase is `approved`.
 - Every file is `approved`, `incomplete`, or `superseded`, and no claim is live.

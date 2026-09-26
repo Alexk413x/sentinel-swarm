@@ -74,3 +74,29 @@ or the `/sentinel-swarm:run` skill.
 | `base_branch` | empty | `repo_check` tries `main`, then `master` |
 
 `-p no:cacheprovider` keeps parallel pytest runs from contending on `.pytest_cache`.
+
+## Plugin features (proposed)
+
+Evaluated against the plugin manifest and settings reference:
+
+- **`userConfig`.** Built. `plugin.json` declares one option, `test_command`, prompted
+  when the user enables the plugin at project scope. The `setup` skill uses
+  `${user_config.test_command}` verbatim when the user set it, instead of detecting the
+  stack. The prompt is a one-time install step, not something that runs in a session.
+- **`experimental.monitors` (`monitors/monitors.json`).** Not built. A monitor starts
+  at session start (`when: "always"`, the default) or the first time a named skill
+  runs, and keeps running as a background process for the rest of that session,
+  in every session that has the plugin enabled, not only a session running a swarm
+  role. The watchdog listener is already scoped correctly: the Oracle arms it itself,
+  per run, with `Monitor(...)`. A plugin-level monitor would instead start the listener
+  in a host repo's ordinary sessions that never run a swarm.
+- **`subagentStatusLine`.** Not built. It labels Claude Code's own Agent-tool subagent
+  mechanism. No sentinel-swarm role uses that mechanism: every role is its own Claude
+  Code session, and no role template carries the `Agent` tool. The setting would have
+  nothing to attach to.
+- **`agent` in the plugin's `settings.json`.** Not built. It replaces a session's main
+  thread with one of the plugin's own agents, for every session that has the plugin
+  enabled. sentinel-swarm ships no plugin-level agents to name (the four roles are
+  templates setup writes into the host repo), and forcing a role's persona onto a
+  user's ordinary session in that repo would be exactly the kind of non-swarm-session
+  effect the plugin must avoid.
