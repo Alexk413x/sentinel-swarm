@@ -37,9 +37,14 @@ def _latest_run(conn: sqlite3.Connection) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM runs ORDER BY run_id DESC LIMIT 1").fetchone()
 
 
+# The Oracle writes the outcome as free text; runs have ended "success", "succeeded",
+# and "completed".
+_SUCCESS_WORDS = ("success", "succeeded", "complete")
+
+
 def _outcome_check(run: sqlite3.Row) -> Check:
     outcome = (run["outcome"] or "").strip().lower()
-    ok = run["state"] == "finished" and outcome.startswith("success")
+    ok = run["state"] == "finished" and outcome.startswith(_SUCCESS_WORDS)
     return Check(
         "the run finished with a success-like outcome",
         ok,

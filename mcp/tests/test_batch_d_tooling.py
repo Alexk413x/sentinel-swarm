@@ -130,6 +130,9 @@ def test_happy_path_all_pass_or_warn(tmp_path: Path) -> None:
     [
         ("success", "finished", True),
         ("success: all files approved", "finished", True),
+        ("succeeded", "finished", True),
+        ("completed", "finished", True),
+        ("incomplete", "finished", False),
         ("unsuccessful", "finished", False),
         ("failure", "finished", False),
         ("success", "active", False),
