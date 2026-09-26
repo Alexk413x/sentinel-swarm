@@ -41,6 +41,13 @@ _ADDED_COLUMNS = (
     ("runs", "branch", "TEXT"),
     ("phases", "handed_up_at", "TEXT"),
     ("reviews", "details_json", "TEXT"),
+    ("directives", "question", "TEXT"),
+)
+# Renamed to snake_case; an older ledger may still hold either the code's old
+# spelling or a value directive_submit stored before this alias table existed.
+_DIRECTIVE_SOURCE_RENAMES = (
+    ("user-chat", "user_chat"),
+    ("outside-session", "outside_session"),
 )
 _ADDED_TABLES = ("wakeups", "watchdog_findings", "departure_decisions")
 
@@ -139,6 +146,12 @@ def _upgrade(conn: sqlite3.Connection) -> None:
             if "duplicate column" not in str(exc):
                 raise
     _upgrade_departure_states(conn)
+    _upgrade_directive_sources(conn)
+
+
+def _upgrade_directive_sources(conn: sqlite3.Connection) -> None:
+    for old, new in _DIRECTIVE_SOURCE_RENAMES:
+        conn.execute("UPDATE directives SET source = ? WHERE source = ?", (new, old))
 
 
 def _upgrade_departure_states(conn: sqlite3.Connection) -> None:

@@ -376,7 +376,9 @@ def directive_submit(
 ) -> dict[str, Any]:
     """Submits a directive to the run from chat, a skill, or the watchdog; no identity required.
 
-    A reply_to that names a needs_user directive resolves that directive.
+    Sources: user_chat, outside_session, skill, watchdog (the old user-chat and
+    outside-session spellings are still accepted and normalized). A reply_to that
+    names any open directive of the run resolves it, whatever its outcome.
     """
     return _call(
         _ledger().directive_submit,
@@ -428,7 +430,11 @@ def override_grant(
     reason: str,
     agent_id: str | None = None,
 ) -> dict[str, Any]:
-    """Grants a one-time override of a rule for an agent; the Oracle calls this."""
+    """Grants a one-time override of a rule for an agent; the Oracle calls this.
+
+    Refuses a target_agent_name that names the Oracle itself: the Oracle must never
+    grant itself a write or shell override.
+    """
     return _call(
         _ledger().override_grant,
         caller=caller,

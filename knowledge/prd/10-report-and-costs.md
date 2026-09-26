@@ -1,8 +1,11 @@
 # The run report and costs
 
-`report_build()` writes `.sentinel-swarm/report.md`. `run_finish` rebuilds it, and the
-Oracle's last stop or session end refreshes it with the Oracle's final tokens. Each run
-overwrites the previous run's report. The user copies it out to keep it. **(proposed)**
+`report_build()` writes `.sentinel-swarm/report-<run_id>.md`, and copies it to
+`.sentinel-swarm/report.md` so a tool that always reads the latest report, such as
+`scripts/smoke.sh`, keeps working. `run_finish` rebuilds both, and the Oracle's last
+stop or session end refreshes both with the Oracle's final tokens. `report.md` is
+overwritten by every run; each run's own `report-<run_id>.md` survives it, so earlier
+runs' reports stay on disk. The user copies either out to keep it. **(proposed)**
 
 Sections **(contents proposed)**:
 
@@ -14,11 +17,22 @@ Sections **(contents proposed)**:
 - Returns and fix attempts: path, fix round, who returned it, target dimensions,
   outcome, and issues.
 - Open items: open deferrals, and every issue by round with its attempts and resolution.
+- Decided deferrals: who proposed each one, who decided it, and the decision and
+  reason. **(proposed)**
 - Departures, each with its full decision chain and final state.
 - Shortfalls.
 - Change requests, with decision, work done, evidence, and verification.
 - Overrides, with reasons.
 - Directives, with source and outcome.
+- Notifications to the user: every directive resolved `needs_user`, with the question
+  asked (kept even after a later `directive_resolve` changes the outcome) and each
+  reply it received through `reply_to`. **(proposed)**
+- Final test run: the last `full`-scope `tests_run`, with passed, failed, skipped, and
+  exit code, or a note that none was recorded. **(proposed)**
+- Measures: each phase's working time; each role's total agent time, summed across its
+  agents; returns per file, from the `attempts` table; and cost per phase, summed from
+  each agent's cost by its `phase_id`, with the Oracle's cost under a run-level total
+  since the Oracle has no phase. **(proposed)**
 - Agents: model, tokens, elapsed time, tool uses, context overflows, and cost, plus a
   run total.
 

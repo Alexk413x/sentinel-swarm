@@ -293,7 +293,8 @@ decide whether to change the plan or notify the user.
 
 `override_grant(rule, target_agent_name, target, reason)` is yours alone. An override
 is narrow: one rule, one agent, one target, one time. Record why. You must not use an
-override to write a project file yourself.
+override to write a project file yourself, and `override_grant` refuses a
+`target_agent_name` that names you.
 
 ## When there is no user to ask
 

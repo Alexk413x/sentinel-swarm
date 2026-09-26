@@ -19,7 +19,8 @@ from .settings import load_settings
 _NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 _RESUME_POINTER = "Re-read your brief and your inbox in the ledger."
 _PHASE_STATES = ("planned", "unlocked", "working", "handed_up", "approved")
-_DIRECTIVE_SOURCES = ("user-chat", "outside-session", "skill", "watchdog")
+_DIRECTIVE_SOURCES = ("user_chat", "outside_session", "skill", "watchdog")
+_DIRECTIVE_SOURCE_ALIASES = {"user-chat": "user_chat", "outside-session": "outside_session"}
 _DIRECTIVE_OUTCOMES = ("applied", "scheduled", "declined", "needs_user")
 _LIVE_RUN = "state IN ('active', 'paused')"
 _TOKEN_COLUMNS = (
@@ -1185,6 +1186,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
     def directive_submit(
         self, source: str, sender_name: str | None, body: str, reply_to: int | None = None
     ) -> dict:
+        source = _DIRECTIVE_SOURCE_ALIASES.get(source, source)
         if source not in _DIRECTIVE_SOURCES:
             raise LedgerError(
                 f"unknown directive source {source!r}; use one of {sorted(_DIRECTIVE_SOURCES)}. "
@@ -1199,9 +1201,11 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
                 ).fetchone()
                 if parent is None:
                     raise LedgerError(f"reply_to {reply_to!r} names no directive of this run")
+                # Resolves any open directive it answers, not only a needs_user one: the
+                # outcome column is left as-is, so a needs_user question stays on the row.
                 conn.execute(
                     f"UPDATE directives SET state = 'resolved', resolved_at = {_NOW} "
-                    "WHERE directive_id = ? AND state = 'open' AND outcome = 'needs_user'",
+                    "WHERE directive_id = ? AND state = 'open'",
                     (reply_to,),
                 )
             cur = conn.execute(
@@ -1271,8 +1275,8 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
             if outcome == "needs_user":
                 conn.execute(
                     "UPDATE directives SET state = 'open', outcome = ?, resolution = ?, "
-                    "resolved_at = NULL WHERE directive_id = ?",
-                    (outcome, resolution, directive_id),
+                    "resolved_at = NULL, question = ? WHERE directive_id = ?",
+                    (outcome, resolution, resolution, directive_id),
                 )
             else:
                 conn.execute(
@@ -1301,6 +1305,12 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
             require_role(c, "oracle")
+            is_oracle_name = conn.execute(
+                "SELECT 1 FROM agents WHERE run_id = ? AND role = 'oracle' AND name = ?",
+                (c.run_id, target_agent_name),
+            ).fetchone()
+            if is_oracle_name is not None:
+                raise LedgerError("the Oracle must not grant itself an override")
             cur = conn.execute(
                 "INSERT INTO overrides (run_id, rule, target_agent_name, target, reason) "
                 "VALUES (?, ?, ?, ?, ?)",

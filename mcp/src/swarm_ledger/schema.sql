@@ -315,6 +315,10 @@ CREATE TABLE IF NOT EXISTS directives (
     resolved_at TEXT,
     resolution TEXT,
     notified_at TEXT,
+    -- Set when outcome is set to needs_user, and left in place after a later
+    -- resolve overwrites outcome/resolution, so the report can still show what
+    -- was asked. report_build's notifications section reads this column.
+    question TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
