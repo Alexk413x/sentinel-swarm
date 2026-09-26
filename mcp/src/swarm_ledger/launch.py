@@ -47,6 +47,12 @@ def _claude_binary() -> str:
     return claude_binary()
 
 
+def _dev_channel_args() -> list[str]:
+    from .sessions import dev_channel_args
+
+    return dev_channel_args()
+
+
 def repo_slug(repo: Path) -> str:
     return re.sub(r"[^a-z0-9]+", "-", repo.resolve().name.lower()).strip("-") or "repo"
 
@@ -63,14 +69,15 @@ def oracle_command(
 ) -> list[str]:
     options = _session_options(repo, "oracle", _oracle_model(repo), ledger_url)
     claude = _claude_binary()
+    dev = _dev_channel_args()
     if mode == "headless":
-        return [claude, "-p", *options, "--output-format", "stream-json", "--verbose"]
+        return [claude, "-p", *options, "--output-format", "stream-json", "--verbose", *dev]
     # The prompt goes first: --allowedTools takes a space-separated list and swallows a
     # prompt that follows it.
     head = [claude, prompt]
     if mode == "bg":
         head += ["--bg", "--name", name or oracle_session_name(repo)]
-    return [*head, *options]
+    return [*head, *options, *dev]
 
 
 def _needs_setup(repo: Path) -> bool:

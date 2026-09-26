@@ -20,6 +20,7 @@ def _isolated_claude_config(
     # The machine-level run lock (lock.py) writes under CLAUDE_CONFIG_DIR; tests must never
     # touch the real ~/.claude. A fixture that needs the real registry sets its own value.
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path_factory.mktemp("claude-config")))
+    monkeypatch.delenv("CLAUDE_DEV_CHANNELS", raising=False)
 
 
 def installed_plugin(plugin_id: str, marker: str) -> Path | None:

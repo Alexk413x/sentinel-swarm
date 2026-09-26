@@ -26,6 +26,16 @@ claude "You are <name>. Read your brief from the swarm ledger and follow it." --
   `registered`. A session that does not appear is stopped and the call fails.
 - The parent ends its turn after its spawns. A child's message wakes it.
 - The claude binary is `SENTINEL_SWARM_CLAUDE` when set, else `claude`.
+- Development channels: when the environment variable `CLAUDE_DEV_CHANNELS` is not empty,
+  every session launch appends `--dangerously-load-development-channels` and its entries as
+  the last arguments. That covers `agent_spawn`, `agent_resume`, and the Oracle's launcher
+  in every mode. The entries are separated by spaces or commas, each
+  `plugin:<name>@<marketplace>` or `server:<name>`. The flag goes last because it takes
+  several values and swallows anything after it. This matches Alex's `claude` wrapper,
+  which the launcher bypasses by calling the binary directly. The variable is empty
+  today. Claude Code 2.1.283 reads the flag only in an interactive session, so today it
+  takes effect only for an interactive Oracle; see
+  [13-platform-facts.md](13-platform-facts.md).
 - The Oracle starts a Driver with `drive_request(focus)` instead of `brief_create` and
   `agent_spawn`: the tool performs both steps itself, under the child name
   `driver-e<ordinal>`, and returns the loop's status alongside the spawned agent. See

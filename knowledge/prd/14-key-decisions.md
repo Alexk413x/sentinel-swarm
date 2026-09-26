@@ -58,3 +58,4 @@
 - 2026-09-25: Build every designed but unbuilt feature, the snake_case directive sources, the Driver, then Channels (`plans/build-order.md`).
 - 2026-09-25: The Driver is built as a fifth role (see `plans/driver-agent.md` for the decisions). Only the Oracle requests it, it works through cartographer, and it is the one role allowed the Agent tool, for cartographer's `map-driver` and `map-reviewer` only.
 - 2026-09-25: sentinel-swarm has no optional dependencies. Claude Code installs an optional dependency into every host, so cartographer, the driver plugins, and a11y load only where the user installed them.
+- 2026-09-26: Every session launch appends `--dangerously-load-development-channels <entries>` last when `CLAUDE_DEV_CHANNELS` is not empty, as Alex's `claude` wrapper does. The first planned channel is a device-queue broker that tells a waiting session the device is free.

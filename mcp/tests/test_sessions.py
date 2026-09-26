@@ -657,3 +657,31 @@ def test_the_same_oracle_session_calling_run_start_again_resumes(
     again = ledger.run_start(prd="Build X", session_id=_ORACLE_SESSION)
     assert again["resumed"] is True
     assert again["oracle"]["agent_id"] == _ORACLE_SESSION
+
+
+# -- CLAUDE_DEV_CHANNELS --------------------------------------------------------------------
+
+
+def test_dev_channels_are_empty_without_the_variable() -> None:
+    assert sessions.dev_channel_args() == []
+
+
+def test_dev_channels_split_on_spaces_and_commas(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLAUDE_DEV_CHANNELS", " plugin:q@m, server:x  server:y,")
+    assert sessions.dev_channel_args() == [
+        "--dangerously-load-development-channels",
+        "plugin:q@m",
+        "server:x",
+        "server:y",
+    ]
+
+
+def test_dev_channels_go_last_on_spawn_and_resume(
+    claude: FakeClaude, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CLAUDE_DEV_CHANNELS", "plugin:q@m")
+    sessions.spawn("You are x.", "n-1", ["--agent", "swarm-lead"], tmp_path)
+    sessions.resume("3378dc08-full-id", "Re-read.", cwd=tmp_path)
+    tail = ["--dangerously-load-development-channels", "plugin:q@m"]
+    assert claude.calls[0][0][-2:] == tail
+    assert claude.calls[-1][0] == ["--resume", "3378dc08-full-id", "--bg", "Re-read.", *tail]

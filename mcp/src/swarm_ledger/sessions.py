@@ -12,6 +12,7 @@ from pathlib import Path
 from .identity import LedgerError
 
 CLAUDE_VAR = "SENTINEL_SWARM_CLAUDE"
+DEV_CHANNELS_VAR = "CLAUDE_DEV_CHANNELS"
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _BG_LINE = re.compile(r"backgrounded\s+\S+\s+([0-9A-Za-z-]+)")
 _LABELS = ("agents", "stop", "--resume", "--bg")
@@ -26,6 +27,12 @@ _POLL_S = 0.5
 def claude_binary() -> str:
     raw = os.environ.get(CLAUDE_VAR) or "claude"
     return shutil.which(raw) or raw
+
+
+def dev_channel_args() -> list[str]:
+    # Last on the command line: the flag takes several values and swallows anything after it.
+    entries = [e for e in re.split(r"[\s,]+", os.environ.get(DEV_CHANNELS_VAR, "")) if e]
+    return ["--dangerously-load-development-channels", *entries] if entries else []
 
 
 def _run(args: list[str], cwd: Path | None = None) -> str:
@@ -102,7 +109,7 @@ def live_names(sessions: list[dict]) -> set[str]:
 
 
 def spawn(prompt: str, name: str, options: list[str], cwd: Path) -> tuple[str, str]:
-    output = _run([prompt, "--bg", "--name", name, *options], cwd=cwd)
+    output = _run([prompt, "--bg", "--name", name, *options, *dev_channel_args()], cwd=cwd)
     bg_id = parse_bg_id(output)
     if bg_id is None:
         raise LedgerError(f"claude --bg printed no background id: {_strip_ansi(output).strip()!r}")
@@ -129,4 +136,6 @@ def stop(bg_id: str) -> None:
 
 
 def resume(session_id: str, message: str, cwd: Path | None = None) -> str | None:
-    return parse_bg_id(_run(["--resume", session_id, "--bg", message], cwd=cwd))
+    return parse_bg_id(
+        _run(["--resume", session_id, "--bg", message, *dev_channel_args()], cwd=cwd)
+    )
