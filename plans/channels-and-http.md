@@ -37,9 +37,19 @@ Probed with a standard-library stdio channel server that declares `claude/channe
 2. **`--channels` with `--bg` and a project-scope plugin.** A project-scope plugin connects as a normal MCP server. It registers as a channel only if it is on the allowlist. The prompt must come before either channel flag, or the flag takes the prompt as another channel entry.
 3. **Can the channel server tell which session it serves?** Yes. Its environment carries `CLAUDE_CODE_SESSION_ID`, `CLAUDE_PROJECT_DIR`, `CLAUDE_PLUGIN_ROOT`, and `CLAUDE_CODE_SESSION_ATTENDED`.
 4. **Prompts and cost.** A default-permission `--bg` session stalls for good on a file write; `acceptEdits` clears it. `--bg` refuses an untrusted folder with `Workspace not trusted`, which does not affect a real run, since setup runs in a trusted host. The stdlib server finishes its handshake 10 to 40 ms after start.
-5. **Events pushed while busy.** Not reachable: no event was delivered at all.
+5. **Events pushed while busy.** Not reachable in `--bg`: no event was delivered at all.
 
-**Recommendation (proposed): do not build Channels now.** A swarm role is a `--bg` session, and sentinel-swarm is not on the channels allowlist, so a `swarm-events` channel would connect and never deliver. Keep `SendMessage`, the Oracle's `Monitor` listener, and `agent_resume`. Revisit when either change ships: `--dangerously-load-development-channels` works in `--bg` sessions, or a user-level setting can allowlist a plugin. The retest is the probe above: check the debug log for `Channel notifications skipped`.
+### Interactive and print sessions (2026-09-26)
+
+The probe was repackaged as a plugin (`probe-channel@probe-marketplace`, project scope in the test host) and loaded with `--dangerously-load-development-channels plugin:probe-channel@probe-marketplace`.
+
+- **`-p` with `--input-format stream-json`, kept open:** the server connects, but no channel registers and a pushed event never arrives. The binary reads the development flag only when the session is interactive.
+- **Interactive session in a pseudo-console:** Claude Code shows `WARNING: Loading development channels` with two choices, `I am using this for local development` and `Exit`. After Enter on the first, the log reads `Channel notifications registered`.
+  - An event pushed to the idle session started a new turn within 3 seconds, and the session wrote the event to `probe_events.txt`. The screen shows it as `← probe-channel: <text>`.
+  - Three events pushed about 0.6 seconds apart all arrived, in order.
+- Per the agent-view docs, a session sent to the background with `/bg` or `←` resumes in a fresh process, and the supervisor stops a background session's process after about an hour idle unless it is pinned with `Ctrl+T`. That stop would end the channel server too. The changelog notes a fix for channel connections dropping after `/bg`. Not probed.
+
+**Recommendation (proposed): a channel works only in an interactive session.** An interactive session with the development flag, confirmed once at the prompt, receives channel events and wakes on them. A swarm role today is a `--bg` session, which discards the flag, and sentinel-swarm is not on the channels allowlist, so a `swarm-events` channel would connect and never deliver to a role. Keep `SendMessage`, the Oracle's `Monitor` listener, and `agent_resume`. Revisit when either change ships: `--dangerously-load-development-channels` works in `--bg` sessions, or a user-level setting can allowlist a plugin. The retest is the probe above: check the debug log for `Channel notifications skipped`.
 
 ## Proposed design **(proposed)**
 
