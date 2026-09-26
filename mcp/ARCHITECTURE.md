@@ -8,7 +8,7 @@ piece can be built and tested alone.
 | Module | Holds |
 |---|---|
 | `db.py` | `ledger_path`, `connect`, `write_tx`, `migrate` with an idempotent upgrade for columns and tables added after version 1, `ensure_git_exclude` |
-| `schema.sql` | The tables, including `agents.session_name`, `agents.bg_id`, `wakeups` (the wake-ups each agent owes), `watchdog_findings`, `directives.notified_at`, and `runs.watch_heartbeat_at` |
+| `schema.sql` | The tables, including `agents.session_name`, `agents.bg_id`, `wakeups` (the wake-ups each agent owes), `watchdog_findings`, `directives.notified_at`, `runs.watch_heartbeat_at`, and `drive_requests` and `drive_findings` for the Driver's exploration queue |
 | `settings.py` | `Settings` loaded from `.claude/sentinel-swarm.local.md` frontmatter, with the defaults from `templates/sentinel-swarm.local.md.example` |
 | `identity.py` | `Caller`: resolves a call's `caller` name and stamped `agent_id` against the `agents` table. `require_role` |
 | `ledger.py` | `Ledger`: one object per server process, holding the connection, the repo root, and the settings. Every tool is a method that returns a plain dict |
@@ -17,6 +17,7 @@ piece can be built and tested alone.
 | `rubric.py` | Dimension math: criterion ratings to a 0 to 100 dimension score, the pass rule, the disagreement rule, and the improved, plateau, or regression classification |
 | `repo.py` | `RepoMixin`: `repo_check` and `repo_branch_create`. `check_repo` is the pure git inspection underneath, callable without a `Ledger` **(proposed)** |
 | `oversight.py` | `OversightMixin`: the Manager's `module_review` and the Oracle's `phase_review`, and the shared readiness checks the `phase_update` gates for `handed_up` and `approved` call **(proposed)** |
+| `drive.py` | **(proposed)** `DriveMixin`: the Driver's exploration queue (`drive_request`, `drive_issue`, `drive_checkin`, `drive_done`), the pure `compute_loop_status` the stop rules run on, and the `run_finish` gate that requires a clean exploration or a resolved stop rule |
 | `testing.py` | Runs the profile's test command for a scope and parses the result |
 | `graph.py` | `graph_upsert` under a process lock, and the graph-current check for a file |
 | `versions.py` | Saves and restores file versions in `.sentinel-swarm/versions/` |

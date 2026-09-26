@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-ROLES = ("oracle", "manager", "lead", "coder")
+ROLES = ("oracle", "manager", "lead", "coder", "driver")
 SKILLS = ("swarm-protocol", "run", "plan", "status", "resume", "setup")
 KG_TOOLS = (
     "kg_search",
@@ -95,7 +95,7 @@ def test_plugin_has_no_agents_folder(repo_root: Path):
     assert not (repo_root / "agents").exists()
 
 
-def test_templates_are_exactly_the_four_roles(repo_root: Path):
+def test_templates_are_exactly_the_five_roles(repo_root: Path):
     found = sorted(p.name for p in (repo_root / "templates" / "agents").iterdir())
     assert found == sorted(f"{role}.md" for role in ROLES)
 
@@ -115,6 +115,7 @@ def test_template_name_and_description(repo_root: Path, role: str):
         ("manager", "green", "opus", "default"),
         ("lead", "purple", "sonnet", "default"),
         ("coder", "orange", "sonnet", "acceptEdits"),
+        ("driver", "yellow", "sonnet", "default"),
     ],
 )
 def test_template_color_model_and_permission_mode(
@@ -135,7 +136,9 @@ def test_template_never_sets_max_turns(repo_root: Path, role: str):
 @pytest.mark.parametrize("role", ROLES)
 def test_template_tools(repo_root: Path, role: str):
     tools = _tools(_split(_template(repo_root, role))[0])
-    assert "Agent" not in tools
+    # The Driver is the one role with an Agent tool, and only for cartographer's own
+    # map-driver and map-reviewer subagents; pre_agent enforces that restriction.
+    assert ("Agent" in tools) == (role == "driver")
     assert "Workflow" not in tools
     assert "ToolSearch" in tools
     assert "SendMessage" in tools
@@ -146,11 +149,18 @@ def test_template_tools(repo_root: Path, role: str):
     assert not any("a11y" in t or "driver" in t for t in tools)
 
 
-def test_only_coder_writes_edits_and_runs_a_shell(repo_root: Path):
+def test_only_coder_writes_and_edits(repo_root: Path):
     for role in ROLES:
         tools = _tools(_split(_template(repo_root, role))[0])
-        for tool in ("Write", "Edit", "Bash"):
+        for tool in ("Write", "Edit"):
             assert (tool in tools) == (role == "coder"), f"{role} and {tool}"
+
+
+def test_only_the_coder_and_driver_run_a_shell(repo_root: Path):
+    for role in ROLES:
+        tools = _tools(_split(_template(repo_root, role))[0])
+        assert ("Bash" in tools) == (role in ("coder", "driver")), role
+        assert ("PowerShell" in tools) == (role in ("coder", "driver")), role
 
 
 @pytest.mark.parametrize("role", ROLES)

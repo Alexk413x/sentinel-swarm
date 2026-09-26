@@ -180,10 +180,54 @@ sessions.
 
 `run_finish(outcome)` refuses while any phase is not approved, any file claim is live,
 any directive is open, any deferral is open, any change request is not verified or
-declined, or any departure is neither signed off nor reworked. It then sets the run to
-`finished`, releases every live agent except the Oracle, builds the report, and closes
-the Oracle's row. The ledger server then stops the Oracle's background session and
-exits. See "What stops when" in [05-sessions.md](05-sessions.md).
+declined, or any departure is neither signed off nor reworked. **(proposed)** It also
+refuses, when the host has a Driver available, while no exploration has ended clean
+since the last fix wave, unless the loop stopped on a stop rule whose directive is
+resolved: see "Explorations" below. It then sets the run to `finished`, releases every
+live agent except the Oracle, builds the report, and closes the Oracle's row. The
+ledger server then stops the Oracle's background session and exits. See "What stops
+when" in [05-sessions.md](05-sessions.md).
+
+## Explorations
+
+- The Driver runs the app and tests it between waves, while no Coder is editing. It
+  exists only when the host has cartographer and a driver plugin installed; see
+  "Driver" in [01-roles.md](01-roles.md).
+- `drive_request(focus)` is the Oracle's call. It refuses while an earlier exploration
+  is still open (`drive_requests.state = 'open'`), and while a Manager, Lead, or Coder
+  is still live in the run: an exploration and a fix wave never overlap. It writes the
+  Driver's brief and starts its session the same way `brief_create` and `agent_spawn`
+  do, under the name `driver-e<ordinal>`, and returns the loop's current status. The
+  first exploration's focus covers every PRD feature; a later one covers the last
+  wave's changes, every open finding, and a quick smoke pass; the final, clean one is a
+  full pass. **(proposed)**
+- `drive_issue(request_id, finding)` records one finding in a fixed shape — `fingerprint`
+  (the check, the location, and what it saw), `title`, `steps`, `expected`, `actual`,
+  `severity` (blocker, major, or minor), `area`, and `evidence` (paths into
+  cartographer's run folder) — as a row in `drive_findings`, and owes the Oracle a
+  wake-up at once. A failed build is recorded as a finding. **(proposed)**
+- `drive_checkin(request_id, covered, steps, notes)` records a progress check-in and
+  owes the Oracle a wake-up. The watchdog does not report the Driver as stuck while its
+  check-ins arrive within 30 minutes plus a grace period; see
+  [08-watchdog.md](08-watchdog.md). **(proposed)**
+- `drive_done(request_id)` ends the exploration, releases the Driver's session, and
+  stops it. **(proposed)**
+- The Oracle starts a fix for each finding as `drive_issue` reports it: a Coder joins a
+  running fix phase through its Manager and Lead, or a new Manager, Lead, and Coder
+  start for a separate bug, the same way a phase starts. A fix phase runs unit tests
+  only. **(proposed)**
+- **Stop rules**, tracked by fingerprint across explorations: a finding still present
+  after 3 fix attempts in a row stops getting fixes and becomes a directive for the
+  user, with a hard cap of 5 attempts per finding in all; 3 explorations in a row that
+  fix nothing stop the loop; and a detected pattern — a fixed finding regressing, a fix
+  wave's files carrying at least as many new findings as it fixed, or two findings
+  trading places — is reported the same way. Each condition files an open directive
+  from source `driver`, computed by the pure function `compute_loop_status` in
+  `mcp/src/swarm_ledger/drive.py` over every request and finding of the run, and
+  deduplicated by its exact reason text. **(proposed)**
+- The loop ends on a clean exploration (no finding) or on a stop rule, whichever comes
+  first. The Oracle requests the next exploration only once the current one and every
+  fix it spawned have finished. **(proposed)**
 
 ## Pause and resume
 

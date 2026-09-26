@@ -5,11 +5,14 @@ tracking: local
 
 runtime:
   # Every role runs as its own Claude Code session in the one working tree. A parent
-  # starts a child with the ledger's agent_spawn tool.
+  # starts a child with the ledger's agent_spawn tool. The Oracle starts a Driver with
+  # drive_request instead; the Driver exists only when the host has cartographer and a
+  # driver plugin installed.
   oracle: session
   manager: session
   lead: session
   coder: session
+  driver: session
 
 models:
   # Approved models for the Oracle. It has no parent, so it runs on the first
@@ -21,6 +24,8 @@ models:
   lead: [opus, sonnet]
   # Approved models for the Coder.
   coder: [sonnet, haiku]
+  # Approved models for the Driver. drive_request runs it on the first entry, sonnet.
+  driver: [sonnet, opus]
 
 rubric:
   # The goal for every scored dimension.
@@ -80,6 +85,7 @@ effort:
   manager:
   lead:
   coder:
+  driver:
 
 # Left empty for every role; agent_spawn sets promptCacheTtl for a role listed here. Claude
 # Code accepts only "5m" or "1h" and otherwise ignores the value.
@@ -88,6 +94,7 @@ prompt_cache_ttl:
   manager:
   lead:
   coder:
+  driver:
 
 # Left empty for every role; agent_spawn also caps that role's own live sessions in the run,
 # on top of parallelism_cap above.
@@ -96,6 +103,7 @@ role_parallelism_cap:
   manager:
   lead:
   coder:
+  driver:
 ---
 
 # sentinel-swarm local settings

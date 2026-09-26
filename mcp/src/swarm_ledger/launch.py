@@ -76,7 +76,9 @@ def oracle_command(
 def _needs_setup(repo: Path) -> bool:
     if not (repo / setup.SHIM_PATH).is_file():
         return True
-    return any(not setup.role_file(repo, role).is_file() for role in setup.ROLES)
+    # Driver's role file is conditional on cartographer and a driver plugin, so its
+    # absence alone never triggers a re-run of setup.
+    return any(not setup.role_file(repo, role).is_file() for role in setup.CORE_ROLES)
 
 
 def _run(command: list[str], repo: Path, prompt: str, mode: Mode, transcript: Path | None) -> int:

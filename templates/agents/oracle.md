@@ -84,9 +84,11 @@ Ledger tools are named `mcp__swarm-ledger__<name>`. This file uses the short nam
 ## Sessions
 
 Every role in the run is its own Claude Code session, with its own row in agent
-view. You start a child session with `agent_spawn`; you have no `Agent` tool and
+view. You start a Manager session with `agent_spawn`; you have no `Agent` tool and
 start no subagents. A child wakes you with a `SendMessage` when it has something for
-you, so you end your turn while children work instead of waiting in it.
+you, so you end your turn while children work instead of waiting in it. You start a
+Driver session with `drive_request` instead: it briefs and spawns the session for you
+and returns the loop's status. See "Explorations".
 
 ## Start the run
 
@@ -199,8 +201,50 @@ messages, or an agent none of whose children is working.
 - `report_build()` writes the final report to the records folder.
 - `run_finish(outcome=...)` closes the run, releases every session still live, and
   stops the ledger server. It refuses while any change request in the run is open,
-  accepted, or completed but not yet verified, and while any departure is neither
-  signed off nor reworked.
+  accepted, or completed but not yet verified, while any departure is neither signed
+  off nor reworked, and, when the host has a Driver available, while no exploration has
+  ended clean since the last fix wave, unless the loop stopped on a stop rule whose
+  directive you already resolved.
+
+## Explorations
+
+The Driver runs the app and tests changes on it with cartographer, between waves,
+while no Coder is editing. It exists only when the host has cartographer and a driver
+plugin installed; when `drive_request` refuses because neither is installed, skip every
+step below and finish the run on unit tests alone.
+
+1. **Request one.** After a wave ends — every phase in it approved, or every fix from
+   the last exploration's findings approved — call `drive_request(focus=...)`. The
+   focus list you write:
+   - The first exploration covers every PRD feature.
+   - A later one covers the features the last wave touched, every open finding to
+     recheck, and a quick smoke pass over everything else.
+   - The final, clean exploration is a full pass.
+   `drive_request` refuses while an earlier exploration or any fix it spawned is still
+   open, and its result's `loop_status` reports the stop-rule state: read it before you
+   write the next focus list.
+2. **Fix as findings arrive.** `drive_issue` wakes you for each finding as the Driver
+   records it. Start a fix at once: when a fix phase for that finding's module is
+   already running, brief and spawn a new Coder through that module's Manager and
+   Lead; otherwise brief and spawn a new Manager, Lead, and Coder for it, the same way
+   you start a phase. A fix phase runs unit tests only — nothing builds or runs the app
+   while the Driver still explores.
+3. **Review check-ins.** `drive_checkin` wakes you roughly every 30 minutes. Read what
+   it covered and the steps it took, and look for problems that are not obvious bugs:
+   the Driver wandering off the focus list, or repeating itself. The watchdog does not
+   report the Driver as stuck while its check-ins are on time; a late one is its own
+   watchdog finding.
+4. **Follow the stop rules.** They are enforced in the ledger, not by your judgment:
+   a finding still open after 3 fix attempts in a row stops getting fixes and becomes a
+   directive for the user with its evidence; any one finding gets at most 5 attempts in
+   all; 3 explorations in a row that fix nothing stop the loop; and a detected pattern
+   (a fixed finding returning, fixes causing new findings in the files they touched, or
+   two findings trading places) is reported to you as a directive too. Each stop
+   condition arrives as an open directive from source `driver`; resolve it like any
+   other directive before `run_finish`.
+5. **Loop.** Request the next exploration only once the current one and every fix it
+   spawned have finished. The loop ends on a clean exploration — the final, full-pass
+   one with no finding — or on a stop rule, whichever comes first.
 
 ## Change requests and departures
 

@@ -31,6 +31,10 @@ _WINDOW_1M = 1_000_000
 IDLE_STALL = timedelta(minutes=2)
 _WINDOW_HAIKU = 200_000
 _TAIL_BLOCK = 256 * 1024
+# The Driver checks in every 30 minutes by design (plans/driver-agent.md); the watchdog
+# adds a grace period before it reports one as overdue.
+DRIVER_CHECKIN_INTERVAL = timedelta(minutes=30)
+DRIVER_CHECKIN_GRACE = timedelta(minutes=5)
 
 
 @dataclass(frozen=True)
@@ -77,7 +81,8 @@ def scan(
         dict(row)
         for row in conn.execute(
             "SELECT * FROM agents WHERE run_id = ? AND ended_at IS NULL "
-            "AND role IN ('oracle', 'manager', 'lead', 'coder') ORDER BY started_at, agent_id",
+            "AND role IN ('oracle', 'manager', 'lead', 'coder', 'driver') "
+            "ORDER BY started_at, agent_id",
             (run["run_id"],),
         )
     ]
@@ -101,6 +106,8 @@ def scan(
                         "or issue_escalate.",
                     )
                 )
+        elif agent["role"] == "driver":
+            findings += _driver_findings(conn, agent, entry, now)
         context = _context_high(agent, settings)
         if context is not None:
             findings.append(_finding(agent, "context_high", context, _context_step(agent, names)))
@@ -175,6 +182,55 @@ def _session_findings(
             f"Message it with SendMessage(to={label}) and ask what blocks it, or have its "
             "parent replace it with a fresh agent that continues from the ledger. "
             "agent_resume refuses a running session.",
+        )
+    ]
+
+
+def _driver_findings(
+    conn: sqlite3.Connection, agent: dict, entry: dict | None, now: datetime
+) -> list[Finding]:
+    name = json.dumps(agent["name"])
+    running = entry is not None and sessions.is_running(entry)
+    if not running:
+        started = parse_stamp(agent["started_at"])
+        overdue = started is not None and now - started > REGISTER_GRACE
+        if agent["state"] == "working" or (agent["state"] == "registered" and overdue):
+            where = (
+                "is not in claude agents --json"
+                if entry is None
+                else f"is not running (status {entry.get('status')}, state {entry.get('state')})"
+            )
+            return [
+                _finding(
+                    agent,
+                    "crashed",
+                    f"the ledger says {agent['state']}, but its session {where}",
+                    f"Resume it with agent_resume(target_name={name}).",
+                )
+            ]
+        return []
+
+    if agent["state"] != "working":
+        return []
+    request = conn.execute(
+        "SELECT * FROM drive_requests WHERE agent_id = ? AND state = 'open' "
+        "ORDER BY request_id DESC LIMIT 1",
+        (agent["agent_id"],),
+    ).fetchone()
+    if request is None:
+        return []
+    last = parse_stamp(request["last_checkin_at"]) or parse_stamp(request["opened_at"])
+    if last is None or now - last < DRIVER_CHECKIN_INTERVAL + DRIVER_CHECKIN_GRACE:
+        return []
+    minutes = int((now - last).total_seconds() // 60)
+    label = json.dumps(agent["session_name"] or agent["name"])
+    return [
+        _finding(
+            agent,
+            "driver_overdue",
+            f"exploration {request['request_id']} has had no check-in for {minutes} minutes",
+            f"Message it with SendMessage(to={label}) and ask what blocks it, or stop it and "
+            "start a fix for whatever blocked it. agent_resume refuses a running session.",
         )
     ]
 

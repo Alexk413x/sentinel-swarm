@@ -11,7 +11,8 @@ from pathlib import Path
 from . import __version__, agentfiles, lock, serve, sessions
 from .agreements import AgreementsMixin
 from .db import connect, ensure_git_exclude, ledger_path, write_tx
-from .identity import ROLES, Caller, LedgerError, child_role_of, require_role, resolve
+from .drive import DriveMixin
+from .identity import ROLES, Caller, LedgerError, child_roles_of, require_role, resolve
 from .oversight import OversightMixin
 from .repo import RepoMixin
 from .review import ReviewMixin
@@ -20,7 +21,7 @@ from .settings import load_settings
 _NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 _RESUME_POINTER = "Re-read your brief and your inbox in the ledger."
 _PHASE_STATES = ("planned", "unlocked", "working", "handed_up", "approved")
-_DIRECTIVE_SOURCES = ("user_chat", "outside_session", "skill", "watchdog")
+_DIRECTIVE_SOURCES = ("user_chat", "outside_session", "skill", "watchdog", "driver")
 _DIRECTIVE_SOURCE_ALIASES = {"user-chat": "user_chat", "outside-session": "outside_session"}
 _DIRECTIVE_OUTCOMES = ("applied", "scheduled", "declined", "needs_user")
 _ISSUE_OPEN_ROUND = {"manager": 2, "oracle": 3}
@@ -60,7 +61,7 @@ def looks_like_swarm_session(name: str) -> bool:
     return bool(_SWARM_SESSION_RE.match(name))
 
 
-class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
+class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin):
     # AgreementsMixin first: ReviewMixin declares stub bodies for the gate methods
     # AgreementsMixin implements (for pyright, since review.py's methods are typed
     # against ReviewMixin alone), and MRO resolves the first base's attribute, so
@@ -437,6 +438,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
 
             self._block_run_finish_for_cr(conn, run_id)
             self._block_run_finish_for_departures(conn, run_id)
+            self._block_run_finish_for_driver(run_id)
 
             conn.execute(
                 f"UPDATE runs SET state = 'finished', outcome = ?, ended_at = {_NOW} "
@@ -704,7 +706,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
     ) -> dict:
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
-            if child_role_of(c.role) != child_role:
+            if child_role not in child_roles_of(c.role):
                 raise LedgerError(f"a {c.role!r} may not brief a {child_role!r}")
             if model not in self.settings.models.get(child_role, []):
                 raise LedgerError(f"model {model!r} is not approved for {child_role!r}")
@@ -945,7 +947,9 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
             raise LedgerError(
                 f"no unacknowledged brief for {child_name!r}; call brief_create first"
             )
-        if brief["parent_agent_id"] != c.agent_id or child_role_of(c.role) != brief["child_role"]:
+        if brief["parent_agent_id"] != c.agent_id or brief["child_role"] not in child_roles_of(
+            c.role
+        ):
             raise LedgerError(f"{caller!r} is not the parent named in the brief for {child_name!r}")
         if brief["child_role"] == "manager":
             run_row = self.conn.execute(

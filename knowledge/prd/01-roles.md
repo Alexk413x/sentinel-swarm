@@ -37,13 +37,19 @@
 | Manager | 1 per phase | One phase | Oracle | Oracle | `swarm-manager` | green |
 | Lead | 1 per module | One module | Manager | Manager | `swarm-lead` | purple |
 | Coder | 1 per file | One file and its unit test file | Lead | Lead | `swarm-coder` | orange |
+| Driver | 1 per exploration | One exploration: building, exploring, and its findings | Oracle | Oracle | `swarm-driver` | yellow |
 
-- The minimum run is one of each role.
-- Each role starts only the role below it. The Oracle starts Managers, a Manager starts
-  Leads, and a Lead starts Coders. A Coder starts nothing.
-- No role has the `Agent` or `Workflow` tool, so no role runs subagents or workflows.
-  The `pre_agent` hook denies an `Agent` call from any swarm session.
-  `mcp/tests/test_plugin_surface.py` checks that no template lists either tool.
+- The minimum run is one of each of the first four roles. The Driver exists only when
+  the host has cartographer and a driver plugin installed; `setup` writes
+  `swarm-driver.md` only then. See "Driver" below.
+- Each role starts only the role below it. The Oracle starts Managers and, through
+  `drive_request`, Drivers; a Manager starts Leads; a Lead starts Coders. A Coder and a
+  Driver start no ledger child.
+- No role has the `Agent` or `Workflow` tool except the Driver, whose `Agent` tool runs
+  only cartographer's own `map-driver` and `map-reviewer` subagents. The `pre_agent`
+  hook denies an `Agent` call from every other swarm session, and denies any other
+  `subagent_type` from a Driver session too.
+  `mcp/tests/test_plugin_surface.py` checks the template surface for every role.
 - A Lead reviews its Coders' work itself.
 - No role template sets `maxTurns`. The watchdog and the escalation budget are the only
   controls on a runaway agent.
@@ -56,6 +62,7 @@
 | Manager | `mgr-<phase>` | `mgr-p2-api` |
 | Lead | `lead-<phase>-<module>` | `lead-p2-auth` |
 | Coder | `coder-<phase>-<module>-<file>` | `coder-p2-auth-login` |
+| Driver | `driver-e<exploration number>` | `driver-e2` |
 
 - A name is unique among the live agents of a run. It is the address in the ledger, and
   the agent passes it as `caller` on every ledger call. **(proposed)**
@@ -71,6 +78,7 @@
 | Manager | opus | opus |
 | Lead | sonnet | opus, sonnet |
 | Coder | sonnet | sonnet, haiku |
+| Driver | sonnet | sonnet, opus |
 
 - The settings file holds the approved models per role. `brief_create` refuses a model
   outside the child role's list.
@@ -82,6 +90,8 @@
   far enough to run on the cheaper model.
 - Escalation can raise the model: a fresh Coder in round 2 or 3 can run on the stronger
   model in its list. **(proposed)**
+- `drive_request` picks the Driver's model itself, from the first entry of its approved
+  list, since the Oracle's call carries no `model` argument. **(proposed)**
 - The registry records the model of each agent. **(proposed)** For the Oracle's row,
   `run_start` records the model the launcher uses, by the same rule. A new Oracle
   session that resumes the run records it the same way.
@@ -164,9 +174,31 @@
   SendMessage, WebSearch, WebFetch, the ledger, and the codebase-kg read tools. It
   changes the graph only through `graph_upsert`.
 
-### Driver (planned, not built)
+### Driver
 
-A fifth role, the Driver, runs the app and checks changes on it with the android-driver,
-ios-driver, and web-driver plugins, on request from any role. Alex decided its
-responsibilities. Its mechanics are not designed. Read `plans/driver-agent.md` before
-you work on it.
+- **Exists only when:** the host has `cartographer@cartographer` installed and at least
+  one of `android-driver@accessibility-tools`, `ios-driver@accessibility-tools`, or
+  `web-driver@accessibility-tools`. `setup` writes `swarm-driver.md` only then;
+  `drive_request` refuses clearly when either is missing, and the Oracle skips every
+  exploration step for that run.
+- **Does:** builds the app with `build_command`, boots the device, replays recorded
+  routes with cartographer's `map-test`, then explores toward the Oracle's focus list
+  with `map-explore` through cartographer's own `map-driver` and `map-reviewer`
+  subagents. Records each finding with `drive_issue` as it is found, checks in with
+  `drive_checkin` every 30 minutes, and ends the exploration with `drive_done`, which
+  releases and stops its own session.
+- **Owns:** one exploration: the build, the device session, and every finding it
+  records, with evidence in cartographer's run folder.
+- **Must not:** write or edit a project file. It has no Write or Edit tool. It must not
+  fix anything; the Oracle turns its findings into a fix wave.
+- **Done when:** it calls `drive_done`.
+- **Tools:** Read, Grep, Glob, ToolSearch, SendMessage, Bash and PowerShell (gated to
+  `build_command`), Agent (gated to cartographer's `map-driver` and `map-reviewer`
+  subagents only), Skill **(proposed)**, the ledger, and the codebase-kg read tools. No
+  Write or Edit. cartographer's MCP server and the installed driver plugins' servers
+  join its session only, the same way the a11y servers join every role's: see
+  [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
+
+See `plans/driver-agent.md` for the full set of decisions this role implements: the
+request queue, the fixed finding shape, the stop rules, and the loop between
+exploration and fix waves.

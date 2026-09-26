@@ -3,12 +3,14 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 
-ROLES = ("oracle", "manager", "lead", "coder")
+ROLES = ("oracle", "manager", "lead", "coder", "driver")
 
-_CHILD_ROLE = {
-    "oracle": "manager",
-    "manager": "lead",
-    "lead": "coder",
+# The Oracle starts a Driver alongside its Managers; every other role still starts
+# only the one role below it.
+_CHILD_ROLES: dict[str, tuple[str, ...]] = {
+    "oracle": ("manager", "driver"),
+    "manager": ("lead",),
+    "lead": ("coder",),
 }
 
 
@@ -28,8 +30,8 @@ class Caller:
     parent_agent_id: str | None
 
 
-def child_role_of(role: str) -> str | None:
-    return _CHILD_ROLE.get(role)
+def child_roles_of(role: str) -> tuple[str, ...]:
+    return _CHILD_ROLES.get(role, ())
 
 
 def resolve(conn: sqlite3.Connection, caller: str, agent_id: str | None) -> Caller:

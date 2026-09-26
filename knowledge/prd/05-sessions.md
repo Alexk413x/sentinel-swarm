@@ -26,6 +26,10 @@ claude "You are <name>. Read your brief from the swarm ledger and follow it." --
   `registered`. A session that does not appear is stopped and the call fails.
 - The parent ends its turn after its spawns. A child's message wakes it.
 - The claude binary is `SENTINEL_SWARM_CLAUDE` when set, else `claude`.
+- The Oracle starts a Driver with `drive_request(focus)` instead of `brief_create` and
+  `agent_spawn`: the tool performs both steps itself, under the child name
+  `driver-e<ordinal>`, and returns the loop's status alongside the spawned agent. See
+  "Explorations" in [02-run-lifecycle.md](02-run-lifecycle.md). **(proposed)**
 
 ## Identity
 
@@ -54,8 +58,9 @@ wake-up the caller owes, and returns a `next` field with the exact call to make.
 
 - Steps that owe a wake-up: `handoff_submit`, `return_work`, `message_post`,
   `phase_update(handed_up)`, a returned `module_review` or `phase_review`, `cr_open`,
-  `cr_accept`, `cr_complete`, a failed `cr_verify`, and each level of a departure
-  pushback chain.
+  `cr_accept`, `cr_complete`, a failed `cr_verify`, each level of a departure pushback
+  chain, and, for the Driver, `drive_issue` and `drive_checkin` (both owe the Oracle).
+  **(proposed)**
 - `next` is `SendMessage(to="<session name>", message="<one-line pointer>")` when the
   recipient's session runs, and `agent_resume(target_name=...)` when it does not.
 - The `post_any` hook clears the debt when it sees a `SendMessage` to that session name.
@@ -110,6 +115,7 @@ wake-up the caller owes, and returns a `next` field with the exact call to make.
 | `approve` or `accept_incomplete` | The Coder's session |
 | `agent_release` by a Manager after `module_review` accepts | The Lead's session |
 | `phase_update(approved)` | The phase's Manager and every live agent under it |
+| `drive_done` | The Driver's own session |
 | `run_finish` | Every agent still live except the Oracle |
 | About 3 seconds after `run_finish` | The server waits up to 5 minutes for the Oracle's last turn to end, stops the Oracle's background session, and exits. An interactive Oracle is the user's terminal and keeps running |
 | `idle_exit_minutes` with no active run, or a paused run, and no session of the run running | The ledger server |
@@ -127,6 +133,10 @@ wake-up the caller owes, and returns a `next` field with the exact call to make.
   release. **(proposed)**
 - `role_parallelism_cap.<role>` caps that role's own live agents in the run, on top of
   `parallelism_cap`. **(proposed)**
+- `drive_request` starts the Driver through the same `agent_spawn` path, so both caps
+  apply to it exactly as to any other role; in practice a run has at most one live
+  Driver, since `drive_request` refuses while an exploration is already open.
+  **(proposed)**
 - A swarm session starts only its role's MCP servers, about 300 MB of memory each.
 - With shared HTTP servers, a session starts no MCP server process: codebase-kg and the
   a11y servers run once per repo. **(proposed)**

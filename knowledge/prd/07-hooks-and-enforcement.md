@@ -68,9 +68,11 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
   agent to working. For any other session, it reports an active or paused run; checks
   the plugin registry for codebase-kg and, only once that is installed, reports a
   missing `knowledge/code_graph.db`; and adds `.sentinel-swarm/` to the git excludes.
-- `pre_agent`: denies `Agent` to every swarm session, unconditionally. No override rule
-  covers it: the rule that no role runs subagents has no legitimate exception, so
-  `pre_agent` never calls `override_consume`. **(proposed)**
+- `pre_agent`: denies `Agent` to every swarm session, unconditionally, except a Driver
+  session calling cartographer's `map-driver` or `map-reviewer` subagent, which it
+  allows. No override rule covers it: the rule that no role runs an arbitrary subagent
+  has no legitimate exception, so `pre_agent` never calls `override_consume`.
+  **(proposed)**
 - `pre_send_message`: denies a `SendMessage` whose `to` does not name a registered
   agent's `session_name` in the caller's own run, and lists the valid names in the
   reason. A caller the registry does not know, or one with no run yet, passes.
@@ -80,10 +82,11 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
   Coder, and a Coder's write outside its claimed path and test path, naming the owner;
   an override of rule `write` lets one of these two writes through.
 - `pre_shell`: while a run is active or paused, denies the shell to every role but the
-  Coder. A Coder may run a command that starts with the profile's test, build, or lint
-  command, or read-only git (`status`, `diff`, `log`, `show`, `ls-files`, `branch`). A
-  command with `;`, `&`, `|`, `<`, `>`, a backtick, a newline, or `$(` is denied. An
-  override of rule `shell` lets one command through.
+  Coder and the Driver. A Coder may run a command that starts with the profile's test,
+  build, or lint command, or read-only git (`status`, `diff`, `log`, `show`,
+  `ls-files`, `branch`). A Driver may run only a command that starts with the profile's
+  `build_command`. A command with `;`, `&`, `|`, `<`, `>`, a backtick, a newline, or
+  `$(` is denied. An override of rule `shell` lets one command through. **(proposed)**
 - `pre_monitor`: allows exactly one `Monitor` call from a swarm session, the Oracle's
   watchdog call. It denies every other one and names the allowed call. A session not
   yet in the ledger counts as a swarm session when its `agent_type` is `swarm-<role>`.
@@ -111,7 +114,9 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 | Only the Coder writes project files | `pre_write`, and no write tool or shell in the other agent files |
 | A Coder writes only its own file and test file | `pre_write` for edit tools; `pre_shell` and `post_shell` for the shell |
 | Nobody edits the records by hand | `pre_write` |
-| A role starts only its own child role | `brief_create` and `agent_spawn`; `pre_agent` denies `Agent` |
+| A role starts only its own child role | `brief_create` and `agent_spawn`; `pre_agent` denies `Agent` except a Driver's cartographer subagents |
+| The Oracle starts a Driver only between waves | `drive_request` refuses while an exploration is open or a Manager, Lead, or Coder is live |
+| `run_finish` needs a clean exploration or a resolved stop rule | `drive_request`, `drive_issue`, `drive_done`, and the `run_finish` gate in `drive.py` |
 | A model comes from the approved list | `brief_create` |
 | No agent starts without a brief | `agent_spawn` and `brief_ack` |
 | No agent fakes its identity | `pre_ledger` stamps `agent_id`; every tool matches `caller` to it |

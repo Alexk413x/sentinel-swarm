@@ -12,7 +12,22 @@ from .identity import ROLES, LedgerError
 LEDGER_SERVER = "swarm-ledger"
 SESSION_SETTINGS = '{"worktree":{"bgIsolation":"none"}}'
 _SETUP_HINT = "run /sentinel-swarm:setup"
-OPTIONAL_SERVERS = {"a11y@accessibility-tools": ("a11y-tools", "a11y-kg")}
+OPTIONAL_SERVERS: dict[str, tuple[str, ...]] = {
+    "a11y@accessibility-tools": ("a11y-tools", "a11y-kg")
+}
+# (proposed) Joined only into the Driver's own session, never any other role's.
+CARTOGRAPHER_PLUGIN = "cartographer@cartographer"
+DRIVER_PLUGINS = (
+    "android-driver@accessibility-tools",
+    "ios-driver@accessibility-tools",
+    "web-driver@accessibility-tools",
+)
+DRIVER_OPTIONAL_SERVERS: dict[str, tuple[str, ...]] = {
+    CARTOGRAPHER_PLUGIN: ("cartographer",),
+    "android-driver@accessibility-tools": ("android-driver-kg",),
+    "ios-driver@accessibility-tools": ("ios-driver-kg",),
+    "web-driver@accessibility-tools": ("web-driver-kg",),
+}
 
 
 def _registry_path() -> Path:
@@ -46,13 +61,22 @@ def plugin_installed(repo_root: Path, plugin_id: str) -> bool:
     )
 
 
-def optional_servers(repo_root: Path) -> dict[str, Any]:
+def optional_servers(repo_root: Path, role: str | None = None) -> dict[str, Any]:
+    groups = dict(OPTIONAL_SERVERS)
+    if role == "driver":
+        groups.update(DRIVER_OPTIONAL_SERVERS)
     return {
         server: {"command": "python", "args": [".sentinel-swarm/hook.py", "mcp", plugin, server]}
-        for plugin, servers in OPTIONAL_SERVERS.items()
+        for plugin, servers in groups.items()
         if plugin_installed(repo_root, plugin)
         for server in servers
     }
+
+
+def driver_available(repo_root: Path) -> bool:
+    return plugin_installed(repo_root, CARTOGRAPHER_PLUGIN) and any(
+        plugin_installed(repo_root, plugin) for plugin in DRIVER_PLUGINS
+    )
 
 
 def agent_file_path(repo_root: Path, role: str) -> Path:
@@ -129,7 +153,7 @@ def session_options(
     prompt_cache_ttl: str | None = None,
 ) -> list[str]:
     agent_file = read_agent_file(repo_root, role)
-    extra = optional_servers(repo_root)
+    extra = optional_servers(repo_root, role)
     servers = {
         LEDGER_SERVER: {"type": "http", "url": ledger_url},
         **mcp_servers(agent_file),
