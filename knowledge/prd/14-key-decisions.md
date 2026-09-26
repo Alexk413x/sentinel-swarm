@@ -56,3 +56,5 @@
 - 2026-09-25: Ledger enum values use snake_case.
 - 2026-09-25: The ledger does not share codebase-kg; codebase-kg 0.8.0 shares one server per machine through its own relay.
 - 2026-09-25: Build every designed but unbuilt feature, the snake_case directive sources, the Driver, then Channels (`plans/build-order.md`).
+- 2026-09-25: The Driver is built as a fifth role (see `plans/driver-agent.md` for the decisions). Only the Oracle requests it, it works through cartographer, and it is the one role allowed the Agent tool, for cartographer's `map-driver` and `map-reviewer` only.
+- 2026-09-25: sentinel-swarm has no optional dependencies. Claude Code installs an optional dependency into every host, so cartographer, the driver plugins, and a11y load only where the user installed them.

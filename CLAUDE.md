@@ -44,10 +44,12 @@ the one for a subject. `plans/` holds only plans for work not built yet.
 
 ## Rules
 
-- The plugin ships no agents. The four roles are templates in `templates/agents/`;
+- The plugin ships no agents. The roles are templates in `templates/agents/`;
   setup writes them into a host repo's `.claude/agents/` as `swarm-<role>.md`, where
-  their `hooks` frontmatter applies. Every role runs as its own session; no role has
-  the `Agent` tool.
+  their `hooks` frontmatter applies. Every role runs as its own session. No role has
+  the `Agent` tool except the Driver, which `pre_agent` limits to cartographer's
+  `map-driver` and `map-reviewer`; setup writes the Driver only when the host has
+  cartographer and a driver plugin installed.
 - No role template sets `maxTurns`. The watchdog and the escalation budget are the only
   controls on a runaway agent.
 - Every enforcement rule lives in a role template's hooks or in a swarm-ledger tool,

@@ -19,6 +19,7 @@
   its restart. Probe it by killing a shared server under a live background session and
   calling one of its tools after the supervisor restarts it.
 - **a11y sharing.** The ledger shares the a11y servers because a11y has no relay of its own yet. When a11y ships one, as codebase-kg 0.8.0 did, remove a11y from `shared.planned_servers` and let a11y share itself.
-- **The Driver role.** Planned, not built. See `plans/driver-agent.md`.
+- **The Driver, live.** Built and unit-tested, never run: no host here has cartographer and a driver plugin installed yet. The first live run needs an Android app host, and must confirm the shim starts cartographer's and the driver plugins' servers.
+- **Driver stop-rule escalation.** A stop rule files a `driver` directive that stays open until the Oracle resolves it, possibly as `needs_user`. Decide whether that is enough, or whether it needs its own user notification.
 - **Repo lock after a server crash.** When a ledger server crashes and a new server resumes the same run, the lock still names the dead server's pid until the next `run_start` or `run_finish`, so a second clone could take the lock during that window.
 - **Channels.** Planned, not built. See `plans/channels-and-http.md`.

@@ -1,7 +1,8 @@
 # sentinel-swarm
 
-A Claude Code plugin that runs a four-role agent swarm, Oracle, Manager, Lead, and
-Coder, to take a PRD to built, tested, reviewed code. Enforced reviews, a shared
+A Claude Code plugin that runs an agent swarm, Oracle, Manager, Lead, and Coder, plus a
+Driver that tests the app when the host has cartographer and a driver plugin, to take a
+PRD to built, tested, reviewed code. Enforced reviews, a shared
 ledger, and a scoring rubric hold every role accountable, and every hand-off
 requires recorded evidence, not a claim.
 

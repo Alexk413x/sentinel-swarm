@@ -5,7 +5,7 @@
     "email": "alexk413x@gmail.com"
   },
   "metadata": {
-    "description": "A four-role agent swarm, Oracle, Manager, Lead, Coder, that takes a PRD to built, tested, reviewed code through enforced reviews, a shared ledger, and a scoring rubric."
+    "description": "An agent swarm, Oracle, Manager, Lead, Coder, and an optional Driver, that takes a PRD to built, tested, reviewed code through enforced reviews, a shared ledger, and a scoring rubric."
   },
   "allowCrossMarketplaceDependenciesOn": [
     "codebase-kg",
@@ -16,7 +16,7 @@
     {
       "name": "sentinel-swarm",
       "source": ".",
-      "description": "A four-role agent swarm, Oracle, Manager, Lead, Coder, that takes a PRD to built, tested, reviewed code through enforced reviews, a shared ledger, and a scoring rubric. Design complete, skeleton only: nothing runs yet.",
+      "description": "An agent swarm, Oracle, Manager, Lead, Coder, and an optional Driver, that takes a PRD to built, tested, reviewed code through enforced reviews, a shared ledger, and a scoring rubric. Design complete, skeleton only: nothing runs yet.",
       "category": "development",
       "tags": [
         "agent-swarm",

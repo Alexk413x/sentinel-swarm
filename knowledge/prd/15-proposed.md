@@ -101,3 +101,7 @@ Built on 2026-09-25, choices Alex has not reviewed:
 - Directive sources `user_chat` and `outside_session`, with the old spellings accepted and normalized.
 - Per-role `effort` (the `--effort` flag) and `prompt_cache_ttl` (the `promptCacheTtl` setting).
 - Smoke runs install as `0.0.1-dev.<epoch seconds>` and remove older dev copies.
+- The Driver's details: `drive_request` picks the first approved Driver model; the Driver has the `Skill` tool to run cartographer's `map-test` and `map-explore`; its shell runs only `build_command`; `post_shell`'s claim check stays Coder-only.
+- The exact stop-rule math in `compute_loop_status` (`mcp/src/swarm_ledger/drive.py`): the attempt streak and total, the three-exploration stall, fixes causing bugs, and ping-pong.
+- The report's Explorations section marks each finding as recurred in a later exploration or not seen again; the ledger does not link a finding to the fix that closed it.
+- The watchdog reports a Driver whose check-in is overdue (`driver_overdue`) and does not report it as stuck or spinning.

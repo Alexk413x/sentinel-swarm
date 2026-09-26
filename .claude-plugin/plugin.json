@@ -1,7 +1,7 @@
 {
   "name": "sentinel-swarm",
   "version": "0.0.1",
-  "description": "A four-role agent swarm, Oracle, Manager, Lead, Coder, that takes a PRD to built, tested, reviewed code. Enforced reviews, a shared ledger, and a scoring rubric hold every role accountable.",
+  "description": "An agent swarm, Oracle, Manager, Lead, Coder, and an optional Driver, that takes a PRD to built, tested, reviewed code. Enforced reviews, a shared ledger, and a scoring rubric hold every role accountable.",
   "author": {
     "name": "Alexk413x",
     "email": "alexk413x@gmail.com"
@@ -24,27 +24,6 @@
       "name": "codebase-kg",
       "marketplace": "codebase-kg",
       "version": ">=0.7.0"
-    }
-  ],
-  "optionalDependencies": [
-    {
-      "name": "cartographer",
-      "marketplace": "cartographer"
-    },
-    {
-      "name": "android-driver",
-      "marketplace": "accessibility-tools",
-      "version": ">=0.11.0"
-    },
-    {
-      "name": "ios-driver",
-      "marketplace": "accessibility-tools",
-      "version": ">=0.5.0"
-    },
-    {
-      "name": "web-driver",
-      "marketplace": "accessibility-tools",
-      "version": ">=0.2.0"
     }
   ],
   "userConfig": {

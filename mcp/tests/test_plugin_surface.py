@@ -69,8 +69,8 @@ def test_plugin_manifest_parses(repo_root: Path):
     deps = data["dependencies"]
     names = [d if isinstance(d, str) else d.get("name") for d in deps]
     assert "codebase-kg" in names
-    optional = [d.get("name") for d in data.get("optionalDependencies", [])]
-    assert "a11y" not in names + optional
+    assert "a11y" not in names
+    assert "optionalDependencies" not in data
 
 
 def test_marketplace_manifest_parses(repo_root: Path):

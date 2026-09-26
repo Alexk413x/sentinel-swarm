@@ -1,6 +1,6 @@
 # Plan: the Driver role
 
-Status: not built. Every question below is settled as of 2026-09-25; the plan is ready to build. Items marked **(proposed)** are details Alex has not reviewed. `knowledge/prd/` describes the system this role joins.
+Status: built on 2026-09-25 in round 2 of `plans/build-order.md`; not yet run live. `knowledge/prd/` describes the built role. Every question below is settled. Items marked **(proposed)** are details Alex has not reviewed. `knowledge/prd/` describes the system this role joins.
 
 ## What the Driver does
 

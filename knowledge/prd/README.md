@@ -2,7 +2,8 @@
 
 sentinel-swarm is a Claude Code plugin that takes a PRD of any size to built, tested,
 reviewed code. Four roles do the work: the Oracle, the Managers, the Leads, and the
-Coders. Every role runs as its own Claude Code session in the host repo's one working
+Coders. A fifth, the Driver, builds and explores the app between waves when the host
+has cartographer and a driver plugin installed. Every role runs as its own Claude Code session in the host repo's one working
 tree. A shared SQLite ledger, served by the `swarm-ledger` MCP server, holds the run's
 state and every gate. Hooks in each role's agent file make the ledger unavoidable.
 
