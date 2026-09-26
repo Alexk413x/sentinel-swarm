@@ -32,7 +32,19 @@ The split of design into architecture and code structure is **(proposed)**.
 - A dimension's score is the average of its ratings times 10, from 0 to 100.
 - There is no combined score and there are no weights. Each dimension passes or fails
   on its own, and a criterion can fail on its own.
-- A rating below 9 needs a reason. A file-and-line reference is optional in the ledger.
+- A rating below 9 needs a reason and a `ref` (file and line). `score_record` refuses
+  a rating below 9 that lacks either. **(proposed)**
+
+## Module and phase review scores **(proposed)**
+
+- `module_review` and `phase_review` take a `scores` list when the outcome is
+  `accepted`: one rating from 1 to 10 for each of three dimensions — completeness,
+  integration, and open items — with a reason below 9. The ledger refuses an
+  `accepted` outcome missing a required dimension, carrying an unknown one, or rating
+  below 9 with no reason.
+- The scores are the Manager's or the Oracle's own judgment of the module or the
+  phase as a whole; they are not derived from the files' rubric scores. They are
+  stored on the review record and the report shows them next to that review.
 
 | Rating | Meaning |
 |---|---|
@@ -54,9 +66,20 @@ The split of design into architecture and code structure is **(proposed)**.
 | `regression_tolerance` | 5 | A drop this large on any dimension is a regression |
 
 - **Pass rule:** every applicable dimension is at or above the target, and no criterion
-  is below the criterion floor. `approve` requires it of the Lead review.
+  is below the criterion floor. `approve` requires it of the Lead review, or the floor
+  pass below.
 - **Disagreement:** a gap of `disagreement_gap` or more on a dimension, or one score at
   or above the target and the other below it. **(proposed)**
+
+## Floor pass **(proposed)**
+
+- A file that fails the pass rule still passes when it ends its last escalation round
+  with every applicable dimension at or above `floor` and no criterion below
+  `criterion_floor`. `attempts.round` counts fix attempts per file, not per issue, so
+  it never caps at `rounds`; a file is at its last round once its recorded attempts
+  reach the full escalation budget, `rounds` times `attempts_per_round`.
+- `approve` accepts the handoff then. It records which dimensions passed at the floor,
+  as a shortfall for each dimension still below `target`, and the report shows them.
 
 ## Issues
 
@@ -67,6 +90,9 @@ The split of design into architecture and code structure is **(proposed)**.
   Manager, or the Oracle.
 - `approve` refuses while the file has an open issue. `issue_open` records a problem by
   hand. `idea_record` records an idea tried against an issue and its outcome.
+- **Blind scoring.** Until the file's Lead has recorded its own score for the file's
+  current handoff, `issue_list` hides from that Lead the issues the Coder's self
+  review opened for that file. They show once the Lead scores. **(proposed)**
 
 ## The improvement loop **(proposed)**
 
@@ -101,13 +127,18 @@ issue stopped improving, and it explains to the next layer why the issue arrived
   proposed)** Only a reviewer's return counts, and accepting work as incomplete uses no
   attempt.
 - `issue_escalate(issue_id)` moves an issue to its next round, names the receiver in
-  `escalated_to` (the Manager for round 2, the Oracle for round 3), and messages it.
-  Only the file owner and the owner's parent chain may call it.
+  `escalated_to` (the Manager for round 2, the Oracle for round 3), messages it, and
+  owes it a wake-up with a pointer, returned as `next`. Only the file owner and the
+  owner's parent chain may call it.
+- `attempt_record` advances a round the same way: on a plateau or a regression that
+  exhausts `attempts_per_round`, it sets `escalated_to`, messages the receiver, and
+  owes it the same wake-up, listed in the result's `escalated`. **(proposed)**
 - The Manager's resources include its other Leads and Coders, a new Lead, a fresh
   Coder, a stronger model, and a structural change such as a split file or a changed
   contract. **(proposed)**
-- An issue a Manager finds starts at round 2. **(proposed)** The ledger opens every
-  issue at round 1.
+- An issue opened by hand with `issue_open` starts at round 1 for a Coder or a Lead,
+  round 2 for a Manager, and round 3 for the Oracle. **(proposed)** An issue a
+  self or Lead review opens automatically always starts at round 1.
 - A layer with no new idea passes the issue up.
 
 ## Evidence

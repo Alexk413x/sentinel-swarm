@@ -470,7 +470,8 @@ def override_grant(
 def issue_open(
     caller: str, file_id: int, title: str, body: str, agent_id: str | None = None
 ) -> dict[str, Any]:
-    """Opens an issue against a file; any registered agent calls this."""
+    """Opens an issue against a file; any registered agent calls this. An issue a Manager
+    opens starts at round 2, and one the Oracle opens starts at round 3."""
     return _call(
         _ledger().issue_open,
         caller=caller,
@@ -485,7 +486,9 @@ def issue_open(
 def issue_list(
     caller: str, file_id: int | None = None, agent_id: str | None = None
 ) -> list[dict[str, Any]]:
-    """Lists the run's issues, optionally filtered to one file; any registered agent calls this."""
+    """Lists the run's issues, optionally filtered to one file; any registered agent calls this.
+    For a Lead, hides issues its own module's self-review opened until the Lead records its
+    own score for the file's current handoff."""
     return _call(_ledger().issue_list, caller=caller, agent_id=agent_id, file_id=file_id)
 
 
@@ -520,8 +523,9 @@ def idea_record(
 
 @mcp.tool
 def issue_escalate(caller: str, issue_id: int, agent_id: str | None = None) -> dict[str, Any]:
-    """Escalates an issue to its next round and messages the agent that takes it; only the
-    issue's owner and the owner's parent chain call it."""
+    """Escalates an issue to its next round, names the receiver in escalated_to, and messages
+    it; only the issue's owner and the owner's parent chain call it. Returns the wake-up call
+    to make as `next`."""
     return _call(_ledger().issue_escalate, caller=caller, agent_id=agent_id, issue_id=issue_id)
 
 
@@ -622,7 +626,12 @@ def review_compare(caller: str, handoff_id: int, agent_id: str | None = None) ->
 def approve(
     caller: str, handoff_id: int, notes: str | None = None, agent_id: str | None = None
 ) -> dict[str, Any]:
-    """Approves a handoff once its lead review passes and no issue is open; a Lead calls this."""
+    """Approves a handoff once its lead review passes and no issue is open; a Lead calls this.
+    Also accepts a floor pass: every dimension at or above the rubric floor, no criterion
+    below the criterion floor, and the file's attempts at the full escalation budget
+    (rounds times attempts_per_round), once the review itself misses the target. A floor
+    pass records a shortfall for each dimension still below target and lists them in
+    `floor_pass_dimensions`."""
     return _call(
         _ledger().approve, caller=caller, agent_id=agent_id, handoff_id=handoff_id, notes=notes
     )
@@ -649,7 +658,9 @@ def return_work(
 
 @mcp.tool
 def attempt_record(caller: str, file_id: int, agent_id: str | None = None) -> dict[str, Any]:
-    """Classifies a file's latest attempt as improved, plateau, or regression; a Lead calls it."""
+    """Classifies a file's latest attempt as improved, plateau, or regression; a Lead calls it.
+    When a plateau or regression moves an issue to round 2 or 3, `escalated` lists each
+    escalation with its `escalated_to` agent and the wake-up call to make as its `next`."""
     return _call(_ledger().attempt_record, caller=caller, agent_id=agent_id, file_id=file_id)
 
 
@@ -677,11 +688,14 @@ def module_review(
     outcome: Literal["accepted", "returned"],
     notes: str,
     disagreement_notes: dict[str, str] | None = None,
+    scores: list[dict[str, Any]] | None = None,
     agent_id: str | None = None,
 ) -> dict[str, Any]:
     """Records the Manager's review of a module before it hands the phase up; an accepted
     review refuses while a departure in the module waits on the Lead or the Manager, and a
-    returned module owes its live Lead a wake-up as `next`."""
+    returned module owes its live Lead a wake-up as `next`. An accepted review requires
+    `scores`: one rating 1..10 for each of completeness, integration, and open items, with a
+    reason below 9."""
     return _call(
         _ledger().module_review,
         caller=caller,
@@ -690,6 +704,7 @@ def module_review(
         outcome=outcome,
         notes=notes,
         disagreement_notes=disagreement_notes,
+        scores=scores,
     )
 
 
@@ -700,11 +715,14 @@ def phase_review(
     outcome: Literal["accepted", "returned"],
     notes: str,
     low_score_notes: dict[str, str] | None = None,
+    scores: list[dict[str, Any]] | None = None,
     agent_id: str | None = None,
 ) -> dict[str, Any]:
     """Records the Oracle's review of a handed-up phase before phase_update(approved); an
     accepted review refuses while a departure in the phase is not signed off or reworked, and
-    a returned phase owes its live Manager a wake-up as `next`."""
+    a returned phase owes its live Manager a wake-up as `next`. An accepted review requires
+    `scores`: one rating 1..10 for each of completeness, integration, and open items, with a
+    reason below 9."""
     return _call(
         _ledger().phase_review,
         caller=caller,
@@ -713,6 +731,7 @@ def phase_review(
         outcome=outcome,
         notes=notes,
         low_score_notes=low_score_notes,
+        scores=scores,
     )
 
 

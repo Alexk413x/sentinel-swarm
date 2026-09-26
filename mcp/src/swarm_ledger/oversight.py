@@ -16,6 +16,15 @@ def _rows(cursor: sqlite3.Cursor) -> list[dict]:
     return [dict(row) for row in cursor.fetchall()]
 
 
+def _review_scores_json(scores: list[dict] | None) -> list[dict]:
+    parsed = [rubric.parse_review_score(s) for s in (scores or [])]
+    try:
+        rubric.validate_review_scores(parsed)
+    except ValueError as exc:
+        raise LedgerError(str(exc)) from exc
+    return [{"dimension": s.dimension, "value": s.value, "reason": s.reason} for s in parsed]
+
+
 class OversightMixin:
     """The Manager-level module review and the Oracle-level phase review.
 
@@ -247,10 +256,12 @@ class OversightMixin:
         outcome: Literal["accepted", "returned"],
         notes: str,
         disagreement_notes: dict[str, str] | None = None,
+        scores: list[dict] | None = None,
     ) -> dict:
         if outcome not in ("accepted", "returned"):
             raise LedgerError(f"unknown module_review outcome {outcome!r}")
         disagreement_notes = disagreement_notes or {}
+        review_scores: list[dict] = []
 
         wakeup = None
         lead_ended = False
@@ -271,6 +282,7 @@ class OversightMixin:
                 self._require_module_ready_for_review(
                     conn, module_id, module_row["phase_id"], disagreement_notes
                 )
+                review_scores = _review_scores_json(scores)
             else:
                 conn.execute(
                     "UPDATE modules SET state = 'returned' WHERE module_id = ?", (module_id,)
@@ -296,7 +308,9 @@ class OversightMixin:
                     lead_row["agent_id"] if lead_row is not None else None,
                     outcome,
                     notes,
-                    json.dumps({"disagreement_notes": disagreement_notes}),
+                    json.dumps(
+                        {"disagreement_notes": disagreement_notes, "review_scores": review_scores}
+                    ),
                 ),
             )
             review_id = cur.lastrowid
@@ -319,10 +333,12 @@ class OversightMixin:
         outcome: Literal["accepted", "returned"],
         notes: str,
         low_score_notes: dict[str, str] | None = None,
+        scores: list[dict] | None = None,
     ) -> dict:
         if outcome not in ("accepted", "returned"):
             raise LedgerError(f"unknown phase_review outcome {outcome!r}")
         low_score_notes = low_score_notes or {}
+        review_scores: list[dict] = []
 
         wakeup = None
         manager_ended = False
@@ -341,6 +357,7 @@ class OversightMixin:
 
             if outcome == "accepted":
                 self._require_phase_ready_for_review(conn, phase_row, low_score_notes)
+                review_scores = _review_scores_json(scores)
             else:
                 conn.execute("UPDATE phases SET state = 'working' WHERE phase_id = ?", (phase_id,))
                 if manager_row is not None and manager_row["ended_at"] is None:
@@ -363,7 +380,9 @@ class OversightMixin:
                     manager_row["agent_id"] if manager_row is not None else None,
                     outcome,
                     notes,
-                    json.dumps({"low_score_notes": low_score_notes}),
+                    json.dumps(
+                        {"low_score_notes": low_score_notes, "review_scores": review_scores}
+                    ),
                 ),
             )
             review_id = cur.lastrowid

@@ -104,6 +104,7 @@ def _all_ratings(
                     "criterion": criterion_key,
                     "value": dim_value,
                     "reason": reason if dim_value < 9 else None,
+                    "ref": "pkg/good.py:1" if dim_value < 9 else None,
                 }
             )
     return ratings
@@ -111,6 +112,14 @@ def _all_ratings(
 
 def _all_applicable() -> dict[str, str | None]:
     return {dim_key: None for dim_key, _, _ in DIMENSIONS}
+
+
+def _review_scores() -> list[dict]:
+    return [
+        {"dimension": "completeness", "value": 10, "reason": None},
+        {"dimension": "integration", "value": 10, "reason": None},
+        {"dimension": "open_items", "value": 10, "reason": None},
+    ]
 
 
 def _bootstrap(ledger: Ledger) -> dict:
@@ -275,7 +284,12 @@ def test_module_review_accepted_succeeds_with_an_agreeing_file(ledger: Ledger) -
     _insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
 
     result = ledger.module_review(
-        "manager-1", ctx["manager"]["agent_id"], ctx["module_id"], "accepted", "looks good"
+        "manager-1",
+        ctx["manager"]["agent_id"],
+        ctx["module_id"],
+        "accepted",
+        "looks good",
+        scores=_review_scores(),
     )
     assert result["outcome"] == "accepted"
     assert result["kind"] == "manager"
@@ -296,7 +310,12 @@ def test_a_released_claim_that_was_claimed_again_does_not_block_module_review(
     ).fetchone()["state"]
     assert state == "superseded"
     result = ledger.module_review(
-        "manager-1", ctx["manager"]["agent_id"], ctx["module_id"], "accepted", "looks good"
+        "manager-1",
+        ctx["manager"]["agent_id"],
+        ctx["module_id"],
+        "accepted",
+        "looks good",
+        scores=_review_scores(),
     )
     assert result["outcome"] == "accepted"
 
@@ -325,6 +344,7 @@ def test_module_review_refuses_missing_disagreement_notes(ledger: Ledger) -> Non
         "accepted",
         "ok",
         disagreement_notes={str(file_id): "self and lead disagreed on testing; lead's stands"},
+        scores=_review_scores(),
     )
     assert accepted["outcome"] == "accepted"
 
@@ -372,7 +392,12 @@ def test_phase_update_handed_up_succeeds_after_an_accepted_module_review(ledger:
     _release_lead(ledger, ctx)
     _insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
     ledger.module_review(
-        "manager-1", ctx["manager"]["agent_id"], ctx["module_id"], "accepted", "ok"
+        "manager-1",
+        ctx["manager"]["agent_id"],
+        ctx["module_id"],
+        "accepted",
+        "ok",
+        scores=_review_scores(),
     )
 
     phase = _hand_up_phase(ledger, ctx)
@@ -386,7 +411,12 @@ def _accept_module_and_hand_up(ledger: Ledger, ctx: dict) -> None:
     _release_lead(ledger, ctx)
     _insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
     ledger.module_review(
-        "manager-1", ctx["manager"]["agent_id"], ctx["module_id"], "accepted", "ok"
+        "manager-1",
+        ctx["manager"]["agent_id"],
+        ctx["module_id"],
+        "accepted",
+        "ok",
+        scores=_review_scores(),
     )
     _hand_up_phase(ledger, ctx)
 
@@ -410,7 +440,9 @@ def test_phase_review_accepted_succeeds(ledger: Ledger) -> None:
     _accept_module_and_hand_up(ledger, ctx)
     _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
 
-    result = ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ship it")
+    result = ledger.phase_review(
+        "oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ship it", scores=_review_scores()
+    )
     assert result["outcome"] == "accepted"
     assert result["kind"] == "oracle"
 
@@ -437,7 +469,9 @@ def test_re_claiming_an_approved_untested_file_with_a_test_clears_the_gate(
     states = dict(ledger.conn.execute("SELECT file_id, state FROM files").fetchall())
     assert states[first] == "superseded"
     assert states[second] == "approved"
-    result = ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok")
+    result = ledger.phase_review(
+        "oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok", scores=_review_scores()
+    )
     assert result["outcome"] == "accepted"
 
 
@@ -458,7 +492,9 @@ def test_a_file_without_code_in_the_graph_needs_no_test_file(ledger: Ledger, hos
     _accept_module_and_hand_up(ledger, ctx)
     _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
 
-    result = ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok")
+    result = ledger.phase_review(
+        "oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok", scores=_review_scores()
+    )
     assert result["outcome"] == "accepted"
 
 
@@ -483,7 +519,12 @@ def test_phase_review_refuses_missing_low_score_notes(ledger: Ledger) -> None:
     _release_lead(ledger, ctx)
     _insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
     ledger.module_review(
-        "manager-1", ctx["manager"]["agent_id"], ctx["module_id"], "accepted", "ok"
+        "manager-1",
+        ctx["manager"]["agent_id"],
+        ctx["module_id"],
+        "accepted",
+        "ok",
+        scores=_review_scores(),
     )
     _hand_up_phase(ledger, ctx)
     _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
@@ -498,6 +539,7 @@ def test_phase_review_refuses_missing_low_score_notes(ledger: Ledger) -> None:
         "accepted",
         "ok",
         low_score_notes={str(file_id): "recorded shortfall, acceptable for this run"},
+        scores=_review_scores(),
     )
     assert accepted["outcome"] == "accepted"
 
@@ -518,7 +560,9 @@ def test_a_lead_recorded_departure_gates_module_review_and_phase_review(ledger: 
 
     ledger.departure_decide("manager-1", manager_id, departure_id, "agree", "fine for this run")
     _release_lead(ledger, ctx)
-    ledger.module_review("manager-1", manager_id, ctx["module_id"], "accepted", "ok")
+    ledger.module_review(
+        "manager-1", manager_id, ctx["module_id"], "accepted", "ok", scores=_review_scores()
+    )
     _hand_up_phase(ledger, ctx)
     _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
 
@@ -526,9 +570,14 @@ def test_a_lead_recorded_departure_gates_module_review_and_phase_review(ledger: 
         ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok")
 
     ledger.departure_decide("oracle", ctx["oracle_id"], departure_id, "agree", "acceptable")
-    accepted = ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok")
+    accepted = ledger.phase_review(
+        "oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok", scores=_review_scores()
+    )
     assert accepted["outcome"] == "accepted"
-    assert json.loads(accepted["details_json"]) == {"low_score_notes": {}}
+    assert json.loads(accepted["details_json"]) == {
+        "low_score_notes": {},
+        "review_scores": _review_scores(),
+    }
 
 
 def test_phase_review_returned_owes_the_live_manager_a_wake_up(ledger: Ledger) -> None:
@@ -576,7 +625,9 @@ def test_phase_update_approved_succeeds_after_an_accepted_phase_review(ledger: L
     ctx = _bootstrap(ledger)
     _accept_module_and_hand_up(ledger, ctx)
     _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
-    ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ship it")
+    ledger.phase_review(
+        "oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ship it", scores=_review_scores()
+    )
 
     phase = ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
     assert phase["state"] == "approved"
@@ -590,7 +641,9 @@ def test_write_report_lists_manager_and_oracle_reviews_and_the_repo_check(ledger
     ledger.repo_check("oracle", ctx["oracle_id"])
     _accept_module_and_hand_up(ledger, ctx)
     _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
-    ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ship it")
+    ledger.phase_review(
+        "oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ship it", scores=_review_scores()
+    )
 
     text = ledger.report_build("oracle", ctx["oracle_id"])["text"]
     assert "## Repo" in text

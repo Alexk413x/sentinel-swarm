@@ -137,6 +137,14 @@ def _all_applicable() -> dict[str, str | None]:
     return {dim_key: None for dim_key, _, _ in DIMENSIONS}
 
 
+def _review_scores() -> list[dict]:
+    return [
+        {"dimension": "completeness", "value": 10},
+        {"dimension": "integration", "value": 10},
+        {"dimension": "open_items", "value": 10},
+    ]
+
+
 def _latest_file_id(ledger: Ledger, path: str) -> int:
     row = ledger.conn.execute(
         "SELECT file_id FROM files WHERE path = ? ORDER BY file_id DESC LIMIT 1", (path,)
@@ -775,7 +783,9 @@ def test_a_manager_pushback_reopens_the_approved_file_for_the_same_agents(
     ledger.approve("lead-1", lead_id, again["handoff_id"])
     assert _departure(ledger, handed["departure_id"])["state"] == "reworked"
     _insert_passing_test_run(ledger, manager_id, "phase")
-    reviewed = ledger.module_review("manager-1", manager_id, ctx["module_id"], "accepted", "ok")
+    reviewed = ledger.module_review(
+        "manager-1", manager_id, ctx["module_id"], "accepted", "ok", scores=_review_scores()
+    )
     assert reviewed["outcome"] == "accepted"
 
 
@@ -846,7 +856,9 @@ def test_an_oracle_pushback_resumes_the_chain_down_to_the_coder(ledger: Ledger) 
         _as_session(ledger, agent_id, name)
     _decide(ledger, "manager-1", manager_id, handed["departure_id"])
     _insert_passing_test_run(ledger, manager_id, "phase")
-    ledger.module_review("manager-1", manager_id, ctx["module_id"], "accepted", "ok")
+    ledger.module_review(
+        "manager-1", manager_id, ctx["module_id"], "accepted", "ok", scores=_review_scores()
+    )
     ledger.agent_release("manager-1", manager_id, lead_id)
     ledger.phase_update("manager-1", manager_id, ctx["phase_id"], "handed_up")
 
@@ -892,7 +904,9 @@ def test_module_review_refuses_while_a_departure_waits_on_the_manager(ledger: Le
         ledger.module_review("manager-1", manager_id, ctx["module_id"], "accepted", "ok")
 
     _decide(ledger, "manager-1", manager_id, handed["departure_id"])
-    reviewed = ledger.module_review("manager-1", manager_id, ctx["module_id"], "accepted", "ok")
+    reviewed = ledger.module_review(
+        "manager-1", manager_id, ctx["module_id"], "accepted", "ok", scores=_review_scores()
+    )
     assert reviewed["outcome"] == "accepted"
 
 
@@ -902,7 +916,9 @@ def test_phase_review_refuses_until_the_oracle_signs_the_departure_off(ledger: L
     handed = _agreed_and_approved(ledger, ctx)
     _decide(ledger, "manager-1", manager_id, handed["departure_id"])
     _insert_passing_test_run(ledger, manager_id, "phase")
-    ledger.module_review("manager-1", manager_id, ctx["module_id"], "accepted", "ok")
+    ledger.module_review(
+        "manager-1", manager_id, ctx["module_id"], "accepted", "ok", scores=_review_scores()
+    )
     ledger.agent_release("manager-1", manager_id, ctx["lead"]["agent_id"])
     ledger.phase_update("manager-1", manager_id, ctx["phase_id"], "handed_up")
     _insert_passing_test_run(ledger, ctx["oracle_id"], "full")
@@ -913,7 +929,9 @@ def test_phase_review_refuses_until_the_oracle_signs_the_departure_off(ledger: L
         ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok")
 
     _decide(ledger, "oracle", ctx["oracle_id"], handed["departure_id"])
-    reviewed = ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok")
+    reviewed = ledger.phase_review(
+        "oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok", scores=_review_scores()
+    )
     assert reviewed["outcome"] == "accepted"
 
 

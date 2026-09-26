@@ -44,6 +44,7 @@ _ADDED_COLUMNS = (
     ("phases", "pause_reason", "TEXT"),
     ("reviews", "details_json", "TEXT"),
     ("directives", "question", "TEXT"),
+    ("handoffs", "floor_pass_json", "TEXT"),
 )
 # Renamed to snake_case; an older ledger may still hold either the code's old
 # spelling or a value directive_submit stored before this alias table existed.

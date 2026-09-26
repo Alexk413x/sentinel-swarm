@@ -84,7 +84,7 @@ def test_validate_ratings_rejects_value_above_range() -> None:
 
 def test_validate_ratings_accepts_boundary_values_one_and_ten() -> None:
     ratings = [
-        Rating("meets_the_brief", "does_what_was_asked", 1, "wrong", None),
+        Rating("meets_the_brief", "does_what_was_asked", 1, "wrong", "pkg/good.py:1"),
         Rating("meets_the_brief", "nothing_extra", 10, None, None),
     ]
     validate_ratings(ratings, {"meets_the_brief": None})

@@ -183,15 +183,27 @@ def _insert_passing_test_run(ledger: Ledger, run_id: int, agent_id: str, scope: 
         )
 
 
+def _review_scores() -> list[dict]:
+    return [
+        {"dimension": "completeness", "value": 10},
+        {"dimension": "integration", "value": 10},
+        {"dimension": "open_items", "value": 10},
+    ]
+
+
 def _accept_module(ledger: Ledger, ctx: Ctx) -> dict:
     _insert_passing_test_run(ledger, ctx.run_id, ctx.manager[1], "phase")
-    return ledger.module_review(*ctx.manager, ctx.module_id, "accepted", "looks good")
+    return ledger.module_review(
+        *ctx.manager, ctx.module_id, "accepted", "looks good", scores=_review_scores()
+    )
 
 
 def _hand_up_and_accept_phase(ledger: Ledger, ctx: Ctx) -> dict:
     ledger.phase_update(*ctx.manager, ctx.phase_id, "handed_up")
     _insert_passing_test_run(ledger, ctx.run_id, ctx.oracle[1], "full")
-    return ledger.phase_review(*ctx.oracle, ctx.phase_id, "accepted", "ship it")
+    return ledger.phase_review(
+        *ctx.oracle, ctx.phase_id, "accepted", "ship it", scores=_review_scores()
+    )
 
 
 # -- the CLI wrapper ------------------------------------------------------------------------

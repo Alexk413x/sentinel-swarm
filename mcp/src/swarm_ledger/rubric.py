@@ -103,8 +103,15 @@ _CRITERIA_BY_DIMENSION: dict[str, tuple[str, ...]] = {
 
 RATING_SHAPE = (
     'each rating is {"dimension": <key>, "criterion": <key>, "value": 1..10, '
-    '"reason": <text, required below 9>, "ref": <file:line or null>}; '
+    '"reason": <text, required below 9>, "ref": <file:line, required below 9>}; '
     "applicable maps every dimension key to null or a one-line reason it does not apply"
+)
+
+REVIEW_DIMENSIONS: tuple[str, ...] = ("completeness", "integration", "open_items")
+
+REVIEW_SCORE_SHAPE = (
+    'each score is {"dimension": <key>, "value": 1..10, "reason": <text, required below 9>}; '
+    f"required dimensions: {list(REVIEW_DIMENSIONS)}"
 )
 
 
@@ -132,6 +139,42 @@ class Rating:
     ref: str | None
 
 
+@dataclass
+class ReviewScore:
+    dimension: str
+    value: int
+    reason: str | None
+
+
+def parse_review_score(raw: object) -> ReviewScore:
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"a score must be an object, got {type(raw).__name__}. {REVIEW_SCORE_SHAPE}"
+        )
+    missing = [key for key in ("dimension", "value") if key not in raw]
+    if missing:
+        raise ValueError(f"score {sorted(raw.keys())} is missing {missing}. {REVIEW_SCORE_SHAPE}")
+    value = raw["value"]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"score value must be an integer 1..10, got {value!r}")
+    return ReviewScore(str(raw["dimension"]), value, raw.get("reason"))
+
+
+def validate_review_scores(scores: list[ReviewScore]) -> None:
+    seen = {s.dimension for s in scores}
+    missing = [d for d in REVIEW_DIMENSIONS if d not in seen]
+    if missing:
+        raise ValueError(f"scores is missing {missing}. {REVIEW_SCORE_SHAPE}")
+    unknown = sorted(seen - set(REVIEW_DIMENSIONS))
+    if unknown:
+        raise ValueError(f"unknown score dimension(s) {unknown}. {REVIEW_SCORE_SHAPE}")
+    for score in scores:
+        if not 1 <= score.value <= 10:
+            raise ValueError(f"{score.dimension}: value {score.value} is outside 1..10")
+        if score.value < 9 and not score.reason:
+            raise ValueError(f"{score.dimension}: a rating below 9 needs a reason")
+
+
 def validate_ratings(ratings: list[Rating], applicable: dict[str, str | None]) -> None:
     rated: dict[str, set[str]] = {}
     for rating in ratings:
@@ -149,6 +192,10 @@ def validate_ratings(ratings: list[Rating], applicable: dict[str, str | None]) -
         if rating.value < 9 and not rating.reason:
             raise ValueError(
                 f"{rating.dimension}.{rating.criterion}: a rating below 9 needs a reason"
+            )
+        if rating.value < 9 and not rating.ref:
+            raise ValueError(
+                f"{rating.dimension}.{rating.criterion}: a rating below 9 needs a ref (file:line)"
             )
         rated.setdefault(rating.dimension, set()).add(rating.criterion)
 

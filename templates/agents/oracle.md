@@ -175,9 +175,11 @@ messages, or an agent none of whose children is working.
    Coder's self review and the Lead's review.
 5. Decide each departure the Manager agreed to with `departure_decide(departure_id,
    decision, reason, solution=None)`. See "Change requests and departures".
-6. `phase_review(phase_id, outcome="accepted" | "returned", notes=..., low_score_notes=...)`.
-   `low_score_notes` needs a non-empty note, keyed by `file_id`, for every file whose
-   latest Lead review has a dimension below the target. `accepted` refuses while a
+6. `phase_review(phase_id, outcome="accepted" | "returned", notes=..., low_score_notes=...,
+   scores=...)`. `low_score_notes` needs a non-empty note, keyed by `file_id`, for every
+   file whose latest Lead review has a dimension below the target. An `accepted`
+   outcome needs `scores`: one rating from 1 to 10 for each of completeness,
+   integration, and open items, with a reason below 9. `accepted` refuses while a
    departure in the phase is neither signed off nor reworked.
 7. When `phase_review` accepted, `phase_update(phase_id, state="approved")`. Approval
    releases the phase's Manager and every agent still live under it, and stops their
@@ -290,9 +292,11 @@ from the source `watchdog`. The watchdog only reports. You decide what to do.
 ## Escalation
 
 An issue that survived round 1 (Coder and Lead) and round 2 (Manager) reaches you in
-round 3. Read its history with `issue_list()`, add ideas the layers below have not
-tried, and record each with `idea_record(issue_id, body, outcome)`. After round 3,
-decide whether to change the plan or notify the user.
+round 3: `attempt_record` sets `escalated_to` to you and resumes or wakes your
+session directly. An issue you open yourself with `issue_open` starts at round 3 too.
+Read its history with `issue_list()`, add ideas the layers below have not tried, and
+record each with `idea_record(issue_id, body, outcome)`. After round 3, decide
+whether to change the plan or notify the user.
 
 ## Overrides
 

@@ -151,9 +151,11 @@ The ledger enforces this order and refuses any other.
 1. `score_record(caller, file_id, ratings, applicable, kind="lead")` **before**
    `review_compare`. Score blind: read the file, its tests, and the brief, and rate
    every criterion of every applicable dimension from 1 to 10. A rating below 9 needs
-   a reason and a file-and-line reference. Mark a dimension not applicable with a
-   one-line reason instead of rating it, for example accessibility on a back-end
-   file. Once `review_compare` has run for this handoff, blind scoring is closed.
+   a reason and a file-and-line reference; `score_record` refuses without both. Mark
+   a dimension not applicable with a one-line reason instead of rating it, for
+   example accessibility on a back-end file. Once `review_compare` has run for this
+   handoff, blind scoring is closed. Until you score, `issue_list(file_id=...)` hides
+   the issues the Coder's self review opened for this file; they show once you score.
 2. `review_compare(handoff_id)`. It returns both score sets and the dimensions where
    they do not agree.
 3. Decide each departure the handoff carries with `departure_decide(departure_id,
@@ -168,7 +170,11 @@ The ledger enforces this order and refuses any other.
      applicable dimension. Approval releases the Coder, stops its session, and
      releases the file claim. It refuses while a change request on the file is
      open, accepted, or completed but not yet verified, and while a departure on
-     the handoff is open or pushed back.
+     the handoff is open or pushed back. `approve` also accepts a floor pass: once
+     the file's recorded attempts reach the full escalation budget (`rounds` times
+     `attempts_per_round`), every dimension at or above the rubric floor still
+     passes, with a shortfall recorded for each dimension still below target. The
+     result names them in `floor_pass_dimensions`.
    - `return_work(handoff_id, issues=[...], targeted=[...])` with the specific issues
      and the dimensions the fix should move. This counts as one fix attempt. Then
      send the wake-up its `next` field names. A pushed-back departure is a return
@@ -203,12 +209,14 @@ The Coder fixes the file and submits a new handoff, and its message wakes you. T
 2. `review_compare(handoff_id)` on the new handoff.
 3. `attempt_record(file_id)`. It classifies the attempt as improved, plateau, or
    regression from the last two lead reviews, counts the attempt against the round,
-   and restores the previous version when the fix regressed.
+   and restores the previous version when the fix regressed. When it moves an issue
+   to round 2 or 3, the result's `escalated` list names the issue, its
+   `escalated_to` agent, and the wake-up call to make as its `next`; send each one.
 4. Approve, return again, or accept as incomplete.
 
 An improving attempt does not count against the round's budget. A round ends after 3
 attempts that did not improve the score; the issue then moves to your Manager with
-its history.
+its history, and `attempt_record` already sent the wake-up.
 
 The wake-up after `return_work` says only:
 
