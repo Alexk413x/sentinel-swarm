@@ -9,10 +9,13 @@ from datetime import timedelta
 from pathlib import Path
 
 from .. import pricing, sessions
+from ..agentfiles import plugin_installed
 from ..db import ensure_git_exclude, write_tx
 from ..identity import ROLES, LedgerError
 from ..ledger import Ledger
 from ..watchdog import MONITOR_CALL, WATCH_COMMAND, parse_stamp, utcnow
+
+_CODEBASE_KG_PLUGIN = "codebase-kg@codebase-kg"
 
 _RECORDS_DIR = ".sentinel-swarm"
 _WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
@@ -110,7 +113,12 @@ def handle_session_start(ledger: Ledger, data: dict) -> dict | None:
                 "The resume skill continues it."
             )
 
-    if not (ledger.repo_root / "knowledge" / "code_graph.db").is_file():
+    if not plugin_installed(ledger.repo_root, _CODEBASE_KG_PLUGIN):
+        parts.append(
+            "codebase-kg is not installed for this repo; install it, then run "
+            "/sentinel-swarm:setup."
+        )
+    elif not (ledger.repo_root / "knowledge" / "code_graph.db").is_file():
         parts.append("knowledge/code_graph.db is missing; codebase-kg has not mapped this repo.")
 
     git_dir = ledger.repo_root / ".git"
@@ -271,6 +279,29 @@ def handle_pre_monitor(ledger: Ledger, data: dict) -> dict | None:
     return _deny(
         "a swarm role runs no Monitor of its own. The one Monitor call allowed is the "
         f"Oracle's watchdog: {MONITOR_CALL}"
+    )
+
+
+# -- 4b. PreToolUse: SendMessage ----------------------------------------------------
+
+
+def handle_pre_send_message(ledger: Ledger, data: dict) -> dict | None:
+    caller = _swarm_caller(ledger, _caller_id(data))
+    if caller is None or caller["run_id"] is None:
+        return None
+    to = str((data.get("tool_input") or {}).get("to") or "")
+    names = {
+        row["session_name"]
+        for row in ledger.conn.execute(
+            "SELECT DISTINCT session_name FROM agents WHERE run_id = ? "
+            "AND session_name IS NOT NULL",
+            (caller["run_id"],),
+        )
+    }
+    if to in names:
+        return None
+    return _deny(
+        f"SendMessage may target only a session of this run; valid session names: {sorted(names)}"
     )
 
 
@@ -720,18 +751,19 @@ def _oracle_work_block(ledger: Ledger, run: dict, oracle: dict) -> dict | None:
         "JOIN files f ON f.file_id = h.file_id "
         "JOIN modules m ON m.module_id = f.module_id "
         "JOIN phases p ON p.phase_id = m.phase_id "
-        "WHERE p.run_id = ? AND h.state = 'submitted'",
+        "WHERE p.run_id = ? AND h.state = 'submitted' AND p.paused_at IS NULL",
         (run["run_id"],),
     ).fetchone()["n"]
     live_claims = ledger.conn.execute(
         "SELECT COUNT(*) AS n FROM files f "
         "JOIN modules m ON m.module_id = f.module_id "
         "JOIN phases p ON p.phase_id = m.phase_id "
-        "WHERE p.run_id = ? AND f.released_at IS NULL",
+        "WHERE p.run_id = ? AND f.released_at IS NULL AND p.paused_at IS NULL",
         (run["run_id"],),
     ).fetchone()["n"]
     pending_phase_reviews = ledger.conn.execute(
         "SELECT COUNT(*) AS n FROM phases p WHERE p.run_id = ? AND p.state = 'handed_up' "
+        "AND p.paused_at IS NULL "
         "AND NOT EXISTS (SELECT 1 FROM reviews r WHERE r.phase_id = p.phase_id "
         "AND r.kind = 'oracle' AND r.outcome = 'accepted' AND r.created_at >= p.handed_up_at)",
         (run["run_id"],),

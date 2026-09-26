@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import __version__, agentfiles, serve, sessions
+from . import __version__, agentfiles, lock, serve, sessions
 from .agreements import AgreementsMixin
 from .db import connect, ensure_git_exclude, ledger_path, write_tx
 from .identity import ROLES, Caller, LedgerError, child_role_of, require_role, resolve
@@ -46,6 +47,15 @@ def repo_slug(repo_root: Path) -> str:
 
 def session_name_for(repo_root: Path, run_id: int, child_name: str) -> str:
     return f"{repo_slug(repo_root)}-r{run_id}-{child_name}"
+
+
+# Matches the shape session_name_for builds for any repo and run: "<slug>-r<run_id>-<name>".
+# Used to count other swarms' live sessions against parallelism_cap, without knowing their slug.
+_SWARM_SESSION_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?-r\d+-.+$")
+
+
+def looks_like_swarm_session(name: str) -> bool:
+    return bool(_SWARM_SESSION_RE.match(name))
 
 
 class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
@@ -135,6 +145,8 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
                 (prd, __version__, self.settings.snapshot()),
             )
             run_id = cur.lastrowid
+            assert run_id is not None
+            lock.acquire(self.repo_root, run_id, os.getpid())
 
             conn.execute(
                 "INSERT INTO agents "
@@ -241,9 +253,13 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
         current = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run["run_id"],)).fetchone()
         return {"run": dict(current), "oracle": self._agent_dict(session_id), "resumed": True}
 
-    def run_pause(self, caller: str, agent_id: str, reason: str) -> dict:
+    def run_pause(
+        self, caller: str, agent_id: str, reason: str, phases: list[int] | None = None
+    ) -> dict:
         if not reason.strip():
             raise LedgerError("run_pause needs a reason the user can act on")
+        if phases:
+            return self._pause_phases(caller, agent_id, reason, phases)
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
             require_role(c, "oracle")
@@ -257,6 +273,71 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
             "SELECT * FROM runs WHERE run_id = ?", (run["run_id"],)
         ).fetchone()
         return dict(run_row) | {"reason": reason}
+
+    def _pause_phases(self, caller: str, agent_id: str, reason: str, phase_ids: list[int]) -> dict:
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            require_role(c, "oracle")
+            run = self._active_run(conn)
+            rows = _rows(
+                conn.execute(
+                    "SELECT * FROM phases WHERE run_id = ? AND phase_id IN "
+                    f"({','.join('?' for _ in phase_ids)})",
+                    (run["run_id"], *phase_ids),
+                )
+            )
+            found = {row["phase_id"] for row in rows}
+            missing = [pid for pid in phase_ids if pid not in found]
+            if missing:
+                raise LedgerError(f"unknown phase_id(s) for this run: {missing}")
+            conn.execute(
+                f"UPDATE phases SET paused_at = {_NOW}, pause_reason = ? WHERE phase_id IN "
+                f"({','.join('?' for _ in phase_ids)})",
+                (reason, *phase_ids),
+            )
+
+        paused = _rows(
+            self.conn.execute(
+                "SELECT * FROM phases WHERE phase_id IN "
+                f"({','.join('?' for _ in phase_ids)}) ORDER BY ordinal",
+                phase_ids,
+            )
+        )
+        run_row = self.conn.execute(
+            "SELECT * FROM runs WHERE run_id = ?", (run["run_id"],)
+        ).fetchone()
+        return dict(run_row) | {"reason": reason, "paused_phases": paused}
+
+    def phase_resume(self, caller: str, agent_id: str, phase_ids: list[int]) -> dict:
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            require_role(c, "oracle")
+            rows = _rows(
+                conn.execute(
+                    "SELECT * FROM phases WHERE run_id = ? AND phase_id IN "
+                    f"({','.join('?' for _ in phase_ids)})",
+                    (c.run_id, *phase_ids),
+                )
+            )
+            found = {row["phase_id"] for row in rows}
+            missing = [pid for pid in phase_ids if pid not in found]
+            if missing:
+                raise LedgerError(f"unknown phase_id(s) for this run: {missing}")
+            conn.execute(
+                "UPDATE phases SET paused_at = NULL, pause_reason = NULL WHERE phase_id IN "
+                f"({','.join('?' for _ in phase_ids)})",
+                phase_ids,
+            )
+
+        return {
+            "resumed_phases": _rows(
+                self.conn.execute(
+                    "SELECT * FROM phases WHERE phase_id IN "
+                    f"({','.join('?' for _ in phase_ids)}) ORDER BY ordinal",
+                    phase_ids,
+                )
+            )
+        }
 
     def run_status(self, caller: str, agent_id: str) -> dict:
         conn = self.conn
@@ -375,6 +456,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
                 (c.agent_id,),
             )
             self._log_event(conn, c.agent_id, "working", "released", "run_finish")
+        lock.release(self.repo_root, run_id)
 
         run_row = dict(conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone())
         run_row["report_path"] = report["path"]
@@ -563,7 +645,8 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
         conn = self.conn
         c = resolve(conn, caller, agent_id)
         rows = conn.execute(
-            "SELECT * FROM phases WHERE run_id = ? AND state != 'approved' ORDER BY ordinal",
+            "SELECT * FROM phases WHERE run_id = ? AND state != 'approved' "
+            "AND paused_at IS NULL ORDER BY ordinal",
             (c.run_id,),
         ).fetchall()
 
@@ -870,6 +953,16 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
                 raise LedgerError(
                     "call repo_check first; create a branch or ask the user as its advice says"
                 )
+        if brief["phase_id"] is not None:
+            paused = self.conn.execute(
+                "SELECT pause_reason FROM phases WHERE phase_id = ? AND paused_at IS NOT NULL",
+                (brief["phase_id"],),
+            ).fetchone()
+            if paused is not None:
+                raise LedgerError(
+                    f"phase {brief['phase_id']} is paused: {paused['pause_reason']}; call "
+                    "phase_resume before spawning into it"
+                )
         spawned = self.conn.execute(
             "SELECT session_name FROM agents WHERE name = ? AND ended_at IS NULL", (child_name,)
         ).fetchone()
@@ -880,23 +973,59 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
             )
 
         session_name = session_name_for(self.repo_root, brief["run_id"], child_name)
-        if session_name in sessions.live_names(sessions.list_sessions()):
+        listing = sessions.list_sessions()
+        if session_name in sessions.live_names(listing):
             raise LedgerError(f"a running session already has the name {session_name!r}")
+
+        role = brief["child_role"]
         cap = self.settings.parallelism_cap
         if cap is not None:
-            live = self.conn.execute(
+            own_names = {
+                row["session_name"]
+                for row in self.conn.execute(
+                    "SELECT session_name FROM agents WHERE run_id = ? AND ended_at IS NULL "
+                    "AND session_name IS NOT NULL",
+                    (brief["run_id"],),
+                )
+            }
+            own_live = self.conn.execute(
                 "SELECT COUNT(*) AS n FROM agents WHERE run_id = ? AND ended_at IS NULL",
                 (brief["run_id"],),
             ).fetchone()["n"]
+            other_swarms = sum(
+                1
+                for entry in listing
+                if sessions.is_running(entry)
+                and str(entry.get("name") or "") not in own_names
+                and looks_like_swarm_session(str(entry.get("name") or ""))
+            )
+            live = own_live + other_swarms
             if live >= cap:
                 raise LedgerError(
-                    f"the parallelism cap of {cap} is reached ({live} live sessions); call "
-                    "agent_spawn again after a release frees a slot"
+                    f"the parallelism cap of {cap} is reached ({live} live sessions, "
+                    f"{other_swarms} from other swarms on this machine); call agent_spawn again "
+                    "after a release frees a slot"
+                )
+        role_cap = self.settings.role_parallelism_cap.get(role)
+        if role_cap is not None:
+            live_role = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM agents WHERE run_id = ? AND role = ? "
+                "AND ended_at IS NULL",
+                (brief["run_id"], role),
+            ).fetchone()["n"]
+            if live_role >= role_cap:
+                raise LedgerError(
+                    f"the {role} parallelism cap of {role_cap} is reached ({live_role} live "
+                    f"{role} sessions); call agent_spawn again after a release frees a slot"
                 )
 
-        role = brief["child_role"]
         options = agentfiles.session_options(
-            self.repo_root, role, brief["model"], serve.server_url(self.repo_root)
+            self.repo_root,
+            role,
+            brief["model"],
+            serve.server_url(self.repo_root),
+            effort=self.settings.effort.get(role),
+            prompt_cache_ttl=self.settings.prompt_cache_ttl.get(role),
         )
         prompt = f"You are {child_name}. Read your brief from the swarm ledger and follow it."
         bg_id, session_id = sessions.spawn(prompt, session_name, options, cwd=self.repo_root)

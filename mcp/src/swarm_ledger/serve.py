@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import sessions, shared
+from . import lock, sessions, shared
 from .db import ledger_path
 from .identity import LedgerError
 
@@ -201,13 +201,14 @@ def write_server_info(path: Path, info: dict[str, Any]) -> None:
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
-def _shut_down(path: Path) -> None:
+def _shut_down(path: Path, repo_root: Path) -> None:
     shared.stop_all()
     _remove_if_ours(path)
+    lock.release_owned(repo_root, os.getpid())
 
 
-def _exit_now(path: Path) -> None:
-    _shut_down(path)
+def _exit_now(path: Path, repo_root: Path) -> None:
+    _shut_down(path, repo_root)
     # os._exit, not sys.exit: this runs on a timer thread, and uvicorn owns the main thread.
     os._exit(0)
 
@@ -231,17 +232,19 @@ def stop_finished_oracle(session_id: str | None, wait_s: float = ORACLE_TURN_WAI
         time.sleep(_POLL_S)
 
 
-def _finish(path: Path, oracle_session_id: str | None) -> None:
+def _finish(path: Path, repo_root: Path, oracle_session_id: str | None) -> None:
     try:
         print(stop_finished_oracle(oracle_session_id), file=sys.stderr, flush=True)
     except Exception as exc:
         print(f"Oracle session not stopped: {exc}", file=sys.stderr, flush=True)
     finally:
-        _exit_now(path)
+        _exit_now(path, repo_root)
 
 
-def finish_later(path: Path, oracle_session_id: str | None, delay: float = EXIT_DELAY_S) -> None:
-    timer = threading.Timer(delay, _finish, args=(path, oracle_session_id))
+def finish_later(
+    path: Path, repo_root: Path, oracle_session_id: str | None, delay: float = EXIT_DELAY_S
+) -> None:
+    timer = threading.Timer(delay, _finish, args=(path, repo_root, oracle_session_id))
     timer.daemon = True
     timer.start()
 
@@ -271,7 +274,7 @@ def serve(repo_root: Path) -> None:
         return JSONResponse({"name": "swarm-ledger", "repo_root": str(root), "pid": os.getpid()})
 
     server.configure(root)
-    server.on_run_finish = lambda oracle_session_id: finish_later(path, oracle_session_id)
+    server.on_run_finish = lambda oracle_session_id: finish_later(path, root, oracle_session_id)
     _start_watchdog(root, path)
     shared.start_in_background(
         root,
@@ -288,7 +291,7 @@ def serve(repo_root: Path) -> None:
             sockets=[sock],
         )
     finally:
-        _shut_down(path)
+        _shut_down(path, root)
 
 
 def report_shared_down(root: Path, name: str, detail: str) -> int | None:
@@ -320,7 +323,7 @@ def _start_watchdog(root: Path, path: Path) -> None:
         root,
         connect(env.db_path_for(root)),
         load_settings(root).watchdog,
-        exit_server=lambda: _exit_now(path),
+        exit_server=lambda: _exit_now(path, root),
         activity=lambda: server.last_call_at,
     )
 

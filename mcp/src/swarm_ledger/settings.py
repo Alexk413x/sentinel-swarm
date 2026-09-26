@@ -66,6 +66,13 @@ class Settings:
     parallelism_cap: int | None = None
     # Empty means repo_check tries main, then master, then reports no base branch.
     base_branch: str | None = None
+    # Per-role --effort for agent_spawn; a role with no entry runs at its model's default.
+    effort: dict[str, str] = field(default_factory=dict)
+    # Per-role promptCacheTtl ("5m" or "1h") for agent_spawn; a role with no entry keeps the
+    # Claude Code default.
+    prompt_cache_ttl: dict[str, str] = field(default_factory=dict)
+    # Per-role cap on that role's own live sessions in the run, on top of parallelism_cap.
+    role_parallelism_cap: dict[str, int] = field(default_factory=dict)
 
     def snapshot(self) -> str:
         return json.dumps(asdict(self), sort_keys=True)
@@ -131,6 +138,14 @@ def load_settings(repo_root: Path) -> Settings:
         ),
     )
 
+    effort = {role: str(level) for role, level in (data.get("effort") or {}).items() if level}
+    prompt_cache_ttl = {
+        role: str(ttl) for role, ttl in (data.get("prompt_cache_ttl") or {}).items() if ttl
+    }
+    role_parallelism_cap = {
+        role: int(cap) for role, cap in (data.get("role_parallelism_cap") or {}).items() if cap
+    }
+
     return Settings(
         tracking=data.get("tracking") or defaults.tracking,
         runtime=runtime,
@@ -143,4 +158,7 @@ def load_settings(repo_root: Path) -> Settings:
         lint_command=data.get("lint_command") or defaults.lint_command,
         parallelism_cap=data.get("parallelism_cap") or defaults.parallelism_cap,
         base_branch=data.get("base_branch") or defaults.base_branch,
+        effort=effort,
+        prompt_cache_ttl=prompt_cache_ttl,
+        role_parallelism_cap=role_parallelism_cap,
     )

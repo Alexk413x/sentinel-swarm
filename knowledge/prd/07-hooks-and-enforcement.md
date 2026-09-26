@@ -17,6 +17,7 @@
 | `PreToolUse` | `Write\|Edit\|MultiEdit\|NotebookEdit` | `pre_write` | all |
 | `PreToolUse` | `Bash\|PowerShell` | `pre_shell` | all |
 | `PreToolUse` | `Monitor` | `pre_monitor` | all |
+| `PreToolUse` | `SendMessage` | `pre_send_message` | all |
 | `PreToolUse` | `mcp__swarm-ledger__.*` | `pre_ledger` | all |
 | `PostToolUse` | all | `post_any` | all |
 | `PostToolUse` | `Bash\|PowerShell` | `post_shell` | Coder |
@@ -49,8 +50,8 @@ Every hook command is
 
 When the registry, the install, `uv`, or the ledger hook fails, or a hook runs longer
 than 50 seconds, a gating event (`pre_agent`, `pre_write`, `pre_shell`, `pre_monitor`,
-`pre_ledger`) answers `deny` with the reason, and every event adds a `systemMessage`
-that says to run `/sentinel-swarm:setup`. The shim exits 0.
+`pre_send_message`, `pre_ledger`) answers `deny` with the reason, and every event adds
+a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 
 ## Rules every ledger hook follows
 
@@ -64,9 +65,13 @@ that says to run `/sentinel-swarm:setup`. The shim exits 0.
 ## What each hook does
 
 - `session_start`: for a swarm session, records the transcript path and sets an idle
-  agent to working. For any other session, it reports an active or paused run, reports
-  a missing `knowledge/code_graph.db`, and adds `.sentinel-swarm/` to the git excludes.
+  agent to working. For any other session, it reports an active or paused run; checks
+  the plugin registry for codebase-kg and, only once that is installed, reports a
+  missing `knowledge/code_graph.db`; and adds `.sentinel-swarm/` to the git excludes.
 - `pre_agent`: denies `Agent` to every swarm session.
+- `pre_send_message`: denies a `SendMessage` whose `to` does not name a registered
+  agent's `session_name` in the caller's own run, and lists the valid names in the
+  reason. A caller the registry does not know, or one with no run yet, passes.
 - `pre_write`: while a run is active or paused, denies anyone a write into the records
   folder. Denies a write by any role but the Coder, and a Coder's write outside its
   claimed path and test path, naming the owner. An override of rule `write` lets one
@@ -110,7 +115,7 @@ that says to run `/sentinel-swarm:setup`. The shim exits 0.
 | The Lead scores before it sees the Coder's scores | `score_record` refuses a Lead review after `review_compare` |
 | A rule gives way only to the Oracle | `override_grant`, consumed by `pre_write` and `pre_shell` |
 | Look in the graph before writing | codebase-kg's own search gate hook |
-| A message goes to an agent of the run | `message_post` |
+| A message goes to an agent of the run | `message_post`; `pre_send_message` for `SendMessage` itself |
 | Only the owner's chain escalates an issue | `issue_escalate` |
 | A finished Lead or Manager is released | `phase_update(handed_up)` refuses a live Lead; `phase_update(approved)` releases the phase; `run_finish` releases the rest |
 | A non-owner requests, the owner changes | `cr_open` routing and the write gate |

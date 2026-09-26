@@ -13,6 +13,15 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+@pytest.fixture(autouse=True)
+def _isolated_claude_config(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The machine-level run lock (lock.py) writes under CLAUDE_CONFIG_DIR; tests must never
+    # touch the real ~/.claude. A fixture that needs the real registry sets its own value.
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path_factory.mktemp("claude-config")))
+
+
 def installed_plugin(plugin_id: str, marker: str) -> Path | None:
     raw = os.environ.get("CLAUDE_CONFIG_DIR")
     config_dir = Path(raw) if raw else Path.home() / ".claude"

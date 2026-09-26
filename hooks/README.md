@@ -38,6 +38,7 @@ The per-event behavior lives in `mcp/src/swarm_ledger/hooks/events.py`, as funct
 | `PreToolUse` | `Write\|Edit\|MultiEdit\|NotebookEdit` | `pre_write` | all |
 | `PreToolUse` | `Bash\|PowerShell` | `pre_shell` | all |
 | `PreToolUse` | `Monitor` | `pre_monitor` | all |
+| `PreToolUse` | `SendMessage` | `pre_send_message` | all |
 | `PreToolUse` | `mcp__swarm-ledger__.*` | `pre_ledger` | all |
 | `PostToolUse` | all | `post_any` | all |
 | `PostToolUse` | `Bash\|PowerShell` | `post_shell` | coder |
@@ -45,8 +46,12 @@ The per-event behavior lives in `mcp/src/swarm_ledger/hooks/events.py`, as funct
 | `Stop` | all | `stop` | all |
 | `SessionEnd` | all | `session_end` | all |
 
-`pre_agent`, `pre_write`, `pre_shell`, `pre_monitor`, and `pre_ledger` are the gating
-events.
+`pre_agent`, `pre_write`, `pre_shell`, `pre_monitor`, `pre_send_message`, and `pre_ledger`
+are the gating events.
+
+`pre_send_message` denies a `SendMessage` whose `to` is not the `session_name` of a
+registered agent of the caller's own run, and names the valid session names in the
+reason. A caller the registry does not know, or one with no run yet, passes.
 
 `pre_monitor` allows exactly one `Monitor` call from a swarm session: the Oracle's
 watchdog listener, with no `ws` input and this command, compared after whitespace is

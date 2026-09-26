@@ -120,8 +120,46 @@ wake-up the caller owes, and returns a `next` field with the exact call to make.
 
 - No limit by default. `agent_spawn` starts every session the plan calls for.
 - When the user sets `parallelism_cap`, `agent_spawn` refuses at the cap, counting the
-  run's live agents, the Oracle included. The parent tries again after a release.
-  **(proposed)**
+  run's live agents, the Oracle included, plus other swarms' live sessions on the
+  machine: entries from `claude agents --json` that are running, whose name matches the
+  swarm session-name shape (`<slug>-r<run_id>-<name>`, from `looks_like_swarm_session`),
+  and that are not one of this run's own session names. The parent tries again after a
+  release. **(proposed)**
+- `role_parallelism_cap.<role>` caps that role's own live agents in the run, on top of
+  `parallelism_cap`. **(proposed)**
 - A swarm session starts only its role's MCP servers, about 300 MB of memory each.
 - With shared HTTP servers, a session starts no MCP server process: codebase-kg and the
   a11y servers run once per repo. **(proposed)**
+
+## The multi-repo lock
+
+- `run_start` takes a machine-level lock before it opens a new run, so two runs never
+  work the same repo at once, including from a second clone path or a worktree of it.
+  The lock key is the repo's resolved main checkout: `git rev-parse --git-common-dir`
+  from the repo root, its parent, resolved; falls back to the repo root itself when git
+  is unavailable. The lock file sits at
+  `<CLAUDE_CONFIG_DIR or ~/.claude>/sentinel-swarm/locks/<sha256 of that path>.json` and
+  records the run id and the ledger server's pid.
+- `run_start` refuses a new run while a live lock names a different run id and that pid
+  is still alive (`lock.pid_alive`, native on POSIX, `OpenProcess` on Windows). Resuming
+  the run that already holds the lock is unaffected; only opening a second run is
+  refused.
+- The lock clears at `run_finish`, when the ledger server that holds it shuts down for
+  any reason (`serve._shut_down` releases a lock its own pid owns), and, self-healing,
+  the next `run_start` that finds a lock whose pid is no longer alive treats it as
+  stale and takes it. **(proposed)**
+
+## Per-role settings
+
+- `effort.<role>` passes `--effort <level>` to that role's `agent_spawn`, verified
+  against the CLI's own `--effort` flag. A role with no entry runs at its model's
+  default effort.
+- `prompt_cache_ttl.<role>` sets `promptCacheTtl` in that role's session `--settings`
+  JSON, verified against the `promptCacheTtl` settings key (Claude Code accepts only
+  `"5m"` or `"1h"` and otherwise ignores the value). A role with no entry keeps Claude
+  Code's own default TTL.
+- `role_parallelism_cap.<role>`: see "Parallelism" above; a ledger-side cap, not a
+  Claude Code mechanism.
+- No CLI flag or setting controls per-session concurrency beyond what `parallelism_cap`
+  and `role_parallelism_cap` already give the ledger, so no other per-role setting was
+  added. **(proposed)**

@@ -71,6 +71,30 @@ parallelism_cap:
 
 # Left empty; repo_check then tries main, then master, then reports no base branch.
 base_branch:
+
+# Left empty for every role; agent_spawn passes --effort <level> only for a role listed here.
+# Values are Claude Code's own: low, medium, high, xhigh, max.
+effort:
+  oracle:
+  manager:
+  lead:
+  coder:
+
+# Left empty for every role; agent_spawn sets promptCacheTtl for a role listed here. Claude
+# Code accepts only "5m" or "1h" and otherwise ignores the value.
+prompt_cache_ttl:
+  oracle:
+  manager:
+  lead:
+  coder:
+
+# Left empty for every role; agent_spawn also caps that role's own live sessions in the run,
+# on top of parallelism_cap above.
+role_parallelism_cap:
+  oracle:
+  manager:
+  lead:
+  coder:
 ---
 
 # sentinel-swarm local settings

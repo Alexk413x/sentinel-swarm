@@ -119,7 +119,15 @@ def shared_servers(repo_root: Path) -> dict[str, Any]:
     return {name: {"type": "http", "url": url} for name, url in urls.items()}
 
 
-def session_options(repo_root: Path, role: str, model: str | None, ledger_url: str) -> list[str]:
+def session_options(
+    repo_root: Path,
+    role: str,
+    model: str | None,
+    ledger_url: str,
+    *,
+    effort: str | None = None,
+    prompt_cache_ttl: str | None = None,
+) -> list[str]:
     agent_file = read_agent_file(repo_root, role)
     extra = optional_servers(repo_root)
     servers = {
@@ -133,6 +141,8 @@ def session_options(repo_root: Path, role: str, model: str | None, ledger_url: s
     options = ["--agent", f"swarm-{role}"]
     if model:
         options += ["--model", model]
+    if effort:
+        options += ["--effort", effort]
     permission_mode = agent_file.get("permissionMode")
     if permission_mode:
         options += ["--permission-mode", str(permission_mode)]
@@ -141,5 +151,10 @@ def session_options(repo_root: Path, role: str, model: str | None, ledger_url: s
     if tools:
         tools += [f"mcp__{server}" for server in extra if f"mcp__{server}" not in tools]
         options += ["--allowedTools", ",".join(tools)]
-    options += ["--settings", SESSION_SETTINGS]
+    settings_json = SESSION_SETTINGS
+    if prompt_cache_ttl:
+        payload = json.loads(SESSION_SETTINGS)
+        payload["promptCacheTtl"] = prompt_cache_ttl
+        settings_json = json.dumps(payload)
+    options += ["--settings", settings_json]
     return options

@@ -70,7 +70,10 @@ or the `/sentinel-swarm:run` skill.
 | `watchdog.*` | See "Watchdog" in [08-watchdog.md](08-watchdog.md) | Watchdog timing, thresholds, and server idle exit |
 | `test_command` | empty | Must contain `{target}`, for example `python -m pytest -q -p no:cacheprovider {target}` |
 | `build_command`, `lint_command` | empty | Optional; the Coder's shell gate allows them |
-| `parallelism_cap` | empty | No limit when empty |
+| `parallelism_cap` | empty | No limit when empty; also counts other swarms' live sessions on the machine |
 | `base_branch` | empty | `repo_check` tries `main`, then `master` |
+| `effort.<role>` | empty | `--effort <level>` for that role's sessions |
+| `prompt_cache_ttl.<role>` | empty | `promptCacheTtl` (`"5m"` or `"1h"`) for that role's sessions |
+| `role_parallelism_cap.<role>` | empty | Cap on that role's own live sessions in the run |
 
 `-p no:cacheprovider` keeps parallel pytest runs from contending on `.pytest_cache`.

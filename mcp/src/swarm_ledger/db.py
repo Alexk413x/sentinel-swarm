@@ -40,6 +40,8 @@ _ADDED_COLUMNS = (
     ("runs", "repo_checked_at", "TEXT"),
     ("runs", "branch", "TEXT"),
     ("phases", "handed_up_at", "TEXT"),
+    ("phases", "paused_at", "TEXT"),
+    ("phases", "pause_reason", "TEXT"),
     ("reviews", "details_json", "TEXT"),
 )
 _ADDED_TABLES = ("wakeups", "watchdog_findings", "departure_decisions")

@@ -30,6 +30,9 @@ listing skips one pass.
   does not count, because its armed Monitor keeps it `busy`.
 - A stall is reported only when two passes in a row see it, since a run passes through
   "no session running" while one session exits and another resumes.
+- A scoped pause (`run_pause(reason, phases=[...])`) takes its phase's unlocked state
+  and submitted handoffs out of the "pending" count the stall check reads, so a run with
+  only paused phases left to do reports no stall over them. **(proposed)**
 
 ## Reporting
 
