@@ -44,7 +44,13 @@ report_results() {
 
 if [ "$mode" = results ]; then
   report_results
-  exit 0
+  echo
+  # || rc=$? instead of a bare call: set -e would otherwise stop the script here on a FAIL
+  # check, skipping the exit below that turns it into this script's own exit code.
+  rc=0
+  uv run --quiet --project "$(win "$root/mcp")" --frozen --no-dev \
+    python -m swarm_ledger.checklist --repo "$(win "$host")" || rc=$?
+  exit "$rc"
 fi
 
 # A background session cannot answer the trust prompt. Checking first also keeps the launcher
@@ -59,11 +65,23 @@ fi
 # copy runs/ and mcp/.venv into the plugin cache.
 # A fresh folder per run: an open session can hold files in an earlier copy.
 for old in "${TMPDIR:-/tmp}"/sentinel-swarm-plugin*; do rm -rf "$old" 2>/dev/null || true; done
+# Same reasoning for the dev copies this run's own install left in the plugin cache: skip
+# one a live session still has open instead of forcing the removal.
+for old in "$HOME/.claude/plugins/cache/sentinel-swarm/sentinel-swarm"/*-dev.*; do
+  rm -rf "$old" 2>/dev/null || true
+done
 plugin_dir="${TMPDIR:-/tmp}/sentinel-swarm-plugin-$(date +%s)"
 mkdir -p "$plugin_dir"
 (cd "$root" && tar cf - --exclude=.venv --exclude=__pycache__ --exclude=.pytest_cache \
   --exclude=.ruff_cache .claude-plugin .mcp.json skills hooks templates mcp) |
   (cd "$plugin_dir" && tar xf -)
+
+# Installs under its own dev version instead of the repo's pinned version, so this run's
+# install never replaces a cached copy another session still has open.
+dev_version="0.0.1-dev.$(date +%s)"
+python -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d['version']=sys.argv[2]; \
+json.dump(d, open(p, 'w'), indent=2)" \
+  "$(win "$plugin_dir/.claude-plugin/plugin.json")" "$dev_version"
 
 # Empties the folder instead of deleting it: Windows refuses to delete a folder that a shell has open.
 mkdir -p "$run_dir"

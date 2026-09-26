@@ -21,9 +21,11 @@ the file already exists, edit it in place instead of overwriting the user's valu
 
 ## 2. Fill in the commands
 
-Detect the stack and write the three commands into the frontmatter. `test_command`
-must contain `{target}`; the ledger substitutes the file, module, or phase being
-tested, and drops the placeholder for a full run.
+When the user set the plugin's `test_command` option (`${user_config.test_command}`),
+use that value verbatim for `test_command`. Otherwise detect the stack and write the
+three commands into the frontmatter. `test_command` must contain `{target}`; the
+ledger substitutes the file, module, or phase being tested, and drops the placeholder
+for a full run.
 
 | Stack | `test_command` |
 |---|---|

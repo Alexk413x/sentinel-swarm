@@ -59,7 +59,8 @@ watchdog:
   # run, and no session of the run running.
   idle_exit_minutes: 15
 
-# Left empty; the setup skill fills this in from the detected stack.
+# Left empty; the setup skill fills this in from the plugin's test_command option, set
+# at install, or else the detected stack.
 test_command:
 # Left empty; the setup skill fills this in from the detected stack.
 build_command:
