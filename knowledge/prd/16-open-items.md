@@ -22,4 +22,4 @@
 - **The Driver, live.** Built and unit-tested, never run: no host here has cartographer and a driver plugin installed yet. The first live run needs an Android app host, and must confirm the shim starts cartographer's and the driver plugins' servers.
 - **Driver stop-rule escalation.** A stop rule files a `driver` directive that stays open until the Oracle resolves it, possibly as `needs_user`. Decide whether that is enough, or whether it needs its own user notification.
 - **Repo lock after a server crash.** When a ledger server crashes and a new server resumes the same run, the lock still names the dead server's pid until the next `run_start` or `run_finish`, so a second clone could take the lock during that window.
-- **Channels.** Planned, not built. See `plans/channels-and-http.md`.
+- **Channels.** Not built: a channel cannot deliver to a `--bg` session for a plugin outside the allowlist. Retest when the development flag works in `--bg` sessions or a user setting can allowlist a plugin. See "Probe results" in `plans/channels-and-http.md`.

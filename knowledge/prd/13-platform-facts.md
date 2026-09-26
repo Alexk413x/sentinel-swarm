@@ -99,3 +99,4 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
 - A session run with `--agent` loads the user's global `CLAUDE.md`, so a persona from
   it can appear in messages to the user. (2026-09-22)
 - On Windows, Python 3.12's `shutil.which` returns an extensionless file before its `.cmd` twin. A plugin that ships a POSIX launcher beside a `.cmd`, such as codebase-kg 0.8.0's `bin/kg-shim`, then fails with WinError 193. The shim prefers the PATHEXT variants. Verified 2026-09-25.
+- A channel reaches a `--bg` session only through `--channels` with a plugin on the allowlist: Anthropic's list, or an organization's `allowedChannelPlugins` in managed settings. `--dangerously-load-development-channels` does not carry into a `--bg` session, and the debug log reads `server <name> not in --channels list for this session`. An event pushed to an unregistered channel is dropped, not queued. Verified 2026-09-25.
