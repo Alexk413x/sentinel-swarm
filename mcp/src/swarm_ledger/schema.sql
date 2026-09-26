@@ -26,7 +26,10 @@ CREATE TABLE IF NOT EXISTS phases (
     -- Set when phase_update moves the phase to handed_up. phase_review and the
     -- approved gate both measure freshness against this timestamp.
     handed_up_at TEXT,
-    ended_at TEXT
+    ended_at TEXT,
+    -- Set by run_pause(phases=[...]) for a scoped pause; NULL for a phase that keeps going.
+    paused_at TEXT,
+    pause_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS phase_deps (

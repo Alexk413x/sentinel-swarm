@@ -347,11 +347,14 @@ def _stalled(
         "JOIN modules m ON m.module_id = f.module_id "
         "JOIN phases p ON p.phase_id = m.phase_id "
         "LEFT JOIN agents coder ON coder.agent_id = h.agent_id "
-        "WHERE p.run_id = ? AND h.state = 'submitted' ORDER BY h.handoff_id",
+        "WHERE p.run_id = ? AND h.state = 'submitted' AND p.paused_at IS NULL "
+        "ORDER BY h.handoff_id",
         (run_id,),
     ).fetchall()
     unlocked = conn.execute(
-        "SELECT COUNT(*) AS n FROM phases WHERE run_id = ? AND state = 'unlocked'", (run_id,)
+        "SELECT COUNT(*) AS n FROM phases WHERE run_id = ? AND state = 'unlocked' "
+        "AND paused_at IS NULL",
+        (run_id,),
     ).fetchone()["n"]
     directives = conn.execute(
         "SELECT COUNT(*) AS n FROM directives WHERE run_id = ? AND state = 'open' "

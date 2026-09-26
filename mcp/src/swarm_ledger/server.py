@@ -28,6 +28,7 @@ _TOOL_NAMES: tuple[str, ...] = (
     "run_status",
     "run_finish",
     "run_pause",
+    "phase_resume",
     "repo_check",
     "repo_branch_create",
     "profile_set",
@@ -152,9 +153,25 @@ def run_finish(caller: str, outcome: str, agent_id: str | None = None) -> dict[s
 
 
 @mcp.tool
-def run_pause(caller: str, reason: str, agent_id: str | None = None) -> dict[str, Any]:
-    """Pauses the run on a blocker only the user can fix; the Oracle calls this."""
-    return _call(_ledger().run_pause, caller=caller, agent_id=agent_id, reason=reason)
+def run_pause(
+    caller: str,
+    reason: str,
+    phases: list[int] | None = None,
+    agent_id: str | None = None,
+) -> dict[str, Any]:
+    """Pauses the run, or just the named phases, on a blocker only the user can fix; the Oracle
+    calls this. With phases, the run stays active: agent_spawn refuses those phases until
+    phase_resume clears them, and the others keep going."""
+    return _call(
+        _ledger().run_pause, caller=caller, agent_id=agent_id, reason=reason, phases=phases
+    )
+
+
+@mcp.tool
+def phase_resume(caller: str, phase_ids: list[int], agent_id: str | None = None) -> dict[str, Any]:
+    """Clears a scoped pause from the named phases so agent_spawn can start work in them again;
+    the Oracle calls this."""
+    return _call(_ledger().phase_resume, caller=caller, agent_id=agent_id, phase_ids=phase_ids)
 
 
 # -- Repo -----------------------------------------------------------------------------

@@ -181,8 +181,16 @@ exits. See "What stops when" in [05-sessions.md](05-sessions.md).
 - When only the user can unblock the run, the Oracle calls `run_pause(reason)`. The run
   becomes `paused`, the Stop hook lets the Oracle stop, and every gate still applies.
   The Oracle tells the user once what to fix.
+- When only some phases are blocked, the Oracle calls `run_pause(reason, phases=[...])`
+  instead. The run stays `active`; only the named phases get a `paused_at` and
+  `pause_reason`. `agent_spawn` refuses a brief whose `phase_id` names a paused phase.
+  `plan_unlocked`, the Oracle's Stop hook, and the watchdog's stall check all treat a
+  paused phase's handoffs, claims, and unlocked state as waiting, not as pending work,
+  so they neither nag the Oracle nor report a stall over it. `phase_resume(phase_ids)`
+  clears the pause on named phases once the blocker is gone. **(proposed)**
 - The user's next message, or `/sentinel-swarm:resume`, leads the Oracle to call
-  `run_start`, which sets the run back to `active`.
+  `run_start`, which sets the run back to `active`. A scoped pause does not touch the
+  run's own state, so it never needs `run_start` to clear it; only `phase_resume` does.
 - `run_start` on a live run whose Oracle session is gone binds the Oracle's name to the
   calling session, moves the live children and briefs to it, and returns the run with
   `resumed: true`.

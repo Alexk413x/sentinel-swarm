@@ -28,8 +28,17 @@ def _oracle_model(repo: Path) -> str | None:
 
 def _session_options(repo: Path, role: str, model: str | None, ledger_url: str) -> list[str]:
     from .agentfiles import session_options
+    from .settings import load_settings
 
-    return session_options(repo, role, model, ledger_url)
+    settings = load_settings(repo)
+    return session_options(
+        repo,
+        role,
+        model,
+        ledger_url,
+        effort=settings.effort.get(role),
+        prompt_cache_ttl=settings.prompt_cache_ttl.get(role),
+    )
 
 
 def _claude_binary() -> str:

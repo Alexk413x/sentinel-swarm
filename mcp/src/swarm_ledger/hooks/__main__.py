@@ -12,6 +12,7 @@ _HANDLERS = {
     "pre_write": events.handle_pre_write,
     "pre_shell": events.handle_pre_shell,
     "pre_monitor": events.handle_pre_monitor,
+    "pre_send_message": events.handle_pre_send_message,
     "pre_ledger": events.handle_pre_ledger,
     "post_any": events.handle_post_any,
     "post_shell": events.handle_post_shell,

@@ -29,6 +29,7 @@ HOOK_TABLE = (
     ("PreToolUse", "Write|Edit|MultiEdit|NotebookEdit", "pre_write", ALL_ROLES),
     ("PreToolUse", "Bash|PowerShell", "pre_shell", ALL_ROLES),
     ("PreToolUse", "Monitor", "pre_monitor", ALL_ROLES),
+    ("PreToolUse", "SendMessage", "pre_send_message", ALL_ROLES),
     ("PreToolUse", "mcp__swarm-ledger__.*", "pre_ledger", ALL_ROLES),
     ("PostToolUse", None, "post_any", ALL_ROLES),
     ("PostToolUse", "Bash|PowerShell", "post_shell", frozenset({"coder"})),

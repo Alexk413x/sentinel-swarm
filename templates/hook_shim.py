@@ -15,7 +15,9 @@ from collections.abc import Mapping
 from pathlib import Path
 
 PLUGIN_ID = "sentinel-swarm@sentinel-swarm"
-GATING_EVENTS = frozenset({"pre_agent", "pre_write", "pre_shell", "pre_ledger", "pre_monitor"})
+GATING_EVENTS = frozenset(
+    {"pre_agent", "pre_write", "pre_shell", "pre_ledger", "pre_monitor", "pre_send_message"}
+)
 HOOK_TIMEOUT_SECONDS = 50
 SCOPES = ("local", "project", "user")
 USAGE = (
