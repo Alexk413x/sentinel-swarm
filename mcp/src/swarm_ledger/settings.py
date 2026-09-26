@@ -7,19 +7,22 @@ from typing import Any
 
 import yaml
 
-ROLES = ("oracle", "manager", "lead", "coder")
+ROLES = ("oracle", "manager", "lead", "coder", "driver")
 
 _DEFAULT_RUNTIME = {
     "oracle": "session",
     "manager": "session",
     "lead": "session",
     "coder": "session",
+    "driver": "session",
 }
 _DEFAULT_MODELS = {
     "oracle": ["opus", "fable"],
     "manager": ["opus"],
     "lead": ["opus", "sonnet"],
     "coder": ["sonnet", "haiku"],
+    # (proposed) The Driver runs on Sonnet by default, as cartographer's map-driver does.
+    "driver": ["sonnet", "opus"],
 }
 _SETTINGS_PATH = Path(".claude") / "sentinel-swarm.local.md"
 

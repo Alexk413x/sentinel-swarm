@@ -388,3 +388,45 @@ CREATE TABLE IF NOT EXISTS watchdog_findings (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_watchdog_findings_live
     ON watchdog_findings (run_id, agent_id, kind) WHERE cleared_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS drive_requests (
+    request_id INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL REFERENCES runs (run_id) ON DELETE RESTRICT,
+    -- driver-e<ordinal> is the exploration number in this run's session name.
+    ordinal INTEGER NOT NULL,
+    opened_by TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
+    focus TEXT NOT NULL,
+    -- The Driver session drive_request starts for this exploration; set once agent_spawn
+    -- returns, so it is NULL for the instant between the two calls.
+    agent_id TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
+    state TEXT NOT NULL DEFAULT 'open',
+    opened_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    done_at TEXT,
+    last_checkin_at TEXT,
+    last_covered TEXT,
+    last_steps TEXT,
+    last_notes TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_drive_requests_open
+    ON drive_requests (run_id) WHERE state = 'open';
+
+CREATE TABLE IF NOT EXISTS drive_findings (
+    finding_id INTEGER PRIMARY KEY,
+    request_id INTEGER NOT NULL REFERENCES drive_requests (request_id) ON DELETE RESTRICT,
+    run_id INTEGER NOT NULL REFERENCES runs (run_id) ON DELETE RESTRICT,
+    -- The check, the location, and what it saw: matches an issue across explorations.
+    fingerprint TEXT NOT NULL,
+    title TEXT NOT NULL,
+    steps TEXT,
+    expected TEXT,
+    actual TEXT,
+    severity TEXT NOT NULL,
+    area TEXT,
+    -- Paths into cartographer's run folder, knowledge/cartographer/runs/<run-id>/.
+    evidence_json TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_drive_findings_fingerprint
+    ON drive_findings (run_id, fingerprint);

@@ -122,7 +122,7 @@ def test_a_broken_role_file_is_reported(env, capsys: pytest.CaptureFixture[str])
 def test_missing_role_files_run_setup_first(env):
     launch.main(["--repo", str(env["repo"]), "go"])
 
-    for role in setup.ROLES:
+    for role in setup.CORE_ROLES:
         assert setup.role_file(env["repo"], role).is_file()
     assert (env["repo"] / ".sentinel-swarm" / "hook.py").is_file()
 

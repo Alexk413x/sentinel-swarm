@@ -1377,6 +1377,49 @@ class ReviewMixin:
                 lines.append(f"  - {issue}")
         lines.append("")
 
+        lines.append("## Explorations")
+        drive_requests = _rows(
+            conn.execute(
+                "SELECT * FROM drive_requests WHERE run_id = ? ORDER BY ordinal", (run_id,)
+            )
+        )
+        if not drive_requests:
+            lines.append("- No exploration ran.")
+        for req in drive_requests:
+            lines.append(
+                f"### Exploration {req['ordinal']} (request {req['request_id']}, "
+                f"{req['state']}): {req['focus']}"
+            )
+            findings = _rows(
+                conn.execute(
+                    "SELECT * FROM drive_findings WHERE request_id = ? ORDER BY finding_id",
+                    (req["request_id"],),
+                )
+            )
+            if not findings:
+                lines.append("- No finding.")
+                continue
+            later_fingerprints = {
+                row["fingerprint"]
+                for row in conn.execute(
+                    "SELECT DISTINCT df.fingerprint FROM drive_findings df "
+                    "JOIN drive_requests dr ON dr.request_id = df.request_id "
+                    "WHERE dr.run_id = ? AND dr.ordinal > ?",
+                    (run_id, req["ordinal"]),
+                )
+            }
+            for f in findings:
+                fix = (
+                    "still open in a later exploration"
+                    if f["fingerprint"] in later_fingerprints
+                    else "not seen again"
+                )
+                lines.append(
+                    f"- [{f['severity']}] {f['title']} ({f['fingerprint']}), area "
+                    f"{f['area'] or 'unknown'} -- {fix}"
+                )
+        lines.append("")
+
         lines.append("## Open items")
         for d in _rows(
             conn.execute("SELECT * FROM deferrals WHERE run_id = ? AND state = 'open'", (run_id,))

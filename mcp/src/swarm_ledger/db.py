@@ -52,7 +52,13 @@ _DIRECTIVE_SOURCE_RENAMES = (
     ("user-chat", "user_chat"),
     ("outside-session", "outside_session"),
 )
-_ADDED_TABLES = ("wakeups", "watchdog_findings", "departure_decisions")
+_ADDED_TABLES = (
+    "wakeups",
+    "watchdog_findings",
+    "departure_decisions",
+    "drive_requests",
+    "drive_findings",
+)
 
 
 def _main_git_dir(repo_root: Path) -> Path:

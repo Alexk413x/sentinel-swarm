@@ -85,6 +85,10 @@ _TOOL_NAMES: tuple[str, ...] = (
     "report_build",
     "analytics_query",
     "ledger_info",
+    "drive_request",
+    "drive_issue",
+    "drive_checkin",
+    "drive_done",
 )
 
 
@@ -900,6 +904,63 @@ def report_build(caller: str, agent_id: str | None = None) -> dict[str, Any]:
 def analytics_query(caller: str, sql: str, agent_id: str | None = None) -> dict[str, Any]:
     """Runs a single read-only SELECT against the ledger database; the Oracle calls it."""
     return _call(_ledger().analytics_query, caller=caller, agent_id=agent_id, sql=sql)
+
+
+@mcp.tool
+def drive_request(caller: str, focus: str, agent_id: str | None = None) -> dict[str, Any]:
+    """Requests an exploration and starts its Driver session; the Oracle calls this once the
+    previous exploration and every fix it spawned have finished. Refuses when the host has no
+    Driver available (cartographer and a driver plugin), while an exploration is still open,
+    or while a Manager, Lead, or Coder is still live. The result's `loop_status` reports the
+    stop-rule state computed from every exploration and finding so far."""
+    return _call(_ledger().drive_request, caller=caller, agent_id=agent_id, focus=focus)
+
+
+@mcp.tool
+def drive_issue(
+    caller: str, request_id: int, finding: dict[str, Any], agent_id: str | None = None
+) -> dict[str, Any]:
+    """Records one Driver finding against an open exploration and wakes the Oracle; the Driver
+    calls this for each finding, including a failed build. `finding` holds `fingerprint`,
+    `title`, `steps`, `expected`, `actual`, `severity` (blocker, major, or minor), `area`, and
+    `evidence` (paths into cartographer's run folder)."""
+    return _call(
+        _ledger().drive_issue,
+        caller=caller,
+        agent_id=agent_id,
+        request_id=request_id,
+        finding=finding,
+    )
+
+
+@mcp.tool
+def drive_checkin(
+    caller: str,
+    request_id: int,
+    covered: str,
+    steps: str,
+    notes: str,
+    agent_id: str | None = None,
+) -> dict[str, Any]:
+    """Records a 30-minute progress check-in for an open exploration and wakes the Oracle; the
+    Driver calls this. The watchdog does not report the Driver as stuck while its check-ins are
+    on time."""
+    return _call(
+        _ledger().drive_checkin,
+        caller=caller,
+        agent_id=agent_id,
+        request_id=request_id,
+        covered=covered,
+        steps=steps,
+        notes=notes,
+    )
+
+
+@mcp.tool
+def drive_done(caller: str, request_id: int, agent_id: str | None = None) -> dict[str, Any]:
+    """Ends an exploration; the Driver calls this. Its session is released and stopped, and any
+    newly detected stop-rule directive is filed for the Oracle."""
+    return _call(_ledger().drive_done, caller=caller, agent_id=agent_id, request_id=request_id)
 
 
 @mcp.tool

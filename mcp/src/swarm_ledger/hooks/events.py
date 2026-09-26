@@ -22,6 +22,9 @@ _WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 _READONLY_GIT = frozenset({"status", "diff", "log", "show", "ls-files", "branch"})
 _POSIX = os.name != "nt"
 _UNSTAMPED_TOOLS = frozenset({"ledger_info", "brief_get", "who_owns", "directive_submit", "events"})
+# The Driver is the one role with an Agent tool, and only for cartographer's own
+# subagents: it never runs a subagent of its own or any other plugin's.
+_DRIVER_SUBAGENTS = frozenset({"map-driver", "map-reviewer"})
 _SHELL_OPERATORS = re.compile(r"[;&|<>`\n]|\$\(")
 _LIVE_RUN = "state IN ('active', 'paused')"
 _PAUSE_HINT = "If the run is blocked on something only the user can fix, call run_pause(reason)."
@@ -143,8 +146,17 @@ def handle_session_start(ledger: Ledger, data: dict) -> dict | None:
 
 
 def handle_pre_agent(ledger: Ledger, data: dict) -> dict | None:
-    if _swarm_caller(ledger, _caller_id(data)) is None:
+    caller = _swarm_caller(ledger, _caller_id(data))
+    if caller is None:
         return None
+    if caller["role"] == "driver":
+        subagent_type = str((data.get("tool_input") or {}).get("subagent_type") or "")
+        if subagent_type in _DRIVER_SUBAGENTS:
+            return None
+        return _deny(
+            "the Driver's Agent tool is for cartographer's map-driver and map-reviewer "
+            f"subagents only, not {subagent_type!r}"
+        )
     return _deny(
         "roles start children with agent_spawn: write the brief with brief_create, "
         "then call agent_spawn(child_name)"
@@ -204,7 +216,18 @@ def handle_pre_write(ledger: Ledger, data: dict) -> dict | None:
 # -- 4. PreToolUse: Bash, PowerShell -----------------------------------------------
 
 
-def _command_allowed(ledger: Ledger, command: str) -> bool:
+def _allowed_templates(ledger: Ledger, role: str) -> list[str]:
+    if role == "driver":
+        return [t for t in (ledger.settings.build_command,) if t]
+    templates = (
+        ledger.settings.test_command,
+        ledger.settings.build_command,
+        ledger.settings.lint_command,
+    )
+    return [t for t in templates if t]
+
+
+def _command_allowed(ledger: Ledger, command: str, role: str) -> bool:
     if _SHELL_OPERATORS.search(command):
         return False
     try:
@@ -213,17 +236,11 @@ def _command_allowed(ledger: Ledger, command: str) -> bool:
         return False
     if not argv:
         return False
-    for template in (
-        ledger.settings.test_command,
-        ledger.settings.build_command,
-        ledger.settings.lint_command,
-    ):
-        if not template:
-            continue
+    for template in _allowed_templates(ledger, role):
         prefix = shlex.split(template.replace("{target}", ""), posix=_POSIX)
         if prefix and argv[: len(prefix)] == prefix:
             return True
-    return argv[0] == "git" and len(argv) > 1 and argv[1] in _READONLY_GIT
+    return role == "coder" and argv[0] == "git" and len(argv) > 1 and argv[1] in _READONLY_GIT
 
 
 def handle_pre_shell(ledger: Ledger, data: dict) -> dict | None:
@@ -241,21 +258,14 @@ def handle_pre_shell(ledger: Ledger, data: dict) -> dict | None:
             return None
         return _deny(reason)
 
-    if caller["role"] != "coder":
+    if caller["role"] not in ("coder", "driver"):
         return _deny_or_override("this role has no shell; use the ledger tools")
-    if _command_allowed(ledger, command):
+    if _command_allowed(ledger, command, caller["role"]):
         return None
 
-    allowed = [
-        t
-        for t in (
-            ledger.settings.test_command,
-            ledger.settings.build_command,
-            ledger.settings.lint_command,
-        )
-        if t
-    ]
-    allowed.append("read-only git (status, diff, log, show, ls-files, branch)")
+    allowed = list(_allowed_templates(ledger, caller["role"]))
+    if caller["role"] == "coder":
+        allowed.append("read-only git (status, diff, log, show, ls-files, branch)")
     return _deny_or_override(f"command not allowed; allowed: {'; '.join(allowed)}")
 
 

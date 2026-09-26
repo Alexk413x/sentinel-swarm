@@ -6,13 +6,18 @@ import os
 import re
 import shutil
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .agentfiles import driver_available
 from .db import _main_git_dir
 
-ROLES = ("oracle", "manager", "lead", "coder")
+CORE_ROLES = ("oracle", "manager", "lead", "coder")
+ROLES = (*CORE_ROLES, "driver")
+# A role in here is written only when its check passes; setup reports a skip otherwise.
+_ROLE_GATES: dict[str, Callable[[Path], bool]] = {"driver": driver_available}
 PLUGIN_ROOT = Path(__file__).resolve().parents[3]
 TEMPLATES_DIR = PLUGIN_ROOT / "templates"
 SHIM_TEMPLATE = TEMPLATES_DIR / "hook_shim.py"
@@ -164,6 +169,13 @@ def write_role_files(repo: Path, report: SetupReport) -> None:
     for role in ROLES:
         target = role_file(repo, role)
         shown = target.relative_to(repo).as_posix()
+        gate = _ROLE_GATES.get(role)
+        if gate is not None and not gate(repo):
+            report.add(
+                f"skipped {shown}: cartographer and a driver plugin (android-driver, "
+                "ios-driver, or web-driver) are not installed"
+            )
+            continue
         template = template_file(role).read_text(encoding="utf-8")
         if not target.is_file():
             _write_text(target, render_default(template))

@@ -12,10 +12,17 @@
 - `setup` writes each role file with the template's `mcpServers` and `tools` only. A
   plugin that the host's `.claude/settings.json` enables does not join a role file.
   User-level plugins, user MCP servers, and claude.ai connectors never join.
-- Only the future Driver will load the driver plugins.
+- The Driver's session additionally gets cartographer's MCP server (`cartographer`) and
+  the installed driver plugins' servers (`android-driver-kg`, `ios-driver-kg`,
+  `web-driver-kg`), through the same shim mechanism as the a11y servers
+  (`agentfiles.OPTIONAL_SERVERS` for a11y, `agentfiles.DRIVER_OPTIONAL_SERVERS` for the
+  Driver's own, joined only when `role == "driver"`). Every other role's session never
+  gets them, even when the plugins are installed. **(proposed)**
 - Tool names: `mcp__swarm-ledger__<tool>` and `mcp__codebase-kg__<tool>`.
 - Each role keeps a fixed `tools` allowlist in its agent file.
-- `cartographer` is an optional dependency for end-to-end testing outside the run.
+- `cartographer` is an optional dependency. The Driver uses it for end-to-end testing
+  inside the run, between waves; a host without it, or without a driver plugin, simply
+  has no Driver, and the run finishes on unit tests alone.
 
 ## Shared HTTP servers
 

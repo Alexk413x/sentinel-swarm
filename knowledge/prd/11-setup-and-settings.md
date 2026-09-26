@@ -4,7 +4,9 @@
 
 1. Install sentinel-swarm at project scope in the host repo. `--plugin-dir` is not
    enough, because the launcher does not resolve its agents. codebase-kg must be
-   installed too.
+   installed too. Install cartographer and a driver plugin (android-driver, ios-driver,
+   or web-driver, from the accessibility-tools marketplace) as well for a Driver;
+   without them the run finishes on unit tests alone.
 2. Trust the host folder once: run `claude` in it and accept the trust prompt.
 3. Run setup, then the launcher.
 
@@ -18,6 +20,10 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
   `swarm-coder.md` from `templates/agents/<role>.md`. For an existing file it keeps the
   user's frontmatter, adds any key the template has that the file lacks, adds every
   ledger hook the template has that the file lacks, and replaces the prompt body.
+- Writes `swarm-driver.md` the same way, but only when the host has
+  `cartographer@cartographer` installed and at least one of `android-driver`,
+  `ios-driver`, or `web-driver` from the `accessibility-tools` marketplace. Otherwise it
+  reports the file skipped and leaves it alone. **(proposed)**
 - Adds no MCP server beyond the template's. See "MCP servers per role" in
   [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
 - Writes the shim to `.sentinel-swarm/hook.py`, overwriting local edits.
@@ -94,12 +100,13 @@ Evaluated against the plugin manifest and settings reference:
   per run, with `Monitor(...)`. A plugin-level monitor would instead start the listener
   in a host repo's ordinary sessions that never run a swarm.
 - **`subagentStatusLine`.** Not built. It labels Claude Code's own Agent-tool subagent
-  mechanism. No sentinel-swarm role uses that mechanism: every role is its own Claude
-  Code session, and no role template carries the `Agent` tool. The setting would have
-  nothing to attach to.
+  mechanism. Every role is its own Claude Code session; only the Driver carries the
+  `Agent` tool, and only for cartographer's own `map-driver` and `map-reviewer`
+  subagents, which belong to cartographer's own status line, not sentinel-swarm's. The
+  setting would have nothing else to attach to.
 - **`agent` in the plugin's `settings.json`.** Not built. It replaces a session's main
   thread with one of the plugin's own agents, for every session that has the plugin
-  enabled. sentinel-swarm ships no plugin-level agents to name (the four roles are
+  enabled. sentinel-swarm ships no plugin-level agents to name (the five roles are
   templates setup writes into the host repo), and forcing a role's persona onto a
   user's ordinary session in that repo would be exactly the kind of non-swarm-session
   effect the plugin must avoid.

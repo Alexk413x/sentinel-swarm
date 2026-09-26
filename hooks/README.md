@@ -34,9 +34,9 @@ The per-event behavior lives in `mcp/src/swarm_ledger/hooks/events.py`, as funct
 | Event | Matcher | Ledger hook event | Roles |
 |---|---|---|---|
 | `SessionStart` | all | `session_start` | all |
-| `PreToolUse` | `Agent` | `pre_agent`, which denies | all |
+| `PreToolUse` | `Agent` | `pre_agent`, which denies, except a Driver's `map-driver` and `map-reviewer` calls | all |
 | `PreToolUse` | `Write\|Edit\|MultiEdit\|NotebookEdit` | `pre_write` | all |
-| `PreToolUse` | `Bash\|PowerShell` | `pre_shell` | all |
+| `PreToolUse` | `Bash\|PowerShell` | `pre_shell`, build-command only for a Driver | all |
 | `PreToolUse` | `Monitor` | `pre_monitor` | all |
 | `PreToolUse` | `SendMessage` | `pre_send_message` | all |
 | `PreToolUse` | `mcp__swarm-ledger__.*` | `pre_ledger` | all |
@@ -48,6 +48,13 @@ The per-event behavior lives in `mcp/src/swarm_ledger/hooks/events.py`, as funct
 
 `pre_agent`, `pre_write`, `pre_shell`, `pre_monitor`, `pre_send_message`, and `pre_ledger`
 are the gating events.
+
+The Driver is the one role whose `swarm-driver.md` carries `Agent` in its `tools` and
+gets a shell: `pre_agent` allows only its calls to cartographer's `map-driver` and
+`map-reviewer` subagents and denies every other `subagent_type`, and `pre_shell` allows
+only a command that starts with the profile's `build_command`. Every other role's file
+still has no `Agent` tool and no shell, so `pre_agent` and `pre_shell` deny them
+unconditionally, as before.
 
 `pre_send_message` denies a `SendMessage` whose `to` is not the `session_name` of a
 registered agent of the caller's own run, and names the valid session names in the

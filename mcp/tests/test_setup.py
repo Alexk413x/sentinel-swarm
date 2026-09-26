@@ -58,12 +58,13 @@ def _plugin(tmp_path: Path, name: str, servers: dict) -> Path:
 def test_fresh_repo_gets_every_file(repo: Path):
     report = setup.run_setup(repo)
 
-    for role in setup.ROLES:
+    for role in setup.CORE_ROLES:
         path = setup.role_file(repo, role)
         assert path.read_text(encoding="utf-8") == setup.template_file(role).read_text(
             encoding="utf-8"
         )
         assert f"wrote .claude/agents/swarm-{role}.md" in report.lines
+    assert any(line.startswith("skipped .claude/agents/swarm-driver.md") for line in report.lines)
     assert (repo / ".sentinel-swarm" / "hook.py").read_text(
         encoding="utf-8"
     ) == setup.SHIM_TEMPLATE.read_text(encoding="utf-8")
@@ -82,7 +83,9 @@ def test_setup_is_idempotent(repo: Path):
 
     after = {p: p.read_bytes() for p in repo.rglob("*") if p.is_file()}
     assert after == before
-    assert all(line.startswith("unchanged") for line in report.lines[:7])
+    assert all(
+        line.startswith("unchanged") or line.startswith("skipped") for line in report.lines[:8]
+    )
     exclude = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8").splitlines()
     assert exclude.count(".sentinel-swarm/") == 1
 
@@ -249,7 +252,7 @@ def test_enabled_project_plugins_do_not_join_new_role_files(
 
     report = setup.run_setup(repo)
 
-    for role in setup.ROLES:
+    for role in setup.CORE_ROLES:
         written = setup.role_file(repo, role).read_text(encoding="utf-8")
         template = setup.template_file(role).read_text(encoding="utf-8")
         assert written == setup.render_default(template)

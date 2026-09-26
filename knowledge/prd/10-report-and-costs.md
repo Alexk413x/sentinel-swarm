@@ -16,6 +16,9 @@ Sections **(contents proposed)**:
 - Manager and Oracle reviews.
 - Returns and fix attempts: path, fix round, who returned it, target dimensions,
   outcome, and issues.
+- Explorations: each one's ordinal, request id, state, and focus, and each finding it
+  recorded with its fingerprint, severity, area, and whether it recurred in a later
+  exploration or was not seen again. **(proposed)**
 - Open items: open deferrals, and every issue by round with its attempts and resolution.
 - Decided deferrals: who proposed each one, who decided it, and the decision and
   reason. **(proposed)**
