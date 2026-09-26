@@ -46,4 +46,4 @@ A refused call raises `LedgerError(message)`. The server returns it as a tool er
 
 ## Records folder
 
-`.sentinel-swarm/` at the main checkout root: `ledger.db`, `versions/`, `report.md`, `server.json`, `server.port`, `server.log`, and the hook shim `hook.py`. It is excluded through `.git/info/exclude`.
+`.sentinel-swarm/` at the main checkout root: `ledger.db`, `versions/`, `report.md` (the latest run's report), `report-<run_id>.md` for each run, `server.json`, `server.port`, `server.log`, and the hook shim `hook.py`. It is excluded through `.git/info/exclude`.

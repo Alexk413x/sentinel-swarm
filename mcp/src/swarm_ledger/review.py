@@ -10,7 +10,7 @@ from typing import Literal
 
 from . import graph, pricing, rubric, versions
 from .db import ledger_path, write_tx
-from .identity import Caller, LedgerError, require_role, resolve
+from .identity import ROLES, Caller, LedgerError, require_role, resolve
 from .rubric import Rating
 from .settings import Settings
 from .testing import run_tests
@@ -71,6 +71,12 @@ def _duration(start: str | None, end: str | None) -> str:
     hours, rest = divmod(seconds, 3600)
     text = f"{hours}h {rest // 60}m" if hours else f"{rest // 60}m {rest % 60}s"
     return text if finish is not None else f"{text} so far"
+
+
+def _format_ms(ms: int | None) -> str:
+    seconds = int((ms or 0) / 1000)
+    hours, rest = divmod(seconds, 3600)
+    return f"{hours}h {rest // 60}m" if hours else f"{rest // 60}m {rest % 60}s"
 
 
 def _repo_line(raw: str | None) -> str:
@@ -1189,6 +1195,15 @@ class ReviewMixin:
         lines.append(f"- Last repo_check: {_repo_line(run['repo_check_json'])}")
         lines.append("")
 
+        agents = _rows(
+            conn.execute(
+                "SELECT *, CAST((julianday(COALESCE(ended_at, strftime('%Y-%m-%dT%H:%M:%fZ', "
+                "'now'))) - julianday(started_at)) * 86400000 AS INTEGER) AS elapsed_ms "
+                "FROM agents WHERE run_id = ?",
+                (run_id,),
+            )
+        )
+
         for phase in conn.execute(
             "SELECT * FROM phases WHERE run_id = ? ORDER BY ordinal", (run_id,)
         ).fetchall():
@@ -1270,6 +1285,22 @@ class ReviewMixin:
                 )
                 if issue["resolution"]:
                     lines.append(f"    - Resolution: {issue['resolution']}")
+        lines.append("")
+
+        lines.append("## Decided deferrals")
+        for d in _rows(
+            conn.execute(
+                "SELECT d.*, f.path FROM deferrals d LEFT JOIN files f ON f.file_id = d.file_id "
+                "WHERE d.run_id = ? AND d.state IN ('agreed', 'denied') ORDER BY d.deferral_id",
+                (run_id,),
+            )
+        ):
+            where = f" on {d['path']}" if d["path"] else ""
+            lines.append(
+                f"- Deferral #{d['deferral_id']}{where}: {d['reason']} -- proposed by "
+                f"{_agent_name(conn, d['proposed_by'])}, decided by "
+                f"{_agent_name(conn, d['decided_by'])} ({d['state']}): {d['decision_reason']}"
+            )
         lines.append("")
 
         lines.append("## Departures")
@@ -1354,14 +1385,94 @@ class ReviewMixin:
             lines.append(f"- [{d['source']}] {d['body']} -> {d['outcome'] or d['state']}")
         lines.append("")
 
-        lines.append("## Agents")
-        agent_rows = conn.execute(
-            "SELECT *, CAST((julianday(COALESCE(ended_at, strftime('%Y-%m-%dT%H:%M:%fZ', "
-            "'now'))) - julianday(started_at)) * 86400000 AS INTEGER) AS elapsed_ms "
-            "FROM agents WHERE run_id = ?",
-            (run_id,),
+        lines.append("## Notifications to the user")
+        notified = _rows(
+            conn.execute(
+                "SELECT * FROM directives WHERE run_id = ? AND question IS NOT NULL "
+                "ORDER BY directive_id",
+                (run_id,),
+            )
         )
-        agents = _rows(agent_rows)
+        for d in notified:
+            lines.append(f"- Directive #{d['directive_id']} ({d['source']}): {d['question']}")
+            for reply in _rows(
+                conn.execute(
+                    "SELECT * FROM directives WHERE reply_to = ? ORDER BY directive_id",
+                    (d["directive_id"],),
+                )
+            ):
+                sender = reply["sender_name"] or reply["source"]
+                lines.append(f"  - Reply from {sender}: {reply['body']}")
+        lines.append("")
+
+        lines.append("## Final test run")
+        final_run = conn.execute(
+            "SELECT * FROM test_runs WHERE run_id = ? AND scope = 'full' "
+            "ORDER BY test_run_id DESC LIMIT 1",
+            (run_id,),
+        ).fetchone()
+        if final_run is None:
+            lines.append("- No full-suite test run is recorded.")
+        else:
+            lines.append(
+                f"- {final_run['passed']} passed, {final_run['failed']} failed, "
+                f"{final_run['skipped']} skipped, exit {final_run['exit_code']}"
+            )
+        lines.append("")
+
+        lines.append("## Measures")
+        lines.append("### Time per stage")
+        for phase in conn.execute(
+            "SELECT * FROM phases WHERE run_id = ? ORDER BY ordinal", (run_id,)
+        ).fetchall():
+            lines.append(
+                f"- Phase {phase['name']} working time: "
+                f"{_duration(self._phase_work_start(phase), phase['ended_at'])}"
+            )
+        role_ms: dict[str, int] = dict.fromkeys(ROLES, 0)
+        for a in agents:
+            if a["role"] in role_ms:
+                role_ms[a["role"]] += a["elapsed_ms"] or 0
+        for role, ms in role_ms.items():
+            lines.append(f"- {role} agent time total: {_format_ms(ms)}")
+        lines.append("")
+
+        lines.append("### Returns per file")
+        returns = _rows(
+            conn.execute(
+                "SELECT f.path, COUNT(*) AS n FROM attempts a "
+                "JOIN files f ON f.file_id = a.file_id "
+                "JOIN modules m ON m.module_id = f.module_id "
+                "JOIN phases p ON p.phase_id = m.phase_id "
+                "WHERE p.run_id = ? GROUP BY f.path ORDER BY f.path",
+                (run_id,),
+            )
+        )
+        if not returns:
+            lines.append("- No file was returned.")
+        for r in returns:
+            lines.append(f"- {r['path']}: {r['n']} return(s)")
+        lines.append("")
+
+        lines.append("### Cost per phase")
+        phase_agents: dict[int, list[dict]] = {}
+        oracle_agents: list[dict] = []
+        for a in agents:
+            if a["role"] == "oracle":
+                oracle_agents.append(a)
+            elif a["phase_id"] is not None:
+                phase_agents.setdefault(a["phase_id"], []).append(a)
+        for phase in conn.execute(
+            "SELECT * FROM phases WHERE run_id = ? ORDER BY ordinal", (run_id,)
+        ).fetchall():
+            lines.append(
+                f"- Phase {phase['name']}: "
+                f"{_money(_run_cost(phase_agents.get(phase['phase_id'], [])))}"
+            )
+        lines.append(f"- Oracle (run total): {_money(_run_cost(oracle_agents))}")
+        lines.append("")
+
+        lines.append("## Agents")
         for a in agents:
             lines.append(
                 f"- {a['name']} ({a['role']}, {a['model']}): "
@@ -1393,10 +1504,12 @@ class ReviewMixin:
         text = "\n".join(lines) + "\n"
         records_dir = ledger_path(self.repo_root).parent
         records_dir.mkdir(parents=True, exist_ok=True)
+        per_run_path = records_dir / f"report-{run_id}.md"
+        per_run_path.write_text(text, encoding="utf-8", newline="\n")
         report_path = records_dir / "report.md"
         report_path.write_text(text, encoding="utf-8", newline="\n")
 
-        return {"path": str(report_path), "text": text}
+        return {"path": str(report_path), "per_run_path": str(per_run_path), "text": text}
 
     def analytics_query(self, caller: str, agent_id: str, sql: str) -> dict:
         c = resolve(self.conn, caller, agent_id)

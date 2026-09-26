@@ -55,8 +55,8 @@
 ## Records folder
 
 `.sentinel-swarm/` at the root of the main checkout holds `ledger.db`, `versions/`,
-`report.md`, `server.json`, `server.port`, `shared-ports.json`, `server.log`, and the
-hook shim `hook.py`.
+`report.md` (the latest run's report), `report-<run_id>.md` for each run, `server.json`,
+`server.port`, `shared-ports.json`, `server.log`, and the hook shim `hook.py`.
 A worktree's `.git` file resolves to the main checkout, so every worktree shares one
 ledger. The folder is excluded through `.git/info/exclude`, never the host's
 `.gitignore`. **(proposed)** One ledger holds every run in the repo. The swarm writes

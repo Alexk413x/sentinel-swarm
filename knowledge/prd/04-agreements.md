@@ -103,13 +103,21 @@ The responsible level **(proposed)**:
 - Every override is a ledger record, and the report lists it with its reason.
   **(proposed)**
 - The Oracle must not use an override to write a project file itself. **(proposed)**
-  The Oracle's agent file has no write tool.
+  The Oracle's agent file has no write tool. `override_grant` also refuses a
+  `target_agent_name` that names the Oracle itself, so the Oracle cannot grant its own
+  session a write or shell override. **(proposed)**
+- Only the write and shell gates ever consume an override. The records-folder denial in
+  `pre_write`, the identity stamp in `pre_ledger`, and the "no role runs subagents"
+  denial in `pre_agent` are unconditional; no rule-level exception fits them, so they
+  never check for one. **(proposed)**
 
 ## Directives
 
 - `directive_submit(source, sender_name, body, reply_to)` steers the run from any input.
-  Sources: `user-chat`, `outside-session`, `skill`, and `watchdog`. It needs no
-  identity, so an ordinary session can call it.
+  Sources: `user_chat`, `outside_session`, `skill`, and `watchdog`. `directive_submit`
+  accepts the older `user-chat` and `outside-session` spellings too and normalizes
+  them; a stored row from before the rename is migrated to the new spelling. It needs
+  no identity, so an ordinary session can call it.
 - A directive does not interrupt the agents. The Oracle reads `directive_inbox()` at
   safe points and turns each directive into a plan change, a guideline change, a brief,
   or a message. It never forwards a directive's text down the tree.
@@ -121,11 +129,14 @@ The responsible level **(proposed)**:
 - A `needs_user` outcome keeps the directive open, and its resolution states the
   question for the user. While a directive waits on the user, the Oracle's Stop hook
   lets the Oracle stop, and the watchdog reports no stall. **(proposed)**
-- A directive whose `reply_to` names a waiting directive resolves the waiting one. The
-  reply reaches the Oracle through `directive_inbox()` as a new open directive. The
-  Oracle can also call `directive_resolve` again on a waiting directive, for example
-  after the user answers in the Oracle's session. `directive_submit` refuses a
-  `reply_to` that names no directive of the run. **(proposed)**
+- A directive whose `reply_to` names any open directive of the run resolves that
+  directive, whatever its outcome, not only a `needs_user` one. The outcome column is
+  left as it was, so a `needs_user` question stays readable on the row after the reply
+  closes it. The reply reaches the Oracle through `directive_inbox()` as a new open
+  directive. The Oracle can also call `directive_resolve` again on a waiting
+  directive, for example after the user answers in the Oracle's session.
+  `directive_submit` refuses a `reply_to` that names no directive of the run.
+  **(proposed)**
 - `run_finish` refuses while a directive is open.
 
 ## What the Oracle tells the user

@@ -59,7 +59,7 @@ open any row, watch it, and type into it. `claude agents` lists the same session
 ## Steer a live run
 
 An ordinary session can send the Oracle a directive through the ledger's
-`directive_submit`, with `source="skill"` or `source="outside-session"` and the
+`directive_submit`, with `source="skill"` or `source="outside_session"` and the
 sender's name. A directive steers the plan, a future phase, or the guidelines. It
 does not interrupt the agents; the Oracle applies it at its next safe point.
 

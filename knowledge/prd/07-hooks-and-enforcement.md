@@ -66,11 +66,14 @@ that says to run `/sentinel-swarm:setup`. The shim exits 0.
 - `session_start`: for a swarm session, records the transcript path and sets an idle
   agent to working. For any other session, it reports an active or paused run, reports
   a missing `knowledge/code_graph.db`, and adds `.sentinel-swarm/` to the git excludes.
-- `pre_agent`: denies `Agent` to every swarm session.
+- `pre_agent`: denies `Agent` to every swarm session, unconditionally. No override rule
+  covers it: the rule that no role runs subagents has no legitimate exception, so
+  `pre_agent` never calls `override_consume`. **(proposed)**
 - `pre_write`: while a run is active or paused, denies anyone a write into the records
-  folder. Denies a write by any role but the Coder, and a Coder's write outside its
-  claimed path and test path, naming the owner. An override of rule `write` lets one
-  write through.
+  folder, unconditionally; the records folder is the ledger's own state, so no
+  override rule covers it either. **(proposed)** Denies a write by any role but the
+  Coder, and a Coder's write outside its claimed path and test path, naming the owner;
+  an override of rule `write` lets one of these two writes through.
 - `pre_shell`: while a run is active or paused, denies the shell to every role but the
   Coder. A Coder may run a command that starts with the profile's test, build, or lint
   command, or read-only git (`status`, `diff`, `log`, `show`, `ls-files`, `branch`). A
@@ -79,8 +82,10 @@ that says to run `/sentinel-swarm:setup`. The shim exits 0.
 - `pre_monitor`: allows exactly one `Monitor` call from a swarm session, the Oracle's
   watchdog call. It denies every other one and names the allowed call. A session not
   yet in the ledger counts as a swarm session when its `agent_type` is `swarm-<role>`.
+  No override rule covers it.
 - `pre_ledger`: stamps `agent_id`, and denies `override_grant` to anyone but the
-  Oracle.
+  Oracle. The identity stamp itself takes no override: faking `agent_id` is what the
+  stamp exists to prevent. **(proposed)**
 - `post_any`: writes the heartbeat and current activity, sets an idle agent to working,
   records the transcript path, records the watchdog arm time, clears owed wake-ups on a
   `SendMessage`, and after a Coder's write marks its file stale, so the handoff needs a
@@ -109,6 +114,7 @@ that says to run `/sentinel-swarm:setup`. The shim exits 0.
 | No approval without a handoff and two sets of scores | `approve` |
 | The Lead scores before it sees the Coder's scores | `score_record` refuses a Lead review after `review_compare` |
 | A rule gives way only to the Oracle | `override_grant`, consumed by `pre_write` and `pre_shell` |
+| The Oracle never grants itself a write or shell override | `override_grant` refuses a `target_agent_name` that names the Oracle |
 | Look in the graph before writing | codebase-kg's own search gate hook |
 | A message goes to an agent of the run | `message_post` |
 | Only the owner's chain escalates an issue | `issue_escalate` |
