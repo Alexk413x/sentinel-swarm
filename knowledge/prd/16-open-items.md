@@ -18,6 +18,7 @@
   reconnect. The server side is proven: a stateless server accepts a client from before
   its restart. Probe it by killing a shared server under a live background session and
   calling one of its tools after the supervisor restarts it.
+- **a11y sharing.** The ledger shares the a11y servers because a11y has no relay of its own yet. When a11y ships one, as codebase-kg 0.8.0 did, remove a11y from `shared.planned_servers` and let a11y share itself.
 - **The Driver role.** Planned, not built. See `plans/driver-agent.md`.
 - **Directive source names.** The directive sources `user-chat` and `outside-session`
   use hyphens, against the snake_case rule for ledger enum values. Renaming them
