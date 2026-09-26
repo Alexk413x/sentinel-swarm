@@ -183,11 +183,18 @@ def _accept_module_and_phase(ledger: Ledger, ctx: dict) -> None:
     ledger.agent_release("manager-1", ctx["manager"]["agent_id"], ctx["lead"]["agent_id"])
     _insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
     ledger.module_review(
-        "manager-1", ctx["manager"]["agent_id"], ctx["module_id"], "accepted", "looks good"
+        "manager-1",
+        ctx["manager"]["agent_id"],
+        ctx["module_id"],
+        "accepted",
+        "looks good",
+        scores=_review_scores(),
     )
     ledger.phase_update("manager-1", ctx["manager"]["agent_id"], ctx["phase_id"], "handed_up")
     _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
-    ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ship it")
+    ledger.phase_review(
+        "oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ship it", scores=_review_scores()
+    )
 
 
 def _spawn_coder(ledger: Ledger, ctx: dict, coder_name: str, path: str, test_path: str) -> dict:
@@ -221,6 +228,7 @@ def _all_ratings(
                     "criterion": criterion_key,
                     "value": dim_value,
                     "reason": reason if dim_value < 9 else None,
+                    "ref": "pkg/good.py:1" if dim_value < 9 else None,
                 }
             )
     return ratings
@@ -228,6 +236,14 @@ def _all_ratings(
 
 def _all_applicable() -> dict[str, str | None]:
     return {dim_key: None for dim_key, _, _ in DIMENSIONS}
+
+
+def _review_scores() -> list[dict]:
+    return [
+        {"dimension": "completeness", "value": 10},
+        {"dimension": "integration", "value": 10},
+        {"dimension": "open_items", "value": 10},
+    ]
 
 
 def _file_id_for(ledger: Ledger, path: str) -> int:

@@ -113,6 +113,13 @@ The ledger enforces this order:
      handoff is `open` or `pushed_back`. It approves the handoff, approves and releases
      the file, marks pushed-back departures of the file `reworked`, releases the Coder
      and stops its session, and approves the module when no file of it is pending.
+     A file that fails the pass rule still approves as a **floor pass** when every
+     applicable dimension is at or above the rubric floor, no criterion is below the
+     criterion floor, and the file is at its last escalation round: its recorded
+     attempts have reached the full escalation budget, the `escalation` settings'
+     `rounds` times `attempts_per_round`. **(proposed)** A floor pass records a
+     shortfall for each dimension still below target and names them in the result's
+     `floor_pass_dimensions`; the report shows them.
    - `return_work(handoff_id, issues, targeted)` refuses while a departure on the
      handoff is `open`. It returns the handoff and the file, sets the Coder `idle`,
      records a fix attempt, posts the issues and target dimensions to the Coder, and
@@ -126,14 +133,15 @@ The ledger enforces this order:
 
 ## Module review
 
-`module_review(module_id, outcome, notes, disagreement_notes)` belongs to the Manager
-of the module's phase. **(proposed)**
+`module_review(module_id, outcome, notes, disagreement_notes, scores)` belongs to the
+Manager of the module's phase. **(proposed)**
 
 - `accepted` refuses unless every file of the module is `approved`, `incomplete`, or
   `superseded`; a passing test run of scope `module` for the module, or of scope
-  `phase` in the phase, exists after the module's last file decision; and
-  `disagreement_notes` holds a non-empty note, keyed by `file_id`, for each approved
-  file whose self and Lead scores disagreed.
+  `phase` in the phase, exists after the module's last file decision; `disagreement_notes`
+  holds a non-empty note, keyed by `file_id`, for each approved file whose self and
+  Lead scores disagreed; and `scores` rates completeness, integration, and open items
+  from 1 to 10, with a reason below 9. **(proposed)**
 - `accepted` also refuses while a departure in the module waits on the Lead or the
   Manager, or is pushed back and not reworked.
 - `returned` sets the module to `returned` and owes the live Lead a wake-up. When the
@@ -149,14 +157,15 @@ The Manager then posts its phase report to the Oracle.
 
 ## Phase review and approval
 
-`phase_review(phase_id, outcome, notes, low_score_notes)` belongs to the Oracle, for a
-phase in `handed_up`. **(proposed)**
+`phase_review(phase_id, outcome, notes, low_score_notes, scores)` belongs to the Oracle,
+for a phase in `handed_up`. **(proposed)**
 
 - `accepted` refuses unless the Oracle recorded a passing `tests_run(scope="full")`
   after the hand-up; no approved or incomplete file of the phase lacks a test file while
-  the code graph anchors a function or class in it; and `low_score_notes` holds a
+  the code graph anchors a function or class in it; `low_score_notes` holds a
   non-empty note, keyed by `file_id`, for each file whose latest Lead review has a
-  dimension below the target.
+  dimension below the target; and `scores` rates completeness, integration, and open
+  items from 1 to 10, with a reason below 9. **(proposed)**
 - `accepted` also refuses while a departure of the phase is neither signed off nor
   reworked.
 - `returned` sets the phase back to `working` and owes the live Manager a wake-up.

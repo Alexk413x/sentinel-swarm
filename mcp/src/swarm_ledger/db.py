@@ -41,6 +41,7 @@ _ADDED_COLUMNS = (
     ("runs", "branch", "TEXT"),
     ("phases", "handed_up_at", "TEXT"),
     ("reviews", "details_json", "TEXT"),
+    ("handoffs", "floor_pass_json", "TEXT"),
 )
 _ADDED_TABLES = ("wakeups", "watchdog_findings", "departure_decisions")
 

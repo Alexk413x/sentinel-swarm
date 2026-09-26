@@ -146,8 +146,10 @@ one. The message only points at the ledger record; the detail lives in the ledge
    with `departure_decide(departure_id, decision, reason, solution=None)`. See
    "Change requests and departures".
 6. `module_review(module_id, outcome="accepted" | "returned", notes=...,
-   disagreement_notes=...)`. `disagreement_notes` needs a non-empty note, keyed by
-   `file_id`, for every approved file whose self and Lead scores disagreed. `accepted`
+   disagreement_notes=..., scores=...)`. `disagreement_notes` needs a non-empty note,
+   keyed by `file_id`, for every approved file whose self and Lead scores disagreed.
+   An `accepted` outcome needs `scores`: one rating from 1 to 10 for each of
+   completeness, integration, and open items, with a reason below 9. `accepted`
    refuses without every file approved or incomplete, a passing test run recorded
    in step 4, and a decision of yours on every departure in the module.
 7. When `module_review` returned the module, send the wake-up its `next` field names.
@@ -175,13 +177,15 @@ one. The message only points at the ledger record; the detail lives in the ledge
 
 ## Escalation
 
-An issue you find starts at round 2. An issue that reaches you after round 1 between
-a Coder and its Lead continues at round 2. Your resources are your other Leads and
-Coders, a new Lead, a fresh Coder, a stronger model for the Coder from its approved
-list, and a structural change such as a split file or a changed contract. Record each
-idea with `idea_record(issue_id, body, outcome)`. A round ends after 3 attempts that
-did not improve the score; `issue_escalate(issue_id)` moves the issue to the Oracle
-with its history.
+An issue you open yourself with `issue_open` starts at round 2. An issue that reaches
+you after round 1 between a Coder and its Lead continues at round 2: `attempt_record`
+sets `escalated_to` to you and resumes or wakes your session directly, so you do not
+need to poll for it. Your resources are your other Leads and Coders, a new Lead, a
+fresh Coder, a stronger model for the Coder from its approved list, and a structural
+change such as a split file or a changed contract. Record each idea with
+`idea_record(issue_id, body, outcome)`. A round ends after 3 attempts that did not
+improve the score; `issue_escalate(issue_id)` moves the issue to the Oracle with its
+history and returns the wake-up to send as `next`.
 
 ## Deferrals and scope changes
 

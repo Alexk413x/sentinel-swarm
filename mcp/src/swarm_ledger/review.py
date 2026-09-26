@@ -177,6 +177,8 @@ class ReviewMixin:
         self, conn: sqlite3.Connection, file_id: int, handoff_id: int
     ) -> None: ...
 
+    def _issue_chain(self, conn: sqlite3.Connection, issue: sqlite3.Row) -> list[sqlite3.Row]: ...
+
     # -- Shared helpers ---------------------------------------------------
 
     def _thresholds(self) -> rubric.Thresholds:
@@ -198,6 +200,17 @@ class ReviewMixin:
 
     def _scores_for(self, review_id: int) -> dict[str, float]:
         return rubric.dimension_scores(self._ratings_for(review_id))
+
+    def _file_at_last_round(self, file_id: int) -> bool:
+        # attempts.round is a per-file return counter, unlike the per-issue issues.round,
+        # so a dimension with no open issue still needs a file-level measure: the full
+        # escalation budget, rounds * attempts_per_round.
+        escalation = self.settings.escalation
+        budget = escalation.rounds * escalation.attempts_per_round
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM attempts WHERE file_id = ?", (file_id,)
+        ).fetchone()
+        return row is not None and row["n"] >= budget
 
     def _release_agent(self, conn: sqlite3.Connection, target_agent_id: str, reason: str) -> None:
         row = conn.execute("SELECT * FROM agents WHERE agent_id = ?", (target_agent_id,)).fetchone()
@@ -682,11 +695,21 @@ class ReviewMixin:
         if lead_review is None:
             raise LedgerError("no lead review exists for this handoff")
         lead_scores = self._scores_for(lead_review["review_id"])
-        ok, reasons = rubric.passes(
-            lead_scores, self._ratings_for(lead_review["review_id"]), self._thresholds()
-        )
+        ratings = self._ratings_for(lead_review["review_id"])
+        t = self._thresholds()
+        ok, reasons = rubric.passes(lead_scores, ratings, t)
+        floor_dimensions: list[str] = []
         if not ok:
-            raise LedgerError(f"the lead review does not pass: {'; '.join(reasons)}")
+            at_or_above_floor = all(score >= t.floor for score in lead_scores.values())
+            no_criterion_below_floor = all(r.value >= t.criterion_floor for r in ratings)
+            if (
+                at_or_above_floor
+                and no_criterion_below_floor
+                and self._file_at_last_round(file_row["file_id"])
+            ):
+                floor_dimensions = sorted(d for d, score in lead_scores.items() if score < t.target)
+            else:
+                raise LedgerError(f"the lead review does not pass: {'; '.join(reasons)}")
 
         open_issue = self.conn.execute(
             "SELECT 1 FROM issues WHERE file_id = ? AND state = 'open' LIMIT 1",
@@ -700,13 +723,30 @@ class ReviewMixin:
         with self._release_tx() as conn:
             conn.execute(
                 f"UPDATE handoffs SET state = 'approved', decided_notes = ?, "
-                f"decided_at = {_NOW}, decided_by = ? WHERE handoff_id = ?",
-                (notes, c.agent_id, handoff_id),
+                f"decided_at = {_NOW}, decided_by = ?, floor_pass_json = ? WHERE handoff_id = ?",
+                (
+                    notes,
+                    c.agent_id,
+                    json.dumps(floor_dimensions) if floor_dimensions else None,
+                    handoff_id,
+                ),
             )
             conn.execute(
                 f"UPDATE files SET state = 'approved', released_at = {_NOW} WHERE file_id = ?",
                 (file_row["file_id"],),
             )
+            for dimension in floor_dimensions:
+                conn.execute(
+                    "INSERT INTO departures (run_id, agent_id, file_id, kind, state, body) "
+                    "VALUES (?, ?, ?, 'shortfall', 'recorded', ?)",
+                    (
+                        c.run_id,
+                        c.agent_id,
+                        file_row["file_id"],
+                        f"Floor pass: {dimension} scored {lead_scores[dimension]} (target "
+                        f"{t.target}, floor {t.floor}) after the file's last escalation round.",
+                    ),
+                )
             self._mark_departures_reworked(conn, file_row["file_id"], handoff_id)
             self._release_agent(conn, handoff_row["agent_id"], "approve")
             pending = conn.execute(
@@ -720,11 +760,14 @@ class ReviewMixin:
                     (file_row["module_id"],),
                 )
 
-        return dict(
+        result = dict(
             self.conn.execute(
                 "SELECT * FROM handoffs WHERE handoff_id = ?", (handoff_id,)
             ).fetchone()
         )
+        if floor_dimensions:
+            result["floor_pass_dimensions"] = floor_dimensions
+        return result
 
     def return_work(
         self, caller: str, agent_id: str, handoff_id: int, issues: list[str], targeted: list[str]
@@ -816,6 +859,20 @@ class ReviewMixin:
         attempt["next"] = self.next_step(wakeup)
         return attempt
 
+    def _round_advance_target(
+        self, conn: sqlite3.Connection, issue: dict, next_round: int
+    ) -> sqlite3.Row | None:
+        issue_row = conn.execute(
+            "SELECT * FROM issues WHERE issue_id = ?", (issue["issue_id"],)
+        ).fetchone()
+        if issue_row is None:
+            return None
+        chain = self._issue_chain(conn, issue_row)
+        if not chain:
+            return None
+        target_role = "manager" if next_round == 2 else "oracle"
+        return next((a for a in chain if a["role"] == target_role), chain[-1])
+
     def attempt_record(self, caller: str, agent_id: str, file_id: int) -> dict:
         c = resolve(self.conn, caller, agent_id)
         require_role(c, "lead")
@@ -862,6 +919,7 @@ class ReviewMixin:
             restore_from = handoffs[1]
 
         rounds: dict[int, int] = {}
+        escalated: list[dict] = []
         with write_tx(self.conn) as conn:
             conn.execute(
                 "UPDATE attempts SET outcome = ? WHERE attempt_id = ?",
@@ -873,15 +931,43 @@ class ReviewMixin:
                     rounds[issue["issue_id"]] = issue["round"]
                     continue
                 new_attempts = issue["attempts"] + 1
+                next_round = issue["round"] + 1
                 if (
                     new_attempts >= escalation.attempts_per_round
-                    and (issue["round"] + 1) <= escalation.rounds
+                    and next_round <= escalation.rounds
                 ):
+                    target = self._round_advance_target(conn, issue, next_round)
                     conn.execute(
-                        "UPDATE issues SET round = ?, attempts = 0 WHERE issue_id = ?",
-                        (issue["round"] + 1, issue["issue_id"]),
+                        "UPDATE issues SET round = ?, attempts = 0, escalated_to = ? "
+                        "WHERE issue_id = ?",
+                        (
+                            next_round,
+                            target["name"] if target is not None else None,
+                            issue["issue_id"],
+                        ),
                     )
-                    rounds[issue["issue_id"]] = issue["round"] + 1
+                    rounds[issue["issue_id"]] = next_round
+                    if target is not None:
+                        pointer = (
+                            f"Issue {issue['issue_id']} for {file_row['path']} moved to round "
+                            f"{next_round}; read it with issue_list."
+                        )
+                        conn.execute(
+                            "INSERT INTO messages (run_id, from_name, to_name, body) "
+                            "VALUES (?, ?, ?, ?)",
+                            (c.run_id, c.name, target["name"], pointer),
+                        )
+                        wakeup = self._owe_wakeup(
+                            conn, c, target["agent_id"], "attempt_record", pointer
+                        )
+                        escalated.append(
+                            {
+                                "issue_id": issue["issue_id"],
+                                "round": next_round,
+                                "escalated_to": target["name"],
+                                "next": self.next_step(wakeup),
+                            }
+                        )
                 else:
                     conn.execute(
                         "UPDATE issues SET attempts = ? WHERE issue_id = ?",
@@ -926,7 +1012,7 @@ class ReviewMixin:
                         f"version_id={restore_from['version_id']}",
                     )
 
-        return {"outcome": outcome, "rounds": rounds}
+        return {"outcome": outcome, "rounds": rounds, "escalated": escalated}
 
     def accept_incomplete(self, caller: str, agent_id: str, handoff_id: int, reason: str) -> dict:
         c = resolve(self.conn, caller, agent_id)
@@ -1215,7 +1301,20 @@ class ReviewMixin:
                         if lead_review is not None
                         else {}
                     )
-                    lines.append(f"- {file_row['path']} -- {file_row['state']} -- {scores}")
+                    floor_note = ""
+                    approved_handoff = conn.execute(
+                        "SELECT floor_pass_json FROM handoffs WHERE file_id = ? "
+                        "AND state = 'approved' ORDER BY handoff_id DESC LIMIT 1",
+                        (file_row["file_id"],),
+                    ).fetchone()
+                    if approved_handoff is not None and approved_handoff["floor_pass_json"]:
+                        dims = ", ".join(json.loads(approved_handoff["floor_pass_json"]))
+                        floor_note = (
+                            f" -- floor pass: {dims} below target but at or above the floor"
+                        )
+                    lines.append(
+                        f"- {file_row['path']} -- {file_row['state']} -- {scores}{floor_note}"
+                    )
             lines.append("")
 
         lines.append("## Manager and Oracle reviews")
@@ -1230,6 +1329,15 @@ class ReviewMixin:
                 f"module {r['module_id']}" if r["kind"] == "manager" else f"phase {r['phase_id']}"
             )
             lines.append(f"- [{r['kind']}] {scope} ({r['outcome']}): {r['notes']}")
+            details = json.loads(r["details_json"] or "{}")
+            review_scores = details.get("review_scores") or []
+            if review_scores:
+                parts = ", ".join(
+                    f"{s['dimension']}={s['value']}"
+                    + (f" ({s['reason']})" if s.get("reason") else "")
+                    for s in review_scores
+                )
+                lines.append(f"  - Scores: {parts}")
         lines.append("")
 
         lines.append("## Returns and fix attempts")

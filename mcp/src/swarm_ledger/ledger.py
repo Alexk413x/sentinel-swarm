@@ -21,6 +21,7 @@ _RESUME_POINTER = "Re-read your brief and your inbox in the ledger."
 _PHASE_STATES = ("planned", "unlocked", "working", "handed_up", "approved")
 _DIRECTIVE_SOURCES = ("user-chat", "outside-session", "skill", "watchdog")
 _DIRECTIVE_OUTCOMES = ("applied", "scheduled", "declined", "needs_user")
+_ISSUE_OPEN_ROUND = {"manager": 2, "oracle": 3}
 _LIVE_RUN = "state IN ('active', 'paused')"
 _TOKEN_COLUMNS = (
     "input_tokens",
@@ -1335,10 +1336,11 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
     def issue_open(self, caller: str, agent_id: str, file_id: int, title: str, body: str) -> dict:
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
+            round_ = _ISSUE_OPEN_ROUND.get(c.role, 1)
             cur = conn.execute(
-                "INSERT INTO issues (run_id, file_id, opened_by_agent_id, title, body, state) "
-                "VALUES (?, ?, ?, ?, ?, 'open')",
-                (c.run_id, file_id, c.agent_id, title, body),
+                "INSERT INTO issues (run_id, file_id, opened_by_agent_id, title, body, state, "
+                "round) VALUES (?, ?, ?, ?, ?, 'open', ?)",
+                (c.run_id, file_id, c.agent_id, title, body, round_),
             )
             issue_id = cur.lastrowid
 
@@ -1349,15 +1351,56 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
     def issue_list(self, caller: str, agent_id: str, file_id: int | None = None) -> list[dict]:
         c = resolve(self.conn, caller, agent_id)
         if file_id is not None:
-            rows = self.conn.execute(
-                "SELECT * FROM issues WHERE run_id = ? AND file_id = ? ORDER BY issue_id",
-                (c.run_id, file_id),
+            rows = _rows(
+                self.conn.execute(
+                    "SELECT * FROM issues WHERE run_id = ? AND file_id = ? ORDER BY issue_id",
+                    (c.run_id, file_id),
+                )
             )
         else:
-            rows = self.conn.execute(
-                "SELECT * FROM issues WHERE run_id = ? ORDER BY issue_id", (c.run_id,)
+            rows = _rows(
+                self.conn.execute(
+                    "SELECT * FROM issues WHERE run_id = ? ORDER BY issue_id", (c.run_id,)
+                )
             )
-        return _rows(rows)
+        if c.role != "lead":
+            return rows
+        return [row for row in rows if not self._hidden_from_lead(c, row)]
+
+    def _lead_scored_current_handoff(self, file_id: int) -> bool:
+        handoff = self.conn.execute(
+            "SELECT created_at FROM handoffs WHERE file_id = ? ORDER BY handoff_id DESC LIMIT 1",
+            (file_id,),
+        ).fetchone()
+        since = handoff["created_at"] if handoff is not None else None
+        row = self.conn.execute(
+            "SELECT 1 FROM reviews WHERE file_id = ? AND kind = 'lead' "
+            "AND (? IS NULL OR created_at >= ?) LIMIT 1",
+            (file_id, since, since),
+        ).fetchone()
+        return row is not None
+
+    def _opened_by_self_review(self, row: dict) -> bool:
+        if row["dimension"] is None or row["criterion"] is None:
+            return False
+        opener = self.conn.execute(
+            "SELECT role FROM agents WHERE agent_id = ?", (row["opened_by_agent_id"],)
+        ).fetchone()
+        return opener is not None and opener["role"] == "coder"
+
+    def _hidden_from_lead(self, c: Caller, row: dict) -> bool:
+        # A Lead scores blind: a self-review issue is hidden from that Lead's own view of
+        # its own module's file until the Lead records its own score for the handoff.
+        if row["file_id"] is None:
+            return False
+        file_row = self.conn.execute(
+            "SELECT module_id FROM files WHERE file_id = ?", (row["file_id"],)
+        ).fetchone()
+        if file_row is None or file_row["module_id"] != c.module_id:
+            return False
+        if self._lead_scored_current_handoff(row["file_id"]):
+            return False
+        return self._opened_by_self_review(row)
 
     def idea_record(
         self, caller: str, agent_id: str, issue_id: int, body: str, outcome: str
@@ -1399,6 +1442,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
         return chain
 
     def issue_escalate(self, caller: str, agent_id: str, issue_id: int) -> dict:
+        wakeup = None
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
             row = conn.execute("SELECT * FROM issues WHERE issue_id = ?", (issue_id,)).fetchone()
@@ -1419,20 +1463,21 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin):
                 "UPDATE issues SET round = ?, attempts = 0, escalated_to = ? WHERE issue_id = ?",
                 (next_round, target["name"], issue_id),
             )
+            pointer = (
+                f"Issue {issue_id} is escalated to you for round {next_round}. "
+                "Read it with issue_list."
+            )
             conn.execute(
                 "INSERT INTO messages (run_id, from_name, to_name, body) VALUES (?, ?, ?, ?)",
-                (
-                    row["run_id"],
-                    c.name,
-                    target["name"],
-                    f"Issue {issue_id} is escalated to you for round {next_round}. "
-                    "Read it with issue_list.",
-                ),
+                (row["run_id"], c.name, target["name"], pointer),
             )
+            wakeup = self._owe_wakeup(conn, c, target["agent_id"], "issue_escalate", pointer)
 
-        return dict(
+        result = dict(
             self.conn.execute("SELECT * FROM issues WHERE issue_id = ?", (issue_id,)).fetchone()
         )
+        result["next"] = self.next_step(wakeup)
+        return result
 
     # -- Hook support ---------------------------------------------------------
 

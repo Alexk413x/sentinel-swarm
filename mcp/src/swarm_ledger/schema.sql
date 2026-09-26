@@ -264,6 +264,9 @@ CREATE TABLE IF NOT EXISTS handoffs (
     state TEXT NOT NULL,
     compared_at TEXT,
     decided_notes TEXT,
+    -- Dimensions approve() accepted below target but at or above the floor, once the
+    -- file's last escalation round ran out. NULL when approval was a full pass.
+    floor_pass_json TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     decided_at TEXT,
     decided_by TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT

@@ -83,17 +83,32 @@ def _insert_passing_test_run(ledger: Ledger, run_id: int, agent_id: str, scope: 
         )
 
 
+def _review_scores() -> list[dict]:
+    return [
+        {"dimension": "completeness", "value": 10},
+        {"dimension": "integration", "value": 10},
+        {"dimension": "open_items", "value": 10},
+    ]
+
+
 def _accept_module(ledger: Ledger, ctx: dict) -> dict:
     _insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
     return ledger.module_review(
-        "manager-1", ctx["manager"]["agent_id"], ctx["module_id"], "accepted", "looks good"
+        "manager-1",
+        ctx["manager"]["agent_id"],
+        ctx["module_id"],
+        "accepted",
+        "looks good",
+        scores=_review_scores(),
     )
 
 
 def _hand_up_and_accept_phase(ledger: Ledger, ctx: dict) -> dict:
     ledger.phase_update("manager-1", ctx["manager"]["agent_id"], ctx["phase_id"], "handed_up")
     _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
-    return ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ship it")
+    return ledger.phase_review(
+        "oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ship it", scores=_review_scores()
+    )
 
 
 # -- settings -----------------------------------------------------------------
@@ -339,7 +354,14 @@ def test_phase_deps_and_plan_unlocked(ledger: Ledger) -> None:
     # through handed_up and an accepted phase_review before it can be approved.
     ledger.phase_update("oracle", oracle_id, phase_1["phase_id"], "handed_up")
     _insert_passing_test_run(ledger, run_id, oracle_id, "full")
-    ledger.phase_review("oracle", oracle_id, phase_1["phase_id"], "accepted", "nothing to build")
+    ledger.phase_review(
+        "oracle",
+        oracle_id,
+        phase_1["phase_id"],
+        "accepted",
+        "nothing to build",
+        scores=_review_scores(),
+    )
     ledger.phase_update("oracle", oracle_id, phase_1["phase_id"], "approved")
 
     unlocked_after = {p["phase_id"] for p in ledger.plan_unlocked("oracle", oracle_id)}
