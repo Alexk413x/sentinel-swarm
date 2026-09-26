@@ -67,7 +67,9 @@
 - A name is unique among the live agents of a run. It is the address in the ledger, and
   the agent passes it as `caller` on every ledger call. **(proposed)**
 - A session name is unique on the machine and is the address for `SendMessage`. A
-  child's session name is `<repo slug>-r<run_id>-<name>`. The Oracle's session name is
+  child's session name is `<repo slug>-r<run_id>-<MMDDHHMM>-<name>`, with the run's UTC
+  start time, because a stale session keeps its old name and a rebuilt host restarts at
+  run 1. **(proposed)** The Oracle's session name is
   `<repo slug>-oracle-<MMDD-HHMMSS>`, from its launch time.
 
 ### Models

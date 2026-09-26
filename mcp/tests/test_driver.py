@@ -13,7 +13,7 @@ from swarm_ledger.db import connect, write_tx
 from swarm_ledger.drive import STOP_ATTEMPTS_IN_A_ROW, STOP_ATTEMPTS_TOTAL, compute_loop_status
 from swarm_ledger.hooks import events
 from swarm_ledger.identity import LedgerError, child_roles_of
-from swarm_ledger.ledger import Ledger, repo_slug, session_name_for
+from swarm_ledger.ledger import Ledger, repo_slug
 from swarm_ledger.watchdog import DRIVER_CHECKIN_GRACE, DRIVER_CHECKIN_INTERVAL, scan, utcnow
 
 # -- Shared fixtures ------------------------------------------------------------------------
@@ -327,13 +327,14 @@ def test_drive_request_spawns_the_driver_session(ledger: Ledger, claude: FakeCla
     assert result["driver"]["role"] == "driver"
     assert result["loop_status"]["stopped"] is False
 
-    expected_name = session_name_for(ledger.repo_root, ctx["run_id"], "driver-e1")
+    expected_name = ledger.session_name(ctx["run_id"], "driver-e1")
     driver_row = ledger.conn.execute(
         "SELECT * FROM agents WHERE agent_id = ?", (result["agent_id"],)
     ).fetchone()
     assert driver_row["name"] == "driver-e1"
     assert driver_row["session_name"] == expected_name
-    assert expected_name == f"{repo_slug(ledger.repo_root)}-r{ctx['run_id']}-driver-e1"
+    assert expected_name.startswith(f"{repo_slug(ledger.repo_root)}-r{ctx['run_id']}-")
+    assert expected_name.endswith("-driver-e1")
 
 
 def test_drive_request_refuses_without_a_driver_available(tmp_path: Path, repo_root: Path) -> None:

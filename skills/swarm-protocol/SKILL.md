@@ -48,7 +48,7 @@ The child's prompt starts with it: `You are <name>.` The child passes that name 
 `caller` on every ledger call and never passes `agent_id`; a hook stamps the real id.
 
 Each session also has a session name, which is unique on the machine:
-`<repo slug>-r<run id>-<name>`, and `<repo slug>-oracle-<MMDD-HHMMSS>` for the Oracle. `SendMessage`
+`<repo slug>-r<run id>-<MMDDHHMM>-<name>`, and `<repo slug>-oracle-<MMDD-HHMMSS>` for the Oracle. `SendMessage`
 addresses a session only by its session name. The ledger maps each session name to
 its agent.
 

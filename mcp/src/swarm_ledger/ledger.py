@@ -48,8 +48,15 @@ def repo_slug(repo_root: Path) -> str:
     return re.sub(r"[^a-z0-9]", "-", repo_root.resolve().name.lower())
 
 
-def session_name_for(repo_root: Path, run_id: int, child_name: str) -> str:
-    return f"{repo_slug(repo_root)}-r{run_id}-{child_name}"
+def session_name_for(repo_root: Path, run_id: int, child_name: str, stamp: str = "") -> str:
+    run = f"r{run_id}-{stamp}" if stamp else f"r{run_id}"
+    return f"{repo_slug(repo_root)}-{run}-{child_name}"
+
+
+def run_stamp(started_at: str) -> str:
+    # A stale session, local or over Remote Control, keeps its name after it ends, and a
+    # rebuilt host restarts at run 1. The run's start time keeps a new session's name unique.
+    return started_at[5:7] + started_at[8:10] + started_at[11:13] + started_at[14:16]
 
 
 # Matches the shape session_name_for builds for any repo and run: "<slug>-r<run_id>-<name>".
@@ -978,7 +985,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                 "brief_ack, or call agent_resume if that session stopped"
             )
 
-        session_name = session_name_for(self.repo_root, brief["run_id"], child_name)
+        session_name = self.session_name(brief["run_id"], child_name)
         listing = sessions.list_sessions()
         if session_name in sessions.live_names(listing):
             raise LedgerError(f"a running session already has the name {session_name!r}")
@@ -1051,6 +1058,12 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
             self._log_event(conn, session_id, None, "registered", f"agent_spawn: {session_name}")
 
         return self._agent_dict(session_id)
+
+    def session_name(self, run_id: int, child_name: str) -> str:
+        started_at = self.conn.execute(
+            "SELECT started_at FROM runs WHERE run_id = ?", (run_id,)
+        ).fetchone()["started_at"]
+        return session_name_for(self.repo_root, run_id, child_name, run_stamp(started_at))
 
     def _session_options(self, role: str, model: str | None) -> list[str]:
         return agentfiles.session_options(

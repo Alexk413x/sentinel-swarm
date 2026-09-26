@@ -10,7 +10,7 @@ import pytest
 from swarm_ledger import sessions
 from swarm_ledger.db import write_tx
 from swarm_ledger.identity import LedgerError
-from swarm_ledger.ledger import Ledger, repo_slug, session_name_for
+from swarm_ledger.ledger import Ledger, repo_slug, run_stamp, session_name_for
 
 _ORACLE_SESSION = "sess-oracle-0000"
 
@@ -323,7 +323,7 @@ def test_agent_spawn_starts_the_session_with_the_role_files_flags(
     assert args[:3] == [
         "You are lead-1. Read your brief from the swarm ledger and follow it.",
         "--name",
-        f"my-host-r{ctx.run_id}-lead-1",
+        ledger.session_name(ctx.run_id, "lead-1"),
     ]
     options = args[3:]
     assert options[:8] == [
@@ -361,7 +361,7 @@ def test_agent_spawn_registers_the_row_and_brief_ack_binds_it(
     entry = claude.listing[-1]
     assert spawned["agent_id"] == entry["sessionId"]
     assert spawned["bg_id"] == entry["id"]
-    assert spawned["session_name"] == f"my-host-r{ctx.run_id}-coder-a"
+    assert spawned["session_name"] == ledger.session_name(ctx.run_id, "coder-a")
     assert spawned["state"] == "registered"
     assert spawned["role"] == "coder"
     assert spawned["model"] == "haiku"
@@ -409,7 +409,7 @@ def test_agent_spawn_refuses_a_name_a_live_session_holds(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
     ctx = _bootstrap(ledger, claude)
-    claude.add("someone-else", f"my-host-r{ctx.run_id}-lead-2")
+    claude.add("someone-else", ledger.session_name(ctx.run_id, "lead-2"))
     ledger.brief_create(*ctx.manager, "lead-2", "lead", "sonnet", "Own it.")
     with pytest.raises(LedgerError, match="already has the name"):
         ledger.agent_spawn(*ctx.manager, "lead-2")
@@ -450,6 +450,8 @@ def test_repo_slug_lowercases_and_replaces_non_alphanumerics(tmp_path: Path) -> 
     root.mkdir()
     assert repo_slug(root) == "sentinel-swarm-v2"
     assert session_name_for(root, 7, "coder-a") == "sentinel-swarm-v2-r7-coder-a"
+    stamp = run_stamp("2026-09-26T21:39:40.123Z")
+    assert session_name_for(root, 1, "lead-1", stamp) == "sentinel-swarm-v2-r1-09262139-lead-1"
 
 
 # -- agent_resume -------------------------------------------------------------------------------
@@ -480,7 +482,7 @@ def test_agent_resume_continues_a_stopped_session_with_the_owed_pointer(
         ctx.manager[1],
         resumed["message"],
         "--name",
-        "my-host-r1-manager-1",
+        ledger.session_name(1, "manager-1"),
     ]
     assert cwd == host
     assert ledger.owed_wakeups(ctx.lead[1]) == []
@@ -509,7 +511,7 @@ def test_message_post_returns_a_send_message_to_a_running_recipient(
 ) -> None:
     ctx = _bootstrap(ledger, claude)
     posted = ledger.message_post(*ctx.lead, "manager-1", "module-1 is done")
-    session = f"my-host-r{ctx.run_id}-manager-1"
+    session = ledger.session_name(ctx.run_id, "manager-1")
     pointer = (
         f"Message {posted['message_id']} from lead-1 is waiting in the ledger; "
         "read it with message_inbox."
@@ -560,7 +562,8 @@ def test_return_work_owes_the_coder_a_wake_up(ledger: Ledger, claude: FakeClaude
         handoff_id = int(cur.lastrowid or 0)
     attempt = ledger.return_work(*ctx.lead, handoff_id, ["slow"], ["performance"])
     assert attempt["next"] == (
-        f'SendMessage(to="my-host-r{ctx.run_id}-coder-1", message="Handoff {handoff_id} '
+        f'SendMessage(to="{ledger.session_name(ctx.run_id, "coder-1")}", '
+        f'message="Handoff {handoff_id} '
         'for src/coder-1.py is returned; read its issues with message_inbox and fix them.")'
     )
     inbox = ledger.message_inbox(*coder)

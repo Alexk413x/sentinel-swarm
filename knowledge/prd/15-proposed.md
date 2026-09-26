@@ -107,3 +107,4 @@ Built on 2026-09-25, choices Alex has not reviewed:
 - The watchdog reports a Driver whose check-in is overdue (`driver_overdue`) and does not report it as stuck or spinning.
 - The swarm keeps `SendMessage`, the Monitor listener, and `agent_resume` alongside channels until a channel carries the wake-ups in a live run.
 - A role whose session never appears fails `agent_spawn` and leaves its tab open for the user to read, rather than closing it.
+- A role's session name carries the run's UTC start time, `<slug>-r<run>-<MMDDHHMM>-<name>`, because a stale Remote Control entry from an earlier smoke run kept the same name and `SendMessage` refused the ambiguous name.
