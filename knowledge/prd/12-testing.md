@@ -12,12 +12,16 @@ uv run ruff format --check
 ```
 
 `mcp/tests/test_plugin_surface.py` guards the surface contract: the role templates'
-frontmatter and hooks, the empty `hooks.json`, and the manifest fields.
+frontmatter and hooks, the empty `hooks.json`, the manifest fields, the skills'
+frontmatter, and one version across `plugin.json`, `mcp/pyproject.toml`, and the
+package.
 
 This repo maps itself in `knowledge/code_graph.db`. Run `sh .githooks/install.sh` once
 per clone. After a change to a mapped file, refresh the graph with
-`/codebase-kg:refresh`; the `pre-push` hook reports drift. When the codebase-kg tools
-are missing in a session, run `/reload-plugins`.
+`/codebase-kg:refresh`. The `pre-commit` hook reports drift in the staged change and
+never blocks. The `pre-push` hook reports drift, and blocks a push when mapped files
+the push does not touch are stale. When the codebase-kg tools are missing in a session,
+run `/reload-plugins`.
 
 ## The smoke test
 
@@ -25,21 +29,23 @@ are missing in a session, run `/reload-plugins`.
 
 - It empties `runs/hello/` (git-ignored), builds a host repo in `runs/hello/host/` with
   a README, a `pyproject.toml`, a settings file with the pytest test command, a
-  one-node code graph, and `git init -b main`. It copies the plugin to a fresh temp
-  folder, rewrites that copy's version to a dev version such as `0.0.1-dev.<epoch
-  seconds>` **(proposed)**, installs it at project scope under that version, runs
-  setup, commits, and starts the Oracle through the installed copy's launcher. Each run
+  `.claude/settings.local.json` that disables this repo's own `swarm-ledger` server
+  from `.mcp.json`, a one-node code graph, and `git init -b main`. It copies the plugin
+  to a fresh temp folder, rewrites that copy's version to a dev version such as
+  `0.0.1-dev.<epoch seconds>` **(proposed)**, installs it at project scope under that
+  version, runs setup, commits, and starts the Oracle through the installed copy's launcher. Each run
   also removes any older `*-dev.*` copy from the plugin cache, skipping one a live
   session still has open, so a run never replaces a cached copy another session holds.
 - No flag opens an interactive Oracle. `--bg` checks trust first, then starts a
   background session; `bash scripts/smoke.sh --results` prints the results and then the
   automated checklist below, with a non-zero exit if a check fails. `--headless` runs
-  `claude -p` and writes `runs/hello/transcript.jsonl`.
+  `claude -p` and writes `runs/hello/transcript.jsonl` and `runs/hello/stderr.txt`.
 - The default prompt asks for `hello.py`, which writes `Hello, world!` to
   `hello_world.txt`. After the run, `smoke.sh` runs `hello.py` or `hello_world.py` and
   prints the file, because the shell gate lets the swarm run only test commands.
 - `KG_PLUGIN_DIR` picks a codebase-kg version other than the newest in the cache.
-  `CLAUDE_BIN` or `SENTINEL_SWARM_CLAUDE` picks the claude binary.
+  `CLAUDE_BIN` picks the claude binary for the plugin install, and for the launcher and
+  the role sessions unless `SENTINEL_SWARM_CLAUDE` is set.
 - From PowerShell, call Git Bash explicitly:
   `& "C:\Program Files\Git\bin\bash.exe" scripts/smoke.sh`. Plain `bash` can resolve
   to WSL.
@@ -58,13 +64,15 @@ are missing in a session, run `/reload-plugins`.
 ## After a run
 
 `bash scripts/smoke.sh --results` runs `python -m swarm_ledger.checklist` against the
-finished run's ledger and prints `PASS`, `WARN`, or `FAIL` for each check below, then
+latest run in the ledger and prints `PASS`, `WARN`, or `FAIL` for each check below, then
 exits non-zero if any check fails. **(proposed)** It expects the run to have ended in a
 clean, success-like outcome, the shape a default hello-world run should reach; a
 `--prd` run that legitimately defers or leaves a file incomplete does not fit this
-checklist, and needs the manual judgment below instead.
+checklist, and needs the manual judgment below instead. A missing ledger, or a ledger
+with no run, prints one `FAIL`.
 
-- The run is `finished` with an outcome that starts with `success`.
+- The run is `finished` with an outcome that starts with `success`, `succeeded`, or
+  `complete`, in any case.
 - Every phase is `approved`.
 - Every file is `approved`, ignoring a `superseded` row.
 - Every agent is `released`.
@@ -74,8 +82,9 @@ checklist, and needs the manual judgment below instead.
   cleared during the run is a `WARN`, not a `FAIL`, because the run recovered from it.
 - `report.md` exists next to the ledger.
 - No session the run recorded is still running in `claude agents --json`, and the
-  ledger server at `.sentinel-swarm/server.json` no longer answers. Both are skipped,
-  cleanly, when `claude` is not on `PATH`.
+  ledger server at `.sentinel-swarm/server.json` no longer answers. Both are skipped
+  with a `WARN` when the claude binary is not on `PATH`. A session list that
+  `claude agents --json` cannot produce fails the session check.
 
 Judge any other run from `runs/hello/host/.sentinel-swarm/ledger.db`, not from the
 transcript. Check that:

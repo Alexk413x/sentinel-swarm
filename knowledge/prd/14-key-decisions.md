@@ -55,8 +55,17 @@
 - 2026-09-24: The Manager accepts a module, and the Oracle a phase or the run, only after every departure is decided.
 - 2026-09-25: Ledger enum values use snake_case.
 - 2026-09-25: The ledger does not share codebase-kg; codebase-kg 0.8.0 shares one server per machine through its own relay.
-- 2026-09-25: Build every designed but unbuilt feature, the snake_case directive sources, the Driver, then Channels (`plans/build-order.md`).
-- 2026-09-25: The Driver is built as a fifth role (see `plans/driver-agent.md` for the decisions). Only the Oracle requests it, it works through cartographer, and it is the one role allowed the Agent tool, for cartographer's `map-driver` and `map-reviewer` only.
+- 2026-09-25: Build every designed but unbuilt feature, the snake_case directive sources, the Driver, then Channels.
+- 2026-09-25: The Driver is built as a fifth role, `driver`, colored yellow, on Sonnet by default, with sessions named `driver-e<exploration number>`. Only the Oracle requests it, it works through cartographer, and it is the one role allowed the Agent tool, for cartographer's `map-driver` and `map-reviewer` only.
+- 2026-09-25: The Driver exists only when the host has cartographer and a driver plugin installed. When they are missing or fail to load, the run skips the exploration steps, with no special report entry.
+- 2026-09-25: The Driver starts when the Oracle's request arrives and shuts down when its exploration ends. It boots the emulator, Simulator, or browser at the start of each exploration and shuts it down at the end.
+- 2026-09-25: Fixes start while the Driver still explores: a Coder joins a running fix phase for the module, or a new Manager, Lead, and Coder start for the bug. The Driver builds and retests once the exploration and every fix have finished.
+- 2026-09-25: An exploration has no time limit. The Driver checks in every 30 minutes; the Oracle reviews each check-in, starts fixes for problems that are not obvious bugs, and stops a stuck Driver.
+- 2026-09-25: The Driver loop stops on lack of progress: a bug still there after 3 fix attempts in a row goes to the user, a bug gets at most 5 attempts in all, 3 fix waves in a row that fix nothing end the loop, and a pattern of bugs pauses fixes in that area and is reported.
+- 2026-09-25: Every wave, including a fix wave planned from an exploration, starts from a new plan and new agents. A review fix inside a wave resumes the existing agents.
+- 2026-09-25: Each exploration request carries a focus list the Oracle writes: every PRD feature first; then the last wave's features, every open issue, and a quick smoke pass; the final clean exploration is a full pass.
+- 2026-09-25: Every Driver finding has a fixed shape: a fingerprint, a title, the steps, the expected and actual result, a severity (blocker, major, or minor), the area, and the evidence.
+- 2026-09-25: Driver platforms come in this order: Android, then web, then iOS once a Mac is available.
 - 2026-09-25: sentinel-swarm has no optional dependencies. Claude Code installs an optional dependency into every host, so cartographer, the driver plugins, and a11y load only where the user installed them.
 - 2026-09-26: Every session launch appends `--dangerously-load-development-channels <entries>` last when `CLAUDE_DEV_CHANNELS` is not empty, as Alex's `claude` wrapper does. The first planned channel is a device-queue broker that tells a waiting session the device is free.
 - 2026-09-26: Every role stays a `claude --bg` session, viewed in agent view. A `--bg` role does not receive a development channel.

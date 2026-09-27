@@ -33,15 +33,18 @@ Every hook command is
 `templates/hook_shim.py`. It has these commands:
 
 - `hook <event>` finds the sentinel-swarm install for this repo in
-  `~/.claude/plugins/installed_plugins.json` (scope `local`, then `project` with a
+  `~/.claude/plugins/installed_plugins.json` (scope `local`, then `project`, each with a
   matching `projectPath`, then `user`), and runs
   `uv run --project <installPath>/mcp --frozen --no-dev python -m swarm_ledger.hooks <event>`
   with stdin and stdout passed through. A plugin upgrade changes the registry, not the
   agent files.
 - `mcp <plugin_id> <server>` starts another plugin's MCP server the same way, from its
-  `.mcp.json`, with `${CLAUDE_PLUGIN_ROOT}` and `${VAR:-default}` expanded. A plugin
-  that names its own relay there shares its server through that relay. See "Plugin
-  servers" in [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
+  `.mcp.json`, or its manifest's `mcpServers` when it has no `.mcp.json`, with
+  `${CLAUDE_PLUGIN_ROOT}` and `${VAR:-default}` expanded in the command, the arguments,
+  and the `env` values. When it cannot find the server or its command, it writes the
+  reason to stderr and exits 1. A plugin that names its own relay there shares its
+  server through that relay. See "Plugin servers" in
+  [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
 - `watch` runs `python -m swarm_ledger.watch` and passes each line through with no
   timeout.
 - `channel` runs `python -m swarm_ledger.bridge`, the `swarm-events` channel server,
@@ -60,15 +63,18 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
   **(proposed)**
 - A broken ledger hook allows: `swarm_ledger.hooks` catches every exception, writes one
   line to stderr, and prints nothing.
-- A hook ignores a caller the registry does not know, so a non-swarm session in the
-  same repo passes. **(proposed)**
+- Apart from `pre_write`'s records-folder rule, `pre_ledger`, and `pre_monitor`'s
+  `agent_type` check, a hook ignores a caller the registry does not know, so a non-swarm
+  session in the same repo passes. An agent that has ended counts as unknown.
+  **(proposed)**
 
 ## What each hook does
 
 - `session_start`: for a swarm session, records the transcript path and sets an idle
   agent to working. For any other session, it reports an active or paused run; checks
-  the plugin registry for codebase-kg and, only once that is installed, reports a
-  missing `knowledge/code_graph.db`; and adds `.sentinel-swarm/` to the git excludes.
+  the plugin registry for codebase-kg, reports it when it is not installed, and, only
+  once it is installed, reports a missing `knowledge/code_graph.db`; and adds
+  `.sentinel-swarm/` to the git excludes.
 - `pre_agent`: denies `Agent` to every swarm session, unconditionally, except a Driver
   session calling cartographer's `map-driver` or `map-reviewer` subagent, which it
   allows. No override rule covers it: the rule that no role runs an arbitrary subagent
@@ -94,7 +100,11 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
   No override rule covers it.
 - `pre_ledger`: stamps `agent_id`, and denies `override_grant` to anyone but the
   Oracle. The identity stamp itself takes no override: faking `agent_id` is what the
-  stamp exists to prevent. **(proposed)**
+  stamp exists to prevent. **(proposed)** The stamp is the hook input's `agent_id`, or
+  else its `session_id`. For the five tools that take no identity (`ledger_info`,
+  `brief_get`, `who_owns`, `directive_submit`, `events`), it removes `agent_id`
+  instead. It answers `allow`, so a ledger call never asks for permission.
+  **(proposed)**
 - `post_any`: writes the heartbeat and current activity, sets an idle agent to working,
   records the transcript path, records the watchdog arm time, clears owed wake-ups on a
   `SendMessage`, and after a Coder's write marks its file stale, so the handoff needs a
@@ -106,23 +116,24 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
   folder, and `knowledge/` is recorded as a `violation` event and posted to its Lead.
 - `pre_compact`: adds one to the agent's `context_overflow_count`.
 - `stop`: records tokens and cost from the transcript, then applies the stop rules in
-  "Sessions". For a wake-up the ledger pushed through a channel, it first waits up to
-  30 seconds for the target's transcript to confirm it; see "Wake-up delivery" in
-  [05-sessions.md](05-sessions.md). After a run finishes, the Oracle's stop refreshes
-  the report, then blocks while the Oracle still owes a `PushNotification` call.
+  "Sessions". For a wake-up the ledger pushed through a channel, it first waits until
+  30 seconds after the push for the target's transcript to confirm it; see "Wake-up
+  delivery" in [05-sessions.md](05-sessions.md). After a run finishes, the Oracle's
+  stop refreshes the report, then blocks while the Oracle still owes a
+  `PushNotification` call.
   **(proposed)**
-- `session_end`: records tokens and cost and the end reason. After a run finishes, it
-  refreshes the report.
+- `session_end`: records tokens and cost and the end reason. After a run finishes, the
+  Oracle's `session_end` refreshes the report.
 
 ## Rule-to-enforcement map
 
 | Rule | Enforced by |
 |---|---|
-| Only the Coder writes project files | `pre_write`, and no write tool or shell in the other agent files |
+| Only the Coder writes project files | `pre_write`; no write tool in the other agent files, and no shell except the Driver's, which `pre_shell` limits to the build command |
 | A Coder writes only its own file and test file | `pre_write` for edit tools; `pre_shell` and `post_shell` for the shell |
 | Nobody edits the records by hand | `pre_write` |
 | A role starts only its own child role | `brief_create` and `agent_spawn`; `pre_agent` denies `Agent` except a Driver's cartographer subagents |
-| The Oracle starts a Driver only between waves | `drive_request` refuses while an exploration is open or a Manager, Lead, or Coder is live |
+| The Oracle starts a new exploration only after every fix has finished | `drive_request` refuses while an exploration is open or a Manager, Lead, or Coder is live |
 | `run_finish` needs a clean exploration or a resolved stop rule | `drive_request`, `drive_issue`, `drive_done`, and the `run_finish` gate in `drive.py` |
 | A model comes from the approved list | `brief_create` |
 | No agent starts without a brief | `agent_spawn` and `brief_ack` |

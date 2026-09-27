@@ -10,8 +10,8 @@ with verified evidence.
 | `cr_open(path, body)` | Any role | Routes to the file's live owner, else its module's live Lead, else its phase's live Manager, else the Oracle. Refuses a path no module plans, and a caller who is the recipient. Owes the recipient a wake-up |
 | `cr_accept(cr_id, accept, reason)` | The recipient | `open` to `accepted` or `declined`. A decline needs a reason. Owes the requester a wake-up |
 | `cr_complete(cr_id, notes)` | The recipient | `accepted` to `completed`. A Coder recipient needs its own passing file-scope test run of the path or its test file since acceptance. Any other recipient needs such a run by anyone, or an approved handoff of the file since acceptance. Owes the requester a wake-up |
-| `cr_verify(cr_id, ok, notes)` | The requester, or its nearest live ancestor | `completed` to `verified`, or back to `accepted` with the notes and a wake-up to the recipient |
-| `cr_list(state)` | Any role | The caller's own requests. The Oracle sees every request in the run |
+| `cr_verify(cr_id, ok, notes)` | The requester while it is live, else its nearest live ancestor | `completed` to `verified`, or back to `accepted` with the notes and a wake-up to the recipient |
+| `cr_list(state)` | Any role | The requests the caller opened or received. The Oracle sees every request in the run |
 
 - `handoff_submit` refuses while a Coder's accepted request on the file is not
   completed. `approve`, `phase_update(approved)`, and `run_finish` refuse while a
@@ -26,7 +26,8 @@ first-pass gate: an agent may get something working first, and the review cycle 
 it toward the guidelines.
 
 - A Coder lists departures in `handoff_submit`. Each becomes a row linked to the
-  handoff, in state `open`, waiting on the Lead.
+  handoff, in state `open`, waiting on the Lead. An open departure the Coder recorded
+  earlier for the file, with no handoff yet, joins the new handoff too. **(proposed)**
 - `departure_record(body, file_id, guideline_id)` records one outside a handoff: a
   Coder for its own file, a Lead, Manager, or Oracle for work in its scope. A Coder's
   departure waits on the Lead, a Lead's on the Manager, and a Manager's on the Oracle.
@@ -44,7 +45,8 @@ it toward the guidelines.
 - Every decision needs a reason, and `departure_decisions` keeps each one.
 - A pushback needs a suggested solution and sets `pushed_back`.
   - A Lead pushback is a return. The Lead calls `return_work` next, and it counts as a
-    fix attempt.
+    fix attempt. A Lead pushback on a file that is already released resumes the chain
+    like a Manager pushback. **(proposed)**
   - A Manager or Oracle pushback resumes the chain below the decider, down to the same
     Coder. The ledger reopens the file for that Coder, even after approval, and refuses
     when another live claim holds the path. It un-releases the agents below the
@@ -98,8 +100,10 @@ The responsible level **(proposed)**:
   `pre_ledger` hook denies it to any other caller.
 - An override is narrow: one rule, one agent, one target, one use. **(proposed)** The
   ledger consumes it on first use.
-- Two rules take overrides: `write` (the target is the repo-relative path) in the write
-  gate, and `shell` (the target is the exact command) in the shell gate.
+- Two rules take overrides: `write` (the target is the repo-relative path, or the path
+  as given for a file outside the repo) in the write gate, and `shell` (the target is
+  the exact command) in the shell gate. `override_grant` accepts any rule name; a grant
+  for another rule is recorded and never used. **(proposed)**
 - Every override is a ledger record, and the report lists it with its reason.
   **(proposed)**
 - The Oracle must not use an override to write a project file itself. **(proposed)**
@@ -107,17 +111,20 @@ The responsible level **(proposed)**:
   `target_agent_name` that names the Oracle itself, so the Oracle cannot grant its own
   session a write or shell override. **(proposed)**
 - Only the write and shell gates ever consume an override. The records-folder denial in
-  `pre_write`, the identity stamp in `pre_ledger`, and the "no role runs subagents"
-  denial in `pre_agent` are unconditional; no rule-level exception fits them, so they
+  `pre_write`, the identity stamp in `pre_ledger`, the `Agent` denial in `pre_agent`
+  (every role but the Driver, and the Driver outside cartographer's `map-driver` and
+  `map-reviewer`), the `Monitor` denial in `pre_monitor`, and the `SendMessage` denial
+  in `pre_send_message` are unconditional; no rule-level exception fits them, so they
   never check for one. **(proposed)**
 
 ## Directives
 
 - `directive_submit(source, sender_name, body, reply_to)` steers the run from any input.
-  Sources: `user_chat`, `outside_session`, `skill`, and `watchdog`. `directive_submit`
-  accepts the older `user-chat` and `outside-session` spellings too and normalizes
-  them; a stored row from before the rename is migrated to the new spelling. It needs
-  no identity, so an ordinary session can call it.
+  Sources: `user_chat`, `outside_session`, `skill`, `watchdog`, and `driver`. The
+  ledger itself writes a `driver` directive for each new Driver stop rule.
+  `directive_submit` accepts the older `user-chat` and `outside-session` spellings too
+  and normalizes them; a stored row from before the rename is migrated to the new
+  spelling. It needs no identity, so an ordinary session can call it.
 - A directive does not interrupt the agents. The Oracle reads `directive_inbox()` at
   safe points and turns each directive into a plan change, a guideline change, a brief,
   or a message. It never forwards a directive's text down the tree.
@@ -145,10 +152,13 @@ The responsible level **(proposed)**:
 |---|---|
 | Only the user can unblock it, and the run can continue afterwards | Notifies the user now, with `run_pause` |
 | An issue ends round 3 below the floor | Notifies the user now |
-| The Driver finishes, or hits an error | Notifies the user now; see "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md) |
+| The Driver finishes, or hits an error | Notifies the user now: the ledger server shows an OS notification itself, and the Oracle's Stop hook blocks until the Oracle sends the `PushNotification` it owes. See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md) |
+| Only the user can answer a directive | Resolves it `needs_user` and asks the user once, in its session. **(proposed)** |
+| The watchdog reports a session waiting on a permission prompt | Tells the user which session to open in agent view. **(proposed)** |
 | It works, but nobody found better: a shortfall or a signed-off departure | Lists it in the final report |
 
-A notification states what is blocked, what the user needs to do, and what resumes
-after. **(proposed)**
+A pause notification states what the user must fix, and that saying "continue" or
+running `/sentinel-swarm:resume` continues the run. A Driver notification is the
+ledger's recorded one-line message, which the Oracle sends unchanged. **(proposed)**
 
 The user is notified when the Driver finishes or hits an error.

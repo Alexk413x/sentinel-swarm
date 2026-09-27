@@ -12,8 +12,9 @@
   with no error in its log. It has not recurred.
 - **Plugin relays in a live run.** No live run has confirmed that role sessions reach a
   plugin's shared server through the shim's stdio entry. A live run on a host with a11y
-  0.8.2 should confirm that every role reaches the shared a11y daemon through the a11y
-  relay, and that no role starts a private a11y server while the daemon answers.
+  0.8.2 or later should confirm that every role reaches the shared a11y servers through
+  the a11y relay, and that no role starts a private a11y server while they answer. The
+  plan is `plans/a11y-relay-smoke-test.md`.
 - **The Driver, live.** Built and unit-tested, never run: no host here has cartographer and a driver plugin installed yet. The first live run needs an Android app host, and must confirm the shim starts cartographer's and the driver plugins' servers.
 - **Driver notifications, live.** Built and unit-tested; no test shows a real
   notification. On Windows, a dry run loaded the WinRT toast types, parsed the toast
@@ -28,8 +29,8 @@
   - A live run with `wake_transport: channel` and an interactive Oracle: a Lead's or
     Manager's wake-up must arrive as a channel event, and the ledger must confirm it
     from the Oracle's transcript. The transcript shape of a channel turn is not verified
-    yet; `wake.transcript_confirms` accepts origin kind `channel` or the `swarm-events`
-    tag.
+    yet; `wake.transcript_confirms` accepts origin kind `channel`, a `turnOrigin` or
+    `promptSource` of `channel`, or the `swarm-events` tag.
   - The plugin manifest's `channels` entry. The manifest shape is
     `"channels": [{"server": "swarm-events"}]`, and `server` must name a server in the
     plugin's own `mcpServers`. That server would then start in every session that has
@@ -37,5 +38,22 @@
     matters only for an allowlist listing or a `plugin:` development channel.
   - The device-queue broker, as a second event kind on `swarm-events`. Roles stay `--bg`
     sessions, so it still needs another path to a waiting role.
+  - An event pushed while the Oracle is busy. The channels docs say such events queue and
+    arrive together on the next turn. No probe has checked it.
+  - An interactive Oracle sent to the background with `/bg` or `←`. Per the agent-view
+    docs, it resumes in a fresh process, and the supervisor stops a background process
+    after about an hour idle unless it is pinned with `Ctrl+T`. Either would restart or
+    end the channel bridge. Not probed.
   - Retest the `--bg` case when the development flag works in `--bg` sessions or a user
-    setting can allowlist a plugin. See "Probe results" in `plans/channels-and-http.md`.
+    setting can allowlist a plugin. The retest repeats the 2026-09-25 probe and checks
+    the debug log for `Channel notifications skipped`. See the channel facts in
+    [13-platform-facts.md](13-platform-facts.md).
+- **Driver notifications in the report.** The report's "Notifications to the user"
+  section lists only `needs_user` directives. It does not list the `notifications`
+  rows, so a Driver notification never appears in the report.
+- **Overrides across runs.** `override_consume` matches the rule, the agent name, and
+  the target, but not the run. An unused override from an earlier run can be used up
+  by an agent with the same name in a later run.
+- **A Driver outside `drive_request`.** `brief_create` accepts `child_role="driver"`
+  from the Oracle, and `agent_spawn` then starts that Driver. It has no request row, so
+  `drive_issue` refuses its findings. Only `drive_request` should start a Driver.

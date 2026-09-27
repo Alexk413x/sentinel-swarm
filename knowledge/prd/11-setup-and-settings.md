@@ -20,6 +20,8 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
   `swarm-coder.md` from `templates/agents/<role>.md`. For an existing file it keeps the
   user's frontmatter, adds any key the template has that the file lacks, adds every
   ledger hook the template has that the file lacks, and replaces the prompt body.
+  A new file's MCP server `command` is `python` on Windows, and `python3` elsewhere
+  when `python3` is on `PATH`. **(proposed)**
 - Writes `swarm-driver.md` the same way, but only when the host has
   `cartographer@cartographer` installed and at least one of `android-driver`,
   `ios-driver`, or `web-driver` from the `accessibility-tools` marketplace. Otherwise it
@@ -29,8 +31,10 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
 - Writes the shim to `.sentinel-swarm/hook.py`, overwriting local edits.
 - Merges `{"worktree": {"bgIsolation": "none"}}` into `.claude/settings.local.json`.
 - Adds `.sentinel-swarm/` and `.claude/agents/swarm-*.md` to `.git/info/exclude`.
-- Reports whether the repo is trusted, from `~/.claude.json`, and prints the command
-  that trusts it. `--check-trust` only checks.
+- Reports whether the repo is trusted, from `~/.claude.json` (or
+  `$CLAUDE_CONFIG_DIR/.claude.json`), and prints the command that trusts it.
+  `--check-trust` only checks, and exits 1 with the command when the repo is not
+  trusted.
 
 The role files take effect in the next session. A session loads agent files once, at
 startup.
@@ -40,10 +44,11 @@ startup.
 `python -m swarm_ledger.launch [--repo <root>] [--bg | --headless [--transcript <file>]] "<prompt>"`,
 or the `/sentinel-swarm:run` skill.
 
-- It runs setup when the shim or a role file is missing.
+- It runs setup when the shim or one of the four core role files is missing. A missing
+  `swarm-driver.md` alone does not run setup.
 - `--bg` refuses an untrusted repo and prints the trust command.
-- It starts the ledger server, then the Oracle with its agent file's model and the same
-  flags as `agent_spawn`. If the file has no `model`, it uses the first entry of the
+- It starts the ledger server, or reuses one that answers, then the Oracle with its
+  agent file's model and the same flags as `agent_spawn`. If the file has no `model`, it uses the first entry of the
   Oracle's approved list.
 - Interactive by default. `--bg` starts a background session. `--headless` runs
   `claude -p` with a stream-json transcript and the prompt on stdin. Nobody answers
@@ -82,14 +87,14 @@ or the `/sentinel-swarm:run` skill.
 | `escalation.attempts_per_round` | 3 | Non-improving attempts per round |
 | `watchdog.*` | See "Watchdog" in [08-watchdog.md](08-watchdog.md) | Watchdog timing, thresholds, and server idle exit |
 | `test_command` | empty | Must contain `{target}`, for example `python -m pytest -q -p no:cacheprovider {target}` |
-| `build_command`, `lint_command` | empty | Optional; the Coder's shell gate allows them |
+| `build_command`, `lint_command` | empty | Optional; the Coder's shell gate allows them, and the Driver's allows `build_command` only **(proposed)** |
 | `parallelism_cap` | empty | No limit when empty; also counts other swarms' live sessions on the machine |
 | `base_branch` | empty | `repo_check` tries `main`, then `master` |
 | `effort.<role>` | empty | `--effort <level>` for that role's sessions |
 | `prompt_cache_ttl.<role>` | empty | `promptCacheTtl` (`"5m"` or `"1h"`) for that role's sessions |
 | `role_parallelism_cap.<role>` | empty | Cap on that role's own live sessions in the run |
-| `wake_transport` | `channel` | `channel` pushes a wake-up through the target's channel when it has one, with `SendMessage` as the fallback; `sendmessage` sends every wake-up by `SendMessage`. Any other value reads as `channel` **(proposed)**. See "Wake-up delivery" in [05-sessions.md](05-sessions.md) |
-| `notify` | `[os, push]` | **(proposed)** How the user hears that the Driver finished or hit an error. `os`: the ledger server shows a desktop notification. `push`: the Oracle owes a `PushNotification` call. `[]` turns both off; unknown values are dropped; an unset key keeps both. See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md) |
+| `wake_transport` | `channel` | `channel` pushes a wake-up through the target's channel when it has one, with `SendMessage` as the fallback; `sendmessage` sends every wake-up by `SendMessage`. Case, `_`, and `-` are ignored, and any other value reads as `channel` **(proposed)**. See "Wake-up delivery" in [05-sessions.md](05-sessions.md) |
+| `notify` | `[os, push]` | **(proposed)** How the user hears that the Driver finished or hit an error. `os`: the ledger server shows a desktop notification. `push`: the Oracle owes a `PushNotification` call. `[]` turns both off; a single value reads as a one-item list; unknown values are dropped; an unset or empty key keeps both. See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md) |
 
 `-p no:cacheprovider` keeps parallel pytest runs from contending on `.pytest_cache`.
 

@@ -64,6 +64,9 @@
 | Coder | `coder-<phase>-<module>-<file>` | `coder-p2-auth-login` |
 | Driver | `driver-e<exploration number>` | `driver-e2` |
 
+- The Driver's pattern is decided; the **(proposed)** mark covers the other rows.
+  `drive_request` sets it from the exploration's ordinal in the run.
+
 - A name is unique among the live agents of a run. It is the address in the ledger, and
   the agent passes it as `caller` on every ledger call. **(proposed)**
 - A session name is unique on the machine and is the address for `SendMessage`. A
@@ -80,7 +83,7 @@
 | Manager | opus | opus |
 | Lead | sonnet | opus, sonnet |
 | Coder | sonnet | sonnet, haiku |
-| Driver | sonnet | sonnet, opus |
+| Driver | sonnet | sonnet, opus **(proposed)** |
 
 - The settings file holds the approved models per role. `brief_create` refuses a model
   outside the child role's list.
@@ -107,7 +110,8 @@
   Runs the full test suite after each phase hands up. Reviews and approves each phase.
   Decides departures at its level. Resolves directives. Arms the watchdog listener.
   Grants overrides. Decides between a notification now and a line in the final report.
-  Writes the final report and finishes the run.
+  Requests each Driver exploration and starts fixes from its findings. Writes the final
+  report and finishes the run.
 - **Owns:** PRD meaning, acceptance criteria, the guidelines, the phase plan, the final
   verdict, and all communication with the user.
 - **Arbitrates:** disputes between Managers, including which Manager owns a shared
@@ -182,20 +186,40 @@
 - **Exists only when:** the host has `cartographer@cartographer` installed and at least
   one of `android-driver@accessibility-tools`, `ios-driver@accessibility-tools`, or
   `web-driver@accessibility-tools`. `setup` writes `swarm-driver.md` only then;
-  `drive_request` refuses clearly when either is missing, and the Oracle skips every
-  exploration step for that run.
+  `drive_request` refuses clearly when either is missing. When the plugins are missing
+  or fail to load, the run skips every exploration step, and the report needs no
+  special entry for it.
+- **Started by:** the Oracle only. Only the Oracle sends requests, with
+  `drive_request`. The Driver starts when the request arrives, and it shuts down when
+  its exploration ends. Each session is named `driver-e<exploration number>` after the
+  session-name prefix above, for example `myapp-r1-09251430-driver-e2`.
 - **Does:** builds the app with `build_command`, boots the device, replays recorded
   routes with cartographer's `map-test`, then explores toward the Oracle's focus list
   with `map-explore` through cartographer's own `map-driver` and `map-reviewer`
   subagents. Records each finding with `drive_issue` as it is found, checks in with
-  `drive_checkin` every 30 minutes, and ends the exploration with `drive_done`, which
-  releases and stops its own session. When a failed build or a device that will not
-  boot stops it, it records a finding and passes `blocked` to `drive_done`, which
-  notifies the user. **(proposed)**
+  `drive_checkin` every 30 minutes, shuts the device down, and ends the exploration
+  with `drive_done`, which releases and stops its own session. When a failed build or a
+  device that will not boot stops it, it records a finding and passes `blocked` to
+  `drive_done`, which notifies the user. **(proposed)**
+- **Tests the app:** the Driver explores, tests, and records findings. Every other role
+  does unit testing only, because the app cannot build while other edits are in
+  progress.
+- **Devices:** it boots the emulator, Simulator, or browser at the start of each
+  exploration and shuts it down when the exploration ends, so no device holds memory
+  between explorations.
+- **Platforms:** Android first, then web, then iOS once a Mac is available.
+- **Works through cartographer:** it does not drive the device itself. cartographer's
+  `map-explore` and `map-test` do, and cartographer records each run and its evidence in
+  `knowledge/cartographer/runs/<run-id>/`. The Driver turns cartographer's findings into
+  ledger findings for the Oracle.
+- **Subagents:** it is the one role allowed subagents, and only cartographer's own:
+  `map-driver` and `map-reviewer`. The Oracle does not run them, so its context stays
+  small.
 - **Owns:** one exploration: the build, the device session, and every finding it
   records, with evidence in cartographer's run folder.
 - **Must not:** write or edit a project file. It has no Write or Edit tool. It must not
-  fix anything; the Oracle turns its findings into a fix wave.
+  fix anything; it observes and reports, and the Oracle turns its findings into a fix
+  wave.
 - **Done when:** it calls `drive_done`.
 - **Tools:** Read, Grep, Glob, ToolSearch, SendMessage, Bash and PowerShell (gated to
   `build_command`), Agent (gated to cartographer's `map-driver` and `map-reviewer`
@@ -204,6 +228,5 @@
   join its session only, the same way the a11y servers join every role's: see
   [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
 
-See `plans/driver-agent.md` for the full set of decisions this role implements: the
-request queue, the fixed finding shape, the stop rules, and the loop between
-exploration and fix waves.
+See "Explorations" in [02-run-lifecycle.md](02-run-lifecycle.md) for the request queue,
+the finding shape, the stop rules, and the loop between exploration and fix waves.

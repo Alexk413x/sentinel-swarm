@@ -6,8 +6,9 @@
 - `python -m swarm_ledger.serve [--repo <root>]` binds the port saved in
   `.sentinel-swarm/server.port`, or a free port when that one is taken, and writes
   `.sentinel-swarm/server.json` with `url`, `port`, `pid`, and `started_at`. A second
-  start finds the first one answering, prints its URL, and exits 0. The saved port
-  lets a resumed session reach the ledger at the URL it started with.
+  start finds the first one answering, prints its URL, and exits 0. A server counts as
+  answering when `/health` returns the name `swarm-ledger` and this repo's root. The
+  saved port lets a resumed session reach the ledger at the URL it started with.
 - `serve.ensure_server(repo_root)` starts the server detached when it does not answer,
   waits until it answers, and returns its URL. On Windows it starts with a hidden
   console (`CREATE_NO_WINDOW`).
@@ -16,9 +17,10 @@
   through its own relay. See "Plugin servers" in
   [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
 - Tool calls run one at a time under one lock, on one SQLite connection.
-- The server loads the settings file once, at start. `profile_set` changes the commands
-  for the server process and the run's settings snapshot, not the file. The hooks read
-  the file on every call, so the Coder's shell gate follows the file's commands.
+- The server loads the settings file once: the watchdog at start, and the ledger at the
+  first tool call. `profile_set` changes the commands for the server process and the
+  run's settings snapshot, not the file. The hooks read the file on every call, so the
+  Coder's shell gate follows the file's commands.
 - The watchdog runs on a thread inside the server.
 - `GET /events?session=<session id>` holds one session's `swarm-events` event stream
   open: newline-delimited JSON, one event per line, and a `{"kind": "ping"}` line after
@@ -69,7 +71,7 @@ partial success.
 
 | Group | Tools |
 |---|---|
-| Run and plan | `run_start`, `run_status`, `run_pause`, `run_finish`, `profile_set`, `guidelines_set`, `guidelines_get`, `phase_add`, `phase_update`, `plan_unlocked`, `module_add` |
+| Run and plan | `run_start`, `run_status`, `run_pause`, `phase_resume`, `run_finish`, `profile_set`, `guidelines_set`, `guidelines_get`, `phase_add`, `phase_update`, `plan_unlocked`, `module_add` |
 | Repo | `repo_check`, `repo_branch_create` |
 | Briefs and agents | `brief_create`, `brief_get`, `brief_ack`, `agent_spawn`, `agent_resume`, `agent_release` |
 | Ownership | `claim_file`, `release_file`, `who_owns` |
@@ -88,6 +90,7 @@ partial success.
   timeout. It parses pytest and Go output. An agent never reports a test result itself.
 - `version_restore(version_id)` restores a saved version onto the Coder's own file.
 - The server itself shows a desktop notification for each Driver notification it
-  records, from `notify.py`, in a background thread. A failure goes to the server log.
+  records, from `notify.py`, in a background thread, when the settings' `notify` list
+  includes `os`. A failure goes to the server log.
   See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md).
   **(proposed)**

@@ -22,9 +22,10 @@
   See "Wake-up delivery" in [05-sessions.md](05-sessions.md). **(proposed)**
 - Tool names: `mcp__swarm-ledger__<tool>` and `mcp__codebase-kg__<tool>`.
 - Each role keeps a fixed `tools` allowlist in its agent file.
-- `cartographer` is an optional dependency. The Driver uses it for end-to-end testing
-  inside the run, between waves; a host without it, or without a driver plugin, simply
-  has no Driver, and the run finishes on unit tests alone.
+- `cartographer` is not a plugin dependency; the manifest declares no optional
+  dependencies. The Driver uses it for end-to-end testing inside the run, after each
+  wave; a host without it, or without a driver plugin, simply has no Driver, and the
+  run finishes on unit tests alone.
 
 ## Plugin servers
 
@@ -36,21 +37,24 @@
   command is the plugin's relay, the relay does the sharing.
 - codebase-kg 0.8.0 and later names its relay, `bin/kg-shim`, in its `.mcp.json`. The
   relay is one small process that connects to one codebase-kg server per machine and
-  plugin version. Its handshake sends the session's working folder and any explicit
-  graph path, and the shared server resolves each tool call's graph from that
-  connection, so every session reads its own host's `knowledge/code_graph.db`. When the
-  shared server cannot be reached within 10 seconds, the relay starts a private server
+  server build: the plugin version plus a digest of its Python files. Its handshake
+  sends the session's working folder and any explicit graph path (the relay's first
+  argument, else `CODEBASE_KG_PATH`), and the shared server resolves each tool call's
+  graph from that connection, so every session reads its own host's
+  `knowledge/code_graph.db`. When the shared server cannot be reached within
+  `CODEBASE_KG_SHARED_TIMEOUT` seconds (default 10), the relay starts a private server
   for that session. Verified in codebase-kg 0.8.0's `shim.py`, `daemon.py`, and
-  `server.py` on 2026-09-25.
+  `server.py` on 2026-09-25, and in 0.8.2's `shim.py` on 2026-09-27.
 - The accessibility-tools plugins share themselves the same way from a11y 0.8.2,
   android-driver 0.12.1, ios-driver 0.7.3, and web-driver 0.4.3. Each names a relay,
-  `bin/<server>-shim`, in its `.mcp.json`, and the relay falls back to a private stdio
-  server when it cannot reach the shared one.
+  `bin/<server>-shim`, in its `.mcp.json`. The relay connects to one server per machine
+  and server build, and falls back to a private stdio server when it cannot reach the
+  shared one.
 - An older plugin version that names a plain `uv run` or `uvx` command runs one server
   per session.
-- Graph writes go through `graph_upsert`, which runs codebase-kg's CLI with the host
-  graph's explicit path under the ledger's lock, so the shared codebase-kg server only
-  ever serves reads.
+- Graph writes go through `graph_upsert`, which calls codebase-kg's
+  `edits.upsert_node` with the host graph's explicit path under the ledger's lock, so
+  the shared codebase-kg server only ever serves reads.
 
 ## The code graph
 
@@ -66,7 +70,8 @@ find what exists while many agents change the code at once. The graph file,
   codebase-kg's `kg_upsert_node` node shape (`id`, `kind`, `section`, `description`,
   `anchors`, `edges`). The ledger refuses an anchor outside the Coder's file and test
   file, and an edge to a node that does not exist. It applies the upsert under a lock
-  in the ledger process, through `uv run` in the codebase-kg plugin's cache folder, or
+  in the ledger process, through `uv run` in the `mcp` folder of the highest numbered
+  version under `~/.claude/plugins/cache/codebase-kg/codebase-kg/`, or in
   `SENTINEL_SWARM_KG_ROOT`. **(mechanism proposed)**
 - A node that anchors on several files is updated through the Lead. **(proposed)**
 - Anchors are `"<path>#<Symbol>"` for every top-level function and class. A file with no

@@ -14,7 +14,7 @@ from .settings import Settings
 _NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 SEVERITIES = ("blocker", "major", "minor")
 
-# Stop rules from plans/driver-agent.md: a finding still present after this many fix
+# Stop rules from knowledge/prd/02-run-lifecycle.md: a finding still present after this many fix
 # attempts in a row stops getting fixes; this many attempts in all is the hard cap; this
 # many explorations in a row that fix nothing stops the loop.
 STOP_ATTEMPTS_IN_A_ROW = 3
@@ -188,7 +188,7 @@ def _severities_help() -> str:
 
 class DriveMixin:
     """The Driver's request queue and its stop-rule loop status. See
-    plans/driver-agent.md for the decisions this implements.
+    "Explorations" in knowledge/prd/02-run-lifecycle.md for the decisions this implements.
 
     Split out of `ledger.py`; every method here still assumes it is mixed into
     `Ledger` and relies on `self.conn`, `self.settings`, `self.repo_root`,

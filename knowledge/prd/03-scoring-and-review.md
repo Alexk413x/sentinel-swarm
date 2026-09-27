@@ -8,10 +8,12 @@ The rubric is identical for every scorer. Every number is a setting in
 - Every file gets two reviews: the Coder's self review and the Lead's blind review.
 - A Coder's own scores never pass a file. Only the Lead's review does. **(proposed)**
 - The Manager does not score files. It reviews whether each Lead met its tasks, and the
-  files whose two most recent scores disagreed.
+  files whose self and Lead scores on the approved handoff disagreed.
 - The Oracle does not score files. It audits the scores and investigates the low ones.
 - `score_record(file_id, ratings, applicable, kind, targeted)` accepts `self` from the
   file's owner and `lead` from the module's Lead only.
+- The Lead scores blind, before it sees the Coder's scores. `score_record` refuses a
+  Lead review once `review_compare` has run for the file's latest handoff.
 
 ## Dimensions
 
@@ -29,7 +31,7 @@ The split of design into architecture and code structure is **(proposed)**.
 ## Scale **(proposed)**
 
 - Each criterion is rated from 1 to 10.
-- A dimension's score is the average of its ratings times 10, from 0 to 100.
+- A dimension's score is the average of its ratings times 10, from 10 to 100.
 - There is no combined score and there are no weights. Each dimension passes or fails
   on its own, and a criterion can fail on its own.
 - A rating below 9 needs a reason and a `ref` (file and line). `score_record` refuses
@@ -99,9 +101,10 @@ The split of design into architecture and code structure is **(proposed)**.
 - A score below the target is something to research and improve. The loop stops when
   new scores stop getting better.
 - After each fix, `attempt_record(file_id)` compares the last two Lead reviews:
-  - **Regression:** a dimension fell by `regression_tolerance` or more, or fell below
-    the floor. The ledger restores the file and test file from the previous handoff's
-    saved versions. The failed idea is recorded so nobody tries it again.
+  - **Regression:** a dimension fell by `regression_tolerance` or more, or fell by any
+    amount and ended below the floor. The ledger restores the file and test file from
+    the previous handoff's saved versions. `attempt_record` does not record the failed
+    idea; a role records it with `idea_record` so nobody tries it again.
   - **Improved:** no regression, and a targeted dimension rose by `plateau` or more. The
     attempt does not count against the budget.
   - **Plateau:** anything else.
@@ -129,7 +132,8 @@ issue stopped improving, and it explains to the next layer why the issue arrived
 - `issue_escalate(issue_id)` moves an issue to its next round, names the receiver in
   `escalated_to` (the Manager for round 2, the Oracle for round 3), messages it, and
   owes it a wake-up with a pointer, returned as `next`. Only the file owner and the
-  owner's parent chain may call it.
+  owner's parent chain may call it. It refuses an issue already at round `rounds`.
+  **(proposed)**
 - `attempt_record` advances a round the same way: on a plateau or a regression that
   exhausts `attempts_per_round`, it sets `escalated_to`, messages the receiver, and
   owes it the same wake-up, listed in the result's `escalated`. **(proposed)**

@@ -125,9 +125,10 @@ The ledger enforces this order:
      records a fix attempt, posts the issues and target dimensions to the Coder, and
      owes the Coder a wake-up. A return counts as one fix attempt.
    - `accept_incomplete(handoff_id, reason)` refuses while a departure on the handoff is
-     `open` or `pushed_back`. It marks the file `incomplete` and releases it, releases
-     the Coder, and opens a deferral. It uses no fix attempt. The Lead validates the
-     Coder's reason first. **(proposed)**
+     `open` or `pushed_back`. It marks the file `incomplete` and releases it, marks
+     pushed-back departures of the file `reworked`, releases the Coder, and opens a
+     deferral. It uses no fix attempt. The Lead validates the Coder's reason first.
+     **(proposed)**
 5. After a return, the Coder hands off again. The Lead scores again with `targeted`,
    compares, and calls `attempt_record(file_id)`. See "Scoring and review" in [03-scoring-and-review.md](03-scoring-and-review.md).
 
@@ -190,47 +191,73 @@ when" in [05-sessions.md](05-sessions.md).
 
 ## Explorations
 
-- The Driver runs the app and tests it between waves, while no Coder is editing. It
-  exists only when the host has cartographer and a driver plugin installed; see
-  "Driver" in [01-roles.md](01-roles.md).
-- `drive_request(focus)` is the Oracle's call. It refuses while an earlier exploration
-  is still open (`drive_requests.state = 'open'`), and while a Manager, Lead, or Coder
-  is still live in the run: an exploration and a fix wave never overlap. It writes the
+- The Driver builds the app at the start of each exploration, then runs and tests that
+  build. It exists only when the host has cartographer and a driver plugin installed;
+  see "Driver" in [01-roles.md](01-roles.md). Only the Oracle sends requests.
+- Fixes start while the Driver still explores. The Oracle sees each issue as the Driver
+  records it and starts work on it at once: when a fix phase for that module is already
+  running, a Coder joins it; otherwise the Oracle starts a new Manager, Lead, and Coder
+  for that bug. When the exploration ends and every fix agent has finished, the Driver
+  builds and retests. Fix agents run unit tests only.
+  - The Oracle asks a running module for a new Coder through its Manager, which asks
+    the Lead, so the spawn order holds. **(proposed)**
+  - The Driver tests the app it built at the start of the exploration, never a dev
+    server that reloads on edits. **(proposed)**
+  - A failed build is recorded at once as a finding with the build log, which ends that
+    exploration, and the retest starts with a build. **(proposed)**
+- Every wave starts from a new plan and new agents, including a fix wave planned from a
+  Driver exploration. A review fix inside a wave, such as a return or a pushback,
+  resumes the existing agents. The Oracle groups the issues by module, one fix phase per
+  module. **(proposed)** Each Coder's brief carries the issue and its evidence and
+  re-claims the file. **(proposed, not built)**
+- Each request carries a focus list the Oracle writes. The first exploration covers
+  every PRD feature; each later one covers the features the last wave touched, every
+  open issue to recheck, and a quick smoke pass over everything else; the final clean
+  exploration is a full pass. The Driver first replays recorded routes with `map-test`
+  to recheck earlier findings, then runs `map-explore` with the focus list as its goal.
+  **(proposed)**
+- `drive_request(focus)` is the Oracle's call. It refuses an empty focus list, a host
+  with no Driver available, an earlier exploration that is still open
+  (`drive_requests.state = 'open'`), and a Manager, Lead, or Coder still live in the
+  run: a new exploration starts only after every fix has finished. It writes the
   Driver's brief and starts its session the same way `brief_create` and `agent_spawn`
-  do, under the name `driver-e<ordinal>`, and returns the loop's current status. The
-  first exploration's focus covers every PRD feature; a later one covers the last
-  wave's changes, every open finding, and a quick smoke pass; the final, clean one is a
-  full pass. **(proposed)**
-- `drive_issue(request_id, finding)` records one finding in a fixed shape — `fingerprint`
-  (the check, the location, and what it saw), `title`, `steps`, `expected`, `actual`,
-  `severity` (blocker, major, or minor), `area`, and `evidence` (paths into
-  cartographer's run folder) — as a row in `drive_findings`, and owes the Oracle a
-  wake-up at once. A failed build is recorded as a finding. **(proposed)**
-- `drive_checkin(request_id, covered, steps, notes)` records a progress check-in and
-  owes the Oracle a wake-up. The watchdog does not report the Driver as stuck while its
-  check-ins arrive within 30 minutes plus a grace period; see
+  do, under the name `driver-e<ordinal>`, and returns the loop's current status.
+- Every finding has a fixed shape, filled as fully as possible: a fingerprint (the
+  check, the location, and what it saw), a title, the steps to reproduce, the expected
+  and actual result, a severity (blocker, major, or minor), the area, and the evidence
+  (screenshots before and after, the UI tree, log excerpts).
+  `drive_issue(request_id, finding)` records one finding as a row in `drive_findings`,
+  with the evidence as paths into cartographer's run folder, and owes the Oracle a
+  wake-up at once. It refuses a finding with no `fingerprint` or `title`, or with
+  another severity. **(proposed)**
+- No time limit on an exploration. Every 30 minutes the Driver reports its progress to
+  the Oracle and keeps working. The Oracle reviews the testing and the steps so far,
+  looking for problems that are not obvious bugs, and starts fixes for them. It also
+  decides whether the Driver is stuck; if so, it stops the Driver and starts a fix for
+  whatever blocked it. `drive_checkin(request_id, covered, steps, notes)` records a
+  check-in and owes the Oracle a wake-up. The watchdog does not report the Driver as
+  stuck while its check-ins arrive within 30 minutes plus a 5-minute grace; see
   [08-watchdog.md](08-watchdog.md). **(proposed)**
 - `drive_done(request_id, blocked=None)` ends the exploration, releases the Driver's
   session, and stops it. **(proposed)** The Driver passes `blocked`, a short statement
   of what failed, when it cannot continue: a failed build or a device that will not
   boot. `drive_done` refuses `blocked` until the exploration has a finding, so a blocked
   exploration never counts as clean. **(proposed)**
-- The Oracle starts a fix for each finding as `drive_issue` reports it: a Coder joins a
-  running fix phase through its Manager and Lead, or a new Manager, Lead, and Coder
-  start for a separate bug, the same way a phase starts. A fix phase runs unit tests
-  only. **(proposed)**
-- **Stop rules**, tracked by fingerprint across explorations: a finding still present
-  after 3 fix attempts in a row stops getting fixes and becomes a directive for the
-  user, with a hard cap of 5 attempts per finding in all; 3 explorations in a row that
-  fix nothing stop the loop; and a detected pattern — a fixed finding regressing, a fix
-  wave's files carrying at least as many new findings as it fixed, or two findings
-  trading places — is reported the same way. Each condition files an open directive
-  from source `driver`, computed by the pure function `compute_loop_status` in
-  `mcp/src/swarm_ledger/drive.py` over every request and finding of the run, and
-  deduplicated by its exact reason text. **(proposed)**
+- **Stop rules.** The loop stops on lack of progress, not a fixed count. A bug still
+  there after 3 fix attempts in a row stops getting fixes and goes to the user with its
+  evidence. A bug gets at most 5 fix attempts in all. The loop stops when 3 fix waves in
+  a row fix nothing, and the Oracle reports what is left. The loop also watches for
+  patterns of bugs; on one, the Oracle pauses fixes in that area and reports it.
+  - The ledger tracks each finding by fingerprint and counts each later exploration
+    that still finds it as one fix attempt. The patterns are a regression (a fixed
+    finding returns), fixes causing bugs (new findings in the areas of the findings the
+    last wave fixed, at least as many as it fixed), and ping-pong (two findings that take
+    turns across the last 4 explorations). `drive_done` files each condition as an open
+    directive from source `driver`, computed by the pure function `compute_loop_status`
+    in `mcp/src/swarm_ledger/drive.py` over every request and finding of the run, and
+    deduplicated by its exact reason text. **(proposed)**
 - The loop ends on a clean exploration (no finding) or on a stop rule, whichever comes
-  first. The Oracle requests the next exploration only once the current one and every
-  fix it spawned have finished. **(proposed)**
+  first. **(proposed)**
 
 ### Driver notifications
 
@@ -270,8 +297,9 @@ tells the user" in [04-agreements.md](04-agreements.md). The mechanics below are
 
   A failure goes to the server log, `.sentinel-swarm/server.log`, and nothing else
   happens.
-- **Push path.** Each notification also records a push the run's Oracle owes. The
-  Oracle's watchdog `Monitor` prints the call once, which wakes the Oracle:
+- **Push path.** When `notify` lists `push`, each notification also records a push the
+  run's Oracle owes. The Oracle's watchdog `Monitor` prints the call once, which wakes
+  the Oracle:
   `PushNotification(message="<message>", status="proactive")`. The Oracle's Stop hook
   blocks until `post_any` sees a `PushNotification` call from the Oracle. Any call
   counts as sent, whatever its result text, because Claude Code answers "Not sent —
@@ -283,7 +311,8 @@ tells the user" in [04-agreements.md](04-agreements.md). The mechanics below are
 ## Pause and resume
 
 - When only the user can unblock the run, the Oracle calls `run_pause(reason)`. The run
-  becomes `paused`, the Stop hook lets the Oracle stop, and every gate still applies.
+  becomes `paused`, the Stop hook lets the Oracle stop once it owes the user no
+  `PushNotification` call, and every gate still applies.
   The Oracle tells the user once what to fix.
 - When only some phases are blocked, the Oracle calls `run_pause(reason, phases=[...])`
   instead. The run stays `active`; only the named phases get a `paused_at` and

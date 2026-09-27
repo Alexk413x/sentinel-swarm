@@ -32,7 +32,7 @@ IDLE_STALL = timedelta(minutes=2)
 UNCONFIRMED_AFTER = timedelta(minutes=2)
 _WINDOW_HAIKU = 200_000
 _TAIL_BLOCK = 256 * 1024
-# The Driver checks in every 30 minutes by design (plans/driver-agent.md); the watchdog
+# The Driver checks in every 30 minutes by design (knowledge/prd/02-run-lifecycle.md); the watchdog
 # adds a grace period before it reports one as overdue.
 DRIVER_CHECKIN_INTERVAL = timedelta(minutes=30)
 DRIVER_CHECKIN_GRACE = timedelta(minutes=5)

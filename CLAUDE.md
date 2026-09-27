@@ -31,7 +31,7 @@ the one for a subject. `plans/` holds only plans for work not built yet.
   (two dependent phases, about 10 files; about $12).
 - `.githooks/` — the codebase-kg staleness hooks. Run `sh .githooks/install.sh` once per
   clone.
-- `plans/` — plans for work not built yet, such as `driver-agent.md`.
+- `plans/` — plans for work not built yet, such as `a11y-relay-smoke-test.md`.
 
 ## Conventions shared with the sibling plugins
 

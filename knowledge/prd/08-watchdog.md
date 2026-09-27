@@ -19,11 +19,11 @@ transcript shows it. See "Wake-up delivery" in [05-sessions.md](05-sessions.md).
 | `crashed` | A Manager, Lead, Coder, or Driver is `working`, or `registered` for more than 2 minutes, and its session is missing or not running. An `idle` or `handed_up` agent whose session exited is normal | `agent_resume(target_name=...)` |
 | `stuck` | The session runs, the agent is `working`, and its last heartbeat is older than `stuck_minutes`. Does not apply to a Driver: see `driver_overdue` below | Message it, or have its parent replace it |
 | `driver_overdue` | The Driver's session runs, it is `working`, and its open exploration's last check-in (or its start, with none yet) is older than 30 minutes plus a 5-minute grace | Message it, or have the Oracle stop it and start a fix for whatever blocked it. **(proposed)** |
-| `waiting_permission` | The session waits on a permission prompt. Not also reported as stuck | Tell the user to open that session and answer |
+| `waiting_permission` | A Manager's, Lead's, or Coder's session waits on a permission prompt. Not also reported as crashed or stuck | Tell the user to open that session and answer |
 | `spinning` | The agent's last `spin_failures` test runs for one scope and target all failed. Does not apply to a Driver, which runs no `tests_run` | Ask its parent to `return_work` or `issue_escalate` |
 | `context_high` | The latest request of the agent, the Oracle included, fills `context_pct` of its window | Have its parent replace it. For the Oracle: `run_pause`, then resume in a fresh session |
 | `wake_unconfirmed` | A wake-up the ledger pushed through a channel is neither confirmed nor sent 2 minutes after the push, and its target is live. Reported on the target. **(proposed)** | For an Oracle target: act on the pointer. For any other target: the `SendMessage` call with the pointer |
-| `stalled` | No session of the run runs; or sessions run, but no member session is busy, no member is `working`, and nothing changed for 2 minutes. Not reported while a directive waits on the user | Wake the agent whose work is pending: the reviewer of a submitted handoff, an agent with unread messages, or the Lead of a file with an open issue |
+| `stalled` | No session of the run runs; or sessions run, but no member session is busy, no member is `working`, and nothing changed for 2 minutes. Not reported while a directive waits on the user | Wake the agent whose work is pending: the reviewer of a submitted handoff, an agent with unread messages, or the Lead of a file with an open issue. With no such agent: resume or spawn the owner of the pending work, or, with nothing pending, continue the plan or call `run_finish` |
 
 - The context size is the input, cache read, and cache creation tokens of the last
   assistant response in the agent's transcript. The window is 200,000 tokens when the
@@ -45,8 +45,10 @@ transcript shows it. See "Wake-up delivery" in [05-sessions.md](05-sessions.md).
   the agent, its session, the kind, the detail, and the next step. The Oracle resolves
   each one; open directives block `run_finish`.
 - A new `crashed` or `driver_overdue` report on a Driver session also
-  records a user notification, keyed by its directive id, and shows it as an OS
-  notification. See "Driver notifications" in
+  records a user notification, keyed by its directive id: "Driver crashed" at level
+  error, or "Driver overdue" at level warning. The server shows it as an OS
+  notification when `notify` includes `os`, and the Oracle owes a `PushNotification`
+  for it when `notify` includes `push`. See "Driver notifications" in
   [02-run-lifecycle.md](02-run-lifecycle.md). **(proposed)**
 - A Driver stop rule is a separate mechanism, not the watchdog: it files a directive
   with source `driver`, computed by `compute_loop_status` in `drive.py` from every
