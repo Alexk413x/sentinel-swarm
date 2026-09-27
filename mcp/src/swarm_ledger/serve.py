@@ -188,8 +188,9 @@ def write_server_info(path: Path, info: dict[str, Any]) -> None:
 
 
 def _shut_down(path: Path, repo_root: Path) -> None:
-    _remove_if_ours(path)
+    # Lock first: once server.json is gone, a new server may start, and it needs the lock free.
     lock.release_owned(repo_root, os.getpid())
+    _remove_if_ours(path)
 
 
 def _exit_now(path: Path, repo_root: Path) -> None:

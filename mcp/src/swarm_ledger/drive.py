@@ -13,6 +13,7 @@ from .settings import Settings
 
 _NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 SEVERITIES = ("blocker", "major", "minor")
+UNAVAILABLE_TAG = "[driver-unavailable]"
 
 # Stop rules from knowledge/prd/02-run-lifecycle.md: a finding still present after this many fix
 # attempts in a row stops getting fixes; this many attempts in all is the hard cap; this
@@ -270,6 +271,74 @@ def compute_loop_status(requests: list[dict], findings: list[dict]) -> dict[str,
     }
 
 
+def loop_status(conn: sqlite3.Connection, run_id: int) -> dict[str, Any]:
+    requests = _rows(
+        conn.execute(
+            "SELECT request_id, ordinal, state FROM drive_requests WHERE run_id = ?", (run_id,)
+        )
+    )
+    findings = _rows(
+        conn.execute(
+            "SELECT request_id, fingerprint, area, severity, title, evidence_json "
+            "FROM drive_findings WHERE run_id = ? ORDER BY finding_id",
+            (run_id,),
+        )
+    )
+    for f in findings:
+        f["evidence"] = json.loads(f.pop("evidence_json") or "[]")
+    return compute_loop_status(requests, findings)
+
+
+def open_findings(conn: sqlite3.Connection, run_id: int) -> list[dict]:
+    ordinal_of: dict[int, int] = {}
+    done: list[int] = []
+    for r in conn.execute(
+        "SELECT request_id, ordinal, state FROM drive_requests WHERE run_id = ?", (run_id,)
+    ):
+        ordinal_of[r["request_id"]] = r["ordinal"]
+        if r["state"] == "done":
+            done.append(r["ordinal"])
+    latest: dict[str, dict] = {}
+    for f in _rows(
+        conn.execute(
+            "SELECT finding_id, request_id, fingerprint, title, severity, area "
+            "FROM drive_findings WHERE run_id = ? ORDER BY finding_id",
+            (run_id,),
+        )
+    ):
+        latest[f["fingerprint"]] = f
+    stopped = {
+        row["fingerprint"]
+        for row in conn.execute(
+            "SELECT fingerprint FROM drive_stops WHERE run_id = ? AND kind = 'finding'",
+            (run_id,),
+        )
+    }
+    live = loop_status(conn, run_id)["fingerprints"]
+    return [
+        f
+        for fp, f in sorted(latest.items(), key=lambda item: item[1]["finding_id"])
+        if fp not in stopped
+        and not live.get(fp, {}).get("stop")
+        and not any(o > ordinal_of[f["request_id"]] for o in done)
+    ]
+
+
+def findings_named(conn: sqlite3.Connection, finding_ids: list[int]) -> list[dict]:
+    if not finding_ids:
+        return []
+    marks = ", ".join("?" for _ in finding_ids)
+    rows = {
+        row["finding_id"]: dict(row)
+        for row in conn.execute(
+            "SELECT finding_id, fingerprint, title, severity, area FROM drive_findings "
+            f"WHERE finding_id IN ({marks})",
+            finding_ids,
+        )
+    }
+    return [rows[i] for i in finding_ids if i in rows]
+
+
 def _severities_help() -> str:
     return f"severity must be one of {SEVERITIES}"
 
@@ -324,22 +393,7 @@ class DriveMixin:
     def agent_spawn(self, caller: str, agent_id: str, child_name: str) -> dict: ...
 
     def _drive_loop_status(self, run_id: int) -> dict[str, Any]:
-        requests = _rows(
-            self.conn.execute(
-                "SELECT request_id, ordinal, state FROM drive_requests WHERE run_id = ?",
-                (run_id,),
-            )
-        )
-        findings = _rows(
-            self.conn.execute(
-                "SELECT request_id, fingerprint, area, severity, title, evidence_json "
-                "FROM drive_findings WHERE run_id = ? ORDER BY finding_id",
-                (run_id,),
-            )
-        )
-        for f in findings:
-            f["evidence"] = json.loads(f.pop("evidence_json") or "[]")
-        return compute_loop_status(requests, findings)
+        return loop_status(self.conn, run_id)
 
     def _oracle_agent_id(self, conn: sqlite3.Connection, run_id: int) -> str | None:
         row = conn.execute(
@@ -435,19 +489,24 @@ class DriveMixin:
             channels=self.settings.notify,
         )
 
-    def _driver_unavailable(self, run_id: int) -> str | None:
-        row = self.conn.execute(
-            "SELECT driver_unavailable_at, driver_unavailable_reason FROM runs WHERE run_id = ?",
-            (run_id,),
+    def _unavailable_directive(self, conn: sqlite3.Connection, run_id: int) -> dict | None:
+        row = conn.execute(
+            "SELECT * FROM directives WHERE run_id = ? AND source = 'driver' "
+            "AND substr(body, 1, ?) = ? ORDER BY directive_id DESC LIMIT 1",
+            (run_id, len(UNAVAILABLE_TAG), UNAVAILABLE_TAG),
         ).fetchone()
-        if row is None or row["driver_unavailable_at"] is None:
+        return dict(row) if row is not None else None
+
+    def _explorations_skipped(self, conn: sqlite3.Connection, run_id: int) -> dict | None:
+        directive = self._unavailable_directive(conn, run_id)
+        if directive is None or directive["state"] == "open" or directive["outcome"] != "declined":
             return None
-        return row["driver_unavailable_reason"] or "no reason recorded"
+        return directive
 
     def _block_run_finish_for_driver(self, run_id: int) -> None:
         if not agentfiles.driver_available(self.repo_root):
             return
-        if self._driver_unavailable(run_id) is not None:
+        if self._explorations_skipped(self.conn, run_id) is not None:
             return
         status = self._drive_loop_status(run_id)
         if status["stopped"] or status["clean_latest"]:
@@ -476,6 +535,16 @@ class DriveMixin:
                 raise LedgerError(f"finding {finding_id!r} is not a Driver finding of this run")
             rows.append(row)
         return rows
+
+    def _require_finding_ids(self, conn: sqlite3.Connection, run_id: int) -> None:
+        open_rows = open_findings(conn, run_id)
+        if not open_rows:
+            return
+        listed = "; ".join(f"{f['finding_id']} {f['title']}" for f in open_rows)
+        raise LedgerError(
+            f"{len(open_rows)} Driver finding(s) are open: {listed}. Pass finding_ids=[...] "
+            "with the ids this brief fixes, or finding_ids=[] when it fixes none"
+        )
 
     def _block_fix_for_stops(
         self, conn: sqlite3.Connection, run_id: int, finding_ids: list[int]
@@ -530,11 +599,19 @@ class DriveMixin:
                 "one driver plugin (android-driver, ios-driver, or web-driver) from "
                 "accessibility-tools; skip exploration for this run"
             )
-        unavailable = self._driver_unavailable(c.run_id)
-        if unavailable is not None:
+        unavailable = self._unavailable_directive(self.conn, c.run_id)
+        if unavailable is not None and unavailable["state"] == "open":
             raise LedgerError(
-                f"the Driver is unavailable for this run ({unavailable}); skip exploration "
-                "for this run"
+                f"the Driver is unavailable: directive {unavailable['directive_id']} is open "
+                f"({unavailable['body'].removeprefix(UNAVAILABLE_TAG).strip()}). Fix the cause "
+                "and resolve it applied, or resolve it declined once the user decides to go "
+                "without the Driver"
+            )
+        skipped = self._explorations_skipped(self.conn, c.run_id)
+        if skipped is not None:
+            raise LedgerError(
+                f"the user decided to go without the Driver (directive "
+                f"{skipped['directive_id']} was declined); skip exploration for this run"
             )
         open_row = self.conn.execute(
             "SELECT request_id FROM drive_requests WHERE run_id = ? AND state = 'open'",
@@ -581,7 +658,7 @@ class DriveMixin:
             f"drive_checkin(request_id={request_id}, ...) every 30 minutes, and "
             f"drive_done(request_id={request_id}) when the exploration ends."
         )
-        self.brief_create(caller, agent_id, child_name, "driver", model, body)
+        self.brief_create(caller, agent_id, child_name, "driver", model, body, finding_ids=[])
         spawned = self.agent_spawn(caller, agent_id, child_name)
 
         with write_tx(self.conn) as conn:
@@ -751,12 +828,16 @@ class DriveMixin:
             raise LedgerError(f"{caller!r} has no open exploration")
 
         with self._release_tx() as conn:
-            conn.execute(
-                f"UPDATE runs SET driver_unavailable_at = COALESCE(driver_unavailable_at, {_NOW}), "
-                "driver_unavailable_reason = COALESCE(driver_unavailable_reason, ?) "
-                "WHERE run_id = ?",
-                (reason, c.run_id),
-            )
+            directive = self._unavailable_directive(conn, c.run_id)
+            if directive is None or directive["state"] != "open":
+                cur = conn.execute(
+                    "INSERT INTO directives (run_id, source, sender_name, body) "
+                    "VALUES (?, 'driver', ?, ?)",
+                    (c.run_id, c.name, f"{UNAVAILABLE_TAG} {reason}"),
+                )
+                directive_id = cur.lastrowid
+            else:
+                directive_id = directive["directive_id"]
             for request in open_rows:
                 conn.execute(
                     f"UPDATE drive_requests SET state = 'abandoned', done_at = {_NOW} "
@@ -769,19 +850,18 @@ class DriveMixin:
                 conn,
                 c.run_id,
                 kind="error",
-                event_key=f"drive_unavailable:{c.run_id}",
-                message=f"Driver unavailable: {reason}. The run skips every exploration",
+                event_key=f"drive_unavailable:{directive_id}",
+                message=f"Driver unavailable: {reason}. Explorations wait until it is fixed "
+                "or you decide to go without the Driver",
                 channels=self.settings.notify,
             )
         notify.deliver(notice, self.settings.notify)
 
-        run = dict(
+        result = dict(
             self.conn.execute(
-                "SELECT run_id, driver_unavailable_at, driver_unavailable_reason FROM runs "
-                "WHERE run_id = ?",
-                (c.run_id,),
+                "SELECT * FROM directives WHERE directive_id = ?", (directive_id,)
             ).fetchone()
         )
-        run["abandoned"] = [r["request_id"] for r in open_rows]
-        run["notification"] = notice
-        return run
+        result["abandoned"] = [r["request_id"] for r in open_rows]
+        result["notification"] = notice
+        return result

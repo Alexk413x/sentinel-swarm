@@ -121,7 +121,9 @@ The responsible level **(proposed)**:
 
 - `directive_submit(source, sender_name, body, reply_to)` steers the run from any input.
   Sources: `user_chat`, `outside_session`, `skill`, `watchdog`, and `driver`. The
-  ledger itself writes a `driver` directive for each new Driver stop rule.
+  ledger itself writes a `driver` directive for each new Driver stop rule, and one for
+  a Driver that fails to load. The second blocks explorations and `run_finish` like any
+  open directive; see "Explorations" in [02-run-lifecycle.md](02-run-lifecycle.md).
   `directive_submit` accepts the older `user-chat` and `outside-session` spellings too
   and normalizes them; a stored row from before the rename is migrated to the new
   spelling. It needs no identity, so an ordinary session can call it.

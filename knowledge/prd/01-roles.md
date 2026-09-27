@@ -186,12 +186,14 @@
 - **Exists only when:** the host has `cartographer@cartographer` installed and at least
   one of `android-driver@accessibility-tools`, `ios-driver@accessibility-tools`, or
   `web-driver@accessibility-tools`. `setup` writes `swarm-driver.md` only then;
-  `drive_request` refuses clearly when either is missing. When the plugins are missing
-  or fail to load, the run skips every exploration step, and the report needs no
-  special entry for it. When the plugins are installed but their servers fail to load,
-  the Driver, or the Oracle, calls `drive_unavailable(reason)`. It abandons any open
-  exploration, releases its Driver, and notifies the user. From then on
-  `drive_request` refuses and `run_finish` needs no exploration. **(proposed)**
+  `drive_request` refuses clearly when either is missing. When the plugins are
+  missing, the run skips every exploration step, and the report needs no special entry
+  for it. A Driver whose plugins are installed but fail to load is a normal blocking
+  issue: the Driver, or the Oracle, calls `drive_unavailable(reason)`, which files a
+  directive for the Oracle. The Oracle tries to resolve the cause. Explorations resume
+  once it is fixed, and the run skips them only when the user decides to go without the
+  Driver. The report shows it only as its directive and its notification. See
+  "Explorations" in [02-run-lifecycle.md](02-run-lifecycle.md).
 - **Started by:** the Oracle only. Only the Oracle sends requests, with
   `drive_request`. The Driver starts when the request arrives, and it shuts down when
   its exploration ends. Each session is named `driver-e<exploration number>` after the

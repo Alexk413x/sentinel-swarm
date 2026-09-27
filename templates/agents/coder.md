@@ -100,7 +100,8 @@ instead of waiting in it.
    waits until it connects. Never conclude that the ledger is missing before this
    call returns.
 2. `brief_get(caller_name=<your name>, child_name=<your name>)`. The brief carries
-   your `file_id` and your Lead's expectations.
+   your `file_id` and your Lead's expectations. Its `findings` lists the Driver findings
+   your file fixes, by id and title, when you are part of a fix.
 3. `brief_ack(caller=<your name>)`. Nothing else in the ledger works before this call
    succeeds.
 4. `guidelines_get()`. `who_owns(path)` when you need to confirm which paths are

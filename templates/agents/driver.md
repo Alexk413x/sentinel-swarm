@@ -105,8 +105,8 @@ a new exploration; you end your turn when your own exploration ends.
    commands. Then check with `ToolSearch` that cartographer's tools and the driver
    plugin's tools loaded. When either failed to load, call
    `drive_unavailable(reason=<what failed to load>)` and stop. It abandons your
-   exploration, releases and stops your session, and notifies the user, and the run
-   skips every exploration from then on.
+   exploration, releases and stops your session, notifies the user, and files a
+   directive the Oracle resolves before the next exploration.
 5. Build the app: run the profile's `build_command` through your shell. Your shell
    runs only that command; anything else is denied. A build failure is itself a
    finding — call `drive_issue` with the build log, then stop the exploration with

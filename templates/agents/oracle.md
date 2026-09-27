@@ -132,7 +132,8 @@ For each unlocked phase:
    the approved list for manager>, body=<the brief>, phase_id=<the phase id>)`. The
    brief states the phase goal, its acceptance criteria, the modules you expect, the
    contracts it must honor, and the guidelines that apply. `agent_spawn` refuses a
-   child that has no brief.
+   child that has no brief. While the run has an open Driver finding, pass
+   `finding_ids` on every brief: see "Explorations".
 2. `agent_spawn(caller="oracle", child_name="mgr-<phase>")`. It starts the Manager's
    session with the model you recorded in the brief, and returns the session name.
    The Manager's prompt says only who it is and to read its brief from the ledger.
@@ -223,18 +224,30 @@ messages, or an agent none of whose children is working.
   accepted, or completed but not yet verified, while any departure is neither signed
   off nor reworked, and, when the host has a Driver available, while no exploration has
   ended clean since the last fix wave, unless the loop stopped on a stop rule whose
-  directive you already resolved or the Driver is unavailable for the run.
+  directive you already resolved or the user decided to go without the Driver.
 
 ## Explorations
 
 The Driver builds the app at the start of each exploration and tests that build with
 cartographer. Fixes start while the Driver explores. It exists only when the host has
 cartographer and a driver plugin installed. When `drive_request` refuses because
-neither is installed, or because the Driver is unavailable for this run, skip every
-step below and finish the run on unit tests alone. When a Driver session cannot load
-cartographer's or the driver plugin's servers and has not said so itself, call
-`drive_unavailable(reason=<what failed>)`. It abandons any open exploration, and the
-run skips every exploration from then on.
+neither is installed, or because the user decided to go without the Driver, skip every
+step below and finish the run on unit tests alone.
+
+A Driver that fails to load is a blocking issue, like any other directive. When a
+Driver session cannot load cartographer's or the driver plugin's servers and has not
+said so itself, call `drive_unavailable(reason=<what failed>)`. Either call abandons
+any open exploration, notifies the user, and files a `driver` directive that starts
+with `[driver-unavailable]`. While it is open, `drive_request` and `run_finish`
+refuse. Try to resolve the cause, then `directive_resolve` it:
+
+- `applied` once the cause is fixed. Explorations resume, and `run_finish` again needs
+  a clean exploration or a stop rule.
+- `needs_user` when only the user can fix it or decide to go without the Driver. The
+  directive stays open and blocks the run until the user answers.
+- `declined` when the user decides to go without the Driver. The run skips every
+  exploration from then on, and `run_finish` needs none. Decline it only on the user's
+  answer.
 
 1. **Request one.** After a wave ends — every phase in it approved, or every fix from
    the last exploration's findings approved — call `drive_request(focus=...)`. The
@@ -250,10 +263,14 @@ run skips every exploration from then on.
    records it. Start a fix at once: when a fix phase for that finding's module is
    already running, brief and spawn a new Coder through that module's Manager and
    Lead; otherwise brief and spawn a new Manager, Lead, and Coder for it, the same way
-   you start a phase. Name the findings each fix covers with
-   `brief_create(..., finding_ids=[...])`; each child's brief inherits the list. A fix
-   phase runs unit tests only — nothing builds or runs the app while the Driver still
-   explores.
+   you start a phase. While any finding is open, every brief you create names its
+   findings: `brief_create(..., finding_ids=[...])` with the ids it fixes, or
+   `finding_ids=[]` for a brief that fixes none. `brief_create` refuses a brief without
+   `finding_ids`, and its refusal lists the open ids and titles; it refuses an unknown
+   id too. Each child's brief inherits the list. `brief_get`, `status_tree`, and the
+   report show each fix's finding ids and titles, so every role works from the same
+   ids. A fix phase runs unit tests only — nothing builds or runs the app while the
+   Driver still explores.
 3. **Review check-ins.** `drive_checkin` wakes you roughly every 30 minutes. Read what
    it covered and the steps it took, and look for problems that are not obvious bugs:
    the Driver wandering off the focus list, or repeating itself. The watchdog does not

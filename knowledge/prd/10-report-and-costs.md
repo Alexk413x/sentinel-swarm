@@ -19,10 +19,13 @@ Sections **(contents proposed)**:
 - Returns and fix attempts: path, fix round, who returned it, target dimensions,
   outcome, and issues.
 - Explorations: each one's ordinal, request id, state, and focus, and each finding it
-  recorded with its title, fingerprint, severity, area, and whether it recurred in a
-  later exploration or was not seen again. **(proposed)** A "Stop rules" list shows
-  each `driver` directive's reason, its outcome, and its evidence lines, including what
-  is left after a stall. **(proposed)**
+  recorded with its id, title, fingerprint, severity, area, and whether it recurred in
+  a later exploration or was not seen again. **(proposed)** A "Fixes" list shows each
+  brief that names findings: the child's name and role, and each finding's id and
+  title. **(proposed)** A "Stop rules" list shows each `[driver-stop]` directive's
+  reason, its outcome, and its evidence lines, including what is left after a stall.
+  **(proposed)** A Driver that fails to load has no entry here; it shows only as its
+  directive and its notification.
 - Open items: open deferrals, and every issue by round with its attempts and resolution.
 - Decided deferrals: who proposed each one, who decided it, and the decision and
   reason. **(proposed)**

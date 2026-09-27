@@ -184,7 +184,7 @@ any directive is open, any deferral is open, any change request is not verified 
 declined, or any departure is neither signed off nor reworked. **(proposed)** It also
 refuses, when the host has a Driver available, while no exploration has ended clean
 since the last fix wave, unless the loop stopped on a stop rule whose directive is
-resolved, or the Driver is unavailable for the run: see "Explorations" below. It then
+resolved, or the user decided to go without the Driver: see "Explorations" below. It then
 sets the run to `finished`, releases every live agent except the Oracle, builds the
 report, and closes the Oracle's row. The
 ledger server then stops the Oracle's background session and exits. See "What stops
@@ -209,11 +209,25 @@ when" in [05-sessions.md](05-sessions.md).
 - Every wave starts from a new plan and new agents, including a fix wave planned from a
   Driver exploration. A review fix inside a wave, such as a return or a pushback,
   resumes the existing agents. The Oracle groups the issues by module, one fix phase per
-  module. **(proposed)** Each fix's brief names the findings it fixes with
-  `brief_create(..., finding_ids=[...])`. The brief stores the list, and a child's
-  brief inherits its parent's list unless it names its own. **(proposed)** The
-  finding's evidence in the Coder's brief body and the re-claim of the file are
-  **(proposed, not built)**.
+  module. **(proposed)**
+- Fixes always name their finding ids, so every role works from the same ids and can
+  follow the plan. While the run has an open finding, every brief the Oracle creates
+  passes `finding_ids` explicitly: the ids it fixes, or an empty list for a brief that
+  fixes none. `brief_create` refuses a missing `finding_ids` with a message that lists
+  each open finding's id and title, and refuses an unknown id. The brief stores the
+  list, and a child's brief inherits its parent's list unless it names its own. The fix
+  gates below apply to every list.
+  - An open finding is the latest finding of a fingerprint that no later `done`
+    exploration left out, and whose fingerprint has not hit a per-finding stop rule. An
+    empty list is stored as no list. The Driver's own brief from `drive_request` passes
+    an empty list. **(proposed)**
+  - The ids are visible to every role **(proposed)**: `brief_get` returns `findings`,
+    the id, fingerprint, title, severity, and area of each finding the brief names;
+    `status_tree` returns `open_findings` and `fixes`, each brief that names findings
+    with their ids and titles; and the report's Explorations section shows each
+    finding's id and a "Fixes" list.
+  - The finding's evidence in the Coder's brief body and the re-claim of the file are
+    **(proposed, not built)**.
 - Each request carries a focus list the Oracle writes. The first exploration covers
   every PRD feature; each later one covers the features the last wave touched, every
   open issue to recheck, and a quick smoke pass over everything else; the final clean
@@ -221,8 +235,8 @@ when" in [05-sessions.md](05-sessions.md).
   to recheck earlier findings, then runs `map-explore` with the focus list as its goal.
   **(proposed)**
 - `drive_request(focus)` is the Oracle's call. It refuses an empty focus list, a host
-  with no Driver available, a run whose Driver is unavailable, an earlier exploration
-  that is still open
+  with no Driver available, a run with an open `[driver-unavailable]` directive or one
+  resolved `declined`, an earlier exploration that is still open
   (`drive_requests.state = 'open'`), and a Manager, Lead, or Coder still live in the
   run: a new exploration starts only after every fix has finished. It writes the
   Driver's brief and starts its session the same way `brief_create` and `agent_spawn`
@@ -252,11 +266,25 @@ when" in [05-sessions.md](05-sessions.md).
   as `abandoned`. The Oracle stops a stuck or crashed Driver this way, then requests the
   next exploration. An abandoned exploration never counts as clean, and it is not a wave
   in the stall count; its findings still count as seen. **(proposed)**
-- `drive_unavailable(reason)` records that the Driver's plugin servers failed to load.
-  The Driver calls it for its own exploration, or the Oracle calls it. It abandons any
-  open exploration, releases its Driver, and records an error notification for the
-  user. From then on `drive_request` refuses and `run_finish` needs no exploration.
-  The mechanism is **(proposed)**.
+- A Driver that fails to load is a normal blocking issue. `drive_unavailable(reason)`
+  records that the Driver's plugin servers failed to load. The Driver calls it for its
+  own exploration, or the Oracle calls it. It files a `driver` directive for the
+  Oracle, `[driver-unavailable] <reason>`, abandons any open exploration, releases its
+  Driver, and records an error notification for the user. It never turns explorations
+  off by itself. While the directive is open, `drive_request` refuses and says why, and
+  `run_finish` refuses, as it does for every open directive. The Oracle tries to
+  resolve the cause, then resolves the directive:
+  - `applied`: the cause is fixed. Explorations resume, and `run_finish` again needs a
+    clean exploration or a stop rule.
+  - `needs_user`: the directive stays open and blocks the run until the user answers,
+    as every `needs_user` directive does.
+  - `declined`: the user decided to go without the Driver. The run skips every
+    exploration from then on, and `run_finish` no longer demands one.
+  - The mechanism is **(proposed)**: the ledger reads the run's latest
+    `[driver-unavailable]` directive. `scheduled` counts as `applied`. A user reply
+    through `reply_to` closes the directive but leaves its outcome `needs_user`, which
+    counts as `applied` until the Oracle resolves it `declined`. A second call while
+    the directive is open returns it and files nothing new.
 - **Stop rules.** The loop stops on lack of progress, not a fixed count. A bug still
   there after 3 fix attempts in a row stops getting fixes and goes to the user with its
   evidence. A bug gets at most 5 fix attempts in all. The loop stops when 3 fix waves in
@@ -298,16 +326,19 @@ tells the user" in [04-agreements.md](04-agreements.md). The mechanics below are
   order: `blocked` (error), a stop rule it filed a new directive for (warning), or a
   clean exploration (done). Among new stop rules, a stall comes first, and its message
   lists what is left. An exploration with findings and no new stop rule records none.
-  `drive_unavailable` records one (error) per run. The watchdog records one for each
-  new report on a Driver session: `crashed` (error) or `driver_overdue` (warning).
+  `drive_unavailable` records one (error) per directive it files, for example `Driver
+  unavailable: <reason>. Explorations wait until it is fixed or you decide to go
+  without the Driver`. The watchdog records one for each new report on a Driver
+  session: `crashed` (error) or `driver_overdue` (warning).
   `driver_overdue` is the Driver's stuck report; the watchdog never reports a Driver as
   `stuck`. See [08-watchdog.md](08-watchdog.md).
 - **Levels.** Each kind maps to a level: done is success, warning is warning, and error
   is error. The level picks the notification's logo: the plugin icon with a green,
   amber, or red eye, `assets/icon-<level>.png`.
 - **Dedupe.** The `notifications` table keeps one row per run and event key:
-  `drive_done:<request_id>`, `directive:<directive_id>`, `drive_unavailable:<run_id>`,
-  or `issue:<issue_id>` for an issue that ends round 3 below the floor. A repeat of the
+  `drive_done:<request_id>`, `directive:<directive_id>`,
+  `drive_unavailable:<directive_id>`, or `issue:<issue_id>` for an issue that ends
+  round 3 below the floor. A repeat of the
   same event records nothing and notifies no one.
 - **Message.** One line, at most 199 characters, with no markdown. It leads with what
   the user acts on, for example `Driver done: exploration 3 clean, 0 open bugs, 4 fixed

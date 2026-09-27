@@ -292,9 +292,11 @@ def brief_create(
     agent_id: str | None = None,
 ) -> dict[str, Any]:
     """Creates a brief for the caller's child role (Oracle->Manager, Manager->Lead, Lead->Coder).
-    `finding_ids` names the Driver findings the child fixes; omitted, the child inherits the
-    caller's own brief's list. Refuses a finding that hit a stop rule, or one whose area has
-    an open pattern stop directive."""
+    `finding_ids` names the Driver findings the child fixes, and [] means it fixes none. While
+    the run has an open finding, the Oracle must pass it; the refusal lists the open ids and
+    titles. Omitted by a Manager or Lead, the child inherits the caller's own brief's list.
+    Refuses an unknown finding, one that hit a stop rule, or one whose area has an open
+    pattern stop directive."""
     return _call(
         _ledger().brief_create,
         caller=caller,
@@ -312,7 +314,8 @@ def brief_create(
 
 @mcp.tool
 def brief_get(caller_name: str, child_name: str) -> dict[str, Any]:
-    """Returns the latest brief for a child name; a new agent calls it before it has an agent_id."""
+    """Returns the latest brief for a child name; a new agent calls it before it has an agent_id.
+    `findings` lists the id, fingerprint, title, severity, and area of each finding it fixes."""
     return _call(_ledger().brief_get, caller_name=caller_name, child_name=child_name)
 
 
@@ -905,7 +908,9 @@ def version_restore(caller: str, version_id: int, agent_id: str | None = None) -
 
 @mcp.tool
 def status_tree(caller: str, agent_id: str | None = None) -> dict[str, Any]:
-    """Returns the run's phase, module, and file status tree with live agents; any agent may."""
+    """Returns the run's phase, module, and file status tree with live agents; any agent may.
+    `open_findings` lists the Driver findings not yet fixed or stopped, and `fixes` lists each
+    brief that names findings, with their ids and titles."""
     return _call(_ledger().status_tree, caller=caller, agent_id=agent_id)
 
 
@@ -991,10 +996,11 @@ def drive_done(
 
 @mcp.tool
 def drive_unavailable(caller: str, reason: str, agent_id: str | None = None) -> dict[str, Any]:
-    """Marks the Driver unavailable for the rest of the run when its plugin servers fail to
-    load; the Driver or the Oracle calls this with what failed. Any open exploration is
-    abandoned and its Driver released, drive_request refuses from then on, run_finish no longer
-    needs an exploration, and the user is notified."""
+    """Files a [driver-unavailable] directive when the Driver's plugin servers fail to load;
+    the Driver or the Oracle calls this with what failed. Any open exploration is abandoned and
+    its Driver released, and the user is notified. drive_request and run_finish refuse while
+    the directive is open. Resolved applied or scheduled, explorations resume; resolved
+    declined, the run skips them and run_finish needs none."""
     return _call(_ledger().drive_unavailable, caller=caller, agent_id=agent_id, reason=reason)
 
 

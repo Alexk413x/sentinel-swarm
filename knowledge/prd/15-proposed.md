@@ -135,7 +135,7 @@ Built on 2026-09-27, Driver notifications (see "Driver notifications" in [02-run
 
 - Two delivery paths, both on by default: an OS notification from the ledger server itself, and a `PushNotification` the Oracle owes. `notify: [os, push]` in the settings file picks them; `[]` turns both off. A single value reads as a one-item list, and an empty or unset key keeps both.
 - The events: `drive_done` with `blocked`, a new stop-rule directive (a stall first), or a clean exploration, at most one per exploration in that order; and a new `crashed` or `driver_overdue` watchdog report on a Driver session. `driver_overdue` stands in for `stuck`, which the watchdog never reports on a Driver.
-- One `notifications` row per run and event key (`drive_done:<request_id>`, `directive:<directive_id>`, `drive_unavailable:<run_id>`, or `issue:<issue_id>`), so a repeat notifies no one.
+- One `notifications` row per run and event key (`drive_done:<request_id>`, `directive:<directive_id>`, `drive_unavailable:<directive_id>`, or `issue:<issue_id>`), so a repeat notifies no one.
 - `drive_done(request_id, blocked=None)` is the Driver's path to report that it cannot continue. It refuses `blocked` until the exploration has a finding.
 - The message texts, capped at 199 characters with backticks and asterisks removed. A stop-rule message names the first new rule and counts the rest as "(+N more)".
 - The Windows toast runs through Windows PowerShell 5.1 with `-EncodedCommand` under the AppUserModelID `SentinelSwarm.Notifications`, which each toast registers under `HKCU\Software\Classes\AppUserModelId`; macOS uses `osascript`; Linux uses `notify-send` when installed and logs a skip otherwise. Each runs in a daemon thread with a 30-second timeout, and a failure goes to the server log.
@@ -147,13 +147,9 @@ Built on 2026-09-27, Driver notifications (see "Driver notifications" in [02-run
 
 Built on 2026-09-27, the eight rules the PRD audit found unbuilt, choices Alex has not reviewed:
 
-- `drive_unavailable(reason)`, from the Driver for its own open exploration or from the
-  Oracle, marks the Driver unavailable for the rest of the run in
-  `runs.driver_unavailable_at` and `driver_unavailable_reason`. It abandons any open
-  exploration, releases its Driver, and records an error notification
-  (`drive_unavailable:<run_id>`). `drive_request` then refuses, and the `run_finish`
-  gate passes. The report adds no entry of its own; the notification appears in the
-  report's notifications list with every other notification.
+- `drive_unavailable(reason)` is callable by the Driver for its own open exploration
+  or by the Oracle. It abandons any open exploration and releases its Driver. What it
+  records changed with the 2026-09-27 decision; see the next list.
 - `score_record` refuses a score set whose `applicable` does not list all nine
   dimensions, and a dimension marked not applicable with an empty reason.
 - Releasing a Driver sets its open exploration to `abandoned`, with `done_at`. An
@@ -175,7 +171,7 @@ Built on 2026-09-27, the eight rules the PRD audit found unbuilt, choices Alex h
   notification adds the fingerprint and the explorations it recurred in.
 - A stall's directive and notification list every finding of the latest exploration as
   what is left, and the stall is the first stop rule in the exploration's notification.
-- The report's Explorations section lists each stop directive with its evidence, its
+- The report's Explorations section lists each `[driver-stop]` directive with its evidence, its
   Notifications section lists every `notifications` row, and its Directives section
   shows only the first line of a `driver` directive.
 - An issue ends round 3 when a plateau or a regression brings an issue at round
@@ -184,3 +180,37 @@ Built on 2026-09-27, the eight rules the PRD audit found unbuilt, choices Alex h
   or its criterion below `criterion_floor`, or, for an issue with no dimension, any
   dimension or criterion. `attempt_record` then records an error notification,
   `issue:<issue_id>`, and returns it in `notifications`.
+
+Built on 2026-09-27, Alex's two decisions of 2026-09-27 (a Driver that fails to load
+blocks the run; fixes always name their finding ids), choices Alex has not reviewed:
+
+- `drive_unavailable(reason)` files an open directive from source `driver`, sender the
+  caller's name, body `[driver-unavailable] <reason>`, and records an error
+  notification with event key `drive_unavailable:<directive_id>`. A second call while
+  that directive is open returns it and files nothing new.
+- The outcome mapping. The ledger reads the run's latest `[driver-unavailable]`
+  directive. Open, including `needs_user`: `drive_request` refuses and names the
+  directive, and `run_finish` refuses as for any open directive. `declined`:
+  `drive_request` refuses for the rest of the run, and the `run_finish` Driver gate
+  passes with no exploration. `applied` or `scheduled`: explorations resume, and
+  `run_finish` again needs a clean exploration or a resolved stop rule. A user reply
+  through `reply_to` closes the directive but keeps the outcome `needs_user`, which
+  counts as resumed until the Oracle resolves the directive `declined`.
+- The migration drops `runs.driver_unavailable_at` and `driver_unavailable_reason`. A
+  run that had them set gets a resolved `declined` `[driver-unavailable]` directive, so
+  it keeps skipping explorations. On SQLite older than 3.35, which cannot drop a
+  column, the columns stay unused and are cleared.
+- The report's "Stop rules" list shows only `[driver-stop]` directives, so a Driver that
+  fails to load shows only in the Directives and Notifications sections.
+- An open finding is the latest finding row of a fingerprint that no later `done`
+  exploration left out and that no per-finding stop rule closed, including one that
+  reaches the stop in the open exploration. A pattern pause does not close a finding.
+- Only the Oracle must pass `finding_ids` while a finding is open. A Manager or Lead that
+  omits it inherits its own brief's list. `drive_request` passes `[]` for the Driver's
+  brief. An empty list is stored as no list.
+- The refusal lists every open finding as `<id> <title>`. An unknown id is refused from
+  any role. A named finding that a later exploration cleared is accepted.
+- `brief_get` returns `findings`: the id, fingerprint, title, severity, and area of each
+  finding its brief names. `status_tree` returns `open_findings` and `fixes`, each brief
+  that names findings, with its child's name and role and each finding. The report's
+  Explorations section shows each finding's id and a "Fixes" list of the same briefs.

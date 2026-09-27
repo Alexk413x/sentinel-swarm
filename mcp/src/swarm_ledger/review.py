@@ -10,6 +10,7 @@ from typing import Literal
 
 from . import graph, notify, pricing, rubric, versions
 from .db import ledger_path, write_tx
+from .drive import findings_named, open_findings
 from .identity import ROLES, Caller, LedgerError, require_role, resolve
 from .rubric import Rating
 from .settings import Settings
@@ -1317,7 +1318,28 @@ class ReviewMixin:
             )
         )
 
-        return {"run": dict(run), "phases": phases, "agents": agents}
+        return {
+            "run": dict(run),
+            "phases": phases,
+            "agents": agents,
+            "open_findings": open_findings(conn, run_id),
+            "fixes": self._fixes(conn, run_id),
+        }
+
+    def _fixes(self, conn: sqlite3.Connection, run_id: int) -> list[dict]:
+        return [
+            {
+                "brief_id": b["brief_id"],
+                "child_name": b["child_name"],
+                "child_role": b["child_role"],
+                "findings": findings_named(conn, json.loads(b["finding_ids_json"])),
+            }
+            for b in conn.execute(
+                "SELECT brief_id, child_name, child_role, finding_ids_json FROM briefs "
+                "WHERE run_id = ? AND finding_ids_json IS NOT NULL ORDER BY brief_id",
+                (run_id,),
+            )
+        ]
 
     def report_build(self, caller: str, agent_id: str) -> dict:
         conn = self.conn
@@ -1483,13 +1505,19 @@ class ReviewMixin:
                     else "not seen again"
                 )
                 lines.append(
-                    f"- [{f['severity']}] {f['title']} ({f['fingerprint']}), area "
-                    f"{f['area'] or 'unknown'} -- {fix}"
+                    f"- [{f['severity']}] finding {f['finding_id']}: {f['title']} "
+                    f"({f['fingerprint']}), area {f['area'] or 'unknown'} -- {fix}"
                 )
+        fixes = self._fixes(conn, run_id)
+        if fixes:
+            lines.append("### Fixes")
+        for fix in fixes:
+            named = "; ".join(f"finding {f['finding_id']} {f['title']}" for f in fix["findings"])
+            lines.append(f"- {fix['child_name']} ({fix['child_role']}): {named}")
         stop_directives = _rows(
             conn.execute(
                 "SELECT * FROM directives WHERE run_id = ? AND source = 'driver' "
-                "ORDER BY directive_id",
+                "AND substr(body, 1, 13) = '[driver-stop]' ORDER BY directive_id",
                 (run_id,),
             )
         )

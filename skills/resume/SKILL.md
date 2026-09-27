@@ -77,9 +77,9 @@ The Oracle calls `run_start` in the new session, as it does for a new run.
    row in agent view is waiting, and do not resume it.
 5. When a session cannot be resumed, release it with
    `agent_release(target_agent_id)`, then `brief_create` from the previous brief's
-   content and `agent_spawn` a fresh session. A child is re-created from its brief,
-   not started over from the plan. `brief_create` refuses a `child_name` that a live
-   agent still holds, so release first.
+   content and its `finding_ids`, and `agent_spawn` a fresh session. A child is
+   re-created from its brief, not started over from the plan. `brief_create` refuses a
+   `child_name` that a live agent still holds, so release first.
 6. Anything the records cannot settle goes to the user: a Coder that stopped between
    its last edit and its handoff, a file whose claim is live but whose owner is gone,
    or an issue in the middle of a round.

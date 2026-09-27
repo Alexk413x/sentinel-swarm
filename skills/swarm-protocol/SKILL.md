@@ -119,6 +119,9 @@ keeps every gate.
   session name a live session already uses, and a start past the parallelism cap.
 - `brief_create` refuses a model that is not on the child role's approved list, and
   refuses a name a live agent already holds.
+- While the run has an open Driver finding, `brief_create` refuses an Oracle brief
+  without `finding_ids`: the ids it fixes, or `[]` for none. It refuses an unknown
+  finding id from any role. A child's brief inherits its parent's list.
 - `claim_file` refuses a path that already has a live claim. The claim is the file
   lock; `who_owns(path)` names the owner.
 - `score_record(kind="lead")` must come before `review_compare`. After

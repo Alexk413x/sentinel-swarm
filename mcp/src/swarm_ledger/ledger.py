@@ -11,7 +11,7 @@ from pathlib import Path
 from . import __version__, agentfiles, lock, serve, sessions, wake
 from .agreements import AgreementsMixin
 from .db import connect, ensure_git_exclude, ledger_path, write_tx
-from .drive import DriveMixin
+from .drive import DriveMixin, findings_named
 from .identity import ROLES, Caller, LedgerError, child_roles_of, require_role, resolve
 from .oversight import OversightMixin
 from .repo import RepoMixin
@@ -754,6 +754,8 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
             ):
                 raise LedgerError(f"an unacked brief already exists for {child_name!r}")
             if finding_ids is None:
+                if c.role == "oracle" and c.run_id is not None:
+                    self._require_finding_ids(conn, c.run_id)
                 finding_ids = self._inherited_finding_ids(conn, c.agent_id)
             if c.run_id is not None:
                 self._block_fix_for_stops(conn, c.run_id, finding_ids)
@@ -799,7 +801,9 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
         ).fetchone()
         if row is None:
             raise LedgerError(f"no brief found for {child_name!r}")
-        return dict(row)
+        brief = dict(row)
+        brief["findings"] = findings_named(self.conn, json.loads(brief["finding_ids_json"] or "[]"))
+        return brief
 
     def brief_ack(self, caller: str, agent_id: str, agent_type: str | None = None) -> dict:
         del agent_type

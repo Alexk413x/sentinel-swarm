@@ -13,11 +13,7 @@ CREATE TABLE IF NOT EXISTS runs (
     ended_at TEXT,
     watch_heartbeat_at TEXT,
     watch_expires_at TEXT,
-    watch_owner TEXT,
-    -- Set by drive_unavailable when the Driver's plugin servers fail to load. The run then
-    -- skips every exploration: drive_request refuses and run_finish needs none.
-    driver_unavailable_at TEXT,
-    driver_unavailable_reason TEXT
+    watch_owner TEXT
 );
 
 CREATE TABLE IF NOT EXISTS phases (
@@ -464,8 +460,9 @@ CREATE TABLE IF NOT EXISTS notifications (
     run_id INTEGER NOT NULL REFERENCES runs (run_id) ON DELETE RESTRICT,
     -- done, warning, or error.
     kind TEXT NOT NULL,
-    -- One row per event: drive_done:<request_id>, directive:<directive_id>, or
-    -- issue:<issue_id> for an issue that ended its last round below the floor.
+    -- One row per event: drive_done:<request_id>, directive:<directive_id>,
+    -- drive_unavailable:<directive_id>, or issue:<issue_id> for an issue that ended its
+    -- last round below the floor.
     event_key TEXT NOT NULL,
     message TEXT NOT NULL,
     -- 1 when the settings' notify list holds push: the run's Oracle owes a PushNotification.

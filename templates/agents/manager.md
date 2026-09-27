@@ -94,7 +94,8 @@ you, so you end your turn while children work instead of waiting in it.
    ledger server can still be connecting when your session opens, and this call
    waits until it connects. Never conclude that the ledger is missing before this
    call returns.
-2. `brief_get(caller_name=<your name>, child_name=<your name>)`.
+2. `brief_get(caller_name=<your name>, child_name=<your name>)`. Its `findings` lists
+   the Driver findings your phase fixes, by id and title, when it is a fix phase.
 3. `brief_ack(caller=<your name>)`. Nothing else in the ledger works before this
    call succeeds. It binds your name to your session.
 4. `guidelines_get()` and `run_status()`.
@@ -120,8 +121,8 @@ you, so you end your turn while children work instead of waiting in it.
    and the guidelines that apply. `agent_spawn` refuses a child that has no brief.
    In a fix phase, the Lead's brief inherits the Driver findings your own brief
    names. Pass `finding_ids=[...]` to name a narrower list. `brief_create` and
-   `agent_spawn` refuse a finding that hit a Driver stop rule, or one in an area a
-   pattern paused.
+   `agent_spawn` refuse an unknown finding, a finding that hit a Driver stop rule, or
+   one in an area a pattern paused.
 2. `agent_spawn(caller=<your name>, child_name="lead-<phase>-<module>")`. It starts
    the Lead's session with the model you recorded in the brief, and returns the
    session name.

@@ -9,7 +9,7 @@ import pytest
 
 from swarm_ledger import notify, sessions
 from swarm_ledger.db import connect, write_tx
-from swarm_ledger.drive import compute_loop_status
+from swarm_ledger.drive import compute_loop_status, open_findings
 from swarm_ledger.identity import LedgerError
 from swarm_ledger.ledger import Ledger
 from swarm_ledger.rubric import DIMENSIONS
@@ -165,7 +165,16 @@ def _approve_phase(ledger: Ledger, phase_id: int) -> None:
 # -- 1. A Driver whose servers fail to load -----------------------------------------------------
 
 
-def test_a_driver_marks_itself_unavailable_and_the_run_skips_explorations(
+def _unavailable(ledger: Ledger, ctx: dict, reason: str = "the driver plugin failed") -> dict:
+    return ledger.drive_unavailable("oracle", ctx["oracle_id"], reason)
+
+
+def _finish(ledger: Ledger, ctx: dict) -> dict:
+    _approve_phase(ledger, ctx["phase_id"])
+    return ledger.run_finish("oracle", ctx["oracle_id"], "success")
+
+
+def test_a_driver_that_fails_to_load_files_a_blocking_directive(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
     ctx = _bootstrap(ledger, claude)
@@ -176,7 +185,10 @@ def test_a_driver_marks_itself_unavailable_and_the_run_skips_explorations(
         explored["name"], request["agent_id"], "cartographer's MCP server did not start"
     )
 
-    assert result["driver_unavailable_reason"] == "cartographer's MCP server did not start"
+    assert result["source"] == "driver"
+    assert result["sender_name"] == "driver-e1"
+    assert result["state"] == "open"
+    assert result["body"] == "[driver-unavailable] cartographer's MCP server did not start"
     assert result["abandoned"] == [request["request_id"]]
     row = ledger.conn.execute(
         "SELECT state FROM drive_requests WHERE request_id = ?", (request["request_id"],)
@@ -188,25 +200,80 @@ def test_a_driver_marks_itself_unavailable_and_the_run_skips_explorations(
     assert driver["state"] == "released"
     [notice] = _notifications(ledger)
     assert notice["kind"] == "error"
+    assert notice["event_key"] == f"drive_unavailable:{result['directive_id']}"
     assert notice["message"].startswith("Driver unavailable: cartographer's MCP server")
 
-    with pytest.raises(LedgerError, match="the Driver is unavailable for this run"):
+    with pytest.raises(LedgerError, match=f"directive {result['directive_id']} is open"):
         ledger.drive_request("oracle", ctx["oracle_id"], "again")
-    _approve_phase(ledger, ctx["phase_id"])
-    assert ledger.run_finish("oracle", ctx["oracle_id"], "success")["state"] == "finished"
+    with pytest.raises(LedgerError, match="1 directive"):
+        _finish(ledger, ctx)
 
 
-def test_the_oracle_marks_the_driver_unavailable_before_any_exploration(
+def test_a_second_call_keeps_the_one_open_directive(ledger: Ledger, claude: FakeClaude) -> None:
+    ctx = _bootstrap(ledger, claude)
+    first = _unavailable(ledger, ctx)
+    second = _unavailable(ledger, ctx, "still failing")
+    assert second["directive_id"] == first["directive_id"]
+    assert len(_notifications(ledger)) == 1
+
+
+def test_a_fixed_driver_resumes_explorations_and_run_finish_needs_one_again(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
     ctx = _bootstrap(ledger, claude)
+    directive = _unavailable(ledger, ctx)
+    ledger.directive_resolve(
+        "oracle", ctx["oracle_id"], directive["directive_id"], "applied", "reinstalled"
+    )
+
+    with pytest.raises(LedgerError, match="no exploration has run yet"):
+        ledger._block_run_finish_for_driver(ctx["run_id"])
+    assert ledger.drive_request("oracle", ctx["oracle_id"], "every feature")["ordinal"] == 1
+
+
+def test_a_question_to_the_user_keeps_the_run_blocked(ledger: Ledger, claude: FakeClaude) -> None:
+    ctx = _bootstrap(ledger, claude)
+    directive = _unavailable(ledger, ctx)
+    ledger.directive_resolve(
+        "oracle", ctx["oracle_id"], directive["directive_id"], "needs_user", "Go without it?"
+    )
+
+    with pytest.raises(LedgerError, match="is open"):
+        ledger.drive_request("oracle", ctx["oracle_id"], "again")
+    with pytest.raises(LedgerError, match="1 directive"):
+        _finish(ledger, ctx)
+
+
+def test_going_without_the_driver_skips_explorations_for_the_run(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    directive = _unavailable(ledger, ctx, "the emulator image is missing")
+    ledger.directive_resolve(
+        "oracle", ctx["oracle_id"], directive["directive_id"], "needs_user", "Go without it?"
+    )
+    reply = ledger.directive_submit(
+        "user_chat", "alex", "Go without the Driver.", reply_to=directive["directive_id"]
+    )
     with pytest.raises(LedgerError, match="no exploration has run yet"):
         ledger._block_run_finish_for_driver(ctx["run_id"])
 
-    result = ledger.drive_unavailable("oracle", ctx["oracle_id"], "the driver plugin failed")
+    ledger.directive_resolve(
+        "oracle", ctx["oracle_id"], directive["directive_id"], "declined", "the user said so"
+    )
+    ledger.directive_resolve("oracle", ctx["oracle_id"], reply["directive_id"], "applied", "ok")
 
-    assert result["abandoned"] == []
-    ledger._block_run_finish_for_driver(ctx["run_id"])
+    with pytest.raises(LedgerError, match="go without the Driver"):
+        ledger.drive_request("oracle", ctx["oracle_id"], "again")
+    assert _finish(ledger, ctx)["state"] == "finished"
+    report = ledger.write_report(ctx["run_id"])["text"]
+    explorations = report.split("## Explorations", 1)[1].split("## Open items", 1)[0]
+    assert "unavailable" not in explorations
+    assert "Stop rules" not in explorations
+    directives = report.split("## Directives", 1)[1].split("## Notifications", 1)[0]
+    assert "- [driver] [driver-unavailable] the emulator image is missing -> declined" in directives
+    notifications = report.split("## Notifications to the user", 1)[1]
+    assert "Driver unavailable: the emulator image is missing" in notifications
 
 
 def test_drive_unavailable_needs_a_reason_and_the_oracle_or_the_driver(
@@ -434,6 +501,77 @@ def test_brief_create_refuses_a_finding_of_another_run(ledger: Ledger, claude: F
         _brief_fix(ledger, ctx, "mgr-x", [999])
 
 
+# -- 5b. Fixes always name their finding ids -----------------------------------------------------
+
+
+def test_the_oracle_must_name_finding_ids_while_a_finding_is_open(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    assert ledger.brief_create("oracle", ctx["oracle_id"], "mgr-0", "manager", "opus", "Build.")
+    [f1] = _explore(ledger, ctx, [{**_FINDING, "fingerprint": "F1"}], done=False)["finding_ids"]
+
+    with pytest.raises(
+        LedgerError, match=f"1 Driver finding.* open: {f1} Login button fails contrast"
+    ):
+        ledger.brief_create("oracle", ctx["oracle_id"], "mgr-1", "manager", "opus", "Build.")
+    assert _brief_fix(ledger, ctx, "mgr-1", [])["finding_ids_json"] is None
+    assert _brief_fix(ledger, ctx, "mgr-f1", [f1])["finding_ids_json"] == json.dumps([f1])
+    with pytest.raises(LedgerError, match="not a Driver finding of this run"):
+        _brief_fix(ledger, ctx, "mgr-x", [f1, 999])
+
+
+def test_a_finding_a_later_exploration_cleared_or_a_stop_closed_is_not_open(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    f1, g4 = _three_in_a_row(ledger, ctx)["finding_ids"]
+    assert [f["finding_id"] for f in open_findings(ledger.conn, ctx["run_id"])] == [g4]
+
+    _explore(ledger, ctx, [])
+    assert open_findings(ledger.conn, ctx["run_id"]) == []
+    assert ledger.brief_create("oracle", ctx["oracle_id"], "mgr-1", "manager", "opus", "Build.")
+
+
+def test_every_role_sees_the_finding_ids_a_fix_names(ledger: Ledger, claude: FakeClaude) -> None:
+    ctx = _bootstrap(ledger, claude)
+    explored = _explore(
+        ledger,
+        ctx,
+        [
+            {**_FINDING, "fingerprint": "F1"},
+            {**_FINDING, "fingerprint": "F2", "title": "Cart total wrong", "area": "cart"},
+        ],
+    )
+    f1, f2 = explored["finding_ids"]
+    _brief_fix(ledger, ctx, "mgr-f1", [f1])
+    ledger.agent_register_start("mgr-agent", "manager", parent_agent_id=ctx["oracle_id"])
+    ledger.brief_ack("mgr-f1", "mgr-agent")
+    ledger.brief_create("mgr-f1", "mgr-agent", "lead-f1", "lead", "sonnet", "Fix it.")
+
+    brief = ledger.brief_get("lead-f1", "lead-f1")
+    assert brief["finding_ids_json"] == json.dumps([f1])
+    assert [(f["finding_id"], f["title"]) for f in brief["findings"]] == [
+        (f1, "Login button fails contrast")
+    ]
+
+    tree = ledger.status_tree("oracle", ctx["oracle_id"])
+    assert [f["finding_id"] for f in tree["open_findings"]] == [f1, f2]
+    assert [
+        (fix["child_name"], [f["finding_id"] for f in fix["findings"]]) for fix in tree["fixes"]
+    ] == [
+        ("mgr-f1", [f1]),
+        ("lead-f1", [f1]),
+    ]
+
+    report = ledger.write_report(ctx["run_id"])["text"]
+    explorations = report.split("## Explorations", 1)[1].split("## Open items", 1)[0]
+    assert f"finding {f2}: Cart total wrong (F2)" in explorations
+    assert "### Fixes" in explorations
+    assert f"- mgr-f1 (manager): finding {f1} Login button fails contrast" in explorations
+    assert f"- lead-f1 (lead): finding {f1} Login button fails contrast" in explorations
+
+
 # -- 6. Three waves that fix nothing: the Oracle reports what is left ---------------------------
 
 
@@ -597,7 +735,7 @@ def test_no_floor_notification_before_the_last_round_or_above_the_floor(
 # -- Schema migration ---------------------------------------------------------------------------
 
 
-def test_connect_adds_the_gap_columns_and_the_drive_stops_table(tmp_path: Path) -> None:
+def test_connect_adds_the_finding_ids_column_and_the_drive_stops_table(tmp_path: Path) -> None:
     db_path = tmp_path / "ledger.db"
     old = sqlite3.connect(str(db_path))
     old.executescript(
@@ -613,10 +751,39 @@ def test_connect_adds_the_gap_columns_and_the_drive_stops_table(tmp_path: Path) 
     conn = connect(db_path)
     try:
         runs = {r["name"] for r in conn.execute("PRAGMA table_info(runs)")}
-        assert {"driver_unavailable_at", "driver_unavailable_reason"} <= runs
+        assert "driver_unavailable_at" not in runs
         briefs = {r["name"] for r in conn.execute("PRAGMA table_info(briefs)")}
         assert "finding_ids_json" in briefs
         stops = {r["name"] for r in conn.execute("PRAGMA table_info(drive_stops)")}
         assert {"directive_id", "kind", "reason", "fingerprint", "area"} <= stops
     finally:
         conn.close()
+
+
+def test_connect_turns_a_driver_unavailable_run_into_a_declined_directive(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "ledger.db"
+    connect(db_path).close()
+    old = sqlite3.connect(str(db_path))
+    old.executescript(
+        "ALTER TABLE runs ADD COLUMN driver_unavailable_at TEXT;"
+        "ALTER TABLE runs ADD COLUMN driver_unavailable_reason TEXT;"
+        "INSERT INTO runs (run_id, state, driver_unavailable_at, driver_unavailable_reason) "
+        "VALUES (1, 'active', '2026-09-27T10:00:00.000Z', 'cartographer failed');"
+        "INSERT INTO runs (run_id, state) VALUES (2, 'finished');"
+    )
+    old.close()
+
+    for _ in range(2):
+        conn = connect(db_path)
+        try:
+            [row] = conn.execute("SELECT * FROM directives").fetchall()
+            assert row["run_id"] == 1
+            assert row["source"] == "driver"
+            assert row["body"] == "[driver-unavailable] cartographer failed"
+            assert (row["state"], row["outcome"]) == ("resolved", "declined")
+            runs = {r["name"] for r in conn.execute("PRAGMA table_info(runs)")}
+            assert "driver_unavailable_at" not in runs
+        finally:
+            conn.close()

@@ -47,8 +47,6 @@ _ADDED_COLUMNS = (
     ("handoffs", "floor_pass_json", "TEXT"),
     ("agents", "channel", "TEXT NOT NULL DEFAULT 'none'"),
     ("wakeups", "pushed_at", "TEXT"),
-    ("runs", "driver_unavailable_at", "TEXT"),
-    ("runs", "driver_unavailable_reason", "TEXT"),
     ("briefs", "finding_ids_json", "TEXT"),
 )
 # Renamed to snake_case; an older ledger may still hold either the code's old
@@ -163,6 +161,30 @@ def _upgrade(conn: sqlite3.Connection) -> None:
                 raise
     _upgrade_departure_states(conn)
     _upgrade_directive_sources(conn)
+    _upgrade_driver_unavailable(conn)
+
+
+def _upgrade_driver_unavailable(conn: sqlite3.Connection) -> None:
+    # runs.driver_unavailable_at means the run skips explorations. A declined
+    # [driver-unavailable] directive keeps that meaning once the columns are gone.
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
+    if "driver_unavailable_at" not in columns:
+        return
+    conn.execute(
+        "INSERT INTO directives (run_id, source, sender_name, body, state, outcome, "
+        "resolved_at, resolution) "
+        "SELECT run_id, 'driver', 'ledger', '[driver-unavailable] ' || "
+        "COALESCE(driver_unavailable_reason, 'no reason recorded'), 'resolved', 'declined', "
+        "driver_unavailable_at, 'recorded before a Driver that fails to load became a "
+        "directive; the run skips explorations' FROM runs "
+        "WHERE driver_unavailable_at IS NOT NULL"
+    )
+    for column in ("driver_unavailable_at", "driver_unavailable_reason"):
+        try:
+            conn.execute(f"ALTER TABLE runs DROP COLUMN {column}")
+        except sqlite3.OperationalError:
+            conn.execute("UPDATE runs SET driver_unavailable_at = NULL")
+            return
 
 
 def _upgrade_directive_sources(conn: sqlite3.Connection) -> None:

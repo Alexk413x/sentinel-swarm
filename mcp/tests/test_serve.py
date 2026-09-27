@@ -99,7 +99,7 @@ def test_ensure_server_starts_one_server_per_repo_and_it_exits_after_run_finish(
     finished = asyncio.run(_start_and_finish(url))
     assert finished["state"] == "finished"
     assert _wait_for(lambda: not serve.server_info_path(host).exists())
-    assert serve.is_answering(info, host) is False
+    assert _wait_for(lambda: not serve.is_answering(info, host))
 
 
 def _replace_command(monkeypatch: pytest.MonkeyPatch, code: str) -> list[subprocess.Popen]:
