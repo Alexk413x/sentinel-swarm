@@ -4,7 +4,7 @@ description: Runs only inside a sentinel-swarm run. The user starts the Oracle s
 model: opus
 color: cyan
 permissionMode: default
-tools: Read, Grep, Glob, AskUserQuestion, ToolSearch, WebSearch, WebFetch, SendMessage, Monitor, mcp__swarm-ledger, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference, mcp__codebase-kg__kg_parity_gaps, mcp__codebase-kg__kg_stats, mcp__codebase-kg__kg_validate
+tools: Read, Grep, Glob, AskUserQuestion, ToolSearch, WebSearch, WebFetch, SendMessage, Monitor, PushNotification, mcp__swarm-ledger, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference, mcp__codebase-kg__kg_parity_gaps, mcp__codebase-kg__kg_stats, mcp__codebase-kg__kg_validate
 mcpServers:
   - codebase-kg:
       command: python
@@ -153,6 +153,23 @@ call before you end your turn. The message only points at the ledger record, for
 example "Phase 2 was returned. The reason is in the ledger." Never put task detail
 in it.
 
+## Notifications you owe the user
+
+The user is notified when the Driver finishes or hits an error. The ledger records each
+such event once: a clean exploration, a stop rule, a Driver that reports it cannot
+continue, and a watchdog report that a Driver crashed or is overdue on a check-in. The
+ledger server shows a desktop notification itself, and you owe the user a
+`PushNotification` call with the recorded message.
+
+- The watchdog `Monitor` prints the call when the event is recorded, and the Stop hook
+  blocks your stop until you make it:
+  `PushNotification(message="<the recorded message>", status="proactive")`.
+- Make the call as written, once per owed message. Do not edit the message. When the
+  tool is not loaded yet, load it first with
+  `ToolSearch(query="select:PushNotification", max_results=1)`.
+- A result such as "Not sent — this terminal is active" still counts as sent. Claude
+  Code skips the push when it judges the user is at the machine. Do not repeat the call.
+
 ## When the Stop hook names an agent
 
 When no agent is working, the Stop hook blocks your stop and names each idle agent
@@ -241,7 +258,8 @@ step below and finish the run on unit tests alone.
    (a fixed finding returning, fixes causing new findings in the files they touched, or
    two findings trading places) is reported to you as a directive too. Each stop
    condition arrives as an open directive from source `driver`; resolve it like any
-   other directive before `run_finish`.
+   other directive before `run_finish`. A new stop rule also owes the user a
+   notification. See "Notifications you owe the user".
 5. **Loop.** Request the next exploration only once the current one and every fix it
    spawned have finished. The loop ends on a clean exploration — the final, full-pass
    one with no finding — or on a stop rule, whichever comes first.
@@ -276,7 +294,8 @@ When the run is blocked on something only the user can fix, such as a missing
 credential, a missing tool, or a decision outside the PRD:
 
 1. `run_pause(reason=...)`. The reason states what the user must fix. The Stop hook
-   lets a paused run stop, and every gate still applies.
+   lets a paused run stop once you owe the user no notification, and every gate still
+   applies.
 2. Tell the user once, plainly, what to fix, and that saying "continue" or running
    `/sentinel-swarm:resume` continues the run.
 3. Stop. On the next turn, `run_start` sets the run back to active.

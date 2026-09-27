@@ -10,15 +10,32 @@
   fills its context.
 - **Ledger server early exit.** Once, the server exited about a minute after it started,
   with no error in its log. It has not recurred.
-- **Shared HTTP servers in a live run.** No real session has connected to a shared
-  codebase-kg or a11y server yet. See `plans/channels-and-http.md`.
-- **Claude Code across a shared server restart.** Unknown for a real session: which
-  protocol version Claude Code negotiates, when it notices a dropped HTTP server
-  (a failed tool call, or a lost stream), and whether a failed call starts its
-  reconnect. The server side is proven: a stateless server accepts a client from before
-  its restart. Probe it by killing a shared server under a live background session and
-  calling one of its tools after the supervisor restarts it.
-- **a11y sharing.** The ledger shares the a11y servers because a11y has no relay of its own yet. When a11y ships one, as codebase-kg 0.8.0 did, remove a11y from `shared.planned_servers` and let a11y share itself.
+- **Plugin relays in a live run.** No live run has confirmed that role sessions reach a
+  plugin's shared server through the shim's stdio entry. A live run on a host with a11y
+  0.8.2 should confirm that every role reaches the shared a11y daemon through the a11y
+  relay, and that no role starts a private a11y server while the daemon answers.
 - **The Driver, live.** Built and unit-tested, never run: no host here has cartographer and a driver plugin installed yet. The first live run needs an Android app host, and must confirm the shim starts cartographer's and the driver plugins' servers.
-- **Driver stop-rule escalation.** A stop rule files a `driver` directive that stays open until the Oracle resolves it, possibly as `needs_user`. Decide whether that is enough, or whether it needs its own user notification.
-- **Channels.** Not built: a channel cannot deliver to a `--bg` session for a plugin outside the allowlist. Launches pass `CLAUDE_DEV_CHANNELS` entries as development channels, but Claude Code reads that flag only in interactive sessions, so background roles get no channel today. An interactive session receives events and wakes on them, confirmed live on 2026-09-26. Alex decided on 2026-09-26 that roles stay `--bg` sessions, so the device-queue broker needs another path to a waiting role. The first planned channel is a device-queue broker that tells a waiting session the device is free. Retest when the development flag works in `--bg` sessions or a user setting can allowlist a plugin. See "Probe results" in `plans/channels-and-http.md`, and `plans/channel-wake-delivery.md` for the plan that switches wake-ups between `SendMessage` and a channel.
+- **Driver notifications, live.** Built and unit-tested; no test shows a real
+  notification. On Windows, a dry run loaded the WinRT toast types, parsed the toast
+  XML, and created the notifier, but no toast has been seen on screen. The macOS and
+  Linux commands have never run. A live Driver run should confirm the toast, and that
+  the Oracle's `PushNotification` call clears its Stop hook block.
+- **Channels.** Wake-up delivery through the `swarm-events` channel is built and
+  unit-tested, and has never run live. Only an interactive Oracle started by the launcher
+  carries the channel: Claude Code reads the development flag only in interactive
+  sessions, and sentinel-swarm is not on the allowlist, so every `--bg` role keeps
+  `SendMessage`. Still open:
+  - A live run with `wake_transport: channel` and an interactive Oracle: a Lead's or
+    Manager's wake-up must arrive as a channel event, and the ledger must confirm it
+    from the Oracle's transcript. The transcript shape of a channel turn is not verified
+    yet; `wake.transcript_confirms` accepts origin kind `channel` or the `swarm-events`
+    tag.
+  - The plugin manifest's `channels` entry. The manifest shape is
+    `"channels": [{"server": "swarm-events"}]`, and `server` must name a server in the
+    plugin's own `mcpServers`. That server would then start in every session that has
+    the plugin enabled, not only in swarm sessions, so it waits for Alex's decision. It
+    matters only for an allowlist listing or a `plugin:` development channel.
+  - The device-queue broker, as a second event kind on `swarm-events`. Roles stay `--bg`
+    sessions, so it still needs another path to a waiting role.
+  - Retest the `--bg` case when the development flag works in `--bg` sessions or a user
+    setting can allowlist a plugin. See "Probe results" in `plans/channels-and-http.md`.

@@ -212,11 +212,16 @@ def test_a_missing_claude_binary_is_reported(env, monkeypatch, capsys):
     assert "SENTINEL_SWARM_CLAUDE" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("flags", [[], ["--bg"], ["--headless"]])
-def test_dev_channels_go_last_in_every_mode(env, monkeypatch: pytest.MonkeyPatch, flags):
+@pytest.mark.parametrize(
+    "flags,channel",
+    [([], ["server:swarm-events"]), (["--bg"], []), (["--headless"], [])],
+)
+def test_dev_channels_go_last_in_every_mode(env, monkeypatch: pytest.MonkeyPatch, flags, channel):
     _trust(env["config"], env["repo"])
     monkeypatch.setenv("CLAUDE_DEV_CHANNELS", "plugin:q@m,server:x")
 
     assert launch.main(["--repo", str(env["repo"]), *flags, "Build hello.py"]) == 0
     command = env["run"].calls[-1]["command"]
-    assert command[-3:] == ["--dangerously-load-development-channels", "plugin:q@m", "server:x"]
+    expected = ["--dangerously-load-development-channels", "plugin:q@m", "server:x", *channel]
+    assert command[-len(expected) :] == expected
+    assert command.count("--dangerously-load-development-channels") == 1

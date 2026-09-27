@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TextIO
 
-from . import env
+from . import env, notify
 from .db import connect, write_tx
 from .watchdog import stamp, utcnow
 
@@ -54,9 +54,11 @@ def poll(
             "UPDATE directives SET notified_at = ? WHERE directive_id = ?",
             [(at, row["directive_id"]) for row in rows],
         )
-    return True, [
+        owed = notify.announce(conn, run["run_id"], at)
+    lines = [
         f"Watchdog directive {row['directive_id']}: {' '.join(row['body'].split())}" for row in rows
     ]
+    return True, lines + owed
 
 
 def watch(

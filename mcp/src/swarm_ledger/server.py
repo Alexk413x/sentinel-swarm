@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -103,6 +104,14 @@ def _ledger() -> Ledger:
     if _instance is None:
         _instance = env.open_ledger(_root)
     return _instance
+
+
+def channel_registered(session_id: str) -> None:
+    try:
+        with _CALL_LOCK:
+            _ledger().channel_registered(session_id)
+    except Exception as exc:
+        print(f"swarm-events: cannot record the channel of {session_id}: {exc}", file=sys.stderr)
 
 
 def _call(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
@@ -957,10 +966,21 @@ def drive_checkin(
 
 
 @mcp.tool
-def drive_done(caller: str, request_id: int, agent_id: str | None = None) -> dict[str, Any]:
+def drive_done(
+    caller: str, request_id: int, blocked: str | None = None, agent_id: str | None = None
+) -> dict[str, Any]:
     """Ends an exploration; the Driver calls this. Its session is released and stopped, and any
-    newly detected stop-rule directive is filed for the Oracle."""
-    return _call(_ledger().drive_done, caller=caller, agent_id=agent_id, request_id=request_id)
+    newly detected stop-rule directive is filed for the Oracle. Pass `blocked` with what failed
+    when the Driver cannot continue, such as a failed build or a device that will not boot; it
+    needs a finding already recorded with drive_issue. A clean exploration, a new stop rule, or
+    `blocked` records a notification for the user."""
+    return _call(
+        _ledger().drive_done,
+        caller=caller,
+        agent_id=agent_id,
+        request_id=request_id,
+        blocked=blocked,
+    )
 
 
 @mcp.tool

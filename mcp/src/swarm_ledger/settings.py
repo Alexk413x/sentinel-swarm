@@ -25,6 +25,23 @@ _DEFAULT_MODELS = {
     "driver": ["sonnet", "opus"],
 }
 _SETTINGS_PATH = Path(".claude") / "sentinel-swarm.local.md"
+WAKE_TRANSPORTS = ("channel", "sendmessage")
+DEFAULT_WAKE_TRANSPORT = "channel"
+NOTIFY_CHANNELS = ("os", "push")
+
+
+def normalize_transport(raw: object) -> str:
+    value = str(raw or "").strip().lower().replace("_", "").replace("-", "")
+    return value if value in WAKE_TRANSPORTS else DEFAULT_WAKE_TRANSPORT
+
+
+def normalize_notify(raw: object) -> list[str]:
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return list(NOTIFY_CHANNELS)
+    wanted = {str(item).strip().lower() for item in raw}
+    return [channel for channel in NOTIFY_CHANNELS if channel in wanted]
 
 
 @dataclass
@@ -76,6 +93,8 @@ class Settings:
     prompt_cache_ttl: dict[str, str] = field(default_factory=dict)
     # Per-role cap on that role's own live sessions in the run, on top of parallelism_cap.
     role_parallelism_cap: dict[str, int] = field(default_factory=dict)
+    wake_transport: str = DEFAULT_WAKE_TRANSPORT
+    notify: list[str] = field(default_factory=lambda: list(NOTIFY_CHANNELS))
 
     def snapshot(self) -> str:
         return json.dumps(asdict(self), sort_keys=True)
@@ -164,4 +183,6 @@ def load_settings(repo_root: Path) -> Settings:
         effort=effort,
         prompt_cache_ttl=prompt_cache_ttl,
         role_parallelism_cap=role_parallelism_cap,
+        wake_transport=normalize_transport(data.get("wake_transport")),
+        notify=normalize_notify(data.get("notify")),
     )

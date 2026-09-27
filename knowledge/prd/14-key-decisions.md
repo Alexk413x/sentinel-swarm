@@ -61,3 +61,7 @@
 - 2026-09-26: Every session launch appends `--dangerously-load-development-channels <entries>` last when `CLAUDE_DEV_CHANNELS` is not empty, as Alex's `claude` wrapper does. The first planned channel is a device-queue broker that tells a waiting session the device is free.
 - 2026-09-26: Every role stays a `claude --bg` session, viewed in agent view. A `--bg` role does not receive a development channel.
 - 2026-09-26: The repo lock needs no fix for a server crash. The lock is keyed to the repo's main checkout, so a separate clone has its own lock, and a launch that takes a dead server's lock still leaves one swarm running in the repo.
+- 2026-09-26: The ledger runs no shared MCP servers. codebase-kg and the accessibility-tools plugins share themselves through their own relays, and roles reach them through each plugin's own stdio command.
+- 2026-09-27: `wake_transport` defaults to `channel`: the ledger pushes a wake-up through the target's channel when the session supports one. `SendMessage` stays the fallback for a session without a channel and for a push not confirmed in time, and `wake_transport: sendmessage` restores the `SendMessage`-only behavior exactly. Build it now, for the interactive Oracle and a future allowlist listing.
+- 2026-09-27: The user is notified when the Driver finishes or hits an error.
+- 2026-09-27: OS notifications show the sender as "Sentinel Swarm", with the plugin icon `assets/icon.png`: a round, four-panel shell with one glowing blue eye. The logo shows a green eye for success, amber for a warning, and red for an error.

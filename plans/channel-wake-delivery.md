@@ -1,7 +1,13 @@
 # Plan: deliver wake-ups through a channel when the session supports one
 
-Status: not built. Every design choice here is **(proposed)** until Alex reviews it. The
-probe results that shape it are in `plans/channels-and-http.md`.
+Status: built on 2026-09-27, steps 1 to 4. Step 5, the live run, is still open. The PRD
+describes the built behavior: see "Wake-up delivery" in `knowledge/prd/05-sessions.md`.
+Alex decided questions 1 and 2 on 2026-09-27: the default is `channel`, and it is built
+now. The answers to questions 3 and 4 are **(proposed)** and listed in
+`knowledge/prd/15-proposed.md`. The build differs from this plan in two places: the
+Stop hook waits for confirmation instead of passing a young push, and `plugin.json`
+has no `channels` entry (see "Channels" in `knowledge/prd/16-open-items.md`). The probe
+results that shape it are in `plans/channels-and-http.md`.
 
 ## Goal
 

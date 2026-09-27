@@ -8,7 +8,7 @@ piece can be built and tested alone.
 | Module | Holds |
 |---|---|
 | `db.py` | `ledger_path`, `connect`, `write_tx`, `migrate` with an idempotent upgrade for columns and tables added after version 1, `ensure_git_exclude` |
-| `schema.sql` | The tables, including `agents.session_name`, `agents.bg_id`, `wakeups` (the wake-ups each agent owes), `watchdog_findings`, `directives.notified_at`, `runs.watch_heartbeat_at`, and `drive_requests` and `drive_findings` for the Driver's exploration queue |
+| `schema.sql` | The tables, including `agents.session_name`, `agents.bg_id`, `agents.channel`, `wakeups` (the wake-ups each agent owes, with `pushed_at` for a channel push), `watchdog_findings`, `directives.notified_at`, `runs.watch_heartbeat_at`, and `drive_requests` and `drive_findings` for the Driver's exploration queue |
 | `settings.py` | `Settings` loaded from `.claude/sentinel-swarm.local.md` frontmatter, with the defaults from `templates/sentinel-swarm.local.md.example` |
 | `identity.py` | `Caller`: resolves a call's `caller` name and stamped `agent_id` against the `agents` table. `require_role` |
 | `ledger.py` | `Ledger`: one object per server process, holding the connection, the repo root, and the settings. Every tool is a method that returns a plain dict |
@@ -22,12 +22,15 @@ piece can be built and tested alone.
 | `graph.py` | `graph_upsert` under a process lock, and the graph-current check for a file |
 | `versions.py` | Saves and restores file versions in `.sentinel-swarm/versions/` |
 | `server.py` | FastMCP tool registration. Each tool is a thin wrapper over a `Ledger` method |
-| `serve.py` | `python -m swarm_ledger.serve`: one HTTP ledger server per repo, on the port saved in `.sentinel-swarm/server.port` or a free one, its URL in `.sentinel-swarm/server.json`; `ensure_server` starts it when needed. It starts the watchdog thread and the shared MCP servers |
-| `shared.py` | The shared HTTP MCP servers: starts codebase-kg, and a11y when installed, through the shim's `mcp-http` command, records the URLs that answer, and stops each process tree when the ledger server exits |
-| `watchdog.py` | The watchdog, a thread in the ledger server: `scan` turns `claude agents --json` and the ledger into findings, `record` dedups them in `watchdog_findings` and files each new one as a `watchdog` directive, and `Watchdog.tick` also wakes a stopped Oracle and exits an idle server |
-| `watch.py` | `python -m swarm_ledger.watch`: the Oracle's `Monitor` listener. Prints one line per new watchdog directive, beats `runs.watch_heartbeat_at`, and exits when the run is not active |
+| `serve.py` | `python -m swarm_ledger.serve`: one HTTP ledger server per repo, on the port saved in `.sentinel-swarm/server.port` or a free one, its URL in `.sentinel-swarm/server.json`; `ensure_server` starts it when needed. It starts the watchdog thread |
+| `watchdog.py` | The watchdog, a thread in the ledger server: `scan` turns `claude agents --json` and the ledger into findings, `record` dedups them in `watchdog_findings` and files each new one as a `watchdog` directive, and `Watchdog.tick` also records a notification for a Driver report, wakes a stopped Oracle, and exits an idle server |
+| `wake.py` | **(proposed)** Wake-up delivery: `route_wakeup`, the one switch between a channel push, `SendMessage`, and `agent_resume`; `EventHub`, where the `/events` route registers each session's stream; and confirmation of a push from the target's transcript |
+| `bridge.py` | **(proposed)** `python -m swarm_ledger.bridge`: the `swarm-events` stdio channel server. It reads the ledger's `/events` stream for its session and writes each event as a `notifications/claude/channel` |
+| `clock.py` | `utcnow`, `stamp`, and `parse_stamp`, the ledger's UTC time helpers |
+| `notify.py` | **(proposed)** User notifications for Driver events: `record` keeps one `notifications` row per event, `show` runs the platform's OS notification in a daemon thread through the replaceable `runner`, and `owed`, `mark_sent`, and `announce` track the `PushNotification` call the Oracle owes |
+| `watch.py` | `python -m swarm_ledger.watch`: the Oracle's `Monitor` listener. Prints one line per new watchdog directive and per owed `PushNotification`, beats `runs.watch_heartbeat_at`, and exits when the run is not active |
 | `sessions.py` | The `claude` CLI: start, list, stop, and resume background sessions. Every call goes through `_run`, which tests replace |
-| `agentfiles.py` | Reads a host repo's `.claude/agents/swarm-<role>.md` and builds a role session's flags, with each shared server listed by URL when it answers |
+| `agentfiles.py` | Reads a host repo's `.claude/agents/swarm-<role>.md` and builds a role session's flags |
 | `setup.py` | `python -m swarm_ledger.setup`: writes the role files from `templates/agents/`, the hook shim, and the settings a host repo needs |
 | `launch.py` | `python -m swarm_ledger.launch`: starts the ledger server and the Oracle's session |
 | `hooks/` | One entry point, `python -m swarm_ledger.hooks <event>`, that reads hook input from stdin and answers with JSON on stdout. Exit code is always 0 |

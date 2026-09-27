@@ -14,3 +14,5 @@
 # codebase-kg's code map of this repo. With the textconv driver that
 # /codebase-kg:setup installs, git renders it as JSON in diffs.
 knowledge/code_graph.db binary diff=codegraph
+
+*.png binary

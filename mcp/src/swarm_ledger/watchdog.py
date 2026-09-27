@@ -4,15 +4,16 @@ import json
 import sqlite3
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import sessions
+from . import notify, sessions, wake
+from .clock import parse_stamp, stamp, utcnow
 from .db import write_tx
 from .identity import LedgerError
-from .settings import WatchdogSettings
+from .settings import NOTIFY_CHANNELS, WatchdogSettings
 
 WATCH_COMMAND = "python3 .sentinel-swarm/hook.py watch || python .sentinel-swarm/hook.py watch"
 MONITOR_TIMEOUT_MS = 1_800_000
@@ -25,16 +26,17 @@ WAKE_EVERY = timedelta(minutes=5)
 MAX_WAKES = 3
 WAKE_STATE = "watchdog_wake"
 PAUSE_REASON = "the watchdog could not wake the Oracle"
-SHARED_SERVER_DOWN = "shared_server_down"
 _MEMBER_ROLES = ("manager", "lead", "coder")
 _WINDOW_1M = 1_000_000
 IDLE_STALL = timedelta(minutes=2)
+UNCONFIRMED_AFTER = timedelta(minutes=2)
 _WINDOW_HAIKU = 200_000
 _TAIL_BLOCK = 256 * 1024
 # The Driver checks in every 30 minutes by design (plans/driver-agent.md); the watchdog
 # adds a grace period before it reports one as overdue.
 DRIVER_CHECKIN_INTERVAL = timedelta(minutes=30)
 DRIVER_CHECKIN_GRACE = timedelta(minutes=5)
+DRIVER_ERRORS = {"crashed": ("crashed", "error"), "driver_overdue": ("overdue", "warning")}
 
 
 @dataclass(frozen=True)
@@ -47,32 +49,17 @@ class Finding:
     next_step: str
 
 
-def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def stamp(moment: datetime) -> str:
-    moment = moment.astimezone(timezone.utc)
-    return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
-
-
-def parse_stamp(raw: object) -> datetime | None:
-    if not isinstance(raw, str) or not raw:
-        return None
-    try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
-
-
 def _log(message: str) -> None:
     sys.stderr.write(f"{stamp(utcnow())} watchdog: {message}\n")
     sys.stderr.flush()
 
 
 def scan(
-    conn: sqlite3.Connection, listing: list[dict], now: datetime, settings: WatchdogSettings
+    conn: sqlite3.Connection,
+    listing: list[dict],
+    now: datetime,
+    settings: WatchdogSettings,
+    transport: str = "sendmessage",
 ) -> list[Finding]:
     run = conn.execute("SELECT * FROM runs WHERE state = 'active'").fetchone()
     if run is None:
@@ -112,7 +99,8 @@ def scan(
         if context is not None:
             findings.append(_finding(agent, "context_high", context, _context_step(agent, names)))
 
-    stalled = _stalled(conn, run, agents, by_session, now)
+    findings += _unconfirmed_pushes(conn, run["run_id"], now)
+    stalled = _stalled(conn, run, agents, by_session, now, transport)
     if stalled is not None:
         findings.append(stalled)
     return findings
@@ -366,6 +354,7 @@ def _stalled(
     agents: list[dict],
     by_session: dict[str, dict],
     now: datetime,
+    transport: str = "sendmessage",
 ) -> Finding | None:
     oracle = next((a for a in agents if a["role"] == "oracle"), None)
     if oracle is None:
@@ -464,7 +453,7 @@ def _stalled(
         detail = f"{where}, and the run is not finished"
     if targets:
         by_name = {a["name"]: a for a in members}
-        calls = ", ".join(_wake_call(by_name[t], by_session) for t in targets)
+        calls = ", ".join(_wake_call(by_name[t], by_session, transport) for t in targets)
         step = f"Wake the agent whose work is pending: {calls}."
     elif pending:
         step = "Continue the plan: resume or spawn the agent that owns the pending work."
@@ -473,11 +462,59 @@ def _stalled(
     return _finding(oracle, "stalled", detail, step)
 
 
-def _wake_call(agent: dict, by_session: dict[str, dict]) -> str:
+def _wake_call(agent: dict, by_session: dict[str, dict], transport: str) -> str:
     entry = by_session.get(agent["agent_id"])
-    if entry is not None and sessions.is_running(entry) and agent["session_name"]:
-        return f"SendMessage(to={json.dumps(agent['session_name'])})"
-    return f"agent_resume(target_name={json.dumps(agent['name'])})"
+    return wake.route_wakeup(
+        {
+            "to_agent_id": agent["agent_id"],
+            "to_name": agent["name"],
+            "to_session_name": agent["session_name"],
+        },
+        transport=transport,
+        live=entry is not None and sessions.is_running(entry),
+        channel=agent.get("channel") or "none",
+        hub=wake.HUB,
+    ).next
+
+
+def _unconfirmed_pushes(conn: sqlite3.Connection, run_id: int, now: datetime) -> list[Finding]:
+    findings: list[Finding] = []
+    rows = conn.execute(
+        "SELECT w.*, a.role AS to_role, s.name AS from_name FROM wakeups w "
+        "JOIN agents a ON a.agent_id = w.to_agent_id "
+        "LEFT JOIN agents s ON s.agent_id = w.from_agent_id "
+        "WHERE w.run_id = ? AND w.pushed_at IS NOT NULL AND w.sent_at IS NULL "
+        "AND a.ended_at IS NULL ORDER BY w.wakeup_id",
+        (run_id,),
+    ).fetchall()
+    for row in rows:
+        pushed = parse_stamp(row["pushed_at"])
+        if pushed is None or now - pushed < UNCONFIRMED_AFTER:
+            continue
+        minutes = int((now - pushed).total_seconds() // 60)
+        pointer = " ".join(str(row["pointer"]).split())
+        if row["to_role"] == "oracle":
+            step = f"Act on it: {pointer}"
+        else:
+            step = (
+                f"Deliver it with SendMessage(to={json.dumps(row['to_session_name'])}, "
+                f"message={json.dumps(pointer)})."
+            )
+        findings.append(
+            Finding(
+                agent_id=row["to_agent_id"],
+                name=row["to_name"],
+                session_name=row["to_session_name"],
+                kind="wake_unconfirmed",
+                detail=(
+                    f"wake-up {row['wakeup_id']} from {row['from_name'] or row['from_agent_id']} "
+                    f"({row['reason']}) went through its channel {minutes} minutes ago, and its "
+                    "transcript does not show it, nor was a SendMessage sent"
+                ),
+                next_step=step,
+            )
+        )
+    return findings
 
 
 def directive_body(finding: Finding) -> str:
@@ -487,37 +524,6 @@ def directive_body(finding: Finding) -> str:
         f"{finding.detail}. Next: {finding.next_step} Then resolve this directive with "
         "directive_resolve."
     )
-
-
-def shared_server_body(name: str, detail: str) -> str:
-    return (
-        f"Watchdog finding {SHARED_SERVER_DOWN}: the shared MCP server {name} {detail}. "
-        "The ledger stopped restarting it and removed its URL from server.json. A session "
-        f"spawned from now on starts its own stdio {name}. A session that is running, or that "
-        f"resumes, keeps the dead URL and has no {name} tools. Next: if an agent needs {name}, "
-        "have its parent release it and brief a fresh agent that continues from the ledger "
-        "records. If the Oracle needs it, record where the run stands, call run_pause, and "
-        "continue in a fresh Oracle session with /sentinel-swarm:resume. Then resolve this "
-        "directive with directive_resolve."
-    )
-
-
-def report_shared_server(
-    conn: sqlite3.Connection, name: str, detail: str, now: datetime
-) -> int | None:
-    with write_tx(conn):
-        run = conn.execute(
-            "SELECT run_id FROM runs WHERE state IN ('active', 'paused') "
-            "ORDER BY run_id DESC LIMIT 1"
-        ).fetchone()
-        if run is None:
-            return None
-        cur = conn.execute(
-            "INSERT INTO directives (run_id, source, sender_name, body, created_at) "
-            "VALUES (?, 'watchdog', 'watchdog', ?, ?)",
-            (run["run_id"], shared_server_body(name, detail), stamp(now)),
-        )
-        return cur.lastrowid
 
 
 def _needs_confirmation(kind: str) -> bool:
@@ -590,6 +596,34 @@ def record(
     return reported
 
 
+def driver_notices(
+    conn: sqlite3.Connection, run_id: int, reported: list[dict], channels: Sequence[str]
+) -> list[dict]:
+    notices: list[dict] = []
+    with write_tx(conn):
+        for row in reported:
+            entry = DRIVER_ERRORS.get(row["kind"])
+            if entry is None:
+                continue
+            label, kind = entry
+            agent = conn.execute(
+                "SELECT name, role FROM agents WHERE agent_id = ?", (row["agent_id"],)
+            ).fetchone()
+            if agent is None or agent["role"] != "driver":
+                continue
+            notice = notify.record(
+                conn,
+                run_id,
+                kind=kind,
+                event_key=f"directive:{row['directive_id']}",
+                message=f"Driver {label}: {agent['name']}, {row['detail']}",
+                channels=channels,
+            )
+            if notice is not None:
+                notices.append(notice)
+    return notices
+
+
 class Watchdog:
     def __init__(
         self,
@@ -600,10 +634,14 @@ class Watchdog:
         exit_server: Callable[[], None],
         activity: Callable[[], object] = lambda: None,
         log: Callable[[str], None] = _log,
+        transport: str = "sendmessage",
+        notify_channels: Sequence[str] = NOTIFY_CHANNELS,
     ) -> None:
         self.repo_root = repo_root
         self.conn = conn
         self.settings = settings
+        self.transport = transport
+        self.notify_channels = tuple(notify_channels)
         self._exit_server = exit_server
         self._activity = activity
         self._log = log
@@ -622,12 +660,16 @@ class Watchdog:
             self._log(f"skipped a pass: {exc}")
             listing = None
         if run is not None and run["state"] == "active" and listing is not None:
-            findings = scan(self.conn, listing, now, self.settings)
-            for row in record(self.conn, run["run_id"], findings, now):
+            wake.confirm_pushed(self.conn)
+            findings = scan(self.conn, listing, now, self.settings, self.transport)
+            reported = record(self.conn, run["run_id"], findings, now)
+            for row in reported:
                 self._log(
                     f"reported {row['kind']} for {row['agent_id']} "
                     f"as directive {row['directive_id']}"
                 )
+            for notice in driver_notices(self.conn, run["run_id"], reported, self.notify_channels):
+                notify.deliver(notice, self.notify_channels, log=self._log)
             self._wake_oracle(run, listing, now)
         self._check_idle(run, listing, now)
 
@@ -770,8 +812,18 @@ def start(
     *,
     exit_server: Callable[[], None],
     activity: Callable[[], object],
+    transport: str = "sendmessage",
+    notify_channels: Sequence[str] = NOTIFY_CHANNELS,
 ) -> threading.Event:
-    dog = Watchdog(repo_root, conn, settings, exit_server=exit_server, activity=activity)
+    dog = Watchdog(
+        repo_root,
+        conn,
+        settings,
+        exit_server=exit_server,
+        activity=activity,
+        transport=transport,
+        notify_channels=notify_channels,
+    )
     stop = threading.Event()
     thread = threading.Thread(
         target=dog.run_forever, args=(stop,), name="swarm-watchdog", daemon=True

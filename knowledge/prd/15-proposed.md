@@ -43,29 +43,17 @@ Rubric:
 - A file that ends the last round at or above the floor passes with each shortfall
   recorded. "The last round" is the file's attempts reaching `rounds * attempts_per_round`.
 - No self-approval, and tool output as supporting evidence only.
-- Scored module and phase reviews on completeness, integration, and open items. Not
-  built: `module_review` and `phase_review` record an outcome and notes, not scores.
 
 Ledger and sessions:
 
 - The records folder location, `.git/info/exclude`, the report in the records folder,
   WAL settings, same-machine resume, append-only events, and the run's settings
   snapshot.
-- Other per-role settings: effort, cache lifetime, and a per-role parallelism cap. Not
-  built.
 - The registry columns, the lifecycle stage names, and the run analytics measures. The
-  measures are not built as a report; `analytics_query` reads the raw tables.
+  report's Measures section summarizes them; `analytics_query` reads the raw tables.
 - The session mechanics: `agent_spawn`, owed wake-ups and `next`, the Stop hook's
-  wake-up rule, `agent_resume`, release that stops the session, the shared HTTP server,
+  wake-up rule, `agent_resume`, release that stops the session, the ledger's HTTP server,
   and the project agent file details.
-- The shared HTTP MCP servers: the shim's `mcp-http` and `mcp-entry` commands, the
-  saved ports, `servers` in `server.json`, the stdio fallback, the 60-second start
-  limit, and process-tree shutdown through job objects and process groups.
-- Shared server restarts: stateless HTTP in `mcp-entry`; a supervisor that checks every
-  2 seconds, counts a server dead when its process exits or its URL is silent for 30
-  seconds, and restarts it on the same port after 0, 5, and 15 seconds; a give-up after
-  3 restarts in 5 minutes that removes the URL from `server.json`; and a watchdog
-  directive on a give-up only, never on a restart.
 - `parallelism_cap` counts the run's live agents and other swarms' live sessions, matched by the swarm session-name shape `<slug>-r<run_id>-<name>`; `role_parallelism_cap.<role>` caps a role.
 - A machine-level lock per repo under `<CLAUDE_CONFIG_DIR or ~/.claude>/sentinel-swarm/locks/`, keyed by the main checkout (`git rev-parse --git-common-dir`), holding the run id and server pid; a dead pid's lock is taken.
 - `pre_send_message` refuses a `SendMessage` to a session outside the caller's run; the valid targets are every session name recorded for the run, live or not.
@@ -105,5 +93,34 @@ Built on 2026-09-25, choices Alex has not reviewed:
 - The exact stop-rule math in `compute_loop_status` (`mcp/src/swarm_ledger/drive.py`): the attempt streak and total, the three-exploration stall, fixes causing bugs, and ping-pong.
 - The report's Explorations section marks each finding as recurred in a later exploration or not seen again; the ledger does not link a finding to the fix that closed it.
 - The watchdog reports a Driver whose check-in is overdue (`driver_overdue`) and does not report it as stuck or spinning.
-- Channels are not built: the swarm keeps `SendMessage`, the Monitor listener, and `agent_resume` until a channel can deliver to a `--bg` session for a plugin outside the allowlist.
 - A role's session name carries the run's UTC start time, `<slug>-r<run>-<MMDDHHMM>-<name>`, because a stale Remote Control entry from an earlier smoke run kept the same name and `SendMessage` refused the ambiguous name.
+
+Built on 2026-09-27, wake-up delivery through a channel (`plans/channel-wake-delivery.md`), choices Alex has not reviewed:
+
+- One function, `route_wakeup` in `wake.py`, builds every wake instruction, in the order: the `sendmessage` setting, a stopped target, a supported target, then `SendMessage`. Only a wake-up with a `wakeups` row is ever pushed.
+- `agents.channel` (`none`, `launched`, `confirmed`) is recorded when the target's bridge connects, and at `run_start` and `agent_spawn` for a bridge that connected first. Only a launch that carries the channel lists `swarm-events`, so a connected bridge means `launched`.
+- Only an interactive Oracle launch carries the channel. The launcher then adds `swarm-events` to `--mcp-config`, merges `server:swarm-events` into the development-channels flag, and prints how to answer Claude Code's prompt.
+- The bridge is a standard-library stdio MCP server, `python -m swarm_ledger.bridge`, run through `hook.py channel`. It declares only `claude/channel`, has no tools, starts listening after `notifications/initialized`, and reconnects to `GET /events?session=<id>` 2 seconds after a drop. It forwards each event's `content` and its `meta` keys that are identifiers.
+- `/events` is newline-delimited JSON with a ping line after 15 seconds without an event.
+- A push is confirmed by a user turn from the channel in the target's transcript (origin kind `channel`, or the `swarm-events` tag) that carries the pointer or the `wakeup_id`, stamped no earlier than 5 seconds before the push.
+- The member Stop hook waits for confirmation until 30 seconds after the push, then blocks with the `SendMessage` call. The plan let a push younger than 30 seconds pass. A waiting check closes the gap where a sender stops once and never runs its Stop hook again.
+- `next` for a pushed wake-up reads "Nothing to send: the ledger delivered this wake-up to <name> through its channel."
+- The watchdog reports `wake_unconfirmed` on the target 2 minutes after an unconfirmed, unsent push.
+- A `wake_transport` value other than `channel` or `sendmessage` reads as `channel`.
+- The Oracle's `Monitor` listener stays as it is, whether or not the Oracle has a channel (plan question 3).
+- A future device-queue broker is a second event kind on `swarm-events`, not a separate server (plan question 4). Every event carries a `kind`; a wake-up is `wakeup`. The broker is not built.
+- `plugin.json` has no `channels` entry. See "Channels" in [16-open-items.md](16-open-items.md).
+
+Built on 2026-09-27, Driver notifications (see "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md)), choices Alex has not reviewed:
+
+- Two delivery paths, both on by default: an OS notification from the ledger server itself, and a `PushNotification` the Oracle owes. `notify: [os, push]` in the settings file picks them; `[]` turns both off.
+- The events: `drive_done` with `blocked`, a new stop-rule directive, or a clean exploration, at most one per exploration in that order; and a new `crashed` or `driver_overdue` watchdog report on a Driver session. `driver_overdue` stands in for `stuck`, which the watchdog never reports on a Driver.
+- One `notifications` row per run and event key (`drive_done:<request_id>` or `directive:<directive_id>`), so a repeat notifies no one.
+- `drive_done(request_id, blocked=None)` is the Driver's path to report that it cannot continue. It refuses `blocked` until the exploration has a finding.
+- The message texts, capped at 199 characters with backticks and asterisks removed. A stop-rule message names the first new rule and counts the rest as "(+N more)".
+- The Windows toast runs through Windows PowerShell 5.1 with `-EncodedCommand` under the AppUserModelID `SentinelSwarm.Notifications`, which each toast registers under `HKCU\Software\Classes\AppUserModelId`; macOS uses `osascript`; Linux uses `notify-send` when installed and logs a skip otherwise. Each runs in a daemon thread with a 30-second timeout, and a failure goes to the server log.
+- Levels: a stop rule and an overdue Driver are warnings (amber eye); a blocked or crashed Driver is an error (red eye); a clean exploration is a success (green eye).
+- The Oracle's watchdog `Monitor` prints each owed push once, which wakes the Oracle.
+- The Oracle's Stop hook blocks on an owed push even while the run is paused, while children work, while a directive waits on the user, and after `run_finish`. A stop that follows its own block passes, as for owed wake-ups.
+- Any `PushNotification` call from the Oracle pays one debt, whatever its result: the one whose message matches, or else the oldest.
+- `PushNotification` is in the Oracle's tools only.

@@ -103,10 +103,14 @@ a new exploration; you end your turn when your own exploration ends.
    commands.
 5. Build the app: run the profile's `build_command` through your shell. Your shell
    runs only that command; anything else is denied. A build failure is itself a
-   finding — call `drive_issue` with the build log and stop the exploration with
-   `drive_done`, since nothing works to explore.
+   finding — call `drive_issue` with the build log, then stop the exploration with
+   `drive_done(request_id, blocked="the build failed")`, since nothing works to
+   explore.
 6. Boot the device: the emulator, the Simulator, or the browser, through the installed
-   driver plugin's tools or `driver_launch`.
+   driver plugin's tools or `driver_launch`. When the device will not boot, record it
+   with `drive_issue` and end with `drive_done(request_id, blocked=<what failed>)`.
+   `blocked` notifies the user, and `drive_done` refuses it until a finding is
+   recorded.
 7. Invoke the `map-test` skill first, to replay every recorded route with no AI and
    recheck earlier findings against the build you just made.
 8. Invoke the `map-explore` skill with the focus list as its goal. It spawns

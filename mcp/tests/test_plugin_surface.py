@@ -202,6 +202,12 @@ def test_only_the_oracle_lists_monitor(repo_root: Path):
         assert ("Monitor" in tools) == (role == "oracle"), role
 
 
+def test_only_the_oracle_lists_push_notification(repo_root: Path):
+    for role in ROLES:
+        tools = _tools(_split(_template(repo_root, role))[0])
+        assert ("PushNotification" in tools) == (role == "oracle"), role
+
+
 def test_the_oracle_body_arms_the_exact_watchdog_call(repo_root: Path):
     from swarm_ledger.watchdog import MONITOR_CALL
 

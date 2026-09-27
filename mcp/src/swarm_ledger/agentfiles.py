@@ -10,6 +10,8 @@ import yaml
 from .identity import ROLES, LedgerError
 
 LEDGER_SERVER = "swarm-ledger"
+CHANNEL_SERVER = "swarm-events"
+CHANNEL_CONFIG = {"command": "python", "args": [".sentinel-swarm/hook.py", "channel"]}
 SESSION_SETTINGS = '{"worktree":{"bgIsolation":"none"}}'
 _SETUP_HINT = "run /sentinel-swarm:setup"
 OPTIONAL_SERVERS: dict[str, tuple[str, ...]] = {
@@ -133,16 +135,6 @@ def mcp_servers(agent_file: dict[str, Any]) -> dict[str, Any]:
     return servers
 
 
-def shared_servers(repo_root: Path) -> dict[str, Any]:
-    # Imported here, not at the top: serve and shared import this module.
-    from .serve import read_server_info
-    from .shared import answering_urls
-
-    info = read_server_info(repo_root)
-    urls = answering_urls(info.get("servers") if info else None)
-    return {name: {"type": "http", "url": url} for name, url in urls.items()}
-
-
 def session_options(
     repo_root: Path,
     role: str,
@@ -151,6 +143,7 @@ def session_options(
     *,
     effort: str | None = None,
     prompt_cache_ttl: str | None = None,
+    channel: bool = False,
 ) -> list[str]:
     agent_file = read_agent_file(repo_root, role)
     extra = optional_servers(repo_root, role)
@@ -159,8 +152,8 @@ def session_options(
         **mcp_servers(agent_file),
         **extra,
     }
-    shared = shared_servers(repo_root)
-    servers.update({name: entry for name, entry in shared.items() if name in servers})
+    if channel:
+        servers[CHANNEL_SERVER] = dict(CHANNEL_CONFIG)
     config = {"mcpServers": servers}
     options = ["--agent", f"swarm-{role}"]
     if model:

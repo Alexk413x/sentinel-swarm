@@ -210,8 +210,11 @@ when" in [05-sessions.md](05-sessions.md).
   owes the Oracle a wake-up. The watchdog does not report the Driver as stuck while its
   check-ins arrive within 30 minutes plus a grace period; see
   [08-watchdog.md](08-watchdog.md). **(proposed)**
-- `drive_done(request_id)` ends the exploration, releases the Driver's session, and
-  stops it. **(proposed)**
+- `drive_done(request_id, blocked=None)` ends the exploration, releases the Driver's
+  session, and stops it. **(proposed)** The Driver passes `blocked`, a short statement
+  of what failed, when it cannot continue: a failed build or a device that will not
+  boot. `drive_done` refuses `blocked` until the exploration has a finding, so a blocked
+  exploration never counts as clean. **(proposed)**
 - The Oracle starts a fix for each finding as `drive_issue` reports it: a Coder joins a
   running fix phase through its Manager and Lead, or a new Manager, Lead, and Coder
   start for a separate bug, the same way a phase starts. A fix phase runs unit tests
@@ -228,6 +231,54 @@ when" in [05-sessions.md](05-sessions.md).
 - The loop ends on a clean exploration (no finding) or on a stop rule, whichever comes
   first. The Oracle requests the next exploration only once the current one and every
   fix it spawned have finished. **(proposed)**
+
+### Driver notifications
+
+The user is notified when the Driver finishes or hits an error. See "What the Oracle
+tells the user" in [04-agreements.md](04-agreements.md). The mechanics below are
+**(proposed)**.
+
+- **Events.** `drive_done` records at most one notification per exploration, in this
+  order: `blocked` (error), a stop rule it filed a new directive for (warning), or a
+  clean exploration (done). An exploration with findings and no new stop rule records
+  none. The watchdog records one for each new report on a Driver session: `crashed`
+  (error) or `driver_overdue` (warning). `driver_overdue` is the Driver's stuck report;
+  the watchdog never reports a Driver as `stuck`. See [08-watchdog.md](08-watchdog.md).
+- **Levels.** Each kind maps to a level: done is success, warning is warning, and error
+  is error. The level picks the notification's logo: the plugin icon with a green,
+  amber, or red eye, `assets/icon-<level>.png`.
+- **Dedupe.** The `notifications` table keeps one row per run and event key:
+  `drive_done:<request_id>` or `directive:<directive_id>`. A repeat of the same event
+  records nothing and notifies no one.
+- **Message.** One line, at most 199 characters, with no markdown. It leads with what
+  the user acts on, for example `Driver done: exploration 3 clean, 0 open bugs, 4 fixed
+  this run`, `Driver stopped: 3 attempts in a row with no progress on <finding title>
+  (+1 more)`, `Driver blocked: exploration 2 cannot continue: the build failed`, or
+  `Driver overdue: driver-e2, exploration 2 has had no check-in for 41 minutes`.
+- **OS path.** The ledger server shows the message as a desktop notification itself,
+  in a background thread that never blocks or fails a ledger call. Each platform shows
+  the sender as "Sentinel Swarm" where it can:
+  - Windows: a toast through Windows PowerShell's WinRT toast API, under the
+    AppUserModelID `SentinelSwarm.Notifications`. Each toast first registers that ID
+    under `HKCU\Software\Classes\AppUserModelId`, with the display name "Sentinel Swarm"
+    and `assets/icon.png` as its icon. The toast shows the level's logo. Windows caches
+    an ID's name and icon from its first toast, so a new name or icon needs a new ID.
+  - macOS: `osascript`, with the title "Sentinel Swarm". The sender stays Script Editor,
+    and no logo shows.
+  - Linux: `notify-send --app-name "Sentinel Swarm" --icon <level logo>`, when
+    `notify-send` is installed.
+
+  A failure goes to the server log, `.sentinel-swarm/server.log`, and nothing else
+  happens.
+- **Push path.** Each notification also records a push the run's Oracle owes. The
+  Oracle's watchdog `Monitor` prints the call once, which wakes the Oracle:
+  `PushNotification(message="<message>", status="proactive")`. The Oracle's Stop hook
+  blocks until `post_any` sees a `PushNotification` call from the Oracle. Any call
+  counts as sent, whatever its result text, because Claude Code answers "Not sent —
+  this terminal is active" when it judges the user is at the machine. A call pays the
+  debt whose message it matches, or else the oldest one.
+- **Setting.** `notify: [os, push]` in the settings file picks the paths. An empty list
+  turns both off. See [11-setup-and-settings.md](11-setup-and-settings.md).
 
 ## Pause and resume
 

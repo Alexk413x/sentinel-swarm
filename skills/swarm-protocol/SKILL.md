@@ -77,6 +77,10 @@ returns a `next` field with the exact call to make:
 - `SendMessage(to="<session name>", message="<one-line pointer>")` when the
   recipient's session is running.
 - `agent_resume(...)` when it is not.
+- "Nothing to send: the ledger delivered this wake-up to <name> through its channel."
+  when the ledger pushed it through the recipient's channel. There is no call to make.
+  If the recipient's transcript does not confirm the push within 30 seconds, the
+  `stop` hook names the `SendMessage` to send instead.
 
 The caller makes that call before it ends its turn. The `post_any` hook clears the
 debt when it sees the `SendMessage`, and the `stop` hook blocks a Manager, Lead, or

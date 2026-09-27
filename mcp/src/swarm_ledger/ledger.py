@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import __version__, agentfiles, lock, serve, sessions
+from . import __version__, agentfiles, lock, serve, sessions, wake
 from .agreements import AgreementsMixin
 from .db import connect, ensure_git_exclude, ledger_path, write_tx
 from .drive import DriveMixin
@@ -143,38 +143,58 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
         own = sessions.find_session(listing or [], session_id)
         session_name = str(own["name"]) if own is not None and own.get("name") else None
 
+        resumed: dict | None = None
+        run_id: int | None = None
         with write_tx(self.conn) as conn:
             active = conn.execute(f"SELECT * FROM runs WHERE {_LIVE_RUN}").fetchone()
             if active is not None:
                 self._refuse_live_oracle(conn, active, session_id, listing, listing_error)
-                return self._run_resume(conn, active, session_id, session_name)
+                resumed = self._run_resume(conn, active, session_id, session_name)
+            else:
+                run_id = self._open_run(conn, prd, session_id, oracle_name, session_name)
 
-            cur = conn.execute(
-                "INSERT INTO runs (prd, state, plugin_version, settings_json) "
-                "VALUES (?, 'active', ?, ?)",
-                (prd, __version__, self.settings.snapshot()),
-            )
-            run_id = cur.lastrowid
-            assert run_id is not None
-            lock.acquire(self.repo_root, run_id, os.getpid())
-
-            conn.execute(
-                "INSERT INTO agents "
-                "(agent_id, name, role, runtime, model, run_id, state, session_name, started_at) "
-                f"VALUES (?, ?, 'oracle', ?, ?, ?, 'working', ?, {_NOW})",
-                (
-                    session_id,
-                    oracle_name,
-                    self.settings.runtime.get("oracle"),
-                    agentfiles.oracle_model(self.repo_root, self.settings.models.get("oracle", [])),
-                    run_id,
-                    session_name,
-                ),
-            )
-            self._log_event(conn, session_id, None, "working", "run_start")
-
+        self._mark_channel(session_id)
+        if resumed is not None:
+            return resumed | {"oracle": self._agent_dict(session_id)}
         run = self.conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
         return {"run": dict(run), "oracle": self._agent_dict(session_id), "resumed": False}
+
+    def _open_run(
+        self,
+        conn: sqlite3.Connection,
+        prd: str,
+        session_id: str,
+        oracle_name: str,
+        session_name: str | None,
+    ) -> int:
+        cur = conn.execute(
+            "INSERT INTO runs (prd, state, plugin_version, settings_json) "
+            "VALUES (?, 'active', ?, ?)",
+            (prd, __version__, self.settings.snapshot()),
+        )
+        run_id = cur.lastrowid
+        assert run_id is not None
+        lock.acquire(self.repo_root, run_id, os.getpid())
+
+        conn.execute(
+            "INSERT INTO agents "
+            "(agent_id, name, role, runtime, model, run_id, state, session_name, started_at) "
+            f"VALUES (?, ?, 'oracle', ?, ?, ?, 'working', ?, {_NOW})",
+            (
+                session_id,
+                oracle_name,
+                self.settings.runtime.get("oracle"),
+                agentfiles.oracle_model(self.repo_root, self.settings.models.get("oracle", [])),
+                run_id,
+                session_name,
+            ),
+        )
+        self._log_event(conn, session_id, None, "working", "run_start")
+        return run_id
+
+    def _mark_channel(self, session_id: str) -> None:
+        if wake.HUB.connected(session_id):
+            wake.mark_launched(self.conn, session_id)
 
     def _refuse_live_oracle(
         self,
@@ -1059,6 +1079,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                 conn, session_id, None, "registered", f"agent_spawn: {session_name} ({bg_id})"
             )
 
+        self._mark_channel(session_id)
         return self._agent_dict(session_id)
 
     def session_name(self, run_id: int, child_name: str) -> str:
@@ -1177,18 +1198,43 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
         )
 
     def next_step(self, wakeup: dict | None) -> str | None:
-        if wakeup is None:
-            return None
-        send = (
-            f"SendMessage(to={json.dumps(wakeup['to_session_name'])}, "
-            f"message={json.dumps(wakeup['pointer'])})"
+        return None if wakeup is None else self.wake_step(wakeup)
+
+    def wake_step(self, wakeup: dict) -> str:
+        target = self.conn.execute(
+            "SELECT channel FROM agents WHERE agent_id = ?", (wakeup["to_agent_id"],)
+        ).fetchone()
+        delivery = wake.route_wakeup(
+            wakeup,
+            transport=self.settings.wake_transport,
+            live=self._is_live(wakeup["to_agent_id"]),
+            channel=target["channel"] if target is not None else "none",
+            hub=wake.HUB,
         )
-        resume = f"agent_resume(target_name={json.dumps(wakeup['to_name'])})"
+        if delivery.pushed:
+            self._record_push(wakeup["wakeup_id"])
+        return delivery.next
+
+    def fallback_step(self, wakeup: dict) -> str:
+        return wake.fallback(wakeup, self._is_live(wakeup["to_agent_id"])).next
+
+    def _is_live(self, session_id: str) -> bool | None:
         try:
-            live = sessions.is_live(wakeup["to_agent_id"])
+            return sessions.is_live(session_id)
         except LedgerError:
-            return f"{send}, or {resume} if that session is not running"
-        return send if live else resume
+            return None
+
+    def _record_push(self, wakeup_id: int) -> None:
+        sql = f"UPDATE wakeups SET pushed_at = {_NOW} WHERE wakeup_id = ?"
+        # Some callers owe the wake-up inside their own write transaction.
+        if self.conn.in_transaction:
+            self.conn.execute(sql, (wakeup_id,))
+            return
+        with write_tx(self.conn) as conn:
+            conn.execute(sql, (wakeup_id,))
+
+    def channel_registered(self, session_id: str) -> None:
+        wake.mark_launched(self.conn, session_id)
 
     def owed_wakeups(self, agent_id: str) -> list[dict]:
         return _rows(

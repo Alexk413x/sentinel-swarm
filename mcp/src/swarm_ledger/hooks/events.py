@@ -8,7 +8,7 @@ import subprocess
 from datetime import timedelta
 from pathlib import Path
 
-from .. import pricing, sessions
+from .. import notify, pricing, sessions, wake
 from ..agentfiles import plugin_installed
 from ..db import ensure_git_exclude, write_tx
 from ..identity import ROLES, LedgerError
@@ -70,6 +70,15 @@ def _repo_relative(ledger: Ledger, raw: str) -> str | None:
     except (OSError, ValueError):
         return None
     return rel.as_posix()
+
+
+def _oracle_run_id(ledger: Ledger, caller_id: str | None) -> int | None:
+    if not caller_id:
+        return None
+    row = ledger.conn.execute(
+        "SELECT run_id FROM agents WHERE agent_id = ? AND role = 'oracle'", (caller_id,)
+    ).fetchone()
+    return row["run_id"] if row is not None else None
 
 
 def _deny(reason: str) -> dict:
@@ -346,9 +355,14 @@ def handle_pre_ledger(ledger: Ledger, data: dict) -> dict:
 
 
 def handle_post_any(ledger: Ledger, data: dict) -> None:
+    caller_id = _caller_id(data)
+    if data.get("tool_name") == "PushNotification":
+        run_id = _oracle_run_id(ledger, caller_id)
+        if run_id is not None:
+            message = str((data.get("tool_input") or {}).get("message") or "")
+            notify.mark_sent(ledger.conn, run_id, message)
     if _active_run_row(ledger) is None:
         return None
-    caller_id = _caller_id(data)
     caller = _swarm_caller(ledger, caller_id)
     if caller is None:
         return None
@@ -579,16 +593,23 @@ def _live_session_ids() -> set[str] | None:
         return None
 
 
-def _wake_hint(agent: dict, live_ids: set[str] | None) -> str:
-    resume = f"agent_resume(target_name={json.dumps(agent['name'])})"
-    if not agent["session_name"]:
-        return f"resume it with {resume}"
-    send = f"SendMessage(to={json.dumps(agent['session_name'])})"
-    if live_ids is None:
-        return f"wake it with {send}, or {resume} if that session is not running"
-    if agent["agent_id"] in live_ids:
-        return f"wake it with {send}"
-    return f"its session is not running; resume it with {resume}"
+def _wake_hint(ledger: Ledger, agent: dict, live_ids: set[str] | None) -> str:
+    delivery = wake.route_wakeup(
+        {
+            "to_agent_id": agent["agent_id"],
+            "to_name": agent["name"],
+            "to_session_name": agent["session_name"],
+        },
+        transport=ledger.settings.wake_transport,
+        live=None if live_ids is None else agent["agent_id"] in live_ids,
+        channel=agent.get("channel") or "none",
+        hub=wake.HUB,
+    )
+    if delivery.send is None:
+        return f"resume it with {delivery.resume}"
+    if delivery.kind == "resume":
+        return f"its session is not running; resume it with {delivery.resume}"
+    return f"wake it with {delivery.next}"
 
 
 def _wake_lines(ledger: Ledger, run_id: int, live: list[dict]) -> list[str]:
@@ -613,7 +634,8 @@ def _wake_lines(ledger: Ledger, run_id: int, live: list[dict]) -> list[str]:
             continue
         lines.append(
             f"handoff {handoff['handoff_id']} for {handoff['path']} waits on "
-            f"{reviewer['name']}, which is {reviewer['state']}; {_wake_hint(reviewer, live_ids)}"
+            f"{reviewer['name']}, which is {reviewer['state']}; "
+            f"{_wake_hint(ledger, reviewer, live_ids)}"
         )
         named.add(reviewer["agent_id"])
 
@@ -625,7 +647,8 @@ def _wake_lines(ledger: Ledger, run_id: int, live: list[dict]) -> list[str]:
         ).fetchone()["n"]
         if unread:
             lines.append(
-                f"{agent['name']} has {unread} unread message(s); {_wake_hint(agent, live_ids)}"
+                f"{agent['name']} has {unread} unread message(s); "
+                f"{_wake_hint(ledger, agent, live_ids)}"
             )
             named.add(agent["agent_id"])
 
@@ -639,7 +662,7 @@ def _wake_lines(ledger: Ledger, run_id: int, live: list[dict]) -> list[str]:
             continue
         lines.append(
             f"change request {cr['cr_id']} for {cr['path']} waits on {recipient['name']}, "
-            f"which is idle; {_wake_hint(recipient, live_ids)}"
+            f"which is idle; {_wake_hint(ledger, recipient, live_ids)}"
         )
         named.add(recipient["agent_id"])
 
@@ -657,7 +680,7 @@ def _wake_lines(ledger: Ledger, run_id: int, live: list[dict]) -> list[str]:
             continue
         lines.append(
             f"change request {cr['cr_id']} for {cr['path']} is completed and waits on "
-            f"{agent['name']} to verify it, which is idle; {_wake_hint(agent, live_ids)}"
+            f"{agent['name']} to verify it, which is idle; {_wake_hint(ledger, agent, live_ids)}"
         )
         named.add(agent["agent_id"])
 
@@ -678,19 +701,38 @@ def _wake_lines(ledger: Ledger, run_id: int, live: list[dict]) -> list[str]:
             continue
         lines.append(
             f"{agent['name']} is idle and none of its children is working; "
-            f"{_wake_hint(agent, live_ids)}"
+            f"{_wake_hint(ledger, agent, live_ids)}"
         )
         covered |= ancestors(agent["agent_id"])
     return lines
+
+
+def _push_reason(ledger: Ledger, run_id: int | None) -> str | None:
+    owed = notify.owed(ledger.conn, run_id) if run_id is not None else []
+    if not owed:
+        return None
+    return "\n".join(
+        [
+            "You owe the user a notification. Make each call below, then stop. A result that "
+            "says the notification was not sent still counts; do not repeat the call:",
+            *(f"- {notify.push_call(n['message'])}" for n in owed),
+        ]
+    )
+
+
+def _block(*reasons: str | None) -> dict | None:
+    lines = [reason for reason in reasons if reason]
+    return {"decision": "block", "reason": "\n".join(lines)} if lines else None
 
 
 def handle_stop(ledger: Ledger, data: dict) -> dict | None:
     run = _active_run_row(ledger)
     caller_id = _caller_id(data)
     if run is None:
-        if not data.get("stop_hook_active"):
-            _refresh_finished_report(ledger, caller_id, data.get("transcript_path"))
-        return None
+        if data.get("stop_hook_active"):
+            return None
+        _refresh_finished_report(ledger, caller_id, data.get("transcript_path"))
+        return _block(_push_reason(ledger, _oracle_run_id(ledger, caller_id)))
 
     caller = _swarm_caller(ledger, caller_id)
     if caller is None:
@@ -716,15 +758,16 @@ def handle_stop(ledger: Ledger, data: dict) -> dict | None:
             tokens=_sum_tokens(transcript_path),
         )
 
+    push = _push_reason(ledger, run["run_id"])
     if run["state"] == "paused":
-        return None
+        return _block(push)
 
     blocked = _oracle_work_block(ledger, run, dict(oracle))
-    if not _watch_unarmed(run):
-        return blocked
-    if blocked is None:
-        return {"decision": "block", "reason": _ARM_WATCHDOG}
-    return blocked | {"reason": f"{blocked['reason']}\n{_ARM_WATCHDOG}"}
+    return _block(
+        push,
+        blocked["reason"] if blocked is not None else None,
+        _ARM_WATCHDOG if _watch_unarmed(run) else None,
+    )
 
 
 def _watch_unarmed(run: dict) -> bool:
@@ -798,7 +841,9 @@ def _oracle_work_block(ledger: Ledger, run: dict, oracle: dict) -> dict | None:
         lines.insert(0, "No agent is working, so no child will wake you.")
     elif live:
         live_ids = _live_session_ids()
-        listed = "; ".join(f"{a['name']} ({a['state']}): {_wake_hint(a, live_ids)}" for a in live)
+        listed = "; ".join(
+            f"{a['name']} ({a['state']}): {_wake_hint(ledger, a, live_ids)}" for a in live
+        )
         lines = [f"Live agents: {listed}. Wake the one with pending work, or call run_pause."]
     else:
         lines = ["Continue the plan, or call run_finish."]
@@ -811,6 +856,17 @@ def _oracle_work_block(ledger: Ledger, run: dict, oracle: dict) -> dict | None:
     }
 
 
+def _owed_steps(ledger: Ledger, agent_id: str) -> list[str]:
+    owed = ledger.owed_wakeups(agent_id)
+    pushed = [w for w in owed if w["pushed_at"] is not None]
+    unconfirmed = {w["wakeup_id"] for w in wake.await_confirmation(ledger.conn, pushed)}
+    return [
+        ledger.fallback_step(w) if w["pushed_at"] is not None else ledger.wake_step(w)
+        for w in owed
+        if w["pushed_at"] is None or w["wakeup_id"] in unconfirmed
+    ]
+
+
 def _member_stop(ledger: Ledger, caller: dict, data: dict) -> dict | None:
     transcript_path = data.get("transcript_path")
     ledger.agent_stop(
@@ -818,9 +874,8 @@ def _member_stop(ledger: Ledger, caller: dict, data: dict) -> dict | None:
     )
 
     if not data.get("stop_hook_active"):
-        owed = ledger.owed_wakeups(caller["agent_id"])
-        if owed:
-            steps = [f"- {ledger.next_step(wakeup)}" for wakeup in owed]
+        steps = [f"- {step}" for step in _owed_steps(ledger, caller["agent_id"])]
+        if steps:
             return {
                 "decision": "block",
                 "reason": "\n".join(

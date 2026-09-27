@@ -13,6 +13,7 @@ the one for a subject. `plans/` holds only plans for work not built yet.
 - `skills/` — `swarm-protocol`, `run`, `plan`, `status`, `resume`, `setup`.
 - `hooks/` — `hooks.json`, which carries no hooks, and a README with the per-role hook
   table. Each role's hooks live in its project agent file.
+- `assets/` — `icon.png`, the plugin icon that OS notifications show.
 - `templates/` — `agents/<role>.md`, the four role templates that setup writes to a host
   repo's `.claude/agents/swarm-<role>.md`; `hook_shim.py`, which setup writes to
   `.sentinel-swarm/hook.py`; and the `.local.md` settings example. The plugin has no

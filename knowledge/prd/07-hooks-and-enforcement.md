@@ -39,14 +39,15 @@ Every hook command is
   with stdin and stdout passed through. A plugin upgrade changes the registry, not the
   agent files.
 - `mcp <plugin_id> <server>` starts another plugin's MCP server the same way, from its
-  `.mcp.json`, with `${CLAUDE_PLUGIN_ROOT}` and `${VAR:-default}` expanded.
-- `mcp-http <plugin_id> <server> <port> [<owner_pid>]` serves that server over HTTP in
-  its own environment, through the internal command `mcp-entry`. The ledger server
-  runs it. See "Shared HTTP servers" in
-  [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
-  **(proposed)**
+  `.mcp.json`, with `${CLAUDE_PLUGIN_ROOT}` and `${VAR:-default}` expanded. A plugin
+  that names its own relay there shares its server through that relay. See "Plugin
+  servers" in [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
 - `watch` runs `python -m swarm_ledger.watch` and passes each line through with no
   timeout.
+- `channel` runs `python -m swarm_ledger.bridge`, the `swarm-events` channel server,
+  with stdin and stdout passed through. When the registry, the install, or `uv` fails,
+  it writes the reason to stderr and exits 1, and the session gets no channel.
+  **(proposed)**
 
 When the registry, the install, `uv`, or the ledger hook fails, or a hook runs longer
 than 50 seconds, a gating event (`pre_agent`, `pre_write`, `pre_shell`, `pre_monitor`,
@@ -97,13 +98,19 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 - `post_any`: writes the heartbeat and current activity, sets an idle agent to working,
   records the transcript path, records the watchdog arm time, clears owed wake-ups on a
   `SendMessage`, and after a Coder's write marks its file stale, so the handoff needs a
-  newer self review.
+  newer self review. On the Oracle's `PushNotification` call, it marks one owed
+  notification sent, whatever the call's result, even after the run finished. It needs
+  no matcher of its own: `post_any` already runs after every tool. **(proposed)**
 - `post_shell`: after a Coder's shell call, lists changed paths with `git status`.
   A change outside the Coder's claim, other claimed files of the run, the records
   folder, and `knowledge/` is recorded as a `violation` event and posted to its Lead.
 - `pre_compact`: adds one to the agent's `context_overflow_count`.
 - `stop`: records tokens and cost from the transcript, then applies the stop rules in
-  "Sessions". After a run finishes, the Oracle's stop refreshes the report.
+  "Sessions". For a wake-up the ledger pushed through a channel, it first waits up to
+  30 seconds for the target's transcript to confirm it; see "Wake-up delivery" in
+  [05-sessions.md](05-sessions.md). After a run finishes, the Oracle's stop refreshes
+  the report, then blocks while the Oracle still owes a `PushNotification` call.
+  **(proposed)**
 - `session_end`: records tokens and cost and the end reason. After a run finishes, it
   refreshes the report.
 
@@ -134,10 +141,11 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 | A departure is signed off or reworked | `departure_decide`; gates on `approve`, `return_work`, `accept_incomplete`, `module_review`, `phase_review`, `run_finish` |
 | A deferral is decided by a high enough role in its scope | `agreement_decide`; gates on `phase_update(approved)` and `run_finish` |
 | A directive outcome is one of the four values | `directive_resolve` |
+| The user is notified when the Driver finishes or hits an error | `drive_done` and the watchdog record the notification and show the OS notification; the Oracle's `stop` blocks until a `PushNotification` call, which `post_any` records |
 | The Oracle checks the repo before a Manager starts | `agent_spawn` |
 | A phase hands up only after every module review | `phase_update(handed_up)` |
 | A phase is approved only after the Oracle reviews it | `phase_update(approved)` |
 | Code the graph maps has a test file by the end | `phase_review(accepted)` |
-| A child wakes its parent after each step | The Stop hook, from the owed wake-ups |
+| A child wakes its parent after each step | The Stop hook, from the owed wake-ups; a pushed wake-up counts only once the target's transcript confirms it |
 | The Oracle keeps working while the run has work, unless a directive waits on the user | The Oracle's Stop hook |
 | The Oracle's watchdog listener stays armed | The Oracle's Stop hook and `pre_monitor` |

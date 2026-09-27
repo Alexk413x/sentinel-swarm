@@ -73,7 +73,7 @@ done
 plugin_dir="${TMPDIR:-/tmp}/sentinel-swarm-plugin-$(date +%s)"
 mkdir -p "$plugin_dir"
 (cd "$root" && tar cf - --exclude=.venv --exclude=__pycache__ --exclude=.pytest_cache \
-  --exclude=.ruff_cache .claude-plugin .mcp.json skills hooks templates mcp) |
+  --exclude=.ruff_cache .claude-plugin .mcp.json assets skills hooks templates mcp) |
   (cd "$plugin_dir" && tar xf -)
 
 # Installs under its own dev version instead of the repo's pinned version, so this run's

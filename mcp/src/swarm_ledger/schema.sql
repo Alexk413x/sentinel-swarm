@@ -99,7 +99,8 @@ CREATE TABLE IF NOT EXISTS agents (
     duration_ms INTEGER,
     transcript_path TEXT,
     session_name TEXT,
-    bg_id TEXT
+    bg_id TEXT,
+    channel TEXT NOT NULL DEFAULT 'none'
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_name_live
@@ -367,6 +368,7 @@ CREATE TABLE IF NOT EXISTS wakeups (
     reason TEXT NOT NULL,
     pointer TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    pushed_at TEXT,
     sent_at TEXT
 );
 
@@ -430,3 +432,23 @@ CREATE TABLE IF NOT EXISTS drive_findings (
 
 CREATE INDEX IF NOT EXISTS idx_drive_findings_fingerprint
     ON drive_findings (run_id, fingerprint);
+
+CREATE TABLE IF NOT EXISTS notifications (
+    notification_id INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL REFERENCES runs (run_id) ON DELETE RESTRICT,
+    -- done or error.
+    kind TEXT NOT NULL,
+    -- One row per event: drive_done:<request_id> or directive:<directive_id>.
+    event_key TEXT NOT NULL,
+    message TEXT NOT NULL,
+    -- 1 when the settings' notify list holds push: the run's Oracle owes a PushNotification.
+    push_owed INTEGER NOT NULL DEFAULT 0,
+    -- Set when the Oracle's watchdog Monitor printed the owed call.
+    announced_at TEXT,
+    -- Set by post_any on the Oracle's PushNotification call, whatever its result text.
+    sent_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_event
+    ON notifications (run_id, event_key);

@@ -10,6 +10,12 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
 - A background session that has ended its turn can exit while it waits.
   `claude --resume` brings it back. (2026-09-23)
 - A line printed by a `Monitor` command wakes an idle background session. (2026-09-24)
+- `PushNotification` from a `--bg` session returned "Not sent — this terminal is
+  active" while the user was at the machine. It returned the same with
+  `CLAUDE_CLIENT_PRESENCE_FILE` set to a path that does not exist. (2026-09-27)
+- Windows caches a toast sender's display name and icon the first time an
+  AppUserModelID shows a toast. Changing the registry values afterward changes nothing.
+  (2026-09-27)
 - The Oracle's armed watchdog `Monitor` keeps its session status `busy` while the
   Oracle is idle. (2026-09-25)
 - A cross-session `SendMessage` to an idle background session wakes it. `SendMessage`
@@ -82,12 +88,11 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   made no call while the server was down. A call while the server was down closed its
   session, and the `Client` did not reconnect. (2026-09-25)
 - a11y-kg 0.6.2 (FastMCP 3.4.5) and codebase-kg 0.7.0 (FastMCP 4.0.3) accept
-  `stateless_http=True` in `mcp.run`. Through `mcp-entry` and the supervisor, each
-  came back on the same port after its whole tree was killed, and a `Client` opened
-  before the kill made its next call without error. (2026-09-25)
+  `stateless_http=True` in `mcp.run`. Restarted on the same port after its whole tree
+  was killed, each answered a `Client` opened before the kill on its next call without
+  error. (2026-09-25)
 - codebase-kg 0.8.0 declares its server as `${CLAUDE_PLUGIN_ROOT}/bin/kg-shim`, a
-  standard-library relay, not `uv run`. The shim's `mcp-http` refuses that command.
-  (2026-09-25)
+  standard-library relay, not `uv run`. (2026-09-25)
 - On Windows, `python3` on `PATH` can be the Microsoft Store stub, which only prints a
   hint. Setup writes `python` for MCP server commands on Windows. (noted 2026-09-21,
   not measured)

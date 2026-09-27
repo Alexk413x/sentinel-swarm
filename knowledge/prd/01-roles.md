@@ -120,7 +120,8 @@
 - **Done when:** every phase is approved, the full suite passes, the evidence is on
   file, and `run_finish` accepts the run.
 - **Tools:** Read, Grep, Glob, AskUserQuestion, ToolSearch, WebSearch, WebFetch,
-  SendMessage, Monitor (the watchdog call only), the ledger, and the codebase-kg read
+  SendMessage, Monitor (the watchdog call only), PushNotification (the notifications
+  the ledger records for the user) **(proposed)**, the ledger, and the codebase-kg read
   tools. No write tool and no shell.
 
 ### Manager
@@ -188,7 +189,9 @@
   with `map-explore` through cartographer's own `map-driver` and `map-reviewer`
   subagents. Records each finding with `drive_issue` as it is found, checks in with
   `drive_checkin` every 30 minutes, and ends the exploration with `drive_done`, which
-  releases and stops its own session.
+  releases and stops its own session. When a failed build or a device that will not
+  boot stops it, it records a finding and passes `blocked` to `drive_done`, which
+  notifies the user. **(proposed)**
 - **Owns:** one exploration: the build, the device session, and every finding it
   records, with evidence in cartographer's run folder.
 - **Must not:** write or edit a project file. It has no Write or Edit tool. It must not

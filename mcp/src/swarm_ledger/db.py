@@ -45,6 +45,8 @@ _ADDED_COLUMNS = (
     ("reviews", "details_json", "TEXT"),
     ("directives", "question", "TEXT"),
     ("handoffs", "floor_pass_json", "TEXT"),
+    ("agents", "channel", "TEXT NOT NULL DEFAULT 'none'"),
+    ("wakeups", "pushed_at", "TEXT"),
 )
 # Renamed to snake_case; an older ledger may still hold either the code's old
 # spelling or a value directive_submit stored before this alias table existed.
@@ -58,6 +60,7 @@ _ADDED_TABLES = (
     "departure_decisions",
     "drive_requests",
     "drive_findings",
+    "notifications",
 )
 
 

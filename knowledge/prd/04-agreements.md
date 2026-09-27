@@ -145,7 +145,10 @@ The responsible level **(proposed)**:
 |---|---|
 | Only the user can unblock it, and the run can continue afterwards | Notifies the user now, with `run_pause` |
 | An issue ends round 3 below the floor | Notifies the user now |
+| The Driver finishes, or hits an error | Notifies the user now; see "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md) |
 | It works, but nobody found better: a shortfall or a signed-off departure | Lists it in the final report |
 
 A notification states what is blocked, what the user needs to do, and what resumes
 after. **(proposed)**
+
+The user is notified when the Driver finishes or hits an error.

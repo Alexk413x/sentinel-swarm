@@ -5,50 +5,31 @@
   required: `graph_upsert` protects the code graph with a lock inside it.
 - `python -m swarm_ledger.serve [--repo <root>]` binds the port saved in
   `.sentinel-swarm/server.port`, or a free port when that one is taken, and writes
-  `.sentinel-swarm/server.json` with `url`, `port`, `pid`, `started_at`, and `servers`. A second
+  `.sentinel-swarm/server.json` with `url`, `port`, `pid`, and `started_at`. A second
   start finds the first one answering, prints its URL, and exits 0. The saved port
   lets a resumed session reach the ledger at the URL it started with.
 - `serve.ensure_server(repo_root)` starts the server detached when it does not answer,
   waits until it answers, and returns its URL. On Windows it starts with a hidden
   console (`CREATE_NO_WINDOW`).
 - Errors go to `.sentinel-swarm/server.log`.
-- Shared MCP servers **(proposed)**. At start, a background thread in the server starts
-  one shared HTTP instance of codebase-kg, and of a11y-tools and a11y-kg when the host
-  has a11y. See "Shared HTTP servers" in
+- The ledger server runs no other MCP server. Each plugin shares its own servers
+  through its own relay. See "Plugin servers" in
   [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
-  - Each server gets the port saved for it in `.sentinel-swarm/shared-ports.json`, or a
-    free port when that one is taken. The saved port lets a resumed session reach the
-    server at the URL it started with.
-  - `server.json` holds `servers: null` while they start. When every server answers,
-    fails, or passes the 60-second limit, `servers` maps each server that answers to
-    its URL. A server that fails is logged to `server.log` and left out, and sessions
-    use its stdio entry.
-  - `ensure_server` waits up to 65 seconds for `servers` to be set, so the Oracle's
-    session gets the shared URLs. A record with no `servers` key does not wait.
-  - The server starts each shared server with the ledger's pid. On Windows it starts
-    hidden (`CREATE_NO_WINDOW`), in a job object with `KILL_ON_JOB_CLOSE`. On POSIX it
-    starts in its own session and process group.
-  - A supervisor thread restarts a shared server that dies, on the same port. After 3
-    restarts in 5 minutes, it gives up: it removes the server from `servers` in
-    `server.json` and files a watchdog directive for the Oracle. See "Restarts" in
-    [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
-  - Every exit path stops every shared server's whole process tree. `run_finish`, the
-    idle exit, and a signal that uvicorn handles call `stop_all`. It signals the
-    supervisor to stop before it stops the servers. On Windows it terminates each
-    job. On POSIX it sends `SIGTERM` to the process group, waits 2
-    seconds, and sends `SIGKILL`. When the ledger dies without cleanup, Windows closes
-    its job handles and kills each job. On POSIX, `mcp-entry` watches the ledger's pid
-    and exits within about 1 second of its death.
 - Tool calls run one at a time under one lock, on one SQLite connection.
 - The server loads the settings file once, at start. `profile_set` changes the commands
   for the server process and the run's settings snapshot, not the file. The hooks read
   the file on every call, so the Coder's shell gate follows the file's commands.
 - The watchdog runs on a thread inside the server.
+- `GET /events?session=<session id>` holds one session's `swarm-events` event stream
+  open: newline-delimited JSON, one event per line, and a `{"kind": "ping"}` line after
+  15 seconds without an event. The request records `launched` on that session's agent
+  row, and the stream registers the session until the connection closes. A request
+  without `session` gets 400. See "Wake-up delivery" in
+  [05-sessions.md](05-sessions.md). **(proposed)**
 - Lifetime: the launcher starts the server before the Oracle. It exits after
   `run_finish`, and after `idle_exit_minutes` with no active run, or a paused run, and
   no session of the run running. A ledger tool call restarts the idle clock. A failed
-  `claude agents --json` counts as no session running. The shared MCP servers stop
-  with it. **(proposed)**
+  `claude agents --json` counts as no session running.
 - The plugin's `.mcp.json` also declares a stdio `swarm-ledger` entry. Swarm sessions
   do not use it, because they start with `--strict-mcp-config`.
 
@@ -56,7 +37,7 @@
 
 `.sentinel-swarm/` at the root of the main checkout holds `ledger.db`, `versions/`,
 `report.md` (the latest run's report), `report-<run_id>.md` for each run, `server.json`,
-`server.port`, `shared-ports.json`, `server.log`, and the hook shim `hook.py`.
+`server.port`, `server.log`, and the hook shim `hook.py`.
 A worktree's `.git` file resolves to the main checkout, so every worktree shares one
 ledger. The folder is excluded through `.git/info/exclude`, never the host's
 `.gitignore`. **(proposed)** One ledger holds every run in the repo. The swarm writes
@@ -73,7 +54,8 @@ the project's code in the host repo itself. Tracking is `local` only.
   (`handoffs`, `reviews`, `scores`, `test_runs`, `versions`, `attempts`, `issues`,
   `ideas`); agreements (`change_requests`, `departures`, `departure_decisions`,
   `deferrals`, `overrides`); communication (`messages`, `directives`,
-  `watchdog_findings`). Read `schema.sql` for the columns.
+  `watchdog_findings`, `notifications` **(proposed)**); the Driver (`drive_requests`,
+  `drive_findings`). Read `schema.sql` for the columns.
 - Ledger enum values, such as states, outcomes, and decisions, use snake_case.
 - `agent_events` is append-only, and nothing deletes rows when a run finishes.
   **(proposed)**
@@ -97,6 +79,7 @@ partial success.
 | Issues | `issue_open`, `issue_list`, `issue_close`, `idea_record`, `issue_escalate` |
 | Agreements | `cr_open`, `cr_accept`, `cr_complete`, `cr_verify`, `cr_list`, `departure_record`, `departure_decide`, `shortfall_record`, `deferral_propose`, `agreement_decide`, `override_grant` |
 | Reporting | `status_tree`, `report_build`, `analytics_query` (one read-only SELECT, Oracle only), `events`, `ledger_info` |
+| Driver | `drive_request`, `drive_issue`, `drive_checkin`, `drive_done` |
 
 - `tests_run(scope, target)` is role-bound: `file` to the Coder (its own path or test
   path only), `module` to the Lead, `phase` to the Manager, `full` to the Oracle. It
@@ -104,3 +87,7 @@ partial success.
   with the ledger's own venv dropped from `PATH` and `VIRTUAL_ENV`, and a 600-second
   timeout. It parses pytest and Go output. An agent never reports a test result itself.
 - `version_restore(version_id)` restores a saved version onto the Coder's own file.
+- The server itself shows a desktop notification for each Driver notification it
+  records, from `notify.py`, in a background thread. A failure goes to the server log.
+  See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md).
+  **(proposed)**

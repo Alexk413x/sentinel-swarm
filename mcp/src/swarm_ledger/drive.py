@@ -6,7 +6,7 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
 
-from . import agentfiles
+from . import agentfiles, notify
 from .db import write_tx
 from .identity import Caller, LedgerError, require_role, resolve
 from .settings import Settings
@@ -82,26 +82,44 @@ def _ping_pong_pairs(
 
 def compute_loop_status(requests: list[dict], findings: list[dict]) -> dict[str, Any]:
     """`requests`: rows with request_id, ordinal, state. `findings`: rows with request_id,
-    fingerprint, area. Pure over plain dicts; the ledger wraps it with the database read."""
+    fingerprint, area, and optionally title. Pure over plain dicts; the ledger wraps it with
+    the database read."""
     ordinal_of = {r["request_id"]: r["ordinal"] for r in requests}
     done_ordinals = sorted(r["ordinal"] for r in requests if r["state"] == "done")
 
     by_fingerprint: dict[str, list[int]] = {}
     findings_at: dict[int, list[dict]] = {}
+    title_of: dict[str, str] = {}
     for f in findings:
         ordinal = ordinal_of.get(f["request_id"])
         if ordinal is None:
             continue
         by_fingerprint.setdefault(f["fingerprint"], []).append(ordinal)
         findings_at.setdefault(ordinal, []).append(f)
+        title_of[f["fingerprint"]] = f.get("title") or f["fingerprint"]
 
     fingerprints = {fp: fingerprint_status(ords) for fp, ords in by_fingerprint.items()}
 
-    reasons: list[str] = []
+    stops: list[dict[str, str]] = []
+
+    def stop(reason: str, summary: str) -> None:
+        stops.append({"reason": reason, "summary": summary})
+
     for fp, status in fingerprints.items():
-        reasons += [f"finding {fp}: {reason}" for reason in status["reasons"]]
+        title = title_of[fp]
+        in_a_row, total = status["attempts_in_a_row"], status["total_attempts"]
+        summaries = []
+        if in_a_row >= STOP_ATTEMPTS_IN_A_ROW:
+            summaries.append(f"{in_a_row} attempts in a row with no progress on {title}")
+        if total >= STOP_ATTEMPTS_TOTAL:
+            summaries.append(f"{total} attempts in all with no fix for {title}")
+        for reason, summary in zip(status["reasons"], summaries, strict=True):
+            stop(f"finding {fp}: {reason}", summary)
         if status["regressed"]:
-            reasons.append(f"finding {fp} is a regression: it was fixed, then came back")
+            stop(
+                f"finding {fp} is a regression: it was fixed, then came back",
+                f"{title} came back after it was fixed",
+            )
 
     wave_fixed_nothing: dict[int, bool] = {}
     for i in range(1, len(done_ordinals)):
@@ -112,7 +130,8 @@ def compute_loop_status(requests: list[dict], findings: list[dict]) -> dict[str,
     if len(done_ordinals) >= STOP_WAVES_IN_A_ROW + 1:
         tail = done_ordinals[-STOP_WAVES_IN_A_ROW:]
         if all(wave_fixed_nothing.get(o, False) for o in tail):
-            reasons.append(f"{STOP_WAVES_IN_A_ROW} explorations in a row fixed nothing")
+            stalled = f"{STOP_WAVES_IN_A_ROW} explorations in a row fixed nothing"
+            stop(stalled, stalled)
 
     fixes_causing_bugs: list[int] = []
     for i in range(1, len(done_ordinals)):
@@ -132,15 +151,22 @@ def compute_loop_status(requests: list[dict], findings: list[dict]) -> dict[str,
         if len(new_in_area) >= fixed_count:
             fixes_causing_bugs.append(cur_ord)
     if fixes_causing_bugs:
-        reasons.append(
+        stop(
             "the last fix(es) appear to have caused new findings in the files they touched "
-            f"(exploration(s) {fixes_causing_bugs})"
+            f"(exploration(s) {fixes_causing_bugs})",
+            "the last fixes caused new bugs in the files they touched",
         )
 
     window = done_ordinals[-_PING_PONG_WINDOW:]
     pairs = _ping_pong_pairs(by_fingerprint, window)
     if pairs:
-        reasons.append(f"findings ping-pong between explorations: {pairs}")
+        first, second = pairs[0]
+        stop(
+            f"findings ping-pong between explorations: {pairs}",
+            f"{title_of[first]} and {title_of[second]} keep coming back in turn",
+        )
+
+    reasons = [entry["reason"] for entry in stops]
 
     latest_done = done_ordinals[-1] if done_ordinals else None
     clean_latest = latest_done is not None and not findings_at.get(latest_done)
@@ -149,6 +175,7 @@ def compute_loop_status(requests: list[dict], findings: list[dict]) -> dict[str,
         "fingerprints": fingerprints,
         "stopped": bool(reasons),
         "reasons": reasons,
+        "stops": stops,
         "clean_latest": clean_latest,
         "latest_done_ordinal": latest_done,
         "explorations_done": len(done_ordinals),
@@ -216,8 +243,8 @@ class DriveMixin:
         )
         findings = _rows(
             self.conn.execute(
-                "SELECT request_id, fingerprint, area, severity FROM drive_findings "
-                "WHERE run_id = ?",
+                "SELECT request_id, fingerprint, area, severity, title FROM drive_findings "
+                "WHERE run_id = ? ORDER BY finding_id",
                 (run_id,),
             )
         )
@@ -243,9 +270,12 @@ class DriveMixin:
             raise LedgerError(f"exploration {request_id!r} is already {row['state']!r}")
         return dict(row)
 
-    def _flag_stop_rules(self, conn: sqlite3.Connection, run_id: int, status: dict) -> None:
-        for reason in status["reasons"]:
-            body = f"[driver-stop] {reason}"
+    def _flag_stop_rules(
+        self, conn: sqlite3.Connection, run_id: int, status: dict
+    ) -> list[dict[str, str]]:
+        flagged: list[dict[str, str]] = []
+        for entry in status["stops"]:
+            body = f"[driver-stop] {entry['reason']}"
             already = conn.execute(
                 "SELECT 1 FROM directives WHERE run_id = ? AND source = 'driver' AND body = ?",
                 (run_id, body),
@@ -257,6 +287,42 @@ class DriveMixin:
                 "VALUES (?, 'driver', 'driver', ?)",
                 (run_id, body),
             )
+            flagged.append(entry)
+        return flagged
+
+    def _drive_notice(
+        self,
+        conn: sqlite3.Connection,
+        request: dict,
+        status: dict,
+        flagged: list[dict[str, str]],
+        blocked: str,
+    ) -> dict | None:
+        ordinal = request["ordinal"]
+        if blocked:
+            kind = "error"
+            message = f"Driver blocked: exploration {ordinal} cannot continue: {blocked}"
+        elif flagged:
+            more = f" (+{len(flagged) - 1} more)" if len(flagged) > 1 else ""
+            head = notify.one_line(
+                f"Driver stopped: {flagged[0]['summary']}", notify.MAX_CHARS - len(more)
+            )
+            kind, message = "warning", head + more
+        elif status["clean_latest"]:
+            fixed = len(status["fingerprints"])
+            kind, message = "done", f"Driver done: exploration {ordinal} clean, 0 open bugs"
+            if fixed:
+                message += f", {fixed} fixed this run"
+        else:
+            return None
+        return notify.record(
+            conn,
+            request["run_id"],
+            kind=kind,
+            event_key=f"drive_done:{request['request_id']}",
+            message=message,
+            channels=self.settings.notify,
+        )
 
     def _block_run_finish_for_driver(self, run_id: int) -> None:
         if not agentfiles.driver_available(self.repo_root):
@@ -446,12 +512,23 @@ class DriveMixin:
         result["next"] = self.next_step(wakeup)
         return result
 
-    def drive_done(self, caller: str, agent_id: str, request_id: int) -> dict:
+    def drive_done(
+        self, caller: str, agent_id: str, request_id: int, blocked: str | None = None
+    ) -> dict:
         c = resolve(self.conn, caller, agent_id)
         require_role(c, "driver")
         if c.run_id is None:
             raise LedgerError(f"{caller!r} has no run")
-        self._own_open_request(c, request_id)
+        request = self._own_open_request(c, request_id)
+        blocked = (blocked or "").strip()
+        recorded = self.conn.execute(
+            "SELECT 1 FROM drive_findings WHERE request_id = ?", (request_id,)
+        ).fetchone()
+        if blocked and recorded is None:
+            raise LedgerError(
+                "record what stopped the exploration with drive_issue first, so it never "
+                "counts as clean; then call drive_done with blocked again"
+            )
 
         with self._release_tx() as conn:
             conn.execute(
@@ -461,8 +538,10 @@ class DriveMixin:
             # Computed after the state update, in the same transaction, so this exploration
             # counts as done for the wave-stall and fixes-causing-bugs checks.
             status = self._drive_loop_status(c.run_id)
-            self._flag_stop_rules(conn, c.run_id, status)
+            flagged = self._flag_stop_rules(conn, c.run_id, status)
+            notice = self._drive_notice(conn, request, status, flagged, blocked)
             self._release_agent(conn, c.agent_id, "drive_done")
+        notify.deliver(notice, self.settings.notify)
 
         result = dict(
             self.conn.execute(
@@ -470,4 +549,5 @@ class DriveMixin:
             ).fetchone()
         )
         result["loop_status"] = status
+        result["notification"] = notice
         return result

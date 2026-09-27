@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import lock, sessions, shared
+from . import lock, sessions, wake
 from .db import ledger_path
 from .identity import LedgerError
 
@@ -27,7 +27,6 @@ LOG_FILE = "server.log"
 EXIT_DELAY_S = 3.0
 ORACLE_TURN_WAIT_S = 300.0
 START_TIMEOUT_S = 30.0
-SHARED_WAIT_S = shared.START_TIMEOUT_S + 5.0
 _PROBE_TIMEOUT_S = 2.0
 _POLL_S = 0.2
 
@@ -118,22 +117,10 @@ def _answering_url(repo_root: Path) -> str | None:
     return None
 
 
-def _wait_for_shared(repo_root: Path, timeout: float) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        info = read_server_info(repo_root)
-        if info is None or info.get("servers", {}) is not None:
-            return
-        time.sleep(_POLL_S)
-
-
-def ensure_server(
-    repo_root: Path, timeout: float = START_TIMEOUT_S, shared_wait: float = SHARED_WAIT_S
-) -> str:
+def ensure_server(repo_root: Path, timeout: float = START_TIMEOUT_S) -> str:
     root = repo_root.resolve()
     url = _answering_url(root)
     if url is not None:
-        _wait_for_shared(root, shared_wait)
         return url
 
     log_path = records_dir(root) / LOG_FILE
@@ -166,7 +153,6 @@ def ensure_server(
     while time.monotonic() < deadline:
         url = _answering_url(root)
         if url is not None:
-            _wait_for_shared(root, shared_wait)
             return url
         exit_code = process.poll()
         if exit_code is not None and exit_code != 0:
@@ -202,7 +188,6 @@ def write_server_info(path: Path, info: dict[str, Any]) -> None:
 
 
 def _shut_down(path: Path, repo_root: Path) -> None:
-    shared.stop_all()
     _remove_if_ours(path)
     lock.release_owned(repo_root, os.getpid())
 
@@ -250,8 +235,9 @@ def finish_later(
 
 
 def serve(repo_root: Path) -> None:
+    from starlette.concurrency import run_in_threadpool
     from starlette.requests import Request
-    from starlette.responses import JSONResponse
+    from starlette.responses import JSONResponse, Response, StreamingResponse
 
     # Imported here, not at the top: server imports ledger, which imports this module.
     from . import server
@@ -266,21 +252,26 @@ def serve(repo_root: Path) -> None:
         "pid": os.getpid(),
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
-    write_server_info(path, {**info, "servers": None})
+    write_server_info(path, info)
 
     @server.mcp.custom_route(HEALTH_PATH, methods=["GET"])
     async def health(request: Request) -> JSONResponse:
         del request
         return JSONResponse({"name": "swarm-ledger", "repo_root": str(root), "pid": os.getpid()})
 
+    @server.mcp.custom_route(wake.EVENTS_PATH, methods=["GET"])
+    async def events(request: Request) -> Response:
+        session_id = request.query_params.get("session") or ""
+        if not session_id:
+            return JSONResponse({"error": "events needs ?session=<session id>"}, status_code=400)
+        await run_in_threadpool(server.channel_registered, session_id)
+        return StreamingResponse(
+            wake.event_stream(wake.HUB, session_id), media_type="application/x-ndjson"
+        )
+
     server.configure(root)
     server.on_run_finish = lambda oracle_session_id: finish_later(path, root, oracle_session_id)
     _start_watchdog(root, path)
-    shared.start_in_background(
-        root,
-        lambda servers: write_server_info(path, {**info, "servers": servers}),
-        lambda name, detail: report_shared_down(root, name, detail),
-    )
     try:
         server.mcp.run(
             transport="http",
@@ -294,37 +285,20 @@ def serve(repo_root: Path) -> None:
         _shut_down(path, root)
 
 
-def report_shared_down(root: Path, name: str, detail: str) -> int | None:
-    from . import env, watchdog
-    from .db import connect
-
-    conn = connect(env.db_path_for(root))
-    try:
-        directive_id = watchdog.report_shared_server(conn, name, detail, watchdog.utcnow())
-    finally:
-        conn.close()
-    if directive_id is None:
-        print(f"no run is live to report shared MCP server {name} to", file=sys.stderr, flush=True)
-    else:
-        print(
-            f"reported shared MCP server {name} as directive {directive_id}",
-            file=sys.stderr,
-            flush=True,
-        )
-    return directive_id
-
-
 def _start_watchdog(root: Path, path: Path) -> None:
     from . import env, server, watchdog
     from .db import connect
     from .settings import load_settings
 
+    settings = load_settings(root)
     watchdog.start(
         root,
         connect(env.db_path_for(root)),
-        load_settings(root).watchdog,
+        settings.watchdog,
         exit_server=lambda: _exit_now(path, root),
         activity=lambda: server.last_call_at,
+        transport=settings.wake_transport,
+        notify_channels=settings.notify,
     )
 
 

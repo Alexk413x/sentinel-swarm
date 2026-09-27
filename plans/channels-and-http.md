@@ -1,6 +1,6 @@
 # Plan: Channels and HTTP MCP servers
 
-Status: the HTTP half is built (2026-09-25) and described in `knowledge/prd/09-mcp-servers-and-code-graph.md` under "Shared HTTP servers", and in `06-ledger-server.md`. Channels are not built: the 2026-09-25 probes show a channel cannot deliver to a `--bg` session for a plugin outside the allowlist. See "Probe results". Everything under "Proposed design" is **(proposed)**. Alex asked for two changes: MCP servers over HTTP instead of stdio, and a push-based, event-driven ledger that every agent registers with, which could replace the watchdog's Monitor watcher.
+Status: the HTTP half is superseded. codebase-kg and the accessibility-tools plugins share their servers through their own relays, and the ledger's shared-server code was removed on 2026-09-26. See "Plugin servers" in `knowledge/prd/09-mcp-servers-and-code-graph.md`. A channel reaches a `--bg` role only through the allowlist: the 2026-09-25 probes show a channel cannot deliver to a `--bg` session for a plugin outside it. See "Probe results". Wake-up delivery to an interactive Oracle through the `swarm-events` channel was built on 2026-09-27; see `plans/channel-wake-delivery.md`. Everything under "Proposed design" is **(proposed)**. Alex asked for two changes: MCP servers over HTTP instead of stdio, and a push-based, event-driven ledger that every agent registers with, which could replace the watchdog's Monitor watcher.
 
 ## What the docs say
 
