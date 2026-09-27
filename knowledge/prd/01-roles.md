@@ -188,7 +188,10 @@
   `web-driver@accessibility-tools`. `setup` writes `swarm-driver.md` only then;
   `drive_request` refuses clearly when either is missing. When the plugins are missing
   or fail to load, the run skips every exploration step, and the report needs no
-  special entry for it.
+  special entry for it. When the plugins are installed but their servers fail to load,
+  the Driver, or the Oracle, calls `drive_unavailable(reason)`. It abandons any open
+  exploration, releases its Driver, and notifies the user. From then on
+  `drive_request` refuses and `run_finish` needs no exploration. **(proposed)**
 - **Started by:** the Oracle only. Only the Oracle sends requests, with
   `drive_request`. The Driver starts when the request arrives, and it shuts down when
   its exploration ends. Each session is named `driver-e<exploration number>` after the

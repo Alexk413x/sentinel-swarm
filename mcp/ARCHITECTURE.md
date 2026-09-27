@@ -8,16 +8,16 @@ piece can be built and tested alone.
 | Module | Holds |
 |---|---|
 | `db.py` | `ledger_path`, `connect`, `write_tx`, `migrate` with an idempotent upgrade for columns and tables added after version 1, `ensure_git_exclude` |
-| `schema.sql` | The tables, including `agents.session_name`, `agents.bg_id`, `agents.channel`, `wakeups` (the wake-ups each agent owes, with `pushed_at` for a channel push), `watchdog_findings`, `directives.notified_at`, `runs.watch_heartbeat_at`, and `drive_requests` and `drive_findings` for the Driver's exploration queue |
+| `schema.sql` | The tables, including `agents.session_name`, `agents.bg_id`, `agents.channel`, `wakeups` (the wake-ups each agent owes, with `pushed_at` for a channel push), `watchdog_findings`, `directives.notified_at`, `runs.watch_heartbeat_at`, `runs.driver_unavailable_at`, `briefs.finding_ids_json`, and `drive_requests`, `drive_findings`, and `drive_stops` for the Driver's exploration queue and its stop rules |
 | `settings.py` | `Settings` loaded from `.claude/sentinel-swarm.local.md` frontmatter, with the defaults from `templates/sentinel-swarm.local.md.example` |
 | `identity.py` | `Caller`: resolves a call's `caller` name and stamped `agent_id` against the `agents` table. `require_role` |
 | `ledger.py` | `Ledger`: one object per server process, holding the connection, the repo root, and the settings. Every tool is a method that returns a plain dict |
-| `review.py` | `ReviewMixin`: tests, the code graph, scoring, and the handoff/approve/return cycle |
+| `review.py` | `ReviewMixin`: tests, the code graph, scoring, the handoff/approve/return cycle, the notification for an issue that ends its last round below the floor, and the report. Its `_release_agent` also abandons a released Driver's open exploration |
 | `agreements.py` | **(proposed)** `AgreementsMixin`: change requests (`cr_open`, `cr_accept`, `cr_complete`, `cr_verify`, `cr_list`), departures and shortfalls (`departure_record`, `departure_decide`, `shortfall_record`), and the gates that block `handoff_submit`, `approve`, `phase_update(approved)`, and `run_finish` while one is unresolved. `Ledger` inherits `AgreementsMixin` before `ReviewMixin`, because `ReviewMixin` declares stub bodies for the gate methods (so `review.py`'s own methods type-check against it alone), and MRO resolves the first base's attribute first |
-| `rubric.py` | Dimension math: criterion ratings to a 0 to 100 dimension score, the pass rule, the disagreement rule, and the improved, plateau, or regression classification |
+| `rubric.py` | Rating validation, which requires every dimension in every score set. Dimension math: criterion ratings to a 0 to 100 dimension score, the pass rule, the disagreement rule, and the improved, plateau, or regression classification |
 | `repo.py` | `RepoMixin`: `repo_check` and `repo_branch_create`. `check_repo` is the pure git inspection underneath, callable without a `Ledger` **(proposed)** |
 | `oversight.py` | `OversightMixin`: the Manager's `module_review` and the Oracle's `phase_review`, and the shared readiness checks the `phase_update` gates for `handed_up` and `approved` call **(proposed)** |
-| `drive.py` | **(proposed)** `DriveMixin`: the Driver's exploration queue (`drive_request`, `drive_issue`, `drive_checkin`, `drive_done`), the pure `compute_loop_status` the stop rules run on, and the `run_finish` gate that requires a clean exploration or a resolved stop rule |
+| `drive.py` | **(proposed)** `DriveMixin`: the Driver's exploration queue (`drive_request`, `drive_issue`, `drive_checkin`, `drive_done`, `drive_unavailable`), the pure `compute_loop_status` the stop rules run on, the stop directives and their `drive_stops` targets, the fix gate `brief_create` and `agent_spawn` call on a brief's `finding_ids`, and the `run_finish` gate that requires a clean exploration, a resolved stop rule, or an unavailable Driver |
 | `testing.py` | Runs the profile's test command for a scope and parses the result |
 | `graph.py` | `graph_upsert` under a process lock, and the graph-current check for a file |
 | `versions.py` | Saves and restores file versions in `.sentinel-swarm/versions/` |
@@ -27,7 +27,7 @@ piece can be built and tested alone.
 | `wake.py` | **(proposed)** Wake-up delivery: `route_wakeup`, the one switch between a channel push, `SendMessage`, and `agent_resume`; `EventHub`, where the `/events` route registers each session's stream; and confirmation of a push from the target's transcript |
 | `bridge.py` | **(proposed)** `python -m swarm_ledger.bridge`: the `swarm-events` stdio channel server. It reads the ledger's `/events` stream for its session and writes each event as a `notifications/claude/channel` |
 | `clock.py` | `utcnow`, `stamp`, and `parse_stamp`, the ledger's UTC time helpers |
-| `notify.py` | **(proposed)** User notifications for Driver events: `record` keeps one `notifications` row per event, `show` runs the platform's OS notification in a daemon thread through the replaceable `runner`, and `owed`, `mark_sent`, and `announce` track the `PushNotification` call the Oracle owes |
+| `notify.py` | **(proposed)** User notifications for Driver events and for an issue that ends its last round below the floor: `record` keeps one `notifications` row per event, `show` runs the platform's OS notification in a daemon thread through the replaceable `runner`, and `owed`, `mark_sent`, and `announce` track the `PushNotification` call the Oracle owes |
 | `watch.py` | `python -m swarm_ledger.watch`: the Oracle's `Monitor` listener. Prints one line per new watchdog directive and per owed `PushNotification`, beats `runs.watch_heartbeat_at`, and exits when the run is not active |
 | `sessions.py` | The `claude` CLI: start, list, stop, and resume background sessions. Every call goes through `_run`, which tests replace |
 | `agentfiles.py` | Reads a host repo's `.claude/agents/swarm-<role>.md` and builds a role session's flags |

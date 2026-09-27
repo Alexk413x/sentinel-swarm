@@ -57,7 +57,7 @@ the project's code in the host repo itself. Tracking is `local` only.
   `ideas`); agreements (`change_requests`, `departures`, `departure_decisions`,
   `deferrals`, `overrides`); communication (`messages`, `directives`,
   `watchdog_findings`, `notifications` **(proposed)**); the Driver (`drive_requests`,
-  `drive_findings`). Read `schema.sql` for the columns.
+  `drive_findings`, `drive_stops` **(proposed)**). Read `schema.sql` for the columns.
 - Ledger enum values, such as states, outcomes, and decisions, use snake_case.
 - `agent_events` is append-only, and nothing deletes rows when a run finishes.
   **(proposed)**
@@ -81,7 +81,7 @@ partial success.
 | Issues | `issue_open`, `issue_list`, `issue_close`, `idea_record`, `issue_escalate` |
 | Agreements | `cr_open`, `cr_accept`, `cr_complete`, `cr_verify`, `cr_list`, `departure_record`, `departure_decide`, `shortfall_record`, `deferral_propose`, `agreement_decide`, `override_grant` |
 | Reporting | `status_tree`, `report_build`, `analytics_query` (one read-only SELECT, Oracle only), `events`, `ledger_info` |
-| Driver | `drive_request`, `drive_issue`, `drive_checkin`, `drive_done` |
+| Driver | `drive_request`, `drive_issue`, `drive_checkin`, `drive_done`, `drive_unavailable` **(proposed)** |
 
 - `tests_run(scope, target)` is role-bound: `file` to the Coder (its own path or test
   path only), `module` to the Lead, `phase` to the Manager, `full` to the Oracle. It
@@ -89,8 +89,9 @@ partial success.
   with the ledger's own venv dropped from `PATH` and `VIRTUAL_ENV`, and a 600-second
   timeout. It parses pytest and Go output. An agent never reports a test result itself.
 - `version_restore(version_id)` restores a saved version onto the Coder's own file.
-- The server itself shows a desktop notification for each Driver notification it
-  records, from `notify.py`, in a background thread, when the settings' `notify` list
-  includes `os`. A failure goes to the server log.
+- The server itself shows a desktop notification for each notification it records:
+  a Driver event or an issue that ends round 3 below the floor. It runs from
+  `notify.py`, in a background thread, when the settings' `notify` list includes `os`.
+  A failure goes to the server log.
   See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md).
   **(proposed)**

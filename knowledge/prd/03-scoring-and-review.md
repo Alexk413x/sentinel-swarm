@@ -26,7 +26,9 @@ The split of design into architecture and code structure is **(proposed)**.
   not apply, such as accessibility on a back-end file, is marked not applicable with a
   one-line reason.
 - Every dimension is scored on every review, including the dimensions a fix did not
-  target.
+  target. `score_record` refuses a Coder or Lead score set whose `applicable` does not
+  list all nine dimensions, and a dimension marked not applicable with an empty reason.
+  **(proposed)**
 
 ## Scale **(proposed)**
 
@@ -144,6 +146,15 @@ issue stopped improving, and it explains to the next layer why the issue arrived
   round 2 for a Manager, and round 3 for the Oracle. **(proposed)** An issue a
   self or Lead review opens automatically always starts at round 1.
 - A layer with no new idea passes the issue up.
+- An issue that ends round 3 below the floor notifies the user now. `attempt_record`
+  records it: when a plateau or a regression brings an issue at round `rounds` to
+  `attempts_per_round` attempts, and the file's kept Lead review (the earlier one after
+  a regression) has the issue's dimension below `floor` or its criterion below
+  `criterion_floor`, the ledger records an error notification with the event key
+  `issue:<issue_id>`. For an issue with no dimension, any dimension or criterion of the
+  file counts. The ledger server shows the OS notification, and the Oracle owes the
+  `PushNotification`. See "Driver notifications" in
+  [02-run-lifecycle.md](02-run-lifecycle.md) for both paths. **(proposed)**
 
 ## Evidence
 

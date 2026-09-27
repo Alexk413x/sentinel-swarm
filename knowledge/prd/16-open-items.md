@@ -48,9 +48,6 @@
     setting can allowlist a plugin. The retest repeats the 2026-09-25 probe and checks
     the debug log for `Channel notifications skipped`. See the channel facts in
     [13-platform-facts.md](13-platform-facts.md).
-- **Driver notifications in the report.** The report's "Notifications to the user"
-  section lists only `needs_user` directives. It does not list the `notifications`
-  rows, so a Driver notification never appears in the report.
 - **Overrides across runs.** `override_consume` matches the rule, the agent name, and
   the target, but not the run. An unused override from an earlier run can be used up
   by an agent with the same name in a later run.

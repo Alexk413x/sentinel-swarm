@@ -730,6 +730,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
         phase_id: int | None = None,
         module_id: int | None = None,
         file_id: int | None = None,
+        finding_ids: list[int] | None = None,
     ) -> dict:
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
@@ -752,11 +753,16 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                 is not None
             ):
                 raise LedgerError(f"an unacked brief already exists for {child_name!r}")
+            if finding_ids is None:
+                finding_ids = self._inherited_finding_ids(conn, c.agent_id)
+            if c.run_id is not None:
+                self._block_fix_for_stops(conn, c.run_id, finding_ids)
 
             cur = conn.execute(
                 "INSERT INTO briefs "
                 "(run_id, parent_agent_id, child_name, child_role, model, body, "
-                "phase_id, module_id, file_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "phase_id, module_id, file_id, finding_ids_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     c.run_id,
                     c.agent_id,
@@ -767,6 +773,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                     phase_id if phase_id is not None else c.phase_id,
                     module_id if module_id is not None else c.module_id,
                     file_id if file_id is not None else c.file_id,
+                    json.dumps(finding_ids) if finding_ids else None,
                 ),
             )
             brief_id = cur.lastrowid
@@ -774,6 +781,14 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
         return dict(
             self.conn.execute("SELECT * FROM briefs WHERE brief_id = ?", (brief_id,)).fetchone()
         )
+
+    def _inherited_finding_ids(self, conn: sqlite3.Connection, agent_id: str) -> list[int]:
+        row = conn.execute(
+            "SELECT finding_ids_json FROM briefs WHERE acked_by_agent_id = ? "
+            "ORDER BY brief_id DESC LIMIT 1",
+            (agent_id,),
+        ).fetchone()
+        return json.loads(row["finding_ids_json"]) if row and row["finding_ids_json"] else []
 
     def brief_get(self, caller_name: str, child_name: str) -> dict:
         del caller_name
@@ -978,6 +993,9 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
             c.role
         ):
             raise LedgerError(f"{caller!r} is not the parent named in the brief for {child_name!r}")
+        self._block_fix_for_stops(
+            self.conn, brief["run_id"], json.loads(brief["finding_ids_json"] or "[]")
+        )
         if brief["child_role"] == "manager":
             run_row = self.conn.execute(
                 "SELECT repo_checked_at FROM runs WHERE run_id = ?", (brief["run_id"],)

@@ -66,6 +66,10 @@ def _all_applicable() -> dict[str, str | None]:
     return {key: None for key, _, _ in DIMENSIONS}
 
 
+def _only(dimension: str) -> dict[str, str | None]:
+    return {key: None if key == dimension else "not under test" for key in DIMENSION_KEYS}
+
+
 def test_validate_ratings_accepts_a_complete_valid_set() -> None:
     validate_ratings(_all_applicable_ratings(), _all_applicable())
 
@@ -73,13 +77,13 @@ def test_validate_ratings_accepts_a_complete_valid_set() -> None:
 def test_validate_ratings_rejects_value_below_range() -> None:
     ratings = [Rating("meets_the_brief", "does_what_was_asked", 0, "bad", None)]
     with pytest.raises(ValueError):
-        validate_ratings(ratings, {"meets_the_brief": None})
+        validate_ratings(ratings, _only("meets_the_brief"))
 
 
 def test_validate_ratings_rejects_value_above_range() -> None:
     ratings = [Rating("meets_the_brief", "does_what_was_asked", 11, "bad", None)]
     with pytest.raises(ValueError):
-        validate_ratings(ratings, {"meets_the_brief": None})
+        validate_ratings(ratings, _only("meets_the_brief"))
 
 
 def test_validate_ratings_accepts_boundary_values_one_and_ten() -> None:
@@ -87,7 +91,7 @@ def test_validate_ratings_accepts_boundary_values_one_and_ten() -> None:
         Rating("meets_the_brief", "does_what_was_asked", 1, "wrong", "pkg/good.py:1"),
         Rating("meets_the_brief", "nothing_extra", 10, None, None),
     ]
-    validate_ratings(ratings, {"meets_the_brief": None})
+    validate_ratings(ratings, _only("meets_the_brief"))
 
 
 def test_validate_ratings_rejects_low_rating_with_no_reason() -> None:
@@ -96,7 +100,7 @@ def test_validate_ratings_rejects_low_rating_with_no_reason() -> None:
         Rating("meets_the_brief", "nothing_extra", 10, None, None),
     ]
     with pytest.raises(ValueError):
-        validate_ratings(ratings, {"meets_the_brief": None})
+        validate_ratings(ratings, _only("meets_the_brief"))
 
 
 def test_validate_ratings_rejects_low_rating_with_empty_reason() -> None:
@@ -105,7 +109,7 @@ def test_validate_ratings_rejects_low_rating_with_empty_reason() -> None:
         Rating("meets_the_brief", "nothing_extra", 10, None, None),
     ]
     with pytest.raises(ValueError):
-        validate_ratings(ratings, {"meets_the_brief": None})
+        validate_ratings(ratings, _only("meets_the_brief"))
 
 
 def test_validate_ratings_allows_rating_of_nine_with_no_reason() -> None:
@@ -113,30 +117,30 @@ def test_validate_ratings_allows_rating_of_nine_with_no_reason() -> None:
         Rating("meets_the_brief", "does_what_was_asked", 9, None, None),
         Rating("meets_the_brief", "nothing_extra", 9, None, None),
     ]
-    validate_ratings(ratings, {"meets_the_brief": None})
+    validate_ratings(ratings, _only("meets_the_brief"))
 
 
 def test_validate_ratings_rejects_missing_criterion_for_applicable_dimension() -> None:
     ratings = [Rating("meets_the_brief", "does_what_was_asked", 10, None, None)]
     with pytest.raises(ValueError):
-        validate_ratings(ratings, {"meets_the_brief": None})
+        validate_ratings(ratings, _only("meets_the_brief"))
 
 
 def test_validate_ratings_rejects_rating_for_not_applicable_dimension() -> None:
     ratings = [Rating("accessibility", "ui_files_only", 10, None, None)]
     with pytest.raises(ValueError):
-        validate_ratings(ratings, {"accessibility": "back-end file"})
+        validate_ratings(ratings, _only("meets_the_brief") | {"accessibility": "back-end file"})
 
 
 def test_validate_ratings_allows_not_applicable_dimension_with_no_ratings() -> None:
     ratings = _full_ratings("meets_the_brief")
-    validate_ratings(ratings, {"meets_the_brief": None, "accessibility": "back-end file"})
+    validate_ratings(ratings, _only("meets_the_brief") | {"accessibility": "back-end file"})
 
 
 def test_validate_ratings_rejects_unknown_dimension() -> None:
     ratings = [Rating("not_a_real_dimension", "x", 10, None, None)]
     with pytest.raises(ValueError):
-        validate_ratings(ratings, {"not_a_real_dimension": None})
+        validate_ratings(ratings, _all_applicable() | {"not_a_real_dimension": None})
 
 
 def test_validate_ratings_rejects_unknown_criterion() -> None:
@@ -144,13 +148,31 @@ def test_validate_ratings_rejects_unknown_criterion() -> None:
         Rating("meets_the_brief", "not_a_real_criterion", 10, None, None)
     ]
     with pytest.raises(ValueError):
-        validate_ratings(ratings, {"meets_the_brief": None})
+        validate_ratings(ratings, _only("meets_the_brief"))
 
 
 def test_validate_ratings_rejects_dimension_missing_from_applicable() -> None:
     ratings = _full_ratings("meets_the_brief")
     with pytest.raises(ValueError):
         validate_ratings(ratings, {})
+
+
+def test_validate_ratings_rejects_an_empty_set() -> None:
+    with pytest.raises(ValueError, match="every dimension is scored on every review"):
+        validate_ratings([], {})
+
+
+def test_validate_ratings_rejects_a_dimension_left_out_of_a_partial_set() -> None:
+    applicable = _only("meets_the_brief")
+    del applicable["security"]
+    with pytest.raises(ValueError, match=r"missing \['security'\]"):
+        validate_ratings(_full_ratings("meets_the_brief"), applicable)
+
+
+def test_validate_ratings_rejects_not_applicable_with_an_empty_reason() -> None:
+    applicable = _only("meets_the_brief") | {"accessibility": "  "}
+    with pytest.raises(ValueError, match="accessibility: a dimension marked not applicable"):
+        validate_ratings(_full_ratings("meets_the_brief"), applicable)
 
 
 def test_dimension_scores_computes_mean_times_ten() -> None:

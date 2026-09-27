@@ -184,8 +184,9 @@ any directive is open, any deferral is open, any change request is not verified 
 declined, or any departure is neither signed off nor reworked. **(proposed)** It also
 refuses, when the host has a Driver available, while no exploration has ended clean
 since the last fix wave, unless the loop stopped on a stop rule whose directive is
-resolved: see "Explorations" below. It then sets the run to `finished`, releases every
-live agent except the Oracle, builds the report, and closes the Oracle's row. The
+resolved, or the Driver is unavailable for the run: see "Explorations" below. It then
+sets the run to `finished`, releases every live agent except the Oracle, builds the
+report, and closes the Oracle's row. The
 ledger server then stops the Oracle's background session and exits. See "What stops
 when" in [05-sessions.md](05-sessions.md).
 
@@ -208,8 +209,11 @@ when" in [05-sessions.md](05-sessions.md).
 - Every wave starts from a new plan and new agents, including a fix wave planned from a
   Driver exploration. A review fix inside a wave, such as a return or a pushback,
   resumes the existing agents. The Oracle groups the issues by module, one fix phase per
-  module. **(proposed)** Each Coder's brief carries the issue and its evidence and
-  re-claims the file. **(proposed, not built)**
+  module. **(proposed)** Each fix's brief names the findings it fixes with
+  `brief_create(..., finding_ids=[...])`. The brief stores the list, and a child's
+  brief inherits its parent's list unless it names its own. **(proposed)** The
+  finding's evidence in the Coder's brief body and the re-claim of the file are
+  **(proposed, not built)**.
 - Each request carries a focus list the Oracle writes. The first exploration covers
   every PRD feature; each later one covers the features the last wave touched, every
   open issue to recheck, and a quick smoke pass over everything else; the final clean
@@ -217,7 +221,8 @@ when" in [05-sessions.md](05-sessions.md).
   to recheck earlier findings, then runs `map-explore` with the focus list as its goal.
   **(proposed)**
 - `drive_request(focus)` is the Oracle's call. It refuses an empty focus list, a host
-  with no Driver available, an earlier exploration that is still open
+  with no Driver available, a run whose Driver is unavailable, an earlier exploration
+  that is still open
   (`drive_requests.state = 'open'`), and a Manager, Lead, or Coder still live in the
   run: a new exploration starts only after every fix has finished. It writes the
   Driver's brief and starts its session the same way `brief_create` and `agent_spawn`
@@ -243,6 +248,15 @@ when" in [05-sessions.md](05-sessions.md).
   of what failed, when it cannot continue: a failed build or a device that will not
   boot. `drive_done` refuses `blocked` until the exploration has a finding, so a blocked
   exploration never counts as clean. **(proposed)**
+- Releasing a Driver, with `agent_release` or `run_finish`, closes its open exploration
+  as `abandoned`. The Oracle stops a stuck or crashed Driver this way, then requests the
+  next exploration. An abandoned exploration never counts as clean, and it is not a wave
+  in the stall count; its findings still count as seen. **(proposed)**
+- `drive_unavailable(reason)` records that the Driver's plugin servers failed to load.
+  The Driver calls it for its own exploration, or the Oracle calls it. It abandons any
+  open exploration, releases its Driver, and records an error notification for the
+  user. From then on `drive_request` refuses and `run_finish` needs no exploration.
+  The mechanism is **(proposed)**.
 - **Stop rules.** The loop stops on lack of progress, not a fixed count. A bug still
   there after 3 fix attempts in a row stops getting fixes and goes to the user with its
   evidence. A bug gets at most 5 fix attempts in all. The loop stops when 3 fix waves in
@@ -256,6 +270,21 @@ when" in [05-sessions.md](05-sessions.md).
     directive from source `driver`, computed by the pure function `compute_loop_status`
     in `mcp/src/swarm_ledger/drive.py` over every request and finding of the run, and
     deduplicated by its exact reason text. **(proposed)**
+  - Each directive body starts with `[driver-stop] <reason>` and lists the evidence.
+    For a stopped finding or a regression: the title, fingerprint, and area, the fix
+    attempts in a row and in all, the explorations it recurred in, and the evidence
+    paths. For a stall: every finding of the latest exploration, which is what is left.
+    **(proposed)**
+  - `drive_done` records each directive's targets in `drive_stops`: the fingerprint for
+    a per-finding stop, and each fingerprint the pattern names, with its area, for a
+    pattern. `brief_create` and `agent_spawn` enforce the rules on a brief's
+    `finding_ids` **(proposed)**:
+    - A finding whose fingerprint hit a per-finding stop gets no more fixes for the rest
+      of the run, even after its directive resolves. A finding that reaches the stop in
+      the open exploration is refused too, before `drive_done` files the directive.
+    - A pattern pauses fixes in its area: a finding whose fingerprint or area a pattern
+      names is refused while the pattern's directive is open. Resolving the directive
+      lifts the pause.
 - The loop ends on a clean exploration (no finding) or on a stop rule, whichever comes
   first. **(proposed)**
 
@@ -267,20 +296,25 @@ tells the user" in [04-agreements.md](04-agreements.md). The mechanics below are
 
 - **Events.** `drive_done` records at most one notification per exploration, in this
   order: `blocked` (error), a stop rule it filed a new directive for (warning), or a
-  clean exploration (done). An exploration with findings and no new stop rule records
-  none. The watchdog records one for each new report on a Driver session: `crashed`
-  (error) or `driver_overdue` (warning). `driver_overdue` is the Driver's stuck report;
-  the watchdog never reports a Driver as `stuck`. See [08-watchdog.md](08-watchdog.md).
+  clean exploration (done). Among new stop rules, a stall comes first, and its message
+  lists what is left. An exploration with findings and no new stop rule records none.
+  `drive_unavailable` records one (error) per run. The watchdog records one for each
+  new report on a Driver session: `crashed` (error) or `driver_overdue` (warning).
+  `driver_overdue` is the Driver's stuck report; the watchdog never reports a Driver as
+  `stuck`. See [08-watchdog.md](08-watchdog.md).
 - **Levels.** Each kind maps to a level: done is success, warning is warning, and error
   is error. The level picks the notification's logo: the plugin icon with a green,
   amber, or red eye, `assets/icon-<level>.png`.
 - **Dedupe.** The `notifications` table keeps one row per run and event key:
-  `drive_done:<request_id>` or `directive:<directive_id>`. A repeat of the same event
-  records nothing and notifies no one.
+  `drive_done:<request_id>`, `directive:<directive_id>`, `drive_unavailable:<run_id>`,
+  or `issue:<issue_id>` for an issue that ends round 3 below the floor. A repeat of the
+  same event records nothing and notifies no one.
 - **Message.** One line, at most 199 characters, with no markdown. It leads with what
   the user acts on, for example `Driver done: exploration 3 clean, 0 open bugs, 4 fixed
   this run`, `Driver stopped: 3 attempts in a row with no progress on <finding title>
-  (+1 more)`, `Driver blocked: exploration 2 cannot continue: the build failed`, or
+  [<fingerprint>], seen in explorations 1, 2, 3, 4 (+1 more)`, `Driver loop ended: 3
+  explorations in a row fixed nothing; 2 left: <title>; <title>`, `Driver blocked:
+  exploration 2 cannot continue: the build failed`, or
   `Driver overdue: driver-e2, exploration 2 has had no check-in for 41 minutes`.
 - **OS path.** The ledger server shows the message as a desktop notification itself,
   in a background thread that never blocks or fails a ledger call. Each platform shows

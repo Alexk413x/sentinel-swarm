@@ -151,7 +151,7 @@ The responsible level **(proposed)**:
 | Situation | The Oracle |
 |---|---|
 | Only the user can unblock it, and the run can continue afterwards | Notifies the user now, with `run_pause` |
-| An issue ends round 3 below the floor | Notifies the user now |
+| An issue ends round 3 below the floor | Notifies the user now: `attempt_record` records the notification, the ledger server shows an OS notification, and the Oracle's Stop hook blocks until the Oracle sends the `PushNotification` it owes. See "Escalation" in [03-scoring-and-review.md](03-scoring-and-review.md). **(mechanism proposed)** |
 | The Driver finishes, or hits an error | Notifies the user now: the ledger server shows an OS notification itself, and the Oracle's Stop hook blocks until the Oracle sends the `PushNotification` it owes. See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md) |
 | Only the user can answer a directive | Resolves it `needs_user` and asks the user once, in its session. **(proposed)** |
 | The watchdog reports a session waiting on a permission prompt | Tells the user which session to open in agent view. **(proposed)** |

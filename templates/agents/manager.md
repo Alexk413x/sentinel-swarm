@@ -118,6 +118,10 @@ you, so you end your turn while children work instead of waiting in it.
    id>)`. The brief states the module's goal, the files you expect in it, the
    contracts between them and the neighbouring modules, what the tests must prove,
    and the guidelines that apply. `agent_spawn` refuses a child that has no brief.
+   In a fix phase, the Lead's brief inherits the Driver findings your own brief
+   names. Pass `finding_ids=[...]` to name a narrower list. `brief_create` and
+   `agent_spawn` refuse a finding that hit a Driver stop rule, or one in an area a
+   pattern paused.
 2. `agent_spawn(caller=<your name>, child_name="lead-<phase>-<module>")`. It starts
    the Lead's session with the model you recorded in the brief, and returns the
    session name.

@@ -109,7 +109,7 @@ Built on 2026-09-25, choices Alex has not reviewed:
 - Smoke runs install as `0.0.1-dev.<epoch seconds>` and remove older dev copies.
 - The Driver's details: its approved models, `driver: [sonnet, opus]`; `drive_request` picks the first approved Driver model; the Driver has the `Skill` tool to run cartographer's `map-test` and `map-explore`; its shell runs only `build_command`; `post_shell`'s claim check stays Coder-only.
 - The exact stop-rule math in `compute_loop_status` (`mcp/src/swarm_ledger/drive.py`): the attempt streak and total, the three-exploration stall, the regression check, fixes causing bugs (compared by `area`), and ping-pong (across the last 4 explorations).
-- The Driver's fix-loop details: the Oracle groups findings by module, one fix phase per module, and asks a running module for a new Coder through its Manager and Lead; the Driver tests the build it made at the start of the exploration, never a dev server; a failed build is a finding that ends the exploration; the Driver replays recorded routes with `map-test` before it runs `map-explore` on the focus list. Not built: each fix Coder's brief carries the finding and its evidence and re-claims the file.
+- The Driver's fix-loop details: the Oracle groups findings by module, one fix phase per module, and asks a running module for a new Coder through its Manager and Lead; the Driver tests the build it made at the start of the exploration, never a dev server; a failed build is a finding that ends the exploration; the Driver replays recorded routes with `map-test` before it runs `map-explore` on the focus list. Not built: each fix Coder's brief body carries the finding's evidence and re-claims the file.
 - `drive_request` refuses an empty focus list. `drive_issue` refuses a finding with no fingerprint or title, or with a severity other than blocker, major, or minor.
 - The report's Explorations section marks each finding as recurred in a later exploration or not seen again; the ledger does not link a finding to the fix that closed it.
 - The watchdog reports a Driver whose check-in is overdue (`driver_overdue`) and does not report it as stuck or spinning.
@@ -134,8 +134,8 @@ Built on 2026-09-27, wake-up delivery through a channel (see "Wake-up delivery" 
 Built on 2026-09-27, Driver notifications (see "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md)), choices Alex has not reviewed:
 
 - Two delivery paths, both on by default: an OS notification from the ledger server itself, and a `PushNotification` the Oracle owes. `notify: [os, push]` in the settings file picks them; `[]` turns both off. A single value reads as a one-item list, and an empty or unset key keeps both.
-- The events: `drive_done` with `blocked`, a new stop-rule directive, or a clean exploration, at most one per exploration in that order; and a new `crashed` or `driver_overdue` watchdog report on a Driver session. `driver_overdue` stands in for `stuck`, which the watchdog never reports on a Driver.
-- One `notifications` row per run and event key (`drive_done:<request_id>` or `directive:<directive_id>`), so a repeat notifies no one.
+- The events: `drive_done` with `blocked`, a new stop-rule directive (a stall first), or a clean exploration, at most one per exploration in that order; and a new `crashed` or `driver_overdue` watchdog report on a Driver session. `driver_overdue` stands in for `stuck`, which the watchdog never reports on a Driver.
+- One `notifications` row per run and event key (`drive_done:<request_id>`, `directive:<directive_id>`, `drive_unavailable:<run_id>`, or `issue:<issue_id>`), so a repeat notifies no one.
 - `drive_done(request_id, blocked=None)` is the Driver's path to report that it cannot continue. It refuses `blocked` until the exploration has a finding.
 - The message texts, capped at 199 characters with backticks and asterisks removed. A stop-rule message names the first new rule and counts the rest as "(+N more)".
 - The Windows toast runs through Windows PowerShell 5.1 with `-EncodedCommand` under the AppUserModelID `SentinelSwarm.Notifications`, which each toast registers under `HKCU\Software\Classes\AppUserModelId`; macOS uses `osascript`; Linux uses `notify-send` when installed and logs a skip otherwise. Each runs in a daemon thread with a 30-second timeout, and a failure goes to the server log.
@@ -144,3 +144,43 @@ Built on 2026-09-27, Driver notifications (see "Driver notifications" in [02-run
 - The Oracle's Stop hook blocks on an owed push even while the run is paused, while children work, while a directive waits on the user, and after `run_finish`. A stop that follows its own block passes, as for owed wake-ups.
 - Any `PushNotification` call from the Oracle pays one debt, whatever its result: the one whose message matches, or else the oldest.
 - `PushNotification` is in the Oracle's tools only.
+
+Built on 2026-09-27, the eight rules the PRD audit found unbuilt, choices Alex has not reviewed:
+
+- `drive_unavailable(reason)`, from the Driver for its own open exploration or from the
+  Oracle, marks the Driver unavailable for the rest of the run in
+  `runs.driver_unavailable_at` and `driver_unavailable_reason`. It abandons any open
+  exploration, releases its Driver, and records an error notification
+  (`drive_unavailable:<run_id>`). `drive_request` then refuses, and the `run_finish`
+  gate passes. The report adds no entry of its own; the notification appears in the
+  report's notifications list with every other notification.
+- `score_record` refuses a score set whose `applicable` does not list all nine
+  dimensions, and a dimension marked not applicable with an empty reason.
+- Releasing a Driver sets its open exploration to `abandoned`, with `done_at`. An
+  abandoned exploration never counts as clean and is not a wave in the stall count; its
+  findings still count as seen. `clean_latest` reads the latest `done` or `abandoned`
+  exploration.
+- A fix names its findings with `brief_create(..., finding_ids=[...])`, stored in
+  `briefs.finding_ids_json`. A child's brief inherits its parent's list unless it names
+  its own. `brief_create` and `agent_spawn` refuse a finding of another run, a finding
+  whose fingerprint hit a per-finding stop (for the rest of the run), a finding that
+  reaches a per-finding stop in the open exploration, and a finding whose fingerprint
+  or area an open pattern directive names.
+- `drive_stops` holds one row per fingerprint or area a stop directive names, with its
+  kind: `finding`, `pattern`, or `stalled`. A regression and ping-pong name their
+  fingerprints and areas; fixes causing bugs names the new findings in the fixed areas.
+  Stop directives are deduplicated by reason through this table, and by the old
+  one-line body for a directive filed before it.
+- A stop directive's body lists the evidence after its first line; a per-finding stop's
+  notification adds the fingerprint and the explorations it recurred in.
+- A stall's directive and notification list every finding of the latest exploration as
+  what is left, and the stall is the first stop rule in the exploration's notification.
+- The report's Explorations section lists each stop directive with its evidence, its
+  Notifications section lists every `notifications` row, and its Directives section
+  shows only the first line of a `driver` directive.
+- An issue ends round 3 when a plateau or a regression brings an issue at round
+  `rounds` to `attempts_per_round` attempts. It is below the floor when the kept Lead
+  review (the earlier one after a regression) has the issue's dimension below `floor`
+  or its criterion below `criterion_floor`, or, for an issue with no dimension, any
+  dimension or criterion. `attempt_record` then records an error notification,
+  `issue:<issue_id>`, and returns it in `notifications`.

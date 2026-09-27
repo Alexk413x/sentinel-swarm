@@ -135,6 +135,12 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 | A role starts only its own child role | `brief_create` and `agent_spawn`; `pre_agent` denies `Agent` except a Driver's cartographer subagents |
 | The Oracle starts a new exploration only after every fix has finished | `drive_request` refuses while an exploration is open or a Manager, Lead, or Coder is live |
 | `run_finish` needs a clean exploration or a resolved stop rule | `drive_request`, `drive_issue`, `drive_done`, and the `run_finish` gate in `drive.py` |
+| A Driver whose servers fail to load skips the explorations | `drive_unavailable` records it; `drive_request` refuses and the `run_finish` gate passes after it |
+| A stuck Driver's exploration can be closed | `agent_release` of the Driver abandons its open exploration, which never counts as clean |
+| A stopped bug gets no more fixes, and its evidence reaches the user | `brief_create` and `agent_spawn` refuse a brief whose `finding_ids` name it; `drive_done` puts the evidence in the directive and the notification |
+| A pattern of bugs pauses fixes in that area | `brief_create` and `agent_spawn` refuse a finding in the area while the pattern's directive is open |
+| After 3 waves that fix nothing, the Oracle reports what is left | `drive_done` records the directive and the notification that list what is left; the report shows both |
+| Every dimension is scored on every review | `score_record` refuses a set that leaves a dimension out |
 | A model comes from the approved list | `brief_create` |
 | No agent starts without a brief | `agent_spawn` and `brief_ack` |
 | No agent fakes its identity | `pre_ledger` stamps `agent_id`; every tool matches `caller` to it |
@@ -152,7 +158,8 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 | A departure is signed off or reworked | `departure_decide`; gates on `approve`, `return_work`, `accept_incomplete`, `module_review`, `phase_review`, `run_finish` |
 | A deferral is decided by a high enough role in its scope | `agreement_decide`; gates on `phase_update(approved)` and `run_finish` |
 | A directive outcome is one of the four values | `directive_resolve` |
-| The user is notified when the Driver finishes or hits an error | `drive_done` and the watchdog record the notification and show the OS notification; the Oracle's `stop` blocks until a `PushNotification` call, which `post_any` records |
+| The user is notified when the Driver finishes or hits an error | `drive_done`, `drive_unavailable`, and the watchdog record the notification and show the OS notification; the Oracle's `stop` blocks until a `PushNotification` call, which `post_any` records |
+| An issue that ends round 3 below the floor notifies the user now | `attempt_record` records the notification and shows the OS notification; the Oracle's `stop` blocks until the `PushNotification` call |
 | The Oracle checks the repo before a Manager starts | `agent_spawn` |
 | A phase hands up only after every module review | `phase_update(handed_up)` |
 | A phase is approved only after the Oracle reviews it | `phase_update(approved)` |

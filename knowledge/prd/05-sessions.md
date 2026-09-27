@@ -201,6 +201,7 @@ and the launcher then loads no channel.
 | `agent_release` by a Manager after `module_review` accepts | The Lead's session |
 | `phase_update(approved)` | The phase's Manager and every live agent under it |
 | `drive_done` | The Driver's own session |
+| `agent_release` of a Driver by the Oracle, or `drive_unavailable` | The Driver's session; its open exploration becomes `abandoned` **(proposed)** |
 | `run_finish` | Every agent still live except the Oracle |
 | About 3 seconds after `run_finish` | The server waits up to 5 minutes for the Oracle's last turn to end, stops the Oracle's background session, and exits. An interactive Oracle is the user's terminal and keeps running |
 | `idle_exit_minutes` with no active run, or a paused run, no session of the run running, and no ledger tool call | The ledger server |

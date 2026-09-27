@@ -13,7 +13,11 @@ CREATE TABLE IF NOT EXISTS runs (
     ended_at TEXT,
     watch_heartbeat_at TEXT,
     watch_expires_at TEXT,
-    watch_owner TEXT
+    watch_owner TEXT,
+    -- Set by drive_unavailable when the Driver's plugin servers fail to load. The run then
+    -- skips every exploration: drive_request refuses and run_finish needs none.
+    driver_unavailable_at TEXT,
+    driver_unavailable_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS phases (
@@ -117,6 +121,9 @@ CREATE TABLE IF NOT EXISTS briefs (
     phase_id INTEGER REFERENCES phases (phase_id) ON DELETE RESTRICT,
     module_id INTEGER REFERENCES modules (module_id) ON DELETE RESTRICT,
     file_id INTEGER REFERENCES files (file_id) ON DELETE RESTRICT,
+    -- The drive_findings this brief fixes, as a JSON list of finding ids. A child's brief
+    -- inherits its parent's list unless brief_create names its own.
+    finding_ids_json TEXT,
     acked_by_agent_id TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
     acked_at TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -401,6 +408,8 @@ CREATE TABLE IF NOT EXISTS drive_requests (
     -- The Driver session drive_request starts for this exploration; set once agent_spawn
     -- returns, so it is NULL for the instant between the two calls.
     agent_id TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
+    -- open, done (drive_done), or abandoned (the Driver was released, or drive_unavailable
+    -- closed it). An abandoned exploration never counts as clean.
     state TEXT NOT NULL DEFAULT 'open',
     opened_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     done_at TEXT,
@@ -433,12 +442,30 @@ CREATE TABLE IF NOT EXISTS drive_findings (
 CREATE INDEX IF NOT EXISTS idx_drive_findings_fingerprint
     ON drive_findings (run_id, fingerprint);
 
+-- One row per fingerprint or area a Driver stop rule names. kind 'finding' stops fixes for
+-- that fingerprint for the rest of the run; kind 'pattern' pauses fixes for that area and
+-- fingerprint while its directive is open; kind 'stalled' ends the loop.
+CREATE TABLE IF NOT EXISTS drive_stops (
+    stop_id INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL REFERENCES runs (run_id) ON DELETE RESTRICT,
+    directive_id INTEGER NOT NULL REFERENCES directives (directive_id) ON DELETE RESTRICT,
+    kind TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    fingerprint TEXT,
+    area TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_drive_stops_run
+    ON drive_stops (run_id, kind);
+
 CREATE TABLE IF NOT EXISTS notifications (
     notification_id INTEGER PRIMARY KEY,
     run_id INTEGER NOT NULL REFERENCES runs (run_id) ON DELETE RESTRICT,
-    -- done or error.
+    -- done, warning, or error.
     kind TEXT NOT NULL,
-    -- One row per event: drive_done:<request_id> or directive:<directive_id>.
+    -- One row per event: drive_done:<request_id>, directive:<directive_id>, or
+    -- issue:<issue_id> for an issue that ended its last round below the floor.
     event_key TEXT NOT NULL,
     message TEXT NOT NULL,
     -- 1 when the settings' notify list holds push: the run's Oracle owes a PushNotification.

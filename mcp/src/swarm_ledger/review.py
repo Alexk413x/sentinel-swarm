@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from . import graph, pricing, rubric, versions
+from . import graph, notify, pricing, rubric, versions
 from .db import ledger_path, write_tx
 from .identity import ROLES, Caller, LedgerError, require_role, resolve
 from .rubric import Rating
@@ -229,6 +229,11 @@ class ReviewMixin:
             (phase_name, target_agent_id),
         )
         self._log_event(conn, target_agent_id, row["state"], "released", reason)
+        conn.execute(
+            f"UPDATE drive_requests SET state = 'abandoned', done_at = {_NOW} "
+            "WHERE agent_id = ? AND state = 'open'",
+            (target_agent_id,),
+        )
         if row["bg_id"] and row["role"] != "oracle":
             self._pending_stops.append((target_agent_id, row["bg_id"]))
 
@@ -924,8 +929,13 @@ class ReviewMixin:
                 raise LedgerError("no earlier handoff to restore for a regression")
             restore_from = handoffs[1]
 
+        kept_review = before_review if outcome == "regression" else after_review
+        kept_scores = before_scores if outcome == "regression" else after_scores
+        kept_ratings = self._ratings_for(kept_review["review_id"])
+
         rounds: dict[int, int] = {}
         escalated: list[dict] = []
+        notices: list[dict] = []
         with write_tx(self.conn) as conn:
             conn.execute(
                 "UPDATE attempts SET outcome = ? WHERE attempt_id = ?",
@@ -980,6 +990,15 @@ class ReviewMixin:
                         (new_attempts, issue["issue_id"]),
                     )
                     rounds[issue["issue_id"]] = issue["round"]
+                    if (
+                        issue["round"] >= escalation.rounds
+                        and new_attempts >= escalation.attempts_per_round
+                    ):
+                        notice = self._notify_last_round_below_floor(
+                            conn, issue, file_row["path"], kept_scores, kept_ratings
+                        )
+                        if notice is not None:
+                            notices.append(notice)
 
             if restore_from is not None:
                 records_dir = ledger_path(self.repo_root).parent
@@ -1018,7 +1037,56 @@ class ReviewMixin:
                         f"version_id={restore_from['version_id']}",
                     )
 
-        return {"outcome": outcome, "rounds": rounds, "escalated": escalated}
+        for notice in notices:
+            notify.deliver(notice, self.settings.notify)
+        return {
+            "outcome": outcome,
+            "rounds": rounds,
+            "escalated": escalated,
+            "notifications": notices,
+        }
+
+    def _notify_last_round_below_floor(
+        self,
+        conn: sqlite3.Connection,
+        issue: dict,
+        path: str,
+        scores: dict[str, float],
+        ratings: list[Rating],
+    ) -> dict | None:
+        t = self._thresholds()
+        dimension, criterion = issue["dimension"], issue["criterion"]
+        if dimension is not None:
+            low_scores = (
+                {dimension: scores[dimension]} if scores.get(dimension, 100) < t.floor else {}
+            )
+            low_ratings = [
+                r
+                for r in ratings
+                if r.dimension == dimension
+                and (criterion is None or r.criterion == criterion)
+                and r.value < t.criterion_floor
+            ]
+        else:
+            low_scores = {d: s for d, s in scores.items() if s < t.floor}
+            low_ratings = [r for r in ratings if r.value < t.criterion_floor]
+        if not low_scores and not low_ratings:
+            return None
+        below = [f"{d} {s:g} (floor {t.floor})" for d, s in sorted(low_scores.items())] + [
+            f"{r.dimension}.{r.criterion} {r.value} (floor {t.criterion_floor})"
+            for r in low_ratings
+        ]
+        return notify.record(
+            conn,
+            issue["run_id"],
+            kind="error",
+            event_key=f"issue:{issue['issue_id']}",
+            message=(
+                f"Issue {issue['issue_id']} on {path} ended round {issue['round']} below the "
+                f"floor: {issue['title']}; {', '.join(below)}"
+            ),
+            channels=self.settings.notify,
+        )
 
     def accept_incomplete(self, caller: str, agent_id: str, handoff_id: int, reason: str) -> dict:
         c = resolve(self.conn, caller, agent_id)
@@ -1418,6 +1486,19 @@ class ReviewMixin:
                     f"- [{f['severity']}] {f['title']} ({f['fingerprint']}), area "
                     f"{f['area'] or 'unknown'} -- {fix}"
                 )
+        stop_directives = _rows(
+            conn.execute(
+                "SELECT * FROM directives WHERE run_id = ? AND source = 'driver' "
+                "ORDER BY directive_id",
+                (run_id,),
+            )
+        )
+        if stop_directives:
+            lines.append("### Stop rules")
+        for d in stop_directives:
+            head, *detail = d["body"].removeprefix("[driver-stop] ").splitlines()
+            lines.append(f"- {head} -> {d['outcome'] or d['state']}")
+            lines.extend(f"  - {line.removeprefix('- ')}" for line in detail)
         lines.append("")
 
         lines.append("## Open items")
@@ -1533,7 +1614,10 @@ class ReviewMixin:
 
         lines.append("## Directives")
         for d in _rows(conn.execute("SELECT * FROM directives WHERE run_id = ?", (run_id,))):
-            lines.append(f"- [{d['source']}] {d['body']} -> {d['outcome'] or d['state']}")
+            head, *rest = d["body"].splitlines() or [""]
+            lines.append(f"- [{d['source']}] {head} -> {d['outcome'] or d['state']}")
+            if d["source"] != "driver":
+                lines.extend(f"  {line}" for line in rest)
         lines.append("")
 
         lines.append("## Notifications to the user")
@@ -1554,6 +1638,13 @@ class ReviewMixin:
             ):
                 sender = reply["sender_name"] or reply["source"]
                 lines.append(f"  - Reply from {sender}: {reply['body']}")
+        for n in _rows(
+            conn.execute(
+                "SELECT * FROM notifications WHERE run_id = ? ORDER BY notification_id",
+                (run_id,),
+            )
+        ):
+            lines.append(f"- [{n['kind']}] {n['message']} ({n['created_at']})")
         lines.append("")
 
         lines.append("## Final test run")

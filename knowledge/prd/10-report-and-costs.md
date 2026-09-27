@@ -20,7 +20,9 @@ Sections **(contents proposed)**:
   outcome, and issues.
 - Explorations: each one's ordinal, request id, state, and focus, and each finding it
   recorded with its title, fingerprint, severity, area, and whether it recurred in a
-  later exploration or was not seen again. **(proposed)**
+  later exploration or was not seen again. **(proposed)** A "Stop rules" list shows
+  each `driver` directive's reason, its outcome, and its evidence lines, including what
+  is left after a stall. **(proposed)**
 - Open items: open deferrals, and every issue by round with its attempts and resolution.
 - Decided deferrals: who proposed each one, who decided it, and the decision and
   reason. **(proposed)**
@@ -28,10 +30,12 @@ Sections **(contents proposed)**:
 - Shortfalls.
 - Change requests, with decision, work done, evidence, and verification.
 - Overrides, with reasons.
-- Directives, with source and outcome.
+- Directives, with source and outcome. A `driver` directive shows only its first line,
+  since its evidence is under Explorations. **(proposed)**
 - Notifications to the user: every directive resolved `needs_user`, with the question
   asked (kept even after a later `directive_resolve` changes the outcome) and each
-  reply it received through `reply_to`. **(proposed)**
+  reply it received through `reply_to`; then every row of the `notifications` table,
+  with its kind, message, and time. **(proposed)**
 - Final test run: the last `full`-scope `tests_run`, with passed, failed, skipped, and
   exit code, or a note that none was recorded. **(proposed)**
 - Measures: each phase's working time; each role's total agent time, summed across its

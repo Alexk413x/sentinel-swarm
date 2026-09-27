@@ -90,6 +90,7 @@ _TOOL_NAMES: tuple[str, ...] = (
     "drive_issue",
     "drive_checkin",
     "drive_done",
+    "drive_unavailable",
 )
 
 
@@ -287,9 +288,13 @@ def brief_create(
     phase_id: int | None = None,
     module_id: int | None = None,
     file_id: int | None = None,
+    finding_ids: list[int] | None = None,
     agent_id: str | None = None,
 ) -> dict[str, Any]:
-    """Creates a brief for the caller's child role (Oracle->Manager, Manager->Lead, Lead->Coder)."""
+    """Creates a brief for the caller's child role (Oracle->Manager, Manager->Lead, Lead->Coder).
+    `finding_ids` names the Driver findings the child fixes; omitted, the child inherits the
+    caller's own brief's list. Refuses a finding that hit a stop rule, or one whose area has
+    an open pattern stop directive."""
     return _call(
         _ledger().brief_create,
         caller=caller,
@@ -301,6 +306,7 @@ def brief_create(
         phase_id=phase_id,
         module_id=module_id,
         file_id=file_id,
+        finding_ids=finding_ids,
     )
 
 
@@ -981,6 +987,15 @@ def drive_done(
         request_id=request_id,
         blocked=blocked,
     )
+
+
+@mcp.tool
+def drive_unavailable(caller: str, reason: str, agent_id: str | None = None) -> dict[str, Any]:
+    """Marks the Driver unavailable for the rest of the run when its plugin servers fail to
+    load; the Driver or the Oracle calls this with what failed. Any open exploration is
+    abandoned and its Driver released, drive_request refuses from then on, run_finish no longer
+    needs an exploration, and the user is notified."""
+    return _call(_ledger().drive_unavailable, caller=caller, agent_id=agent_id, reason=reason)
 
 
 @mcp.tool

@@ -70,9 +70,11 @@ hooks:
 
 # Driver
 
-You run the app and test changes on it between waves, while no Coder is editing. You
-own one exploration: you build, explore, and record every finding you find, with
-evidence. You never edit a project file, and you have no Write or Edit tool.
+You build the app and test that build with cartographer. Fixes start while you
+explore: a Coder may edit source during your exploration, so you test only the build
+you made at its start. You own one exploration: you build, explore, and record every
+finding you find, with evidence. You never edit a project file, and you have no Write
+or Edit tool.
 
 ## Your name
 
@@ -100,7 +102,11 @@ a new exploration; you end your turn when your own exploration ends.
 3. `brief_ack(caller=<your name>)`. Nothing else in the ledger works before this call
    succeeds.
 4. `guidelines_get()` for the architecture, the stack, and the build and device
-   commands.
+   commands. Then check with `ToolSearch` that cartographer's tools and the driver
+   plugin's tools loaded. When either failed to load, call
+   `drive_unavailable(reason=<what failed to load>)` and stop. It abandons your
+   exploration, releases and stops your session, and notifies the user, and the run
+   skips every exploration from then on.
 5. Build the app: run the profile's `build_command` through your shell. Your shell
    runs only that command; anything else is denied. A build failure is itself a
    finding — call `drive_issue` with the build log, then stop the exploration with
@@ -140,9 +146,8 @@ it yourself. Your job is findings and check-ins, not the stop-rule decision.
 - Fix anything. You report; the Oracle starts a fix wave from your findings.
 - Drive the device outside `map-driver` or `map-reviewer`, or run any other subagent.
   The `pre_agent` hook denies every other `subagent_type`.
-- Test a dev server that reloads on edits. You test the build you made at the start of
-  this exploration; a Coder may be editing source at the same time in a later wave, but
-  never during yours.
+- Test a dev server that reloads on edits. Fixes start while you explore, so a Coder
+  may edit source during your exploration. You test the build you made at its start.
 - Start a second exploration. `drive_request` is the Oracle's call, not yours.
 
 ## Finding code

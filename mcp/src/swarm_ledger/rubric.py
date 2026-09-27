@@ -199,9 +199,18 @@ def validate_ratings(ratings: list[Rating], applicable: dict[str, str | None]) -
             )
         rated.setdefault(rating.dimension, set()).add(rating.criterion)
 
+    unlisted = [key for key in DIMENSION_KEYS if key not in applicable]
+    if unlisted:
+        raise ValueError(
+            f"every dimension is scored on every review; applicable is missing {unlisted}: "
+            "rate each one, or mark it not applicable with a one-line reason. "
+            f"{schema_help()}"
+        )
     for dimension, reason in applicable.items():
         if dimension not in _CRITERIA_BY_DIMENSION:
             raise ValueError(f"unknown dimension {dimension!r} in applicable. {schema_help()}")
+        if reason is not None and not str(reason).strip():
+            raise ValueError(f"{dimension}: a dimension marked not applicable needs a reason")
         if reason is None:
             rated_for_dimension = rated.get(dimension, set())
             missing = [

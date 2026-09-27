@@ -329,7 +329,7 @@ def test_an_exploration_with_findings_and_no_stop_rule_notifies_nothing(
     assert os_notifications == []
 
 
-def test_a_new_stop_rule_notifies_an_error_with_the_bug_title(
+def test_a_stalled_loop_notifies_a_warning_with_what_is_left(
     ledger: Ledger, claude: FakeClaude, os_notifications: list[list[str]]
 ) -> None:
     claude.add("sess-oracle", "host-oracle")
@@ -347,8 +347,8 @@ def test_a_new_stop_rule_notifies_an_error_with_the_bug_title(
     [notice] = _notifications(ledger)
     assert notice["kind"] == "warning"
     assert notice["message"] == (
-        "Driver stopped: 3 attempts in a row with no progress on Login button fails contrast "
-        "(+1 more)"
+        "Driver loop ended: 3 explorations in a row fixed nothing; 1 left: Login button fails "
+        "contrast (+1 more)"
     )
     assert len(os_notifications) == 1
 

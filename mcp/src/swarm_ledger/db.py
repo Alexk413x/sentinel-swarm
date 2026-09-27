@@ -47,6 +47,9 @@ _ADDED_COLUMNS = (
     ("handoffs", "floor_pass_json", "TEXT"),
     ("agents", "channel", "TEXT NOT NULL DEFAULT 'none'"),
     ("wakeups", "pushed_at", "TEXT"),
+    ("runs", "driver_unavailable_at", "TEXT"),
+    ("runs", "driver_unavailable_reason", "TEXT"),
+    ("briefs", "finding_ids_json", "TEXT"),
 )
 # Renamed to snake_case; an older ledger may still hold either the code's old
 # spelling or a value directive_submit stored before this alias table existed.
@@ -61,6 +64,7 @@ _ADDED_TABLES = (
     "drive_requests",
     "drive_findings",
     "notifications",
+    "drive_stops",
 )
 
 

@@ -125,7 +125,11 @@ Do these in order. The claim must exist before the brief.
    model=<a model from the approved list for coder>, body=<the brief>,
    file_id=<the file id>)`. The brief states the file's goal, the contract it must
    honor, what its unit tests must prove, and the guidelines that apply.
-   `agent_spawn` refuses a child that has no brief.
+   `agent_spawn` refuses a child that has no brief. In a fix phase, the Coder's
+   brief inherits the Driver findings your own brief names. Pass
+   `finding_ids=[...]` to name only the findings this file fixes. `brief_create`
+   and `agent_spawn` refuse a finding that hit a Driver stop rule, or one in an
+   area a pattern paused.
 3. `agent_spawn(caller=<your name>, child_name="coder-<phase>-<module>-<file>")`. It
    starts the Coder's session with the model you recorded in the brief, and returns
    the session name.

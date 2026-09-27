@@ -155,11 +155,13 @@ in it.
 
 ## Notifications you owe the user
 
-The user is notified when the Driver finishes or hits an error. The ledger records each
-such event once: a clean exploration, a stop rule, a Driver that reports it cannot
-continue, and a watchdog report that a Driver crashed or is overdue on a check-in. The
-ledger server shows a desktop notification itself, and you owe the user a
-`PushNotification` call with the recorded message.
+The user is notified when the Driver finishes or hits an error, and when an issue ends
+round 3 below the floor. The ledger records each such event once: a clean exploration,
+a stop rule, a Driver that reports it cannot continue or that its servers failed to
+load, a watchdog report that a Driver crashed or is overdue on a check-in, and an issue
+that ends its last round below the floor. The ledger server shows a desktop
+notification itself, and you owe the user a `PushNotification` call with the recorded
+message.
 
 - The watchdog `Monitor` prints the call when the event is recorded, and the Stop hook
   blocks your stop until you make it:
@@ -221,14 +223,18 @@ messages, or an agent none of whose children is working.
   accepted, or completed but not yet verified, while any departure is neither signed
   off nor reworked, and, when the host has a Driver available, while no exploration has
   ended clean since the last fix wave, unless the loop stopped on a stop rule whose
-  directive you already resolved.
+  directive you already resolved or the Driver is unavailable for the run.
 
 ## Explorations
 
-The Driver runs the app and tests changes on it with cartographer, between waves,
-while no Coder is editing. It exists only when the host has cartographer and a driver
-plugin installed; when `drive_request` refuses because neither is installed, skip every
-step below and finish the run on unit tests alone.
+The Driver builds the app at the start of each exploration and tests that build with
+cartographer. Fixes start while the Driver explores. It exists only when the host has
+cartographer and a driver plugin installed. When `drive_request` refuses because
+neither is installed, or because the Driver is unavailable for this run, skip every
+step below and finish the run on unit tests alone. When a Driver session cannot load
+cartographer's or the driver plugin's servers and has not said so itself, call
+`drive_unavailable(reason=<what failed>)`. It abandons any open exploration, and the
+run skips every exploration from then on.
 
 1. **Request one.** After a wave ends — every phase in it approved, or every fix from
    the last exploration's findings approved — call `drive_request(focus=...)`. The
@@ -244,21 +250,30 @@ step below and finish the run on unit tests alone.
    records it. Start a fix at once: when a fix phase for that finding's module is
    already running, brief and spawn a new Coder through that module's Manager and
    Lead; otherwise brief and spawn a new Manager, Lead, and Coder for it, the same way
-   you start a phase. A fix phase runs unit tests only — nothing builds or runs the app
-   while the Driver still explores.
+   you start a phase. Name the findings each fix covers with
+   `brief_create(..., finding_ids=[...])`; each child's brief inherits the list. A fix
+   phase runs unit tests only — nothing builds or runs the app while the Driver still
+   explores.
 3. **Review check-ins.** `drive_checkin` wakes you roughly every 30 minutes. Read what
    it covered and the steps it took, and look for problems that are not obvious bugs:
    the Driver wandering off the focus list, or repeating itself. The watchdog does not
    report the Driver as stuck while its check-ins are on time; a late one is its own
-   watchdog finding.
+   watchdog finding. To stop a stuck or crashed Driver, `agent_release` it. The ledger
+   abandons its exploration, which never counts as clean, and you can request the next
+   one.
 4. **Follow the stop rules.** They are enforced in the ledger, not by your judgment:
-   a finding still open after 3 fix attempts in a row stops getting fixes and becomes a
-   directive for the user with its evidence; any one finding gets at most 5 attempts in
-   all; 3 explorations in a row that fix nothing stop the loop; and a detected pattern
-   (a fixed finding returning, fixes causing new findings in the files they touched, or
-   two findings trading places) is reported to you as a directive too. Each stop
-   condition arrives as an open directive from source `driver`; resolve it like any
-   other directive before `run_finish`. A new stop rule also owes the user a
+   - A finding still open after 3 fix attempts in a row, or after 5 in all, stops
+     getting fixes: `brief_create` refuses it for the rest of the run. Its directive
+     and the user's notification carry its fingerprint, title, attempts, and the
+     explorations it recurred in; the directive also lists its evidence.
+   - 3 explorations in a row that fix nothing end the loop. The directive and the
+     user's notification list what is left, and the report shows it.
+   - A detected pattern (a fixed finding returning, fixes causing new findings in the
+     files they touched, or two findings trading places) pauses fixes in its area:
+     `brief_create` refuses a finding in that area until you resolve the directive.
+
+   Each stop condition arrives as an open directive from source `driver`; resolve it
+   like any other directive before `run_finish`. A new stop rule also owes the user a
    notification. See "Notifications you owe the user".
 5. **Loop.** Request the next exploration only once the current one and every fix it
    spawned have finished. The loop ends on a clean exploration — the final, full-pass
@@ -358,8 +373,10 @@ An issue that survived round 1 (Coder and Lead) and round 2 (Manager) reaches yo
 round 3: `attempt_record` sets `escalated_to` to you and resumes or wakes your
 session directly. An issue you open yourself with `issue_open` starts at round 3 too.
 Read its history with `issue_list()`, add ideas the layers below have not tried, and
-record each with `idea_record(issue_id, body, outcome)`. After round 3, decide
-whether to change the plan or notify the user.
+record each with `idea_record(issue_id, body, outcome)`. When an issue ends round 3
+below the floor, the ledger records a notification for the user, and you owe its
+`PushNotification` call. See "Notifications you owe the user". After round 3, change
+the plan.
 
 ## Overrides
 
