@@ -30,6 +30,7 @@ _MEMBER_ROLES = ("manager", "lead", "coder")
 _WINDOW_1M = 1_000_000
 IDLE_STALL = timedelta(minutes=2)
 UNCONFIRMED_AFTER = timedelta(minutes=2)
+DRIVER_UNSENT_AFTER = UNCONFIRMED_AFTER
 _WINDOW_HAIKU = 200_000
 _TAIL_BLOCK = 256 * 1024
 # The Driver checks in every 30 minutes by design (knowledge/prd/02-run-lifecycle.md); the watchdog
@@ -212,7 +213,7 @@ def _driver_findings(
         return []
 
     if agent["state"] != "working":
-        return []
+        return _driver_unsent(conn, agent, now)
     request = conn.execute(
         "SELECT * FROM drive_requests WHERE agent_id = ? AND state = 'open' "
         "ORDER BY request_id DESC LIMIT 1",
@@ -243,6 +244,37 @@ def _closed_exploration(conn: sqlite3.Connection, agent_id: str) -> sqlite3.Row 
         "AND o.state = 'open') ORDER BY request_id DESC LIMIT 1",
         (agent_id,),
     ).fetchone()
+
+
+def _driver_unsent(conn: sqlite3.Connection, agent: dict, now: datetime) -> list[Finding]:
+    closed = _closed_exploration(conn, agent["agent_id"])
+    if closed is None:
+        return []
+    wakeup = conn.execute(
+        "SELECT w.* FROM wakeups w JOIN agents t ON t.agent_id = w.to_agent_id "
+        "WHERE w.from_agent_id = ? AND w.sent_at IS NULL AND t.ended_at IS NULL "
+        "ORDER BY w.wakeup_id LIMIT 1",
+        (agent["agent_id"],),
+    ).fetchone()
+    if wakeup is None:
+        return []
+    owed = parse_stamp(wakeup["created_at"])
+    if owed is None or now - owed < DRIVER_UNSENT_AFTER:
+        return []
+    minutes = int((now - owed).total_seconds() // 60)
+    pointer = " ".join(str(wakeup["pointer"]).split())
+    return [
+        _finding(
+            agent,
+            "driver_unsent",
+            f"its exploration {closed['request_id']} ended ({closed['state']}), its session "
+            f"runs but sits idle, and it has owed {wakeup['to_name']} an unsent wake-up for "
+            f"{minutes} minutes: {pointer}",
+            "Its result is in the ledger: read directive_inbox() and status_tree(). "
+            f"Then release it with agent_release(target_agent_id="
+            f"{json.dumps(agent['agent_id'])}).",
+        )
+    ]
 
 
 def _failed(row: sqlite3.Row) -> bool:

@@ -19,6 +19,7 @@ transcript shows it. See "Wake-up delivery" in [05-sessions.md](05-sessions.md).
 | `crashed` | A Manager, Lead, Coder, or Driver is `working`, or `registered` for more than 2 minutes, and its session is missing or not running. An `idle` or `handed_up` agent whose session exited is normal. A Driver whose exploration is closed but that the ledger has not released yet is reported whatever its state, since a closed Driver stays live only until its last wake-up goes out. **(proposed)** | `agent_resume(target_name=...)`. For a Driver whose exploration is closed: read its result in the ledger, then `agent_release` it **(proposed)** |
 | `stuck` | The session runs, the agent is `working`, and its last heartbeat is older than `stuck_minutes`. Does not apply to a Driver: see `driver_overdue` below | Message it, or have its parent replace it |
 | `driver_overdue` | The Driver's session runs, it is `working`, and its open exploration's last check-in (or its start, with none yet) is older than 30 minutes plus a 5-minute grace | Message it, or have the Oracle stop it and start a fix for whatever blocked it. **(proposed)** |
+| `driver_unsent` | The Driver's exploration is closed, the ledger has not released it, its session runs but sits idle, and it has owed a live agent an unsent wake-up for more than 2 minutes. This is the Driver ignoring its Stop hook block twice: `stop_hook_active` lets the second stop through idle. Not also reported as `crashed`, which covers a dead session instead. **(proposed)** | Read its result in the ledger, then `agent_release` it. **(proposed)** |
 | `waiting_permission` | A Manager's, Lead's, or Coder's session waits on a permission prompt. Not also reported as crashed or stuck | Tell the user to open that session and answer |
 | `spinning` | The agent's last `spin_failures` test runs for one scope and target all failed. Does not apply to a Driver, which runs no `tests_run` | Ask its parent to `return_work` or `issue_escalate` |
 | `context_high` | The latest request of the agent, the Oracle included, fills `context_pct` of its window | Have its parent replace it. For the Oracle: `run_pause`, then resume in a fresh session |
@@ -49,7 +50,9 @@ transcript shows it. See "Wake-up delivery" in [05-sessions.md](05-sessions.md).
   error, or "Driver overdue" at level warning. The server shows it as an OS
   notification when `notify` includes `os`, and the Oracle owes a `PushNotification`
   for it when `notify` includes `push`. See "Driver notifications" in
-  [02-run-lifecycle.md](02-run-lifecycle.md). **(proposed)**
+  [02-run-lifecycle.md](02-run-lifecycle.md). **(proposed)** `driver_unsent` records no
+  such notification: it is a delivery miss the Oracle can fix from the directive alone,
+  not a Driver error. **(proposed)**
 - A Driver stop rule is a separate mechanism, not the watchdog: it files a directive
   with source `driver`, computed by `compute_loop_status` in `drive.py` from every
   exploration and finding of the run, not from `claude agents --json`. See

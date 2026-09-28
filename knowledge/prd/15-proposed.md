@@ -234,10 +234,16 @@ ends an exploration or reports it cannot load (see "Explorations" in
 - The Driver's Stop hook blocks as the owed-wake-up rule does for every member: it does
   not block a stop that follows its own block (`stop_hook_active`). A Driver that stops
   that way without sending stays live and idle until `drive_request` or `run_finish`
-  releases it, or its session exits and the watchdog reports it.
+  releases it, or its session exits and the watchdog reports it as `crashed`, or it
+  stays live and idle and the watchdog reports it as `driver_unsent`.
 - The watchdog reports a closed, unreleased Driver whose session is not running as
   `crashed` whatever its state, with the next step "read its result in the ledger, then
   `agent_release` it" instead of `agent_resume`. It still records one "Driver crashed"
   notification for it.
+- The watchdog reports a closed, unreleased Driver whose session runs but sits idle,
+  and that has owed a live agent an unsent wake-up for more than `UNCONFIRMED_AFTER`
+  (2 minutes), as `driver_unsent`, with the same next step as `crashed`: read its
+  result in the ledger, then `agent_release` it. It records no user notification,
+  since a delivery miss is not a Driver error.
 - `drive_request` releases every Driver of the run still live before it starts the next
   one, so a closed Driver never counts against the parallelism caps.

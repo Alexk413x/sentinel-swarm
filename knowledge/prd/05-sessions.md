@@ -88,7 +88,10 @@ wake-up the caller owes, and returns a `next` field with the exact call to make.
   When the sender is a Driver whose exploration is closed and it owes nothing more, the
   hook then releases it, which stops its session. **(proposed)**
 - The Stop hook blocks a Manager, Lead, Coder, or Driver that still owes a wake-up and
-  names each call. **(proposed)**
+  names each call. **(proposed)** It does not block a stop that follows its own block
+  (`stop_hook_active`), so a Driver that ignores the block twice goes idle, live, with
+  its wake-up unsent. The watchdog reports that as `driver_unsent`. See "Detection" in
+  [08-watchdog.md](08-watchdog.md). **(proposed)**
 - A role session wakes the agent its step leaves work for, the Oracle included. The
   Oracle's watchdog `Monitor` stays for the events no role session sends: watchdog
   findings, and the `PushNotification` calls the Oracle owes the user. See "How a report

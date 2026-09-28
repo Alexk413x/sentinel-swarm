@@ -377,6 +377,13 @@ from the source `watchdog`. The watchdog only reports. You decide what to do.
   - `crashed`: `agent_resume(target_name=...)`. For a Driver whose exploration already
     ended, the directive names `agent_release` instead: read the exploration's result
     in the ledger, then release it.
+  - `driver_unsent`: a Driver whose exploration ended sits idle, live, without sending
+    its wake-up. Read the exploration's result in the ledger, then `agent_release` it,
+    the same as for a closed, crashed Driver.
+  - `driver_overdue`: the Driver missed its 30-minute check-in. Message it, or
+    `agent_release` it and start a fix for whatever blocked it.
+  - `wake_unconfirmed`: a channel push was not confirmed. If you are the target, act on
+    the pointer. Otherwise make the `SendMessage` call the directive names.
   - `stuck`: message the agent, or have its parent replace it. `agent_resume` refuses
     a running session.
   - `waiting_permission`: tell the user which session to open in agent view to answer

@@ -17,6 +17,7 @@ from swarm_ledger.ledger import Ledger, repo_slug
 from swarm_ledger.watchdog import (
     DRIVER_CHECKIN_GRACE,
     DRIVER_CHECKIN_INTERVAL,
+    DRIVER_UNSENT_AFTER,
     driver_notices,
     record,
     scan,
@@ -458,6 +459,15 @@ def _driver_row(ledger: Ledger, driver_id: str) -> sqlite3.Row:
     return ledger.conn.execute("SELECT * FROM agents WHERE agent_id = ?", (driver_id,)).fetchone()
 
 
+def _age_wakeup(ledger: Ledger, driver_id: str, age: timedelta) -> None:
+    stamp = (utcnow() - age).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE wakeups SET created_at = ? WHERE from_agent_id = ? AND sent_at IS NULL",
+            (stamp, driver_id),
+        )
+
+
 def _stopped(claude: FakeClaude, driver_id: str) -> bool:
     return ["stop", driver_id[:8]] in [c[0] for c in claude.calls]
 
@@ -892,6 +902,130 @@ def test_a_closed_driver_that_dies_before_its_wake_up_is_reported_crashed_once(
     ledger.agent_release("oracle", ctx["oracle_id"], ctx["driver_id"])
     after = scan(ledger.conn, claude.listing, utcnow(), ledger.settings.watchdog)
     assert not any(f.agent_id == ctx["driver_id"] for f in after)
+
+
+def _idle_closed_driver(ledger: Ledger, claude: FakeClaude) -> dict:
+    # Simulates a Driver that ignores its Stop hook block twice: `stop_hook_active`
+    # skips the owed-wake-up check, release_closed_driver refuses because the
+    # wake-up is still unsent, and the stop falls through to agent_idle.
+    ctx = _open_request(ledger, claude)
+    ledger.drive_done("driver-e1", ctx["driver_id"], ctx["request_id"])
+    stop = events.handle_stop(ledger, {"session_id": ctx["driver_id"], "stop_hook_active": True})
+    assert stop is None
+    assert _driver_row(ledger, ctx["driver_id"])["state"] == "idle"
+    assert _driver_row(ledger, ctx["driver_id"])["ended_at"] is None
+    return ctx
+
+
+def test_watchdog_does_not_report_an_idle_closed_driver_before_the_window(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _idle_closed_driver(ledger, claude)
+
+    findings = scan(ledger.conn, claude.listing, utcnow(), ledger.settings.watchdog)
+    assert not any(f.agent_id == ctx["driver_id"] for f in findings)
+
+
+def test_watchdog_reports_an_idle_closed_driver_that_never_sent_its_wake_up(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _idle_closed_driver(ledger, claude)
+    _age_wakeup(ledger, ctx["driver_id"], DRIVER_UNSENT_AFTER + timedelta(minutes=1))
+
+    [finding] = [
+        f
+        for f in scan(ledger.conn, claude.listing, utcnow(), ledger.settings.watchdog)
+        if f.agent_id == ctx["driver_id"]
+    ]
+    assert finding.kind == "driver_unsent"
+    assert f"exploration {ctx['request_id']} ended (done)" in finding.detail
+    assert "owed oracle an unsent wake-up for 3 minutes" in finding.detail
+    assert f'agent_release(target_agent_id="{ctx["driver_id"]}")' in finding.next_step
+
+
+def test_driver_unsent_is_reported_once_across_ticks(ledger: Ledger, claude: FakeClaude) -> None:
+    ctx = _idle_closed_driver(ledger, claude)
+    _age_wakeup(ledger, ctx["driver_id"], DRIVER_UNSENT_AFTER + timedelta(minutes=1))
+
+    settings = ledger.settings.watchdog
+    first = record(
+        ledger.conn, ctx["run_id"], scan(ledger.conn, claude.listing, utcnow(), settings), utcnow()
+    )
+    second = record(
+        ledger.conn, ctx["run_id"], scan(ledger.conn, claude.listing, utcnow(), settings), utcnow()
+    )
+
+    assert [r["kind"] for r in first] == ["driver_unsent"]
+    assert second == []
+    directives = ledger.conn.execute(
+        "SELECT * FROM directives WHERE source = 'watchdog' AND body LIKE '%driver_unsent%'"
+    ).fetchall()
+    assert len(directives) == 1
+
+
+def test_driver_unsent_clears_once_the_wake_up_is_sent(ledger: Ledger, claude: FakeClaude) -> None:
+    ctx = _idle_closed_driver(ledger, claude)
+    _age_wakeup(ledger, ctx["driver_id"], DRIVER_UNSENT_AFTER + timedelta(minutes=1))
+    assert any(
+        f.kind == "driver_unsent"
+        for f in scan(ledger.conn, claude.listing, utcnow(), ledger.settings.watchdog)
+    )
+
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE wakeups SET sent_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
+            "WHERE from_agent_id = ?",
+            (ctx["driver_id"],),
+        )
+
+    findings = scan(ledger.conn, claude.listing, utcnow(), ledger.settings.watchdog)
+    assert not any(f.agent_id == ctx["driver_id"] for f in findings)
+
+
+def test_driver_unsent_clears_once_the_driver_is_released(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _idle_closed_driver(ledger, claude)
+    _age_wakeup(ledger, ctx["driver_id"], DRIVER_UNSENT_AFTER + timedelta(minutes=1))
+    assert any(
+        f.kind == "driver_unsent"
+        for f in scan(ledger.conn, claude.listing, utcnow(), ledger.settings.watchdog)
+    )
+
+    ledger.agent_release("oracle", ctx["oracle_id"], ctx["driver_id"])
+
+    findings = scan(ledger.conn, claude.listing, utcnow(), ledger.settings.watchdog)
+    assert not any(f.agent_id == ctx["driver_id"] for f in findings)
+
+
+def test_a_dead_session_with_an_unsent_wake_up_is_still_crashed_not_driver_unsent(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _idle_closed_driver(ledger, claude)
+    _age_wakeup(ledger, ctx["driver_id"], DRIVER_UNSENT_AFTER + timedelta(minutes=1))
+    claude.listing[:] = [e for e in claude.listing if e["sessionId"] != ctx["driver_id"]]
+
+    findings = [
+        f
+        for f in scan(ledger.conn, claude.listing, utcnow(), ledger.settings.watchdog)
+        if f.agent_id == ctx["driver_id"]
+    ]
+    assert [f.kind for f in findings] == ["crashed"]
+
+
+def test_driver_unsent_records_no_user_notification(ledger: Ledger, claude: FakeClaude) -> None:
+    ctx = _idle_closed_driver(ledger, claude)
+    _age_wakeup(ledger, ctx["driver_id"], DRIVER_UNSENT_AFTER + timedelta(minutes=1))
+    before = ledger.conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0]
+
+    findings = scan(ledger.conn, claude.listing, utcnow(), ledger.settings.watchdog)
+    reported = record(ledger.conn, ctx["run_id"], findings, utcnow())
+    assert [r["kind"] for r in reported] == ["driver_unsent"]
+
+    notices = driver_notices(ledger.conn, ctx["run_id"], reported, ())
+    assert notices == []
+    after = ledger.conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0]
+    assert after == before
 
 
 # -- The report's Explorations section -----------------------------------------------------------
