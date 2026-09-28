@@ -14,7 +14,14 @@ from swarm_ledger.drive import STOP_ATTEMPTS_IN_A_ROW, STOP_ATTEMPTS_TOTAL, comp
 from swarm_ledger.hooks import events
 from swarm_ledger.identity import LedgerError, child_roles_of
 from swarm_ledger.ledger import Ledger, repo_slug
-from swarm_ledger.watchdog import DRIVER_CHECKIN_GRACE, DRIVER_CHECKIN_INTERVAL, scan, utcnow
+from swarm_ledger.watchdog import (
+    DRIVER_CHECKIN_GRACE,
+    DRIVER_CHECKIN_INTERVAL,
+    driver_notices,
+    record,
+    scan,
+    utcnow,
+)
 
 # -- Shared fixtures ------------------------------------------------------------------------
 
@@ -447,7 +454,26 @@ def test_drive_checkin_records_progress_and_wakes_the_oracle(
     assert result["next"] is not None
 
 
-def test_drive_done_ends_the_exploration_and_releases_the_session(
+def _driver_row(ledger: Ledger, driver_id: str) -> sqlite3.Row:
+    return ledger.conn.execute("SELECT * FROM agents WHERE agent_id = ?", (driver_id,)).fetchone()
+
+
+def _stopped(claude: FakeClaude, driver_id: str) -> bool:
+    return ["stop", driver_id[:8]] in [c[0] for c in claude.calls]
+
+
+def _owed_to_oracle(ledger: Ledger, driver_id: str, reason: str) -> dict:
+    [wakeup] = [w for w in ledger.owed_wakeups(driver_id) if w["reason"] == reason]
+    return wakeup
+
+
+def _send(ledger: Ledger, agent_id: str, to: str) -> None:
+    events.handle_post_any(
+        ledger, {"agent_id": agent_id, "tool_name": "SendMessage", "tool_input": {"to": to}}
+    )
+
+
+def test_drive_done_owes_the_oracle_a_wake_up_and_returns_the_send_message(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
     ctx = _open_request(ledger, claude)
@@ -455,12 +481,196 @@ def test_drive_done_ends_the_exploration_and_releases_the_session(
 
     assert result["state"] == "done"
     assert result["done_at"] is not None
-    driver_row = ledger.conn.execute(
-        "SELECT * FROM agents WHERE agent_id = ?", (ctx["driver_id"],)
-    ).fetchone()
-    assert driver_row["state"] == "released"
-    assert driver_row["ended_at"] is not None
-    assert ["stop", ctx["driver_id"][:8]] in [c[0] for c in claude.calls]
+    wakeup = _owed_to_oracle(ledger, ctx["driver_id"], "drive_done")
+    assert wakeup["to_agent_id"] == ctx["oracle_id"]
+    assert wakeup["pointer"] == (
+        f"Driver exploration 1 (request {ctx['request_id']}) ended: clean, no findings. "
+        "Its result is in the ledger."
+    )
+    assert result["next"] == (
+        f"SendMessage(to={json.dumps(wakeup['to_session_name'])}, "
+        f"message={json.dumps(wakeup['pointer'])})"
+    )
+
+
+def test_the_driver_stays_live_until_its_wake_up_is_sent_then_is_released(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _open_request(ledger, claude)
+    ledger.drive_done("driver-e1", ctx["driver_id"], ctx["request_id"])
+    wakeup = _owed_to_oracle(ledger, ctx["driver_id"], "drive_done")
+
+    assert _driver_row(ledger, ctx["driver_id"])["ended_at"] is None
+    assert not _stopped(claude, ctx["driver_id"])
+
+    _send(ledger, ctx["driver_id"], wakeup["to_session_name"])
+
+    row = _driver_row(ledger, ctx["driver_id"])
+    assert row["state"] == "released"
+    assert row["ended_at"] is not None
+    assert _stopped(claude, ctx["driver_id"])
+
+
+def test_a_send_message_elsewhere_does_not_release_a_driver_that_still_owes_the_oracle(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _open_request(ledger, claude)
+    ledger.drive_done("driver-e1", ctx["driver_id"], ctx["request_id"])
+
+    _send(ledger, ctx["driver_id"], "some-other-session")
+
+    assert _driver_row(ledger, ctx["driver_id"])["ended_at"] is None
+
+
+def test_the_stop_hook_blocks_a_closed_driver_until_its_wake_up_is_sent(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _open_request(ledger, claude)
+    result = ledger.drive_done("driver-e1", ctx["driver_id"], ctx["request_id"])
+
+    blocked = events.handle_stop(ledger, {"session_id": ctx["driver_id"]})
+    assert blocked is not None
+    assert blocked["decision"] == "block"
+    assert result["next"] in blocked["reason"]
+    assert _driver_row(ledger, ctx["driver_id"])["ended_at"] is None
+
+    wakeup = _owed_to_oracle(ledger, ctx["driver_id"], "drive_done")
+    _send(ledger, ctx["driver_id"], wakeup["to_session_name"])
+    assert events.handle_stop(ledger, {"session_id": ctx["driver_id"]}) is None
+
+
+def test_the_stop_hook_releases_a_closed_driver_whose_wake_up_was_delivered(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _open_request(ledger, claude)
+    ledger.drive_done("driver-e1", ctx["driver_id"], ctx["request_id"])
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE wakeups SET sent_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
+            "WHERE from_agent_id = ?",
+            (ctx["driver_id"],),
+        )
+
+    assert events.handle_stop(ledger, {"session_id": ctx["driver_id"]}) is None
+    assert _driver_row(ledger, ctx["driver_id"])["state"] == "released"
+    assert _stopped(claude, ctx["driver_id"])
+
+
+def test_a_driver_that_resumes_the_oracle_is_released_by_the_resume(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _open_request(ledger, claude)
+    claude.listing[:] = [e for e in claude.listing if e["sessionId"] != ctx["oracle_id"]]
+    result = ledger.drive_done("driver-e1", ctx["driver_id"], ctx["request_id"])
+    assert result["next"] == 'agent_resume(target_name="oracle")'
+
+    ledger.agent_resume("driver-e1", ctx["driver_id"], "oracle")
+
+    assert _driver_row(ledger, ctx["driver_id"])["state"] == "released"
+
+
+def test_drive_done_names_the_stop_rule_and_the_block_in_its_wake_up(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    for ordinal in (1, 2, 3):
+        _seed_exploration(ledger, ctx["run_id"], ordinal, ["F1"])
+    request = ledger.drive_request("oracle", ctx["oracle_id"], "recheck F1")
+    ledger.brief_ack("driver-e4", request["agent_id"])
+    ledger.drive_issue(
+        "driver-e4", request["agent_id"], request["request_id"], {**_FINDING, "fingerprint": "F1"}
+    )
+    ledger.drive_done(
+        "driver-e4", request["agent_id"], request["request_id"], blocked="the\nbuild failed"
+    )
+
+    pointer = _owed_to_oracle(ledger, request["agent_id"], "drive_done")["pointer"]
+    assert pointer == (
+        f"Driver exploration 4 (request {request['request_id']}) ended: blocked: the build "
+        "failed; stopped by a stop rule: 3 explorations in a row fixed nothing (+1 more). "
+        "Its result is in the ledger."
+    )
+
+
+def test_drive_done_counts_the_findings_of_an_exploration_that_did_not_stop(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _open_request(ledger, claude)
+    ledger.drive_issue("driver-e1", ctx["driver_id"], ctx["request_id"], _FINDING)
+    ledger.drive_done("driver-e1", ctx["driver_id"], ctx["request_id"])
+
+    pointer = _owed_to_oracle(ledger, ctx["driver_id"], "drive_done")["pointer"]
+    assert "ended: done, 1 finding(s)." in pointer
+
+
+def test_drive_done_releases_at_once_when_no_oracle_can_be_woken(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _open_request(ledger, claude)
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET session_name = NULL WHERE agent_id = ?", (ctx["oracle_id"],)
+        )
+
+    result = ledger.drive_done("driver-e1", ctx["driver_id"], ctx["request_id"])
+
+    assert result["next"] is None
+    assert _driver_row(ledger, ctx["driver_id"])["state"] == "released"
+    assert _stopped(claude, ctx["driver_id"])
+
+
+def test_drive_unavailable_by_the_driver_wakes_the_oracle_before_its_release(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _open_request(ledger, claude)
+    result = ledger.drive_unavailable("driver-e1", ctx["driver_id"], "cartographer did not load")
+
+    wakeup = _owed_to_oracle(ledger, ctx["driver_id"], "drive_unavailable")
+    assert wakeup["pointer"] == (
+        f"Driver unavailable: cartographer did not load. Directive {result['directive_id']} "
+        "waits in the ledger, and the exploration is abandoned."
+    )
+    assert result["next"] is not None
+    assert wakeup["pointer"] in result["next"]
+    assert _driver_row(ledger, ctx["driver_id"])["ended_at"] is None
+    blocked = events.handle_stop(ledger, {"session_id": ctx["driver_id"]})
+    assert blocked is not None and result["next"] in blocked["reason"]
+
+    _send(ledger, ctx["driver_id"], wakeup["to_session_name"])
+
+    assert _driver_row(ledger, ctx["driver_id"])["state"] == "released"
+    assert _stopped(claude, ctx["driver_id"])
+
+
+def test_drive_unavailable_by_the_oracle_owes_nothing_and_releases_the_driver_at_once(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _open_request(ledger, claude)
+    result = ledger.drive_unavailable("oracle", ctx["oracle_id"], "cartographer did not load")
+
+    assert result["next"] is None
+    assert ledger.owed_wakeups(ctx["oracle_id"]) == []
+    assert ledger.owed_wakeups(ctx["driver_id"]) == []
+    assert _driver_row(ledger, ctx["driver_id"])["state"] == "released"
+    assert _stopped(claude, ctx["driver_id"])
+
+
+def test_a_closed_driver_does_not_block_the_next_request_or_run_finish(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _open_request(ledger, claude)
+    ledger.drive_done("driver-e1", ctx["driver_id"], ctx["request_id"])
+
+    second = ledger.drive_request("oracle", ctx["oracle_id"], "a full pass")
+    assert second["ordinal"] == 2
+    assert _driver_row(ledger, ctx["driver_id"])["state"] == "released"
+
+    ledger.brief_ack("driver-e2", second["agent_id"])
+    ledger.drive_done("driver-e2", second["agent_id"], second["request_id"])
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE phases SET state = 'approved' WHERE phase_id = ?", (ctx["phase_id"],))
+    assert ledger.run_finish("oracle", ctx["oracle_id"], "success")["state"] == "finished"
+    assert _driver_row(ledger, second["agent_id"])["state"] == "released"
 
 
 def test_drive_done_refuses_twice(ledger: Ledger, claude: FakeClaude) -> None:
@@ -651,6 +861,37 @@ def test_watchdog_reports_a_crashed_driver(ledger: Ledger, claude: FakeClaude) -
 
     findings = scan(ledger.conn, claude.listing, utcnow(), ledger.settings.watchdog)
     assert any(f.kind == "crashed" and f.agent_id == ctx["driver_id"] for f in findings)
+
+
+def test_a_closed_driver_that_dies_before_its_wake_up_is_reported_crashed_once(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _open_request(ledger, claude)
+    ledger.drive_done("driver-e1", ctx["driver_id"], ctx["request_id"])
+    ledger.agent_idle(ctx["driver_id"], "stop")
+    claude.listing[:] = [e for e in claude.listing if e["sessionId"] != ctx["driver_id"]]
+
+    passes = [scan(ledger.conn, claude.listing, utcnow(), ledger.settings.watchdog) for _ in "ab"]
+    for findings in passes:
+        reported = record(ledger.conn, ctx["run_id"], findings, utcnow())
+        driver_notices(ledger.conn, ctx["run_id"], reported, ())
+
+    [finding] = [f for f in passes[-1] if f.agent_id == ctx["driver_id"]]
+    assert finding.kind == "crashed"
+    assert f"exploration {ctx['request_id']} ended (done)" in finding.detail
+    assert f'agent_release(target_agent_id="{ctx["driver_id"]}")' in finding.next_step
+    directives = ledger.conn.execute(
+        "SELECT * FROM directives WHERE source = 'watchdog' AND body LIKE '%crashed%'"
+    ).fetchall()
+    assert len(directives) == 1
+    crashed = ledger.conn.execute(
+        "SELECT * FROM notifications WHERE message LIKE 'Driver crashed:%'"
+    ).fetchall()
+    assert len(crashed) == 1
+
+    ledger.agent_release("oracle", ctx["oracle_id"], ctx["driver_id"])
+    after = scan(ledger.conn, claude.listing, utcnow(), ledger.settings.watchdog)
+    assert not any(f.agent_id == ctx["driver_id"] for f in after)
 
 
 # -- The report's Explorations section -----------------------------------------------------------

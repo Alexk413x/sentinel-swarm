@@ -1178,6 +1178,8 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                 target["state"],
                 f"agent_resume by {c.name}: {message}",
             )
+        if owed:
+            self.release_closed_driver(c.agent_id)
 
         return {
             "agent": self._agent_dict(target["agent_id"]),
@@ -1275,6 +1277,8 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                 "AND to_session_name = ? AND sent_at IS NULL",
                 (agent_id, to_session_name),
             )
+        if cur.rowcount:
+            self.release_closed_driver(agent_id)
         return cur.rowcount
 
     # -- File ownership -------------------------------------------------------

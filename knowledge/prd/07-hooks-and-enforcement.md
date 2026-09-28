@@ -107,7 +107,8 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
   **(proposed)**
 - `post_any`: writes the heartbeat and current activity, sets an idle agent to working,
   records the transcript path, records the watchdog arm time, clears owed wake-ups on a
-  `SendMessage`, and after a Coder's write marks its file stale, so the handoff needs a
+  `SendMessage` and then releases a Driver whose exploration is closed and that owes
+  nothing more, and after a Coder's write marks its file stale, so the handoff needs a
   newer self review. On the Oracle's `PushNotification` call, it marks one owed
   notification sent, whatever the call's result, even after the run finished. It needs
   no matcher of its own: `post_any` already runs after every tool. **(proposed)**
@@ -118,8 +119,9 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 - `stop`: records tokens and cost from the transcript, then applies the stop rules in
   "Sessions". For a wake-up the ledger pushed through a channel, it first waits until
   30 seconds after the push for the target's transcript to confirm it; see "Wake-up
-  delivery" in [05-sessions.md](05-sessions.md). After a run finishes, the Oracle's
-  stop refreshes the report, then blocks while the Oracle still owes a
+  delivery" in [05-sessions.md](05-sessions.md). A Driver whose exploration is closed
+  and that owes nothing more is released instead of set idle. After a run finishes, the
+  Oracle's stop refreshes the report, then blocks while the Oracle still owes a
   `PushNotification` call.
   **(proposed)**
 - `session_end`: records tokens and cost and the end reason. After a run finishes, the
@@ -137,6 +139,7 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 | `run_finish` needs a clean exploration or a resolved stop rule | `drive_request`, `drive_issue`, `drive_done`, and the `run_finish` gate in `drive.py` |
 | A Driver that fails to load is a blocking issue | `drive_unavailable` files a `driver` directive; `drive_request` refuses while it is open, and `run_finish` refuses as for any open directive. Resolved `declined`, `drive_request` refuses for the rest of the run and the `run_finish` Driver gate passes |
 | A stuck Driver's exploration can be closed | `agent_release` of the Driver abandons its open exploration, which never counts as clean |
+| The Oracle is woken directly when the Driver ends an exploration or cannot load | `drive_done` and the Driver's `drive_unavailable` owe the Oracle a wake-up and do not release the Driver; the Driver's `stop` blocks until it is sent; `post_any`, `agent_resume`, or the Driver's `stop` releases the Driver once it is sent **(proposed)** |
 | Fixes always name their finding ids | `brief_create` refuses an Oracle brief without `finding_ids` while the run has an open finding, and an unknown finding id from any role; `brief_get`, `status_tree`, and the report show the ids and titles |
 | A stopped bug gets no more fixes, and its evidence reaches the user | `brief_create` and `agent_spawn` refuse a brief whose `finding_ids` name it; `drive_done` puts the evidence in the directive and the notification |
 | A pattern of bugs pauses fixes in that area | `brief_create` and `agent_spawn` refuse a finding in the area while the pattern's directive is open |

@@ -234,7 +234,8 @@ cartographer and a driver plugin installed. When `drive_request` refuses because
 neither is installed, or because the user decided to go without the Driver, skip every
 step below and finish the run on unit tests alone.
 
-A Driver that fails to load is a blocking issue, like any other directive. When a
+A Driver that fails to load is a blocking issue, like any other directive. A Driver
+that says so itself calls `drive_unavailable`, and its message wakes you. When a
 Driver session cannot load cartographer's or the driver plugin's servers and has not
 said so itself, call `drive_unavailable(reason=<what failed>)`. Either call abandons
 any open exploration, notifies the user, and files a `driver` directive that starts
@@ -292,9 +293,11 @@ refuse. Try to resolve the cause, then `directive_resolve` it:
    Each stop condition arrives as an open directive from source `driver`; resolve it
    like any other directive before `run_finish`. A new stop rule also owes the user a
    notification. See "Notifications you owe the user".
-5. **Loop.** Request the next exploration only once the current one and every fix it
-   spawned have finished. The loop ends on a clean exploration — the final, full-pass
-   one with no finding — or on a stop rule, whichever comes first.
+5. **Loop.** `drive_done` wakes you when the exploration ends. The message says
+   whether it ended clean, with findings, stopped by a stop rule, or blocked. Request
+   the next exploration only once the current one and every fix it spawned have
+   finished. The loop ends on a clean exploration — the final, full-pass one with no
+   finding — or on a stop rule, whichever comes first.
 
 ## Change requests and departures
 
@@ -371,7 +374,9 @@ from the source `watchdog`. The watchdog only reports. You decide what to do.
   points at the ledger and carries no task.
 - For a watchdog directive, call `directive_inbox()`, then take the step the
   directive names:
-  - `crashed`: `agent_resume(target_name=...)`.
+  - `crashed`: `agent_resume(target_name=...)`. For a Driver whose exploration already
+    ended, the directive names `agent_release` instead: read the exploration's result
+    in the ledger, then release it.
   - `stuck`: message the agent, or have its parent replace it. `agent_resume` refuses
     a running session.
   - `waiting_permission`: tell the user which session to open in agent view to answer

@@ -257,8 +257,35 @@ when" in [05-sessions.md](05-sessions.md).
   check-in and owes the Oracle a wake-up. The watchdog does not report the Driver as
   stuck while its check-ins arrive within 30 minutes plus a 5-minute grace; see
   [08-watchdog.md](08-watchdog.md). **(proposed)**
-- `drive_done(request_id, blocked=None)` ends the exploration, releases the Driver's
-  session, and stops it. **(proposed)** The Driver passes `blocked`, a short statement
+- `drive_done(request_id, blocked=None)` ends the exploration, and the Oracle is woken
+  directly: the Driver's own wake-up tells it how the exploration ended. The Driver's
+  session is released and stopped once that wake-up goes out. The mechanism is
+  **(proposed)**:
+  - `drive_done` owes the Oracle a wake-up, reason `drive_done`, and returns its call
+    as `next`, built by `route_wakeup` like every other wake-up. The pointer names the
+    exploration and how it ended, for example `Driver exploration 3 (request 3) ended:
+    clean, no findings. Its result is in the ledger.` The outcome is `blocked: <what
+    failed>`, `stopped by a stop rule: <reason>` (a stall first, then `(+N more)`), both
+    joined by `;`, `clean, no findings`, or `done, <N> finding(s)`.
+  - `drive_done` does not release the Driver when it owes that wake-up. The ledger
+    releases a Driver whose exploration is closed (`done` or `abandoned`) once it owes
+    no unsent wake-up to a live agent: when `post_any` marks its `SendMessage` sent,
+    when its own `agent_resume` of the Oracle marks it sent, or when its Stop hook finds
+    nothing owed, which covers a channel push the transcript confirmed. Release goes
+    through the normal release path, so its session stops. The Stop hook blocks the
+    Driver while it still owes the wake-up, as for every member.
+  - When no wake-up can be owed, because the run has no live Oracle with a session
+    name, `drive_done` releases the Driver at once.
+  - A Driver whose session dies before it sends the wake-up stays live in the ledger.
+    The watchdog reports it as `crashed`, once, whatever its state, and names
+    `agent_release` for it; see [08-watchdog.md](08-watchdog.md).
+  - A closed Driver that has not sent its wake-up yet never blocks `drive_request` or
+    `run_finish`. `drive_request` checks `drive_requests.state` and the live Managers,
+    Leads, and Coders, then releases every Driver of the run still live before it
+    starts the next one, so the parallelism caps do not count it. `run_finish` releases
+    every live agent.
+
+  The Driver passes `blocked`, a short statement
   of what failed, when it cannot continue: a failed build or a device that will not
   boot. `drive_done` refuses `blocked` until the exploration has a finding, so a blocked
   exploration never counts as clean. **(proposed)**
@@ -269,8 +296,13 @@ when" in [05-sessions.md](05-sessions.md).
 - A Driver that fails to load is a normal blocking issue. `drive_unavailable(reason)`
   records that the Driver's plugin servers failed to load. The Driver calls it for its
   own exploration, or the Oracle calls it. It files a `driver` directive for the
-  Oracle, `[driver-unavailable] <reason>`, abandons any open exploration, releases its
-  Driver, and records an error notification for the user. It never turns explorations
+  Oracle, `[driver-unavailable] <reason>`, abandons any open exploration, and records an
+  error notification for the user. Called by the Oracle, it releases the Driver at once
+  and owes no wake-up. Called by the Driver, it owes the Oracle a wake-up, reason
+  `drive_unavailable`, with the pointer `Driver unavailable: <reason>. Directive <id>
+  waits in the ledger, and the exploration is abandoned.`, returns its call as `next`,
+  and releases the Driver once that wake-up goes out, as for `drive_done` above.
+  **(proposed)** It never turns explorations
   off by itself. While the directive is open, `drive_request` refuses and says why, and
   `run_finish` refuses, as it does for every open directive. The Oracle tries to
   resolve the cause, then resolves the directive:

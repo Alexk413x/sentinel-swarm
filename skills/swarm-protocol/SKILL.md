@@ -83,8 +83,8 @@ returns a `next` field with the exact call to make:
   `stop` hook names the `SendMessage` to send instead.
 
 The caller makes that call before it ends its turn. The `post_any` hook clears the
-debt when it sees the `SendMessage`, and the `stop` hook blocks a Manager, Lead, or
-Coder that still owes one. The message only points at the ledger record, for example
+debt when it sees the `SendMessage`, and the `stop` hook blocks a Manager, Lead,
+Coder, or Driver that still owes one. The message only points at the ledger record, for example
 "Handoff 1 for hello.py is waiting in the ledger." The detail lives in the ledger.
 
 ## The first call in every session

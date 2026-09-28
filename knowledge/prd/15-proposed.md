@@ -214,3 +214,30 @@ blocks the run; fixes always name their finding ids), choices Alex has not revie
   finding its brief names. `status_tree` returns `open_findings` and `fixes`, each brief
   that names findings, with its child's name and role and each finding. The report's
   Explorations section shows each finding's id and a "Fixes" list of the same briefs.
+
+Built on 2026-09-27, Alex's decision that the Oracle is woken directly when the Driver
+ends an exploration or reports it cannot load (see "Explorations" in
+[02-run-lifecycle.md](02-run-lifecycle.md)), choices Alex has not reviewed:
+
+- `drive_done`, and `drive_unavailable` when the Driver calls it, owe the Oracle a
+  wake-up (reasons `drive_done` and `drive_unavailable`) and return its call as `next`.
+  The `drive_done` pointer names the exploration's ordinal and request id and how it
+  ended: `blocked: <what failed>` and `stopped by a stop rule: <reason>`, joined by `;`,
+  else `clean, no findings` or `done, <N> finding(s)`. Among new stop rules a stall
+  comes first, and the rest count as `(+N more)`.
+- Neither call releases the Driver when it owes that wake-up. The ledger releases a
+  Driver once its exploration is closed and it owes no unsent wake-up to a live agent,
+  checked after `post_any` marks a `SendMessage` sent, after the Driver's own
+  `agent_resume`, and in the Driver's Stop hook. With no live Oracle to wake, both calls
+  release the Driver at once. The Oracle's own `drive_unavailable` owes
+  nothing and releases the Driver at once.
+- The Driver's Stop hook blocks as the owed-wake-up rule does for every member: it does
+  not block a stop that follows its own block (`stop_hook_active`). A Driver that stops
+  that way without sending stays live and idle until `drive_request` or `run_finish`
+  releases it, or its session exits and the watchdog reports it.
+- The watchdog reports a closed, unreleased Driver whose session is not running as
+  `crashed` whatever its state, with the next step "read its result in the ledger, then
+  `agent_release` it" instead of `agent_resume`. It still records one "Driver crashed"
+  notification for it.
+- `drive_request` releases every Driver of the run still live before it starts the next
+  one, so a closed Driver never counts against the parallelism caps.

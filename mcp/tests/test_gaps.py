@@ -195,9 +195,12 @@ def test_a_driver_that_fails_to_load_files_a_blocking_directive(
     ).fetchone()
     assert row["state"] == "abandoned"
     driver = ledger.conn.execute(
-        "SELECT state FROM agents WHERE agent_id = ?", (request["agent_id"],)
+        "SELECT state, ended_at FROM agents WHERE agent_id = ?", (request["agent_id"],)
     ).fetchone()
-    assert driver["state"] == "released"
+    assert driver["ended_at"] is None
+    [owed] = ledger.owed_wakeups(request["agent_id"])
+    assert owed["reason"] == "drive_unavailable"
+    assert result["next"] is not None
     [notice] = _notifications(ledger)
     assert notice["kind"] == "error"
     assert notice["event_key"] == f"drive_unavailable:{result['directive_id']}"

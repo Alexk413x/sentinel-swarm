@@ -203,7 +203,8 @@
   with `map-explore` through cartographer's own `map-driver` and `map-reviewer`
   subagents. Records each finding with `drive_issue` as it is found, checks in with
   `drive_checkin` every 30 minutes, shuts the device down, and ends the exploration
-  with `drive_done`, which releases and stops its own session. When a failed build or a
+  with `drive_done`, which owes the Oracle a wake-up. The ledger releases and stops the
+  Driver's session once that wake-up is sent. **(proposed)** When a failed build or a
   device that will not boot stops it, it records a finding and passes `blocked` to
   `drive_done`, which notifies the user. **(proposed)**
 - **Tests the app:** the Driver explores, tests, and records findings. Every other role
@@ -225,7 +226,7 @@
 - **Must not:** write or edit a project file. It has no Write or Edit tool. It must not
   fix anything; it observes and reports, and the Oracle turns its findings into a fix
   wave.
-- **Done when:** it calls `drive_done`.
+- **Done when:** it calls `drive_done` and sends the wake-up its `next` names.
 - **Tools:** Read, Grep, Glob, ToolSearch, SendMessage, Bash and PowerShell (gated to
   `build_command`), Agent (gated to cartographer's `map-driver` and `map-reviewer`
   subagents only), Skill **(proposed)**, the ledger, and the codebase-kg read tools. No

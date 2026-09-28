@@ -883,6 +883,8 @@ def _member_stop(ledger: Ledger, caller: dict, data: dict) -> dict | None:
                 ),
             }
 
+    if caller["role"] == "driver" and ledger.release_closed_driver(caller["agent_id"]):
+        return None
     if caller["state"] != "working":
         return None
     blocked = _block_coder_stop_once(ledger, caller, data)

@@ -90,7 +90,8 @@ Every role in the run is its own Claude Code session, with its own row in agent 
 You are the only role with an `Agent` tool, and it runs only cartographer's own
 `map-driver` and `map-reviewer` subagents: a hook denies any other subagent type, from
 this plugin or any other. The Oracle wakes you with a `SendMessage` only when it starts
-a new exploration; you end your turn when your own exploration ends.
+a new exploration. You wake the Oracle with the call each result's `next` field names,
+and you end your turn when your own exploration ends and that last wake-up is sent.
 
 ## Order of work
 
@@ -104,19 +105,20 @@ a new exploration; you end your turn when your own exploration ends.
 4. `guidelines_get()` for the architecture, the stack, and the build and device
    commands. Then check with `ToolSearch` that cartographer's tools and the driver
    plugin's tools loaded. When either failed to load, call
-   `drive_unavailable(reason=<what failed to load>)` and stop. It abandons your
-   exploration, releases and stops your session, notifies the user, and files a
-   directive the Oracle resolves before the next exploration.
+   `drive_unavailable(reason=<what failed to load>)`, make the call its `next` field
+   names, then stop. It abandons your exploration, notifies the user, and files a
+   directive the Oracle resolves before the next exploration. The ledger releases and
+   stops your session once that wake-up is sent.
 5. Build the app: run the profile's `build_command` through your shell. Your shell
    runs only that command; anything else is denied. A build failure is itself a
-   finding — call `drive_issue` with the build log, then stop the exploration with
+   finding — call `drive_issue` with the build log, then end the exploration with
    `drive_done(request_id, blocked="the build failed")`, since nothing works to
-   explore.
+   explore. Make the call its `next` field names, then stop.
 6. Boot the device: the emulator, the Simulator, or the browser, through the installed
    driver plugin's tools or `driver_launch`. When the device will not boot, record it
    with `drive_issue` and end with `drive_done(request_id, blocked=<what failed>)`.
-   `blocked` notifies the user, and `drive_done` refuses it until a finding is
-   recorded.
+   Make the call its `next` field names, then stop. `blocked` notifies the user, and
+   `drive_done` refuses it until a finding is recorded.
 7. Invoke the `map-test` skill first, to replay every recorded route with no AI and
    recheck earlier findings against the build you just made.
 8. Invoke the `map-explore` skill with the focus list as its goal. It spawns
@@ -133,8 +135,10 @@ a new exploration; you end your turn when your own exploration ends.
     you as stuck while your check-ins are on time; missing one for too long is what
     makes it report you.
 11. When the focus list is covered, or cartographer's `map-explore` has nothing left to
-    try, shut the device down and call `drive_done(request_id)`. It releases and stops
-    your own session.
+    try, shut the device down and call `drive_done(request_id)`. Make the call its
+    `next` field names, then stop. That wake-up tells the Oracle how the exploration
+    ended. The Stop hook blocks you until it is sent, and the ledger releases and stops
+    your session once it is.
 
 `drive_request`'s result already told the Oracle the loop's status; you do not compute
 it yourself. Your job is findings and check-ins, not the stop-rule decision.

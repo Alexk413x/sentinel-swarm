@@ -74,6 +74,9 @@ wake-up the caller owes, and returns a `next` field with the exact call to make.
   `cr_accept`, `cr_complete`, a failed `cr_verify`, each level of a departure pushback
   chain, `issue_escalate`, an `attempt_record` that advances an issue's round, and, for
   the Driver, `drive_issue` and `drive_checkin` (both owe the Oracle). **(proposed)**
+  `drive_done`, and `drive_unavailable` when the Driver calls it, owe the Oracle too, so
+  the Oracle is woken directly when an exploration ends or the Driver cannot load. See
+  "Explorations" in [02-run-lifecycle.md](02-run-lifecycle.md). **(proposed)**
 - A wake-up is owed only to a live agent with a session name, never to the caller
   itself. **(proposed)**
 - `next` is `SendMessage(to="<session name>", message="<one-line pointer>")` when the
@@ -82,8 +85,14 @@ wake-up the caller owes, and returns a `next` field with the exact call to make.
   `agent_resume` if that session is not running. **(proposed)** When the recipient has
   a channel, the ledger pushes the wake-up itself instead. See "Wake-up delivery" below.
 - The `post_any` hook clears the debt when it sees a `SendMessage` to that session name.
+  When the sender is a Driver whose exploration is closed and it owes nothing more, the
+  hook then releases it, which stops its session. **(proposed)**
 - The Stop hook blocks a Manager, Lead, Coder, or Driver that still owes a wake-up and
   names each call. **(proposed)**
+- A role session wakes the agent its step leaves work for, the Oracle included. The
+  Oracle's watchdog `Monitor` stays for the events no role session sends: watchdog
+  findings, and the `PushNotification` calls the Oracle owes the user. See "How a report
+  reaches the Oracle" in [08-watchdog.md](08-watchdog.md).
 
 ## Wake-up delivery
 
@@ -192,6 +201,10 @@ and the launcher then loads no channel.
   which frees its memory. The Oracle's session is never stopped this way.
 - `agent_release(target_agent_id)` releases a child of the caller. The other releases
   are automatic.
+- A Driver whose exploration is closed is released once it owes no unsent wake-up: after
+  its `SendMessage` to the Oracle, after its own `agent_resume` of the Oracle, or at its
+  Stop hook when a channel push was confirmed. `drive_request` and `run_finish` release
+  one that is still live. **(proposed)**
 
 ## What stops when
 
@@ -200,8 +213,10 @@ and the launcher then loads no channel.
 | `approve` or `accept_incomplete` | The Coder's session |
 | `agent_release` by a Manager after `module_review` accepts | The Lead's session |
 | `phase_update(approved)` | The phase's Manager and every live agent under it |
-| `drive_done` | The Driver's own session |
-| `agent_release` of a Driver by the Oracle, or `drive_unavailable` | The Driver's session; its open exploration becomes `abandoned` **(proposed)** |
+| The Driver's wake-up to the Oracle after `drive_done`, or after its own `drive_unavailable`, is marked sent | The Driver's own session **(proposed)** |
+| `drive_done` or the Driver's own `drive_unavailable` with no live Oracle to wake | The Driver's own session, at once |
+| `agent_release` of a Driver by the Oracle, or the Oracle's `drive_unavailable` | The Driver's session; its open exploration becomes `abandoned` **(proposed)** |
+| `drive_request` | An earlier Driver still live after its exploration ended **(proposed)** |
 | `run_finish` | Every agent still live except the Oracle |
 | About 3 seconds after `run_finish` | The server waits up to 5 minutes for the Oracle's last turn to end, stops the Oracle's background session, and exits. An interactive Oracle is the user's terminal and keeps running |
 | `idle_exit_minutes` with no active run, or a paused run, no session of the run running, and no ledger tool call | The ledger server |

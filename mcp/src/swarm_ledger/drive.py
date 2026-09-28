@@ -343,6 +343,42 @@ def _severities_help() -> str:
     return f"severity must be one of {SEVERITIES}"
 
 
+def _one_line(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _done_pointer(
+    request: dict, status: dict, flagged: list[dict[str, Any]], blocked: str, findings: int
+) -> str:
+    outcome: list[str] = []
+    if blocked:
+        outcome.append(f"blocked: {blocked}")
+    if flagged:
+        first = sorted(flagged, key=lambda entry: entry["kind"] != "stalled")[0]
+        more = f" (+{len(flagged) - 1} more)" if len(flagged) > 1 else ""
+        outcome.append(f"stopped by a stop rule: {first['reason']}{more}")
+    if not outcome:
+        outcome.append(
+            "clean, no findings" if status["clean_latest"] else f"done, {findings} finding(s)"
+        )
+    return _one_line(
+        f"Driver exploration {request['ordinal']} (request {request['request_id']}) ended: "
+        f"{'; '.join(outcome)}. Its result is in the ledger."
+    )
+
+
+_SETTLED_DRIVER = (
+    "SELECT 1 FROM agents a WHERE a.agent_id = ? AND a.role = 'driver' "
+    "AND a.ended_at IS NULL "
+    "AND EXISTS (SELECT 1 FROM drive_requests r WHERE r.agent_id = a.agent_id "
+    "AND r.state != 'open') "
+    "AND NOT EXISTS (SELECT 1 FROM drive_requests r WHERE r.agent_id = a.agent_id "
+    "AND r.state = 'open') "
+    "AND NOT EXISTS (SELECT 1 FROM wakeups w JOIN agents t ON t.agent_id = w.to_agent_id "
+    "WHERE w.from_agent_id = a.agent_id AND w.sent_at IS NULL AND t.ended_at IS NULL)"
+)
+
+
 class DriveMixin:
     """The Driver's request queue and its stop-rule loop status. See
     "Explorations" in knowledge/prd/02-run-lifecycle.md for the decisions this implements.
@@ -402,6 +438,14 @@ class DriveMixin:
             (run_id,),
         ).fetchone()
         return row["agent_id"] if row is not None else None
+
+    def release_closed_driver(self, agent_id: str) -> bool:
+        with self._release_tx() as conn:
+            settled = conn.execute(_SETTLED_DRIVER, (agent_id,)).fetchone()
+            if settled is None:
+                return False
+            self._release_agent(conn, agent_id, "exploration closed; final wake-up sent")
+        return True
 
     def _own_open_request(self, c: Caller, request_id: int) -> dict:
         row = self.conn.execute(
@@ -638,6 +682,14 @@ class DriveMixin:
 
         status = self._drive_loop_status(c.run_id)
 
+        with self._release_tx() as conn:
+            for row in conn.execute(
+                "SELECT agent_id FROM agents WHERE run_id = ? AND role = 'driver' "
+                "AND ended_at IS NULL",
+                (c.run_id,),
+            ).fetchall():
+                self._release_agent(conn, row["agent_id"], "drive_request: its exploration ended")
+
         with write_tx(self.conn) as conn:
             ordinal = conn.execute(
                 "SELECT COALESCE(MAX(ordinal), 0) + 1 AS n FROM drive_requests WHERE run_id = ?",
@@ -799,7 +851,20 @@ class DriveMixin:
             status = self._drive_loop_status(c.run_id)
             flagged = self._flag_stop_rules(conn, c.run_id, status)
             notice = self._drive_notice(conn, request, status, flagged, blocked)
-            self._release_agent(conn, c.agent_id, "drive_done")
+            findings = conn.execute(
+                "SELECT COUNT(*) AS n FROM drive_findings WHERE request_id = ?", (request_id,)
+            ).fetchone()["n"]
+            wakeup = self._owe_wakeup(
+                conn,
+                c,
+                self._oracle_agent_id(conn, c.run_id),
+                "drive_done",
+                _done_pointer(request, status, flagged, blocked, findings),
+            )
+            # The Driver is released once this wake-up is sent (release_closed_driver);
+            # releasing it here would stop its session before it can send it.
+            if wakeup is None:
+                self._release_agent(conn, c.agent_id, "drive_done")
         notify.deliver(notice, self.settings.notify)
 
         result = dict(
@@ -809,6 +874,7 @@ class DriveMixin:
         )
         result["loop_status"] = status
         result["notification"] = notice
+        result["next"] = self.next_step(wakeup)
         return result
 
     def drive_unavailable(self, caller: str, agent_id: str, reason: str) -> dict:
@@ -838,14 +904,29 @@ class DriveMixin:
                 directive_id = cur.lastrowid
             else:
                 directive_id = directive["directive_id"]
+            wakeup = None
+            if c.role == "driver":
+                wakeup = self._owe_wakeup(
+                    conn,
+                    c,
+                    self._oracle_agent_id(conn, c.run_id),
+                    "drive_unavailable",
+                    _one_line(
+                        f"Driver unavailable: {reason}. Directive {directive_id} waits in "
+                        "the ledger, and the exploration is abandoned."
+                    ),
+                )
             for request in open_rows:
                 conn.execute(
                     f"UPDATE drive_requests SET state = 'abandoned', done_at = {_NOW} "
                     "WHERE request_id = ?",
                     (request["request_id"],),
                 )
-                if request["agent_id"] is not None:
-                    self._release_agent(conn, request["agent_id"], "drive_unavailable")
+                if request["agent_id"] is None:
+                    continue
+                if wakeup is not None and request["agent_id"] == c.agent_id:
+                    continue
+                self._release_agent(conn, request["agent_id"], "drive_unavailable")
             notice = notify.record(
                 conn,
                 c.run_id,
@@ -864,4 +945,5 @@ class DriveMixin:
         )
         result["abandoned"] = [r["request_id"] for r in open_rows]
         result["notification"] = notice
+        result["next"] = self.next_step(wakeup)
         return result

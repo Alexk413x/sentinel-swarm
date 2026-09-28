@@ -931,7 +931,8 @@ def drive_request(caller: str, focus: str, agent_id: str | None = None) -> dict[
     """Requests an exploration and starts its Driver session; the Oracle calls this once the
     previous exploration and every fix it spawned have finished. Refuses when the host has no
     Driver available (cartographer and a driver plugin), while an exploration is still open,
-    or while a Manager, Lead, or Coder is still live. The result's `loop_status` reports the
+    or while a Manager, Lead, or Coder is still live. It releases an earlier Driver whose
+    exploration ended but whose session is still live. The result's `loop_status` reports the
     stop-rule state computed from every exploration and finding so far."""
     return _call(_ledger().drive_request, caller=caller, agent_id=agent_id, focus=focus)
 
@@ -980,10 +981,12 @@ def drive_checkin(
 def drive_done(
     caller: str, request_id: int, blocked: str | None = None, agent_id: str | None = None
 ) -> dict[str, Any]:
-    """Ends an exploration; the Driver calls this. Its session is released and stopped, and any
-    newly detected stop-rule directive is filed for the Oracle. Pass `blocked` with what failed
-    when the Driver cannot continue, such as a failed build or a device that will not boot; it
-    needs a finding already recorded with drive_issue. A clean exploration, a new stop rule, or
+    """Ends an exploration; the Driver calls this. Any newly detected stop-rule directive is
+    filed for the Oracle, and the Driver owes the Oracle a wake-up that says how the
+    exploration ended: make the call in `next`, then stop. The ledger releases and stops the
+    Driver's session once that wake-up is sent. Pass `blocked` with what failed when the
+    Driver cannot continue, such as a failed build or a device that will not boot; it needs a
+    finding already recorded with drive_issue. A clean exploration, a new stop rule, or
     `blocked` records a notification for the user."""
     return _call(
         _ledger().drive_done,
@@ -998,9 +1001,11 @@ def drive_done(
 def drive_unavailable(caller: str, reason: str, agent_id: str | None = None) -> dict[str, Any]:
     """Files a [driver-unavailable] directive when the Driver's plugin servers fail to load;
     the Driver or the Oracle calls this with what failed. Any open exploration is abandoned and
-    its Driver released, and the user is notified. drive_request and run_finish refuse while
-    the directive is open. Resolved applied or scheduled, explorations resume; resolved
-    declined, the run skips them and run_finish needs none."""
+    the user is notified. Called by the Oracle, it releases the Driver at once. Called by the
+    Driver, the Driver owes the Oracle a wake-up: make the call in `next`, then stop; the
+    ledger releases and stops the Driver's session once that wake-up is sent. drive_request
+    and run_finish refuse while the directive is open. Resolved applied or scheduled,
+    explorations resume; resolved declined, the run skips them and run_finish needs none."""
     return _call(_ledger().drive_unavailable, caller=caller, agent_id=agent_id, reason=reason)
 
 

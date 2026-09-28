@@ -16,7 +16,7 @@ transcript shows it. See "Wake-up delivery" in [05-sessions.md](05-sessions.md).
 
 | Kind | Condition | Next step the report names |
 |---|---|---|
-| `crashed` | A Manager, Lead, Coder, or Driver is `working`, or `registered` for more than 2 minutes, and its session is missing or not running. An `idle` or `handed_up` agent whose session exited is normal | `agent_resume(target_name=...)` |
+| `crashed` | A Manager, Lead, Coder, or Driver is `working`, or `registered` for more than 2 minutes, and its session is missing or not running. An `idle` or `handed_up` agent whose session exited is normal. A Driver whose exploration is closed but that the ledger has not released yet is reported whatever its state, since a closed Driver stays live only until its last wake-up goes out. **(proposed)** | `agent_resume(target_name=...)`. For a Driver whose exploration is closed: read its result in the ledger, then `agent_release` it **(proposed)** |
 | `stuck` | The session runs, the agent is `working`, and its last heartbeat is older than `stuck_minutes`. Does not apply to a Driver: see `driver_overdue` below | Message it, or have its parent replace it |
 | `driver_overdue` | The Driver's session runs, it is `working`, and its open exploration's last check-in (or its start, with none yet) is older than 30 minutes plus a 5-minute grace | Message it, or have the Oracle stop it and start a fix for whatever blocked it. **(proposed)** |
 | `waiting_permission` | A Manager's, Lead's, or Coder's session waits on a permission prompt. Not also reported as crashed or stuck | Tell the user to open that session and answer |
@@ -57,6 +57,12 @@ transcript shows it. See "Wake-up delivery" in [05-sessions.md](05-sessions.md).
 
 ## How a report reaches the Oracle
 
+- The `Monitor` listener is the Oracle's channel for events no role session sends: the
+  watchdog's findings, and the `PushNotification` calls the Oracle owes the user. Every
+  event a role session causes wakes the Oracle through that session's own wake-up
+  instead. The Driver's results are such events: `drive_issue`, `drive_checkin`,
+  `drive_done`, and the Driver's own `drive_unavailable` each owe the Oracle a wake-up.
+  See "Wake-ups owed" in [05-sessions.md](05-sessions.md). **(proposed)**
 - The listener is `python -m swarm_ledger.watch`, run as `hook.py watch`. Every 2
   seconds it prints one line per unnotified watchdog directive, marks it notified, and
   writes `runs.watch_heartbeat_at`. It also prints, once, each `PushNotification` call

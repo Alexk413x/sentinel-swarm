@@ -180,14 +180,27 @@ def _driver_findings(
     name = json.dumps(agent["name"])
     running = entry is not None and sessions.is_running(entry)
     if not running:
+        where = (
+            "is not in claude agents --json"
+            if entry is None
+            else f"is not running (status {entry.get('status')}, state {entry.get('state')})"
+        )
+        closed = _closed_exploration(conn, agent["agent_id"])
+        if closed is not None:
+            return [
+                _finding(
+                    agent,
+                    "crashed",
+                    f"its exploration {closed['request_id']} ended ({closed['state']}), but its "
+                    f"session {where} and the ledger has not released it",
+                    "Its result is in the ledger: read directive_inbox() and status_tree(). "
+                    f"Then release it with agent_release(target_agent_id="
+                    f"{json.dumps(agent['agent_id'])}).",
+                )
+            ]
         started = parse_stamp(agent["started_at"])
         overdue = started is not None and now - started > REGISTER_GRACE
         if agent["state"] == "working" or (agent["state"] == "registered" and overdue):
-            where = (
-                "is not in claude agents --json"
-                if entry is None
-                else f"is not running (status {entry.get('status')}, state {entry.get('state')})"
-            )
             return [
                 _finding(
                     agent,
@@ -221,6 +234,15 @@ def _driver_findings(
             "start a fix for whatever blocked it. agent_resume refuses a running session.",
         )
     ]
+
+
+def _closed_exploration(conn: sqlite3.Connection, agent_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT request_id, state FROM drive_requests r WHERE agent_id = ? AND state != 'open' "
+        "AND NOT EXISTS (SELECT 1 FROM drive_requests o WHERE o.agent_id = r.agent_id "
+        "AND o.state = 'open') ORDER BY request_id DESC LIMIT 1",
+        (agent_id,),
+    ).fetchone()
 
 
 def _failed(row: sqlite3.Row) -> bool:
