@@ -94,7 +94,13 @@
   the task, and the brief records the choice. Ideally, work reaches a Coder broken down
   far enough to run on the cheaper model.
 - Escalation can raise the model: a fresh Coder in round 2 or 3 can run on the stronger
-  model in its list. **(proposed)**
+  model in its list. **(proposed)** It can also raise the effort: `brief_create(effort=...)`
+  sets the child's `--effort` above the role's setting.
+- Every role runs at `medium` effort unless the settings file says otherwise: the
+  documented starting point for Opus 5.5, and for well-specified agentic coding on
+  Sonnet 5.5. An explicit level keeps a run from following each user's own
+  `modelSettings`. The registry records each agent's effort. The Lead, Coder, and Driver
+  levels are starting points for an effort sweep on the benchmark.
 - `drive_request` picks the Driver's model itself, from the first entry of its approved
   list, since the Oracle's call carries no `model` argument. **(proposed)**
 - The registry records the model of each agent. **(proposed)** For the Oracle's row,
@@ -168,9 +174,10 @@
 - **Does:** searches the code graph for existing code before it writes. Writes the test
   file first when it can, then the source file. Test-first is the expected practice,
   not a gate. Runs its tests through `tests_run` until they pass. Updates the code graph
-  for its file with `graph_upsert`. Scores its own work, fixes it, and scores again
-  until it is satisfied; this loop has no cap and is not an escalation attempt. Hands
-  off. Works with its Lead and other Coders on contracts, through the ledger.
+  for its file with `graph_upsert`. Scores its own work with `score_record(kind="self")`
+  and fixes what the score shows; that fix is not an escalation attempt. The template
+  sets no review loop of its own: the self score, the `tests_run` gate, and the Lead's
+  blind review are the checks. Hands off. Works with its Lead and other Coders on contracts, through the ledger.
 - **Owns:** one file and its unit test file. "File" means any project file the run
   touches: new or existing, code or configuration. **(proposed)**
 - **Tests cover:** the happy path, the known possible edge cases such as API errors,

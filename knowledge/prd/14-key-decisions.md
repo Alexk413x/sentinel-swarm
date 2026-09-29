@@ -100,3 +100,7 @@
 - 2026-09-28: No ledger tool schema lists `agent_id`. The server's middleware takes the stamped value out of each call and hands it to the tool for that request. `caller`, `targeted`, and `finding_ids` carry parameter descriptions.
 - 2026-09-28: A ledger tool that writes nothing carries `readOnlyHint: true`, so Claude Code runs several of them from one message in parallel. A tool that marks a row read or notified is not read-only.
 - 2026-09-28: sentinel-swarm runs in Claude Code only. The README, the marketplace entry, and PRD 11 say so; the plugin is not uploaded to claude.ai or added to organization sync.
+- 2026-09-28: Every role runs at `medium` effort by default, and the ledger records each agent's effort. A brief can raise a child's effort, for a fresh Coder in escalation rounds 2 and 3.
+- 2026-09-28: The Coder's prompt cache TTL is 5 minutes by default; the other roles keep Claude Code's default.
+- 2026-09-28: The Coder template sets no uncapped self-review loop; the self score, the `tests_run` gate, and the Lead's blind review are its checks.
+- 2026-09-28: The Oracle's phase-planning conventions live in its role template ("Plan the phases"), and the `plan` skill is removed: the Oracle has no `Skill` tool, and `skills:` does not preload under `--agent`.

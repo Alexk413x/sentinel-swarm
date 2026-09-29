@@ -12,7 +12,15 @@ from . import __version__, agentfiles, lock, sessions, wake
 from .agreements import AgreementsMixin
 from .db import connect, ensure_git_exclude, ledger_path, write_tx
 from .drive import DriveMixin, findings_named
-from .identity import ROLES, Caller, LedgerError, child_roles_of, require_role, resolve
+from .identity import (
+    EFFORT_LEVELS,
+    ROLES,
+    Caller,
+    LedgerError,
+    child_roles_of,
+    require_role,
+    resolve,
+)
 from .oversight import OversightMixin
 from .repo import RepoMixin
 from .review import ReviewMixin, agent_names, live_agents, run_summary
@@ -735,7 +743,10 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
         module_id: int | None = None,
         file_id: int | None = None,
         finding_ids: list[int] | None = None,
+        effort: str | None = None,
     ) -> dict:
+        if effort is not None and effort not in EFFORT_LEVELS:
+            raise LedgerError(f"unknown effort {effort!r}; use one of {list(EFFORT_LEVELS)}")
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
             if child_role not in child_roles_of(c.role):
@@ -766,15 +777,16 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
 
             cur = conn.execute(
                 "INSERT INTO briefs "
-                "(run_id, parent_agent_id, child_name, child_role, model, body, "
+                "(run_id, parent_agent_id, child_name, child_role, model, effort, body, "
                 "phase_id, module_id, file_id, finding_ids_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     c.run_id,
                     c.agent_id,
                     child_name,
                     child_role,
                     model,
+                    effort,
                     body,
                     phase_id if phase_id is not None else c.phase_id,
                     module_id if module_id is not None else c.module_id,
@@ -1078,20 +1090,23 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                     f"{role} sessions); call agent_spawn again after a release frees a slot"
                 )
 
-        options = self._session_options(role, brief["model"])
+        effort = brief["effort"] or self.settings.effort.get(role)
+        options = self._session_options(role, brief["model"], effort)
         prompt = f"You are {child_name}. Read your brief from the swarm ledger and follow it."
         bg_id, session_id = sessions.spawn(prompt, session_name, options, cwd=self.repo_root)
 
         with write_tx(self.conn) as conn:
             conn.execute(
-                "INSERT INTO agents (agent_id, name, role, runtime, model, parent_agent_id, "
-                "run_id, phase_id, module_id, file_id, state, session_name, bg_id, started_at) "
-                f"VALUES (?, ?, ?, 'session', ?, ?, ?, ?, ?, ?, 'registered', ?, ?, {_NOW})",
+                "INSERT INTO agents (agent_id, name, role, runtime, model, effort, "
+                "parent_agent_id, run_id, phase_id, module_id, file_id, state, session_name, "
+                f"bg_id, started_at) VALUES (?, ?, ?, 'session', ?, ?, ?, ?, ?, ?, ?, "
+                f"'registered', ?, ?, {_NOW})",
                 (
                     session_id,
                     child_name,
                     role,
                     brief["model"],
+                    effort,
                     c.agent_id,
                     brief["run_id"],
                     brief["phase_id"],
@@ -1119,7 +1134,9 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
         ).fetchone()["started_at"]
         return session_name_for(self.repo_root, run_id, child_name, run_stamp(started_at))
 
-    def _session_options(self, role: str, model: str | None) -> list[str]:
+    def _session_options(
+        self, role: str, model: str | None, effort: str | None = None
+    ) -> list[str]:
         # Imported here: serve pulls in urllib, and every hook subprocess imports this module.
         from . import serve
 
@@ -1128,15 +1145,15 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
             role,
             model,
             serve.server_url(self.repo_root),
-            effort=self.settings.effort.get(role),
+            effort=effort or self.settings.effort.get(role),
             prompt_cache_ttl=self.settings.prompt_cache_ttl.get(role),
         )
 
-    def _resume_options(self, role: str, model: str | None) -> list[str]:
+    def _resume_options(self, role: str, model: str | None, effort: str | None = None) -> list[str]:
         # A resume still goes ahead without them: the host's installed plugin supplies the
         # ledger server, and a wake-up matters more than the exact launch flags.
         try:
-            return self._session_options(role, model)
+            return self._session_options(role, model, effort)
         except LedgerError:
             return []
 
@@ -1170,7 +1187,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
             message,
             cwd=self.repo_root,
             name=target["session_name"],
-            options=self._resume_options(target["role"], target["model"]),
+            options=self._resume_options(target["role"], target["model"], target["effort"]),
         )
 
         with write_tx(self.conn) as conn:

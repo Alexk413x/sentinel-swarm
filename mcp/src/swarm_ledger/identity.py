@@ -13,6 +13,7 @@ _CHILD_ROLES: dict[str, tuple[str, ...]] = {
     "lead": ("coder",),
 }
 
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 _CHANGE_REQUEST_TOOLS = frozenset({"cr_open", "cr_accept", "cr_complete", "cr_verify", "cr_list"})
 
 ROLE_TOOLS: dict[str, frozenset[str]] = {

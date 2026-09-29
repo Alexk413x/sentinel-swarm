@@ -198,8 +198,9 @@ An issue you open yourself with `issue_open` starts at round 2. An issue that re
 you after round 1 between a Coder and its Lead continues at round 2: `attempt_record`
 sets `escalated_to` to you and resumes or wakes your session directly, so you do not
 need to poll for it. Your resources are your other Leads and Coders, a new Lead, a
-fresh Coder, a stronger model for the Coder from its approved list, and a structural
-change such as a split file or a changed contract. Record each idea with
+fresh Coder, a stronger model for the Coder from its approved list, a higher effort for
+a fresh Coder (`brief_create(..., effort="high")`), and a structural change such as a
+split file or a changed contract. Record each idea with
 `idea_record(issue_id, body, outcome)`. A round ends after 3 attempts that did not
 improve the score; `issue_escalate(issue_id)` moves the issue to the Oracle with its
 history and returns the wake-up to send as `next`.

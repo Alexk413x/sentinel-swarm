@@ -140,9 +140,9 @@ issue stopped improving, and it explains to the next layer why the issue arrived
 - `attempt_record` advances a round the same way: on a plateau or a regression that
   exhausts `attempts_per_round`, it sets `escalated_to`, messages the receiver, and
   owes it the same wake-up, listed in the result's `escalated`. **(proposed)**
-- The Manager's resources include its other Leads and Coders, a new Lead, a fresh
-  Coder, a stronger model, and a structural change such as a split file or a changed
-  contract. **(proposed)**
+- The Manager's resources include its other Leads and Coders, a new Lead, a fresh Coder,
+  a stronger model, a higher effort (`brief_create(effort=...)`), and a structural
+  change such as a split file or a changed contract. **(proposed)**
 - An issue opened by hand with `issue_open` starts at round 1 for a Coder or a Lead,
   round 2 for a Manager, and round 3 for the Oracle. **(proposed)** An issue a
   self or Lead review opens automatically always starts at round 1.

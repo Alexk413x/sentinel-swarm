@@ -37,6 +37,7 @@ _ADDED_COLUMNS = (
     ("departures", "reworked_at", "TEXT"),
     ("departures", "reworked_by_handoff_id", "INTEGER"),
     ("runs", "repo_check_json", "TEXT"),
+    ("briefs", "effort", "TEXT"),
     ("runs", "repo_checked_at", "TEXT"),
     ("runs", "branch", "TEXT"),
     ("phases", "handed_up_at", "TEXT"),

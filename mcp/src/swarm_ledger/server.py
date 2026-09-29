@@ -376,6 +376,13 @@ def brief_create(
     module_id: int | None = None,
     file_id: int | None = None,
     finding_ids: list[int] | None = _FINDING_IDS,
+    effort: Annotated[
+        Literal["low", "medium", "high", "xhigh", "max"] | None,
+        Field(
+            description="The child's effort level; leave unset for the role's default. "
+            "Raise it for a fresh Coder in escalation round 2 or 3."
+        ),
+    ] = None,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Creates a brief for the caller's child role (Oracle->Manager, Manager->Lead, Lead->Coder).
@@ -393,6 +400,7 @@ def brief_create(
         module_id=module_id,
         file_id=file_id,
         finding_ids=finding_ids,
+        effort=effort,
     )
 
 

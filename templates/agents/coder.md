@@ -140,7 +140,7 @@ instead of waiting in it.
    The ledger refuses an anchor that points outside the file and its test file, and
    it takes the graph lock for you. Do not call `kg_upsert_node` directly.
 9. `score_record(caller, file_id, ratings, applicable, kind="self")`. The tool's
-   description lists the exact rating shape and every dimension and criterion key;
+   input schema lists the exact rating shape and every dimension and criterion key;
    read it before you call. Use those keys verbatim. Each rating is one object with
    `dimension`, `criterion`, `value` from 1 to 10, `reason`, and `ref`; a rating
    below 9 needs a reason and a file-and-line reference. `applicable` names all
@@ -151,9 +151,8 @@ instead of waiting in it.
 11. Send the `SendMessage` that the handoff's `next` field names, then end your turn.
     The Stop hook blocks your stop until you have messaged your Lead.
 
-Your own review loop between steps 6 and 9 has no cap. Review, fix, and review again
-until you are satisfied. That loop is not an escalation attempt; only a return from
-your Lead is.
+Fixing your own work before the handoff is not an escalation attempt; only a return
+from your Lead is.
 
 ## What handoff_submit refuses
 

@@ -12,7 +12,7 @@ from swarm_ledger.agentfiles import session_options
 from swarm_ledger.db import connect, write_tx
 from swarm_ledger.hooks import HANDLERS as _HANDLERS
 from swarm_ledger.hooks import events
-from swarm_ledger.identity import LedgerError
+from swarm_ledger.identity import ROLES, LedgerError
 from swarm_ledger.ledger import Ledger, looks_like_swarm_session
 from swarm_ledger.settings import load_settings
 
@@ -475,7 +475,8 @@ def test_load_settings_parses_the_new_per_role_keys(repo_root: Path, tmp_path: P
     root = tmp_path / "host"
     (root / ".claude").mkdir(parents=True)
     text = _settings_text(repo_root)
-    text = text.replace("effort:\n  oracle:\n", "effort:\n  oracle: high\n")
+    text = text.replace("effort:\n  oracle: medium\n", "effort:\n  oracle: high\n")
+    text = text.replace("  lead: medium\n", "  lead:\n")
     text = text.replace("prompt_cache_ttl:\n  oracle:\n", "prompt_cache_ttl:\n  oracle: 1h\n")
     text = text.replace(
         "role_parallelism_cap:\n  oracle:\n", "role_parallelism_cap:\n  oracle: 2\n"
@@ -483,9 +484,22 @@ def test_load_settings_parses_the_new_per_role_keys(repo_root: Path, tmp_path: P
     (root / ".claude" / "sentinel-swarm.local.md").write_text(text, encoding="utf-8")
 
     settings = load_settings(root)
-    assert settings.effort == {"oracle": "high"}
-    assert settings.prompt_cache_ttl == {"oracle": "1h"}
+    assert settings.effort == {
+        "oracle": "high",
+        "manager": "medium",
+        "coder": "medium",
+        "driver": "medium",
+    }
+    assert settings.prompt_cache_ttl == {"oracle": "1h", "coder": "5m"}
     assert settings.role_parallelism_cap == {"oracle": 2}
+
+
+def test_load_settings_defaults_every_role_to_medium_effort(tmp_path: Path) -> None:
+    root = tmp_path / "host"
+    (root / ".claude").mkdir(parents=True)
+    (root / ".claude" / "sentinel-swarm.local.md").write_text("---\ntracking: local\n---\n")
+
+    assert load_settings(root).effort == {role: "medium" for role in ROLES}
 
 
 def test_session_options_passes_effort_and_prompt_cache_ttl(spawn_host: Path) -> None:

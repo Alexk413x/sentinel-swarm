@@ -9,7 +9,7 @@ report, setup, and testing. The code graph maps every document, so codebase-kg's
 ## Layout
 
 - `.claude-plugin/` — `plugin.json`, `marketplace.json`.
-- `skills/` — `swarm-protocol`, `run`, `plan`, `status`, `resume`, `setup`.
+- `skills/` — `swarm-protocol`, `run`, `status`, `resume`, `setup`.
 - `hooks/` — `hooks.json`, which carries no hooks, and a README with the per-role hook
   table. Each role's hooks live in its project agent file.
 - `assets/` — `icon.png`, the plugin icon that OS notifications show.

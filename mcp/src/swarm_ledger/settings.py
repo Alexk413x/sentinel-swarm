@@ -24,6 +24,7 @@ _DEFAULT_MODELS = {
     # (proposed) The Driver runs on Sonnet by default, as cartographer's map-driver does.
     "driver": ["sonnet", "opus"],
 }
+DEFAULT_EFFORT = {role: "medium" for role in _DEFAULT_MODELS}
 _SETTINGS_PATH = Path(".claude") / "sentinel-swarm.local.md"
 WAKE_TRANSPORTS = ("channel", "sendmessage")
 DEFAULT_WAKE_TRANSPORT = "channel"
@@ -87,7 +88,7 @@ class Settings:
     # Empty means repo_check tries main, then master, then reports no base branch.
     base_branch: str | None = None
     # Per-role --effort for agent_spawn; a role with no entry runs at its model's default.
-    effort: dict[str, str] = field(default_factory=dict)
+    effort: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_EFFORT))
     # Per-role promptCacheTtl ("5m" or "1h") for agent_spawn; a role with no entry keeps the
     # Claude Code default.
     prompt_cache_ttl: dict[str, str] = field(default_factory=dict)
@@ -160,7 +161,11 @@ def load_settings(repo_root: Path) -> Settings:
         ),
     )
 
-    effort = {role: str(level) for role, level in (data.get("effort") or {}).items() if level}
+    effort = (
+        {role: str(level) for role, level in (data.get("effort") or {}).items() if level}
+        if "effort" in data
+        else dict(DEFAULT_EFFORT)
+    )
     prompt_cache_ttl = {
         role: str(ttl) for role, ttl in (data.get("prompt_cache_ttl") or {}).items() if ttl
     }

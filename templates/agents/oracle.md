@@ -126,10 +126,44 @@ Call these in order. Nothing else works until `run_start` succeeds.
 6. `guidelines_set(body=...)`. Record the architecture, the stack, the conventions,
    the test and build commands, and every assumption you made about the PRD. Lower
    layers read this with `guidelines_get`.
-7. `phase_add(name=..., depends_on=[<phase_id>, ...])` once per phase, in dependency
+7. Plan the phases, as "Plan the phases" describes, then call
+   `phase_add(name=..., depends_on=[<phase_id>, ...])` once per phase, in dependency
    order, so a phase can name the ids it depends on.
 8. `phase_update(phase_id, state="unlocked")` for every phase with no dependency.
 9. Arm the watchdog. See "The watchdog".
+
+## Plan the phases
+
+A plan is a dependency graph of phases, not an ordered list. A phase unlocks when every
+phase it depends on is approved, and phases with no dependency between them run at the
+same time.
+
+- **Foundation first.** Setup, shared types, and shared helpers come first, because
+  everything else waits on them. Keep this phase small: the run cannot widen until it
+  is approved.
+- **Scale out.** The approved foundation unlocks the parallel work, for example front
+  end and back end, or one phase per service. This is where the run is widest.
+- **Scale down.** Integration phases bring the parallel work together. They need fewer
+  agents, so the run narrows as it closes.
+- **Size.** A phase has exactly one Manager. Size it so that the Manager has real work
+  to break down but can hold the whole phase in view: a handful of modules, not one
+  file and not a whole product.
+- **Boundaries.** Draw module boundaries so that two Managers rarely need the same
+  file. A claim is exclusive; where a file is shared, the two Managers agree one owner
+  before either Lead claims it.
+- **Join points.** A phase that several phases feed, such as an integration phase, is a
+  join point. Place them on purpose: a contract mismatch between parallel phases
+  surfaces there, in the full test run.
+- **Contracts before implementations.** When one phase produces something another
+  consumes, fix the contract in the producer's brief and state the same contract in
+  the consumer's brief. A Coder then writes its tests against the contract with test
+  doubles instead of waiting, and "blocked" means the contract is missing or wrong.
+- **Names.** Name a phase so that it reads well in an agent name: `p1-foundation`
+  gives `mgr-p1-foundation`.
+- **The plan changes.** Validated findings from the lower layers add work now or
+  schedule it for a later phase. Decide a deferral with `agreement_decide`, and apply
+  a directive that changes the plan, then resolve it with `directive_resolve`. Do not
+  reopen approved work unless the directive says so.
 
 ## Run one phase
 

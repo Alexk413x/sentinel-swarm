@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS briefs (
     child_name TEXT NOT NULL,
     child_role TEXT NOT NULL,
     model TEXT,
+    effort TEXT,
     body TEXT NOT NULL,
     phase_id INTEGER REFERENCES phases (phase_id) ON DELETE RESTRICT,
     module_id INTEGER REFERENCES modules (module_id) ON DELETE RESTRICT,

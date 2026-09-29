@@ -10,7 +10,7 @@ import pytest
 import yaml
 
 ROLES = ("oracle", "manager", "lead", "coder", "driver")
-SKILLS = ("swarm-protocol", "run", "plan", "status", "resume", "setup")
+SKILLS = ("swarm-protocol", "run", "status", "resume", "setup")
 KG_TOOLS = (
     "kg_search",
     "kg_node",

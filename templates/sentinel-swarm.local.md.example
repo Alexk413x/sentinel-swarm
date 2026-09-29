@@ -91,22 +91,25 @@ wake_transport: channel
 # makes one. An empty list, [], turns both off.
 notify: [os, push]
 
-# Left empty for every role; agent_spawn passes --effort <level> only for a role listed here.
-# Values are Claude Code's own: low, medium, high, xhigh, max.
+# agent_spawn and the launcher pass --effort <level> for a role listed here; a brief's own
+# effort overrides it. Values are Claude Code's own: low, medium, high, xhigh, max. medium
+# is the documented starting point for Opus 5.5 and for well-specified agentic coding on
+# Sonnet 5.5. Leave a role empty to run at its model's default.
 effort:
-  oracle:
-  manager:
-  lead:
-  coder:
-  driver:
+  oracle: medium
+  manager: medium
+  lead: medium
+  coder: medium
+  driver: medium
 
-# Left empty for every role; agent_spawn sets promptCacheTtl for a role listed here. Claude
-# Code accepts only "5m" or "1h" and otherwise ignores the value.
+# agent_spawn sets promptCacheTtl for a role listed here. Claude Code accepts only "5m" or
+# "1h" and otherwise ignores the value. A Coder lives a few minutes, so a 5-minute cache
+# write, at 1.25x base input, costs less than a 1-hour write at 2x.
 prompt_cache_ttl:
   oracle:
   manager:
   lead:
-  coder:
+  coder: 5m
   driver:
 
 # Left empty for every role; agent_spawn also caps that role's own live sessions in the run,

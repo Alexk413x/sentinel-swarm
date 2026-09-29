@@ -301,23 +301,25 @@ def test_agent_spawn_starts_the_session_with_the_role_files_flags(
         ledger.session_name(ctx.run_id, "lead-1"),
     ]
     options = args[4:]
-    assert options[:8] == [
+    assert options[:10] == [
         "--agent",
         "swarm-lead",
         "--model",
         "sonnet",
+        "--effort",
+        "medium",
         "--permission-mode",
         "acceptEdits",
         "--strict-mcp-config",
         "--mcp-config",
     ]
-    config = json.loads(options[8])
+    config = json.loads(options[10])
     assert config["mcpServers"]["swarm-ledger"] == {
         "type": "http",
         "url": "http://127.0.0.1:4321/mcp",
     }
     assert config["mcpServers"]["codebase-kg"]["command"] == "python"
-    assert options[9:] == [
+    assert options[11:] == [
         "--allowedTools",
         "Read,SendMessage,mcp__swarm-ledger",
         "--settings",
@@ -696,3 +698,28 @@ def test_a_background_entry_without_a_pid_counts_as_running() -> None:
     assert sessions.is_running(entry)
     assert not sessions.is_running(entry | {"state": "stopped"})
     assert not sessions.is_running({"kind": "interactive", "sessionId": "s-2", "status": "idle"})
+
+
+def test_a_briefs_effort_overrides_the_settings_and_is_recorded(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    ledger.claim_file(*ctx.lead, "src/a.py", "tests/test_a.py", "coder-a")
+    ledger.brief_create(*ctx.lead, "coder-a", "coder", "haiku", "Write a.", effort="high")
+    spawned = ledger.agent_spawn(*ctx.lead, "coder-a")
+
+    args = next(args for args, _ in reversed(claude.calls) if "--bg" in args)
+    assert args[args.index("--effort") + 1] == "high"
+    assert spawned["effort"] == "high"
+    with pytest.raises(LedgerError, match="unknown effort"):
+        ledger.brief_create(*ctx.lead, "coder-b", "coder", "haiku", "Write b.", effort="huge")
+
+
+def test_agent_spawn_records_the_settings_effort_without_a_brief_effort(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    ledger.claim_file(*ctx.lead, "src/a.py", "tests/test_a.py", "coder-a")
+    ledger.brief_create(*ctx.lead, "coder-a", "coder", "haiku", "Write a.")
+
+    assert ledger.agent_spawn(*ctx.lead, "coder-a")["effort"] == ledger.settings.effort["coder"]

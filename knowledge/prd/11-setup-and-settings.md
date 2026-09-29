@@ -115,7 +115,6 @@ or the `/sentinel-swarm:run` skill.
 |---|---|
 | `swarm-protocol` | Shared vocabulary, names, tool order, and rubric keys; loads when the swarm is mentioned |
 | `run` | Starts a run with the launcher. User-invoked only |
-| `plan` | The Oracle's conventions for a phase graph |
 | `status` | Reads `ledger.db` read-only and prints the run's state |
 | `resume` | Continues a paused or crashed run, one session at a time. User-invoked only |
 | `setup` | Prepares a host repo |
@@ -143,8 +142,8 @@ descriptions stay out of every session's context.
 | `build_command`, `lint_command` | empty | Optional; the Coder's shell gate allows them, and the Driver's allows `build_command` only **(proposed)** |
 | `parallelism_cap` | empty | No limit when empty; also counts other swarms' live sessions on the machine |
 | `base_branch` | empty | `repo_check` tries `main`, then `master` |
-| `effort.<role>` | empty | `--effort <level>` for that role's sessions |
-| `prompt_cache_ttl.<role>` | empty | `promptCacheTtl` (`"5m"` or `"1h"`) for that role's sessions |
+| `effort.<role>` | `medium` for every role | `--effort <level>` for that role's sessions. A settings file with no `effort` key gets `medium` for every role; a role left empty runs at its model's default. A brief's own `effort` overrides it |
+| `prompt_cache_ttl.<role>` | `5m` for the Coder, empty for the others | `promptCacheTtl` (`"5m"` or `"1h"`) for that role's sessions |
 | `role_parallelism_cap.<role>` | empty | Cap on that role's own live sessions in the run |
 | `wake_transport` | `channel` | `channel` pushes a wake-up through the target's channel when it has one, with `SendMessage` as the fallback; `sendmessage` sends every wake-up by `SendMessage`. Case, `_`, and `-` are ignored, and any other value reads as `channel` **(proposed)**. See "Wake-up delivery" in [05-sessions.md](05-sessions.md) |
 | `notify` | `[os, push]` | **(proposed)** How the user hears that the Driver finished or hit an error, or that an issue ended round 3 below the floor. `os`: the ledger server shows a desktop notification. `push`: the Oracle owes a `PushNotification` call. `[]` turns both off; a single value reads as a one-item list; unknown values are dropped; an unset or empty key keeps both. See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md) |
