@@ -33,6 +33,8 @@ piece can be built and tested alone.
 | `agentfiles.py` | Reads a host repo's `.claude/agents/swarm-<role>.md` and builds a role session's flags |
 | `setup.py` | `python -m swarm_ledger.setup`: writes the role files from `templates/agents/`, the hook shim, and the settings a host repo needs |
 | `launch.py` | `python -m swarm_ledger.launch`: starts the ledger server and the Oracle's session |
+| `checklist.py` | `python -m swarm_ledger.checklist`: the smoke test's checks on the latest run, as text or, with `--json`, as one document with the run's metrics |
+| `metrics.py` | **(proposed)** `run_metrics`: a run's cost, wall time, tool calls, tool latency, hook time, returns, escalations, watchdog findings, overflows, and test runs, from the ledger and the role transcripts |
 | `hooks/` | `HANDLERS` and `run_event`, which the server's hook route and the entry point `python -m swarm_ledger.hooks <event>` share. The entry point reads hook input from stdin and answers with JSON on stdout. Exit code is always 0 |
 
 ## Identity contract

@@ -43,7 +43,7 @@ writes unit tests only. End-to-end testing is a separate process outside the swa
 | [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md) | MCP servers per role, and how the swarm uses codebase-kg |
 | [10-report-and-costs.md](10-report-and-costs.md) | The run report and how tokens and cost are counted |
 | [11-setup-and-settings.md](11-setup-and-settings.md) | Install, setup, launch, skills, and the settings file |
-| [12-testing.md](12-testing.md) | The checks for this repo, the quick and complete smoke tests, and what to check after a run |
+| [12-testing.md](12-testing.md) | The checks for this repo, the quick and complete smoke tests, the benchmark, the skill-trigger evals, and what to check after a run |
 | [13-platform-facts.md](13-platform-facts.md) | Verified Claude Code platform facts the design relies on |
 | [14-key-decisions.md](14-key-decisions.md) | Alex's decisions, one dated line each |
 | [15-proposed.md](15-proposed.md) | Items marked (proposed) that await review |

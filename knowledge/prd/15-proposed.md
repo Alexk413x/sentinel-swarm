@@ -273,3 +273,28 @@ reviewed:
 - The `swarm_ledger` package removes `UV_PROJECT_ENVIRONMENT` from its environment at
   import when it names the package's own venv, so codebase-kg's `uv run` and the host's
   test command never sync their projects into the ledger's venv.
+
+Built on 2026-09-28, the benchmark and the smoke-harness teardown (see "The benchmark",
+"The skill-trigger evals", and "After a run" in [12-testing.md](12-testing.md)),
+choices Alex has not reviewed:
+
+- The held-out PRDs `shapes` (an abstract base with two independent subclasses and a
+  command that writes `shapes.txt`), `units` (length conversion, quantity parsing, and a
+  converter command), and `tally` (CSV expenses, per-category totals, and a command that
+  writes `summary.txt`), and their acceptance tests. `textstats` has acceptance tests
+  too, although it is a dev PRD.
+- The grading details: the acceptance tests run from a copy in the trial folder with a
+  shared conftest (`BENCH_HOST`, `run_python`); a trial passes on a `finished` run and
+  a zero pytest exit with at least one test; a ledger run older than the trial fails it.
+- The runner's files and flags: `runs/bench/<timestamp>[-<label>]/`, `--label`,
+  `--settings` as a JSON object, `--dry-run`, and `--model-pin all=<model>`.
+- `SMOKE_PRD_FILE` and `SMOKE_SETTINGS`, and `scripts/host_settings.py`, which also sets
+  the host Oracle agent file's `model` from `models.oracle`.
+- The JSON metrics and their shapes, in `mcp/src/swarm_ledger/metrics.py`, including the
+  `hook_ms` split into all hooks and the swarm's own, and the transcript fallback path.
+- The trigger suite's cases, their `max_turns: 5` and `timeout_seconds: 180`, and
+  `scripts/evals.sh`, which runs the suite against a copy of the plugin without
+  `mcp/.venv` and without the manifest's `dependencies`.
+- Teardown passes `--keep-data`, removes the marketplace only when its record is a smoke
+  copy no install uses, and is skipped while the ledger's latest run has not ended. The
+  uninstall before each install passes `--keep-data` too.

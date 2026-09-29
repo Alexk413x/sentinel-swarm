@@ -14,12 +14,15 @@ if [ "${1:-}" = --prd ]; then
   [ -f "$prd_file" ] || { echo "no PRD at $prd_file" >&2; exit 1; }
   prompt="$(cat "$prd_file")"
   shift 2
+elif [ -z "${1:-}" ] && [ -n "${SMOKE_PRD_FILE:-}" ]; then
+  prompt="$(cat "$SMOKE_PRD_FILE")"
 else
   prompt="${1:-Create hello.py. When it runs, it writes the text Hello, world! to hello_world.txt in the current folder.}"
 fi
 run_dir="$root/runs/hello"
 host="$run_dir/host"
 claude_bin="${CLAUDE_BIN:-claude}"
+config_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 export SENTINEL_SWARM_CLAUDE="${SENTINEL_SWARM_CLAUDE:-$claude_bin}"
 
 kg_dir="${KG_PLUGIN_DIR:-$(ls -d "$HOME"/.claude/plugins/cache/codebase-kg/codebase-kg/[0-9]* | sort -V | tail -1)}"
@@ -30,6 +33,72 @@ win() { if command -v cygpath >/dev/null; then cygpath -w "$1"; else printf '%s'
 # copy has the same lock as this repo, so both share it.
 ledger_venv="$(python "$(win "$root/mcp/ledger_venv.py")")"
 ledger_uv() { UV_PROJECT_ENVIRONMENT="$ledger_venv" uv "$@"; }
+
+marketplace_state() {
+  python -c '
+import json, os, sys
+def load(name):
+    try:
+        with open(os.path.join(sys.argv[1], name), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+source = (load("known_marketplaces.json").get("sentinel-swarm") or {}).get("source") or {}
+path = str(source.get("path") or "").rstrip("/\\")
+if source.get("source") != "directory" or not os.path.basename(path).startswith("sentinel-swarm-plugin-"):
+    sys.exit()
+installed = load("installed_plugins.json")
+records = installed.get("plugins", installed).get("sentinel-swarm@sentinel-swarm") or []
+users = [str(r.get("projectPath") or r.get("scope")) for r in records if isinstance(r, dict)]
+print("kept " + ", ".join(users) if users else "remove")
+' "$(win "$config_dir/plugins")"
+}
+
+run_live() {
+  [ -f "$host/.sentinel-swarm/ledger.db" ] || return 1
+  python -c '
+import sqlite3, sys
+try:
+    conn = sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True)
+    row = conn.execute("SELECT ended_at FROM runs ORDER BY run_id DESC LIMIT 1").fetchone()
+except sqlite3.Error:
+    sys.exit(1)
+sys.exit(0 if row is not None and row[0] is None else 1)
+' "$(win "$host/.sentinel-swarm/ledger.db")"
+}
+
+# --keep-data: the ledger venv lives in the plugin data folder, which every smoke host and live
+# session shares. For the same reason the marketplace goes only once no install uses it:
+# removing it uninstalls every plugin from it and deletes their data.
+teardown() {
+  if [ -d "$host/.claude" ]; then
+    (cd "$host" && "$claude_bin" plugin uninstall sentinel-swarm@sentinel-swarm --scope project \
+      --keep-data) >/dev/null 2>&1 || true
+  fi
+  local state
+  state="$(marketplace_state)"
+  case "$state" in
+    remove)
+      (cd "$host" 2>/dev/null || cd "$root"
+        "$claude_bin" plugin marketplace remove sentinel-swarm) >/dev/null 2>&1 || true
+      if [ "$(marketplace_state)" = remove ]; then
+        echo "teardown: could not remove the sentinel-swarm marketplace;" \
+          "run: claude plugin marketplace remove sentinel-swarm" >&2
+      fi
+      ;;
+    kept*) echo "teardown: the sentinel-swarm marketplace stays: ${state#kept } still uses it" >&2 ;;
+  esac
+}
+
+# Uninstalling while the run goes on would break its sessions' hooks, which find the plugin
+# through the install record.
+teardown_after_run() {
+  if run_live; then
+    echo "The run is still going. When it ends: bash scripts/smoke.sh --results" >&2
+  else
+    teardown
+  fi
+}
 
 report_results() {
   for script in hello.py hello_world.py; do
@@ -55,6 +124,7 @@ if [ "$mode" = results ]; then
   rc=0
   ledger_uv run --quiet --project "$(win "$root/mcp")" --frozen --no-dev \
     python -m swarm_ledger.checklist --repo "$(win "$host")" || rc=$?
+  teardown_after_run
   exit "$rc"
 fi
 
@@ -65,6 +135,10 @@ if [ "$mode" = bg ] || [ "$mode" = headless ]; then
   ledger_uv run --quiet --project "$(win "$root/mcp")" --frozen --no-dev \
     python -m swarm_ledger.setup --check-trust --repo "$(win "$host")" || exit 1
 fi
+
+# An earlier run's install and marketplace go first: Windows empties the temp folder that the
+# marketplace record points at.
+teardown
 
 # The run installs the plugin from a clean copy of its files. Installing from the repo would
 # copy runs/ and mcp/.venv into the plugin cache.
@@ -140,7 +214,8 @@ git config core.autocrlf false
 # installed copy lives in the plugin cache, outside host/, so Claude Code does not ask before a
 # Coder's writes.
 "$claude_bin" plugin marketplace add --scope project "$(win "$plugin_dir")" >/dev/null
-"$claude_bin" plugin uninstall sentinel-swarm@sentinel-swarm --scope project >/dev/null 2>&1 || true
+"$claude_bin" plugin uninstall sentinel-swarm@sentinel-swarm --scope project --keep-data \
+  >/dev/null 2>&1 || true
 "$claude_bin" plugin install sentinel-swarm@sentinel-swarm --scope project -y >/dev/null
 version=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['version'])" \
   "$(win "$plugin_dir/.claude-plugin/plugin.json")")
@@ -158,6 +233,11 @@ launch() { swarm launch "$@"; }
 # Setup runs before the commit: it edits .claude/settings.local.json, and a tracked file that
 # changes during the run shows up in the Coders' git status checks.
 swarm setup
+if [ -n "${SMOKE_SETTINGS:-}" ]; then
+  ledger_uv run --quiet --project "$installed_mcp" --frozen --no-dev \
+    python "$(win "$root/scripts/host_settings.py")" --repo "$(win "$host")" \
+    --override "$(win "$SMOKE_SETTINGS")"
+fi
 
 git add -A
 git commit -q -m init
@@ -168,6 +248,7 @@ case "$mode" in
     launch --headless --transcript "$(win "$run_dir/transcript.jsonl")" "$prompt" \
       2> "$run_dir/stderr.txt" || echo "the launcher exited with status $?" >&2
     report_results
+    teardown_after_run
     ;;
   bg)
     # The launcher refuses an untrusted repo and prints the one command that trusts it.
@@ -177,5 +258,6 @@ case "$mode" in
   *)
     launch "$prompt" || echo "the launcher exited with status $?" >&2
     report_results
+    teardown_after_run
     ;;
 esac
