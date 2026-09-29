@@ -19,7 +19,17 @@ python3 .sentinel-swarm/hook.py hook <event> || python .sentinel-swarm/hook.py h
 ```
 
 `.sentinel-swarm/hook.py` is the shim that setup copies from
-`templates/hook_shim.py`. It uses the standard library only. It finds the
+`templates/hook_shim.py`. It uses the standard library only.
+
+The shim first posts the hook input to the repo's running ledger server, at
+`POST /hook/<event>` on the port in `.sentinel-swarm/server.json`, and prints the
+answer. The server runs the same handler as `python -m swarm_ledger.hooks <event>`, so
+the answer is byte for byte what the subprocess would print, without starting two
+interpreters.
+
+When there is no `server.json`, the server does not accept the connection within
+0.25 seconds, it does not answer within 10 seconds (40 for `stop` and `session_end`),
+or it answers anything but 200 with the repo header, the shim falls back. It finds the
 sentinel-swarm install for the repo in `~/.claude/plugins/installed_plugins.json`,
 in this order: scope `local`, then `project` with a matching `projectPath`, then
 `user`. It then runs `uv run --project <installPath>/mcp --frozen --no-dev python -m
@@ -40,7 +50,8 @@ The per-event behavior lives in `mcp/src/swarm_ledger/hooks/events.py`, as funct
 | `PreToolUse` | `Monitor` | `pre_monitor` | all |
 | `PreToolUse` | `SendMessage` | `pre_send_message` | all |
 | `PreToolUse` | `mcp__swarm-ledger__.*` | `pre_ledger` | all |
-| `PostToolUse` | all | `post_any` | all |
+| `PostToolUse` | `SendMessage\|PushNotification\|Monitor\|Write\|Edit\|MultiEdit\|NotebookEdit` | `post_any` | all |
+| `PostToolUse` | all, `async: true` | `post_activity`, which skips the tools `post_any` covers | all |
 | `PostToolUse` | `Bash\|PowerShell` | `post_shell` | coder |
 | `PreCompact` | all | `pre_compact` | all |
 | `Stop` | all | `stop` | all |
@@ -48,6 +59,13 @@ The per-event behavior lives in `mcp/src/swarm_ledger/hooks/events.py`, as funct
 
 `pre_agent`, `pre_write`, `pre_shell`, `pre_monitor`, `pre_send_message`, and `pre_ledger`
 are the gating events.
+
+`post_any` stays synchronous after the tools whose records the Stop hook and
+`handoff_submit` read: owed wake-ups, notifications, the watchdog arm time, and stale
+files. `post_activity` runs in the background after every other tool and records only
+the heartbeat, the current activity, and the transcript path, and sets an idle agent to
+working. The shim stamps its input with the time it fired, so a `post_activity` that
+lands after the agent's Stop hook does not set the agent working again.
 
 The Driver is the one role whose `swarm-driver.md` carries `Agent` in its `tools` and
 gets a shell: `pre_agent` allows only its calls to cartographer's `map-driver` and
@@ -74,9 +92,9 @@ its hook input carries `agent_type` `swarm-<role>`. A non-swarm caller passes.
 
 ## When the shim cannot run a hook
 
-The registry is missing, the plugin is not installed for the repo, the install's
-files are missing, `uv` is not on `PATH`, or the ledger hook fails or runs longer than
-50 seconds. Then:
+The server did not answer, and then the registry is missing, the plugin is not
+installed for the repo, the install's files are missing, `uv` is not on `PATH`, or the
+ledger hook fails. Or the two paths together run longer than 50 seconds. Then:
 
 - A gating event answers `deny`, with the reason.
 - Every event adds a `systemMessage` with the reason and tells the user to run

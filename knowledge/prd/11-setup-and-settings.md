@@ -20,6 +20,9 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
   `swarm-coder.md` from `templates/agents/<role>.md`. For an existing file it keeps the
   user's frontmatter, adds any key the template has that the file lacks, adds every
   ledger hook the template has that the file lacks, and replaces the prompt body.
+  A hook entry that is exactly what an earlier template shipped, such as the
+  unmatched synchronous `post_any` entry, is replaced with the template's entry; an
+  edited entry is kept. **(proposed)**
   A new file's MCP server `command` is `python` on Windows, and `python3` elsewhere
   when `python3` is on `PATH`. **(proposed)**
 - Writes `swarm-driver.md` the same way, but only when the host has

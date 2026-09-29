@@ -16,12 +16,24 @@
 - The ledger server runs no other MCP server. Each plugin shares its own servers
   through its own relay. See "Plugin servers" in
   [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
-- Tool calls run one at a time under one lock, on one SQLite connection.
+- Tool calls run one at a time under one lock, on one SQLite connection. A hook
+  request on `/hook/<event>` runs outside that lock, on its own connection.
 - The server loads the settings file once: the watchdog at start, and the ledger at the
   first tool call. `profile_set` changes the commands for the server process and the
   run's settings snapshot, not the file. The hooks read the file on every call, so the
   Coder's shell gate follows the file's commands.
 - The watchdog runs on a thread inside the server.
+- The hook route: `POST /hook/<event>` runs the handler `python -m swarm_ledger.hooks
+  <event>` runs, on the request body, and returns exactly the bytes that command would
+  print. Each request opens its own `Ledger`, so it reads the settings file again, and
+  closes it after the handler. It runs on a worker thread, off the event loop, and
+  never takes the tool-call lock. It uses an empty wake-up hub, as the subprocess does,
+  so a hook never pushes a wake-up through a channel. The handler's stderr goes to the
+  server log. The route answers 403 unless the caller is `127.0.0.1` or `::1` and the
+  `Host` header names `127.0.0.1` or `localhost`, 404 for an unknown event, and 409
+  unless the `X-Sentinel-Swarm-Repo` header names this server's repo root. A 200
+  answer carries the header back. See "The shim" in
+  [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md).
 - `GET /events?session=<session id>` holds one session's `swarm-events` event stream
   open: newline-delimited JSON, one event per line, and a `{"kind": "ping"}` line after
   15 seconds without an event. The request records `launched` on that session's agent

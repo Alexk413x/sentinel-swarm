@@ -7,9 +7,13 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
+import time
+import urllib.parse
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from pathlib import Path
 
 PLUGIN_ID = "sentinel-swarm@sentinel-swarm"
@@ -17,6 +21,17 @@ GATING_EVENTS = frozenset(
     {"pre_agent", "pre_write", "pre_shell", "pre_ledger", "pre_monitor", "pre_send_message"}
 )
 HOOK_TIMEOUT_SECONDS = 50
+SERVER_HOST = "127.0.0.1"
+SERVER_FILE = "server.json"
+HOOK_PATH = "/hook"
+REPO_HEADER = "X-Sentinel-Swarm-Repo"
+# Windows takes about 2 s to refuse a connection to a closed local port; a live local
+# server accepts in well under a millisecond.
+CONNECT_TIMEOUT_SECONDS = 0.25
+FAST_TIMEOUT_SECONDS = 10.0
+SLOW_EVENT_TIMEOUT_SECONDS = {"stop": 40.0, "session_end": 40.0}
+STAMPED_EVENTS = frozenset({"post_activity"})
+FIRED_AT_KEY = "sentinel_swarm_fired_at"
 SCOPES = ("local", "project", "user")
 USAGE = (
     "usage: hook.py hook <event> | hook.py mcp <plugin_id> <server> | hook.py watch "
@@ -144,7 +159,84 @@ def ledger_command(repo: Path, module: str, *args: str) -> tuple[list[str], dict
     return command, env
 
 
-def run_ledger_hook(event: str, payload: bytes) -> bytes:
+def server_port(repo: Path) -> int | None:
+    try:
+        info = json.loads((repo / ".sentinel-swarm" / SERVER_FILE).read_text(encoding="utf-8"))
+        port = int(info["port"])
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+    return port if 0 < port < 65536 else None
+
+
+def fast_hook(event: str, payload: bytes, repo: Path, timeout: float) -> bytes | None:
+    port = server_port(repo)
+    if port is None:
+        return None
+    project = os.environ.get("CLAUDE_PROJECT_DIR") or str(repo)
+    # A plain HTTP/1.0 request, not http.client: its email imports add about 180 ms to
+    # every hook.
+    head = (
+        f"POST {HOOK_PATH}/{event} HTTP/1.0\r\n"
+        f"Host: {SERVER_HOST}:{port}\r\n"
+        "Content-Type: application/json\r\n"
+        f"Content-Length: {len(payload)}\r\n"
+        f"{REPO_HEADER}: {urllib.parse.quote(project)}\r\n\r\n"
+    )
+    try:
+        with socket.create_connection((SERVER_HOST, port), CONNECT_TIMEOUT_SECONDS) as sock:
+            sock.settimeout(timeout)
+            sock.sendall(head.encode("ascii") + payload)
+            chunks = []
+            while chunk := sock.recv(65536):
+                chunks.append(chunk)
+    except OSError:
+        return None
+    return parse_answer(b"".join(chunks))
+
+
+def parse_answer(response: bytes) -> bytes | None:
+    head, separator, body = response.partition(b"\r\n\r\n")
+    lines = head.decode("latin-1").split("\r\n")
+    status = lines[0].split()
+    if not separator or len(status) < 2 or status[1] != "200":
+        return None
+    headers = {}
+    for line in lines[1:]:
+        name, _, value = line.partition(":")
+        headers[name.strip().lower()] = value.strip()
+    if REPO_HEADER.lower() not in headers:
+        return None
+    length = headers.get("content-length")
+    if length is not None and length != str(len(body)):
+        return None
+    return body
+
+
+def stamp_payload(payload: bytes) -> bytes:
+    try:
+        data = json.loads(payload.decode("utf-8")) if payload.strip() else {}
+    except ValueError:
+        return payload
+    if not isinstance(data, dict):
+        return payload
+    now = datetime.now(timezone.utc)
+    data[FIRED_AT_KEY] = now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+    return json.dumps(data).encode("utf-8")
+
+
+def run_hook(event: str, payload: bytes) -> bytes:
+    deadline = time.monotonic() + HOOK_TIMEOUT_SECONDS
+    repo = repo_root()
+    if event in STAMPED_EVENTS:
+        payload = stamp_payload(payload)
+    fast_timeout = SLOW_EVENT_TIMEOUT_SECONDS.get(event, FAST_TIMEOUT_SECONDS)
+    output = fast_hook(event, payload, repo, fast_timeout)
+    if output is not None:
+        return output
+    return run_ledger_hook(event, payload, max(deadline - time.monotonic(), 0.1))
+
+
+def run_ledger_hook(event: str, payload: bytes, timeout: float = HOOK_TIMEOUT_SECONDS) -> bytes:
     repo = repo_root()
     command, env = ledger_command(repo, "swarm_ledger.hooks", event)
     try:
@@ -152,7 +244,7 @@ def run_ledger_hook(event: str, payload: bytes) -> bytes:
             command,
             input=payload,
             capture_output=True,
-            timeout=HOOK_TIMEOUT_SECONDS,
+            timeout=timeout,
             env=env,
             cwd=str(repo),
         )
@@ -172,7 +264,7 @@ def run_ledger_hook(event: str, payload: bytes) -> bytes:
 def hook_main(event: str) -> int:
     payload = sys.stdin.buffer.read()
     try:
-        output = run_ledger_hook(event, payload)
+        output = run_hook(event, payload)
     except Exception as exc:
         sys.stdout.write(json.dumps(failure_answer(event, str(exc))))
         return 0

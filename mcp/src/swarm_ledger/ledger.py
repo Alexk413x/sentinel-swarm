@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import __version__, agentfiles, lock, serve, sessions, wake
+from . import __version__, agentfiles, lock, sessions, wake
 from .agreements import AgreementsMixin
 from .db import connect, ensure_git_exclude, ledger_path, write_tx
 from .drive import DriveMixin, findings_named
@@ -73,14 +73,21 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
     # AgreementsMixin implements (for pyright, since review.py's methods are typed
     # against ReviewMixin alone), and MRO resolves the first base's attribute, so
     # ReviewMixin's empty stub would otherwise shadow the real implementation.
-    def __init__(self, repo_root: Path, *, db_path: Path | None = None) -> None:
+    def __init__(
+        self, repo_root: Path, *, db_path: Path | None = None, hub: wake.EventHub | None = None
+    ) -> None:
         self.repo_root = repo_root
+        self._hub = hub
         self.settings = load_settings(repo_root)
         path = db_path if db_path is not None else ledger_path(repo_root)
         self.conn = connect(path)
         self._pending_stops: list[tuple[str, str]] = []
         if (repo_root / ".git").exists():
             ensure_git_exclude(repo_root)
+
+    @property
+    def hub(self) -> wake.EventHub:
+        return self._hub if self._hub is not None else wake.HUB
 
     @contextmanager
     def _release_tx(self) -> Iterator[sqlite3.Connection]:
@@ -193,7 +200,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
         return run_id
 
     def _mark_channel(self, session_id: str) -> None:
-        if wake.HUB.connected(session_id):
+        if self.hub.connected(session_id):
             wake.mark_launched(self.conn, session_id)
 
     def _refuse_live_oracle(
@@ -1111,6 +1118,9 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
         return session_name_for(self.repo_root, run_id, child_name, run_stamp(started_at))
 
     def _session_options(self, role: str, model: str | None) -> list[str]:
+        # Imported here: serve pulls in urllib, and every hook subprocess imports this module.
+        from . import serve
+
         return agentfiles.session_options(
             self.repo_root,
             role,
@@ -1233,7 +1243,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
             transport=self.settings.wake_transport,
             live=self._is_live(wakeup["to_agent_id"]),
             channel=target["channel"] if target is not None else "none",
-            hub=wake.HUB,
+            hub=self.hub,
         )
         if delivery.pushed:
             self._record_push(wakeup["wakeup_id"])

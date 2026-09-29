@@ -9,18 +9,25 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from . import lock, sessions, wake
 from .db import ledger_path
 from .identity import LedgerError
 
+if TYPE_CHECKING:
+    from starlette.requests import Request
+    from starlette.responses import Response
+
 HOST = "127.0.0.1"
 MCP_PATH = "/mcp"
 HEALTH_PATH = "/health"
+HOOK_PATH = "/hook"
+REPO_HEADER = "X-Sentinel-Swarm-Repo"
 SERVER_FILE = "server.json"
 PORT_FILE = "server.port"
 LOG_FILE = "server.log"
@@ -28,6 +35,8 @@ EXIT_DELAY_S = 3.0
 ORACLE_TURN_WAIT_S = 300.0
 START_TIMEOUT_S = 30.0
 _PROBE_TIMEOUT_S = 2.0
+_LOOPBACK_CLIENTS = frozenset({"127.0.0.1", "::1"})
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost"})
 _POLL_S = 0.2
 
 
@@ -163,6 +172,47 @@ def ensure_server(repo_root: Path, timeout: float = START_TIMEOUT_S) -> str:
     raise LedgerError(f"the ledger server did not answer within {timeout:.0f}s; see {log_path}")
 
 
+def run_hook(root: Path, event: str, payload: bytes) -> str:
+    from .hooks import run_event
+
+    # An empty hub, as in the hook subprocess: a hook never pushes a wake-up itself.
+    stdout, stderr = run_event(
+        event, payload.decode("utf-8", errors="replace"), root, hub=wake.EventHub()
+    )
+    if stderr:
+        sys.stderr.write(stderr)
+        sys.stderr.flush()
+    return stdout
+
+
+async def answer_hook(request: Request, root: Path) -> Response:
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import PlainTextResponse, Response
+
+    from .hooks import HANDLERS
+
+    client = request.client
+    if (
+        client is None
+        or client.host not in _LOOPBACK_CLIENTS
+        or request.url.hostname not in _LOOPBACK_HOSTS
+    ):
+        return PlainTextResponse("the hook route answers only local callers", status_code=403)
+    event = str(request.path_params.get("event") or "")
+    if event not in HANDLERS:
+        return PlainTextResponse(f"unknown hook event {event!r}", status_code=404)
+    repo = urllib.parse.unquote(request.headers.get(REPO_HEADER, ""))
+    if not repo or not _same_path(repo, root):
+        return PlainTextResponse(f"this server serves {root}", status_code=409)
+    payload = await request.body()
+    output = await run_in_threadpool(run_hook, root, event, payload)
+    return Response(
+        output.encode("utf-8"),
+        media_type="application/json",
+        headers={REPO_HEADER: urllib.parse.quote(str(root))},
+    )
+
+
 def _remove_if_ours(path: Path) -> None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -237,8 +287,7 @@ def finish_later(
 
 def serve(repo_root: Path) -> None:
     from starlette.concurrency import run_in_threadpool
-    from starlette.requests import Request
-    from starlette.responses import JSONResponse, Response, StreamingResponse
+    from starlette.responses import JSONResponse, StreamingResponse
 
     # Imported here, not at the top: server imports ledger, which imports this module.
     from . import server
@@ -269,6 +318,10 @@ def serve(repo_root: Path) -> None:
         return StreamingResponse(
             wake.event_stream(wake.HUB, session_id), media_type="application/x-ndjson"
         )
+
+    @server.mcp.custom_route(HOOK_PATH + "/{event}", methods=["POST"])
+    async def hook(request: Request) -> Response:
+        return await answer_hook(request, root)
 
     server.configure(root)
     server.on_run_finish = lambda oracle_session_id: finish_later(path, root, oracle_session_id)

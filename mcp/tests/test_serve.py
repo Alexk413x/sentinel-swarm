@@ -1,20 +1,25 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import os
 import signal
 import subprocess
 import sys
 import time
+import urllib.parse
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 from fastmcp import Client
+from starlette.requests import Request
 
-from swarm_ledger import serve
+from swarm_ledger import hooks as hooks_package
+from swarm_ledger import serve, wake
+from swarm_ledger.hooks import run_event
 from swarm_ledger.identity import LedgerError
 
 
@@ -209,3 +214,124 @@ def test_write_server_info_replaces_the_record(tmp_path: Path) -> None:
     serve.write_server_info(path, {"url": "http://127.0.0.1:6/mcp", "port": 6})
     assert serve.read_server_info(host) == {"url": "http://127.0.0.1:6/mcp", "port": 6}
     assert [p.name for p in path.parent.iterdir()] == ["server.json"]
+
+
+def _hook_request(
+    event: str,
+    repo: Path | None,
+    body: bytes = b"{}",
+    client: tuple[str, int] = ("127.0.0.1", 50000),
+    host_header: str = "127.0.0.1:8123",
+) -> Request:
+    headers = [(b"host", host_header.encode())]
+    if repo is not None:
+        quoted = urllib.parse.quote(str(repo)).encode()
+        headers.append((serve.REPO_HEADER.lower().encode(), quoted))
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": f"{serve.HOOK_PATH}/{event}",
+        "path_params": {"event": event},
+        "headers": headers,
+        "client": client,
+        "server": ("127.0.0.1", 8123),
+        "scheme": "http",
+        "query_string": b"",
+        "root_path": "",
+    }
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request(scope, receive)
+
+
+def _answer(request: Request, root: Path) -> Any:
+    return asyncio.run(asyncio.wait_for(serve.answer_hook(request, root), 30))
+
+
+_LEDGER_INFO = json.dumps(
+    {"session_id": "sess-x", "tool_name": "mcp__swarm-ledger__ledger_info", "tool_input": {}}
+).encode()
+
+
+def test_the_hook_route_returns_what_the_hook_prints(host: Path) -> None:
+    response = _answer(_hook_request("pre_ledger", host, _LEDGER_INFO), host)
+    expected, _ = run_event("pre_ledger", _LEDGER_INFO.decode(), host)
+    assert response.status_code == 200
+    assert response.body == expected.encode()
+    assert json.loads(response.body)["hookSpecificOutput"]["permissionDecision"] == "allow"
+    assert urllib.parse.unquote(response.headers[serve.REPO_HEADER]) == str(host)
+
+
+def test_the_hook_route_refuses_an_unknown_event(host: Path) -> None:
+    assert _answer(_hook_request("nope", host), host).status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("client", "host_header"),
+    [(("10.0.0.5", 50000), "127.0.0.1:8123"), (("127.0.0.1", 50000), "evil.example:8123")],
+)
+def test_the_hook_route_answers_only_local_callers(
+    host: Path, client: tuple[str, int], host_header: str
+) -> None:
+    request = _hook_request("pre_ledger", host, client=client, host_header=host_header)
+    assert _answer(request, host).status_code == 403
+
+
+def test_the_hook_route_refuses_a_caller_from_another_repo(host: Path, tmp_path: Path) -> None:
+    assert _answer(_hook_request("pre_ledger", tmp_path / "other"), host).status_code == 409
+    assert _answer(_hook_request("pre_ledger", None), host).status_code == 409
+
+
+def test_the_hook_route_does_not_wait_for_the_tool_call_lock(host: Path) -> None:
+    from swarm_ledger import server
+
+    with server._CALL_LOCK:
+        response = _answer(_hook_request("pre_ledger", host, _LEDGER_INFO), host)
+    assert response.status_code == 200
+
+
+def test_the_hook_route_runs_each_hook_on_its_own_ledger_and_an_empty_hub(
+    host: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[Path | None, Any]] = []
+
+    def fake_run_event(
+        event: str, raw: str, root: Path | None = None, hub: Any = None
+    ) -> tuple[str, str]:
+        calls.append((root, hub))
+        return '{"x": 1}', "a stderr line\n"
+
+    monkeypatch.setattr(hooks_package, "run_event", fake_run_event)
+    assert serve.run_hook(host, "stop", b"{}") == '{"x": 1}'
+    assert serve.run_hook(host, "stop", b"{}") == '{"x": 1}'
+    (root, hub), (_, second_hub) = calls
+    assert root == host
+    assert isinstance(hub, wake.EventHub) and hub is not wake.HUB and hub is not second_hub
+
+
+def _load_shim(repo_root: Path) -> Any:
+    path = repo_root / "templates" / "hook_shim.py"
+    spec = importlib.util.spec_from_file_location("sentinel_swarm_hook_shim_serve", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.integration
+def test_the_shim_answers_a_hook_through_the_running_server(
+    host: Path, repo_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    serve.ensure_server(host, timeout=60)
+    shim = _load_shim(repo_root)
+    monkeypatch.setattr(shim, "repo_root", lambda: host)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(host))
+
+    def no_fallback(*args: Any) -> bytes:
+        raise AssertionError("the shim fell back to uv run")
+
+    monkeypatch.setattr(shim, "run_ledger_hook", no_fallback)
+    expected, _ = run_event("pre_ledger", _LEDGER_INFO.decode(), host)
+    assert shim.run_hook("pre_ledger", _LEDGER_INFO) == expected.encode()

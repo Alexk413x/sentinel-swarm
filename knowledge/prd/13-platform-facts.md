@@ -35,6 +35,14 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   `Stop`, and `SessionEnd` fire, each with `session_id`, `transcript_path`, and
   `agent_type` set to the agent's name. `agent_id` is empty. `SessionEnd` fires on
   `claude stop` with reason `other`. (2026-09-23)
+- A hook matcher made only of letters, digits, `_`, `-`, spaces, `,`, and `|` is a
+  list of exact tool names; any other matcher is an unanchored JavaScript regular
+  expression. A command hook with `async: true` runs in the background: Claude Code
+  does not wait for it, does not use its output, and does not enforce its `timeout`, so
+  it can finish after a later hook such as `Stop`. From the hooks documentation, not
+  yet checked in a live session. (2026-09-28)
+- On Windows, a TCP connection to a closed port on `127.0.0.1` takes about 2 seconds to
+  fail with `ConnectionRefusedError`. (2026-09-28)
 - Inside an agent-file hook, `CLAUDE_PLUGIN_ROOT` points at an unrelated plugin.
   `CLAUDE_PROJECT_DIR` is correct. (2026-09-23)
 - A background session refuses to start in an untrusted folder. Trust is stored per

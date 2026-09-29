@@ -86,4 +86,6 @@
 - 2026-09-28: sentinel-swarm requires codebase-kg `>=0.8.2`.
 - 2026-09-28: `--headless` refuses an untrusted repo, like `--bg`.
 - 2026-09-28: The `run` and `resume` skills are user-invoked only (`disable-model-invocation: true`).
+- 2026-09-28: A hook reaches the ledger through the running server first: the shim posts the hook input to `POST /hook/<event>` and falls back to `uv run ... python -m swarm_ledger.hooks <event>` when the server does not answer. A gating event still denies when both fail. The route runs on its own connection, outside the tool-call lock, and reads the settings file on every call.
+- 2026-09-28: `PostToolUse` splits in two: `post_any` stays synchronous after `SendMessage`, `PushNotification`, `Monitor`, and the write tools, and `post_activity` runs with `async: true` after every other tool, recording only the heartbeat and activity.
 - 2026-09-28: `claude plugin validate --strict` runs on the marketplace and the plugin before each commit, and in CI as a backup. The dev `CLAUDE.md` lives at `.claude/CLAUDE.md`.

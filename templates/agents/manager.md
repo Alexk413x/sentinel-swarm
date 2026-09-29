@@ -47,10 +47,16 @@ hooks:
           command: "python3 .sentinel-swarm/hook.py hook pre_ledger || python .sentinel-swarm/hook.py hook pre_ledger"
           timeout: 60
   PostToolUse:
-    - hooks:
+    - matcher: "SendMessage|PushNotification|Monitor|Write|Edit|MultiEdit|NotebookEdit"
+      hooks:
         - type: command
           command: "python3 .sentinel-swarm/hook.py hook post_any || python .sentinel-swarm/hook.py hook post_any"
           timeout: 60
+    - hooks:
+        - type: command
+          command: "python3 .sentinel-swarm/hook.py hook post_activity || python .sentinel-swarm/hook.py hook post_activity"
+          timeout: 60
+          async: true
   PreCompact:
     - hooks:
         - type: command

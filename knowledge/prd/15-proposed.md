@@ -247,3 +247,12 @@ ends an exploration or reports it cannot load (see "Explorations" in
   since a delivery miss is not a Driver error.
 - `drive_request` releases every Driver of the run still live before it starts the next
   one, so a closed Driver never counts against the parallelism caps.
+
+Built on 2026-09-28, the hook fast path (see "The shim" in
+[07-hooks-and-enforcement.md](07-hooks-and-enforcement.md)), choices Alex has not
+reviewed:
+
+- Setup replaces a role file's hook entry that is exactly what an earlier template
+  shipped with the template's entry, and keeps an edited one. The first such entry is
+  the unmatched synchronous `post_any`, which setup splits into the matched `post_any`
+  and the async `post_activity`.

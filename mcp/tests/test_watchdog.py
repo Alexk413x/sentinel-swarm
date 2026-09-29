@@ -12,8 +12,8 @@ import pytest
 
 from swarm_ledger import serve, sessions, watch, watchdog
 from swarm_ledger.db import write_tx
+from swarm_ledger.hooks import HANDLERS as _HANDLERS
 from swarm_ledger.hooks import events
-from swarm_ledger.hooks.__main__ import _HANDLERS
 from swarm_ledger.identity import LedgerError
 from swarm_ledger.ledger import Ledger
 from swarm_ledger.settings import WatchdogSettings, load_settings

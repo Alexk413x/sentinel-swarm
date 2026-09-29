@@ -22,7 +22,7 @@ piece can be built and tested alone.
 | `graph.py` | `graph_upsert` under a process lock, and the graph-current check for a file |
 | `versions.py` | Saves and restores file versions in `.sentinel-swarm/versions/` |
 | `server.py` | FastMCP tool registration. Each tool is a thin wrapper over a `Ledger` method |
-| `serve.py` | `python -m swarm_ledger.serve`: one HTTP ledger server per repo, on the port saved in `.sentinel-swarm/server.port` or a free one, its URL in `.sentinel-swarm/server.json`; `ensure_server` starts it when needed. It starts the watchdog thread |
+| `serve.py` | `python -m swarm_ledger.serve`: one HTTP ledger server per repo, on the port saved in `.sentinel-swarm/server.port` or a free one, its URL in `.sentinel-swarm/server.json`; `ensure_server` starts it when needed. It starts the watchdog thread, and serves `POST /hook/<event>`, which runs a hook handler on its own connection for the shim's fast path |
 | `watchdog.py` | The watchdog, a thread in the ledger server: `scan` turns `claude agents --json` and the ledger into findings, `record` dedups them in `watchdog_findings` and files each new one as a `watchdog` directive, and `Watchdog.tick` also records a notification for a Driver report, wakes a stopped Oracle, and exits an idle server |
 | `wake.py` | **(proposed)** Wake-up delivery: `route_wakeup`, the one switch between a channel push, `SendMessage`, and `agent_resume`; `EventHub`, where the `/events` route registers each session's stream; and confirmation of a push from the target's transcript |
 | `bridge.py` | **(proposed)** `python -m swarm_ledger.bridge`: the `swarm-events` stdio channel server. It reads the ledger's `/events` stream for its session and writes each event as a `notifications/claude/channel` |
@@ -33,7 +33,7 @@ piece can be built and tested alone.
 | `agentfiles.py` | Reads a host repo's `.claude/agents/swarm-<role>.md` and builds a role session's flags |
 | `setup.py` | `python -m swarm_ledger.setup`: writes the role files from `templates/agents/`, the hook shim, and the settings a host repo needs |
 | `launch.py` | `python -m swarm_ledger.launch`: starts the ledger server and the Oracle's session |
-| `hooks/` | One entry point, `python -m swarm_ledger.hooks <event>`, that reads hook input from stdin and answers with JSON on stdout. Exit code is always 0 |
+| `hooks/` | `HANDLERS` and `run_event`, which the server's hook route and the entry point `python -m swarm_ledger.hooks <event>` share. The entry point reads hook input from stdin and answers with JSON on stdout. Exit code is always 0 |
 
 ## Identity contract
 
