@@ -26,7 +26,9 @@
   `python .sentinel-swarm/hook.py channel`. It has no tools. No other launch lists it.
   See "Wake-up delivery" in [05-sessions.md](05-sessions.md). **(proposed)**
 - Tool names: `mcp__swarm-ledger__<tool>` and `mcp__codebase-kg__<tool>`.
-- Each role keeps a fixed `tools` allowlist in its agent file.
+- Each role keeps a fixed `tools` allowlist in its agent file. It names each ledger tool
+  the role may call, from `identity.ROLE_TOOLS`, never the whole `mcp__swarm-ledger`
+  server. See "Tools" in [06-ledger-server.md](06-ledger-server.md).
 - `cartographer` is not a plugin dependency; the manifest declares no optional
   dependencies. The Driver uses it for end-to-end testing inside the run, after each
   wave; a host without it, or without a driver plugin, simply has no Driver, and the

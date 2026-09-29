@@ -80,9 +80,36 @@ partial success.
 | Review | `score_record`, `handoff_submit`, `review_compare`, `approve`, `return_work`, `attempt_record`, `accept_incomplete`, `version_restore`, `module_review`, `phase_review` |
 | Issues | `issue_open`, `issue_list`, `issue_close`, `idea_record`, `issue_escalate` |
 | Agreements | `cr_open`, `cr_accept`, `cr_complete`, `cr_verify`, `cr_list`, `departure_record`, `departure_decide`, `shortfall_record`, `deferral_propose`, `agreement_decide`, `override_grant` |
-| Reporting | `status_tree`, `report_build`, `analytics_query` (one read-only SELECT, Oracle only), `events`, `ledger_info` |
+| Reporting | `status_tree`, `report_build`, `analytics_query` (one read-only SELECT, Oracle only), `events(target_agent_id, limit)`, `ledger_info` |
 | Driver | `drive_request`, `drive_issue`, `drive_checkin`, `drive_done`, `drive_unavailable` **(proposed)** |
 
+- No tool schema lists `agent_id`. The `pre_ledger` hook stamps it through
+  `updatedInput`, and Claude Code 2.1.283 and later delivers a key that the schema does
+  not declare. The server's `StampedAgentId` middleware pops `agent_id` from each call's
+  arguments before validation and holds it in a context variable for that one request.
+  A tool reads it from there, never from its arguments.
+- `caller`, `targeted`, and `finding_ids` carry parameter descriptions in the schema.
+- `score_record`'s schema lists every rubric key, built from `rubric.DIMENSIONS`:
+  `ratings` pairs each dimension with its own criteria, `applicable` requires every
+  dimension key, and `targeted` lists the dimension keys. The description no longer
+  repeats the key list. The ledger still validates every rating and answers with its own
+  refusal message; the schema does not reject a key itself.
+- Each role may call only the ledger tools that `identity.ROLE_TOOLS` names for it. Each
+  role template's `tools` line lists exactly those tools as `mcp__swarm-ledger__<tool>`,
+  never the whole server, and `test_plugin_surface.py` checks the sets against the
+  ledger's own role checks. A role's set holds every tool that the ledger's role checks
+  grant the role, and every tool that its template calls.
+- The ledger also refuses a live agent's call to a tool outside its role's set, in
+  `server._call`, with "the <role> role may not call <tool>". An `agent_id` that no live
+  agent holds passes this check. **(proposed)**
+- `events` filters on `target_agent_id`, so the filter no longer shares the stamped
+  identity's name. **(proposed)**
+- A tool that writes nothing carries the MCP annotation `readOnlyHint: true`, so Claude
+  Code runs several of them from one message in parallel: `ledger_info`, `brief_get`,
+  `who_owns`, `issue_list`, `cr_list`, `run_status`, `status_tree`, `guidelines_get`,
+  `plan_unlocked`, `events`, and `analytics_query`. A tool that marks a row is not
+  read-only: `message_inbox` marks its messages read, and `directive_inbox` sets
+  `notified_at`. Mark a new tool read-only only when it writes no row, file, or session.
 - `tests_run(scope, target)` is role-bound: `file` to the Coder (its own path or test
   path only), `module` to the Lead, `phase` to the Manager, `full` to the Oracle. It
   runs the profile's test command with `{target}` replaced, or removed for no target,

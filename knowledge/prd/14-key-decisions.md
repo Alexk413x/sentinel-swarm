@@ -87,3 +87,8 @@
 - 2026-09-28: `--headless` refuses an untrusted repo, like `--bg`.
 - 2026-09-28: The `run` and `resume` skills are user-invoked only (`disable-model-invocation: true`).
 - 2026-09-28: `claude plugin validate --strict` runs on the marketplace and the plugin before each commit, and in CI as a backup. The dev `CLAUDE.md` lives at `.claude/CLAUDE.md`.
+- 2026-09-28: Each role's `tools` line names every ledger tool the role may call, as `mcp__swarm-ledger__<tool>`, never the whole server. `identity.ROLE_TOOLS` holds the sets: each holds `ledger_info`, every tool the ledger's role checks grant the role, and every tool its template calls. A test checks the templates and the role checks against it.
+- 2026-09-28: Setup replaces a host role file's one-line `mcp__swarm-ledger` grant with the template's ledger tool names and keeps the file's other tools.
+- 2026-09-28: `score_record`'s schema lists the rubric's dimension and criterion keys, and its description no longer repeats them. The ledger keeps its own rating validation and refusal message.
+- 2026-09-28: No ledger tool schema lists `agent_id`. The server's middleware takes the stamped value out of each call and hands it to the tool for that request. `caller`, `targeted`, and `finding_ids` carry parameter descriptions.
+- 2026-09-28: A ledger tool that writes nothing carries `readOnlyHint: true`, so Claude Code runs several of them from one message in parallel. A tool that marks a row read or notified is not read-only.

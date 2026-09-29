@@ -149,6 +149,46 @@ def test_a_hook_new_in_the_template_joins_an_existing_role_file(repo: Path):
     assert path.read_text(encoding="utf-8") == merged
 
 
+def test_setup_narrows_a_whole_server_ledger_grant_and_keeps_other_tools(repo: Path):
+    from swarm_ledger.identity import ROLE_TOOLS
+
+    path = setup.role_file(repo, "coder")
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "---\nname: swarm-coder\ntools: Read, mcp__swarm-ledger, mcp__swarm-ledger__brief_get, "
+        "mcp__custom__tool\n---\n\nOld body.\n",
+        encoding="utf-8",
+    )
+
+    report = setup.run_setup(repo)
+
+    tools = [t.strip() for t in _frontmatter(path)["tools"].split(",")]
+    assert "mcp__swarm-ledger" not in tools
+    assert tools[0] == "Read" and tools[-1] == "mcp__custom__tool"
+    assert tools.count("mcp__swarm-ledger__brief_get") == 1
+    ledger = {t.removeprefix("mcp__swarm-ledger__") for t in tools if t.startswith("mcp__swarm-")}
+    assert ledger == ROLE_TOOLS["coder"]
+    line = next(line for line in report.lines if "swarm-coder.md" in line)
+    assert "the role's swarm-ledger tools in place of mcp__swarm-ledger" in line
+
+    merged = path.read_text(encoding="utf-8")
+    setup.run_setup(repo)
+    assert path.read_text(encoding="utf-8") == merged
+
+
+def test_setup_keeps_an_explicit_ledger_tool_list(repo: Path):
+    path = setup.role_file(repo, "lead")
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "---\nname: swarm-lead\ntools: Read, mcp__swarm-ledger__brief_get\n---\n\nOld body.\n",
+        encoding="utf-8",
+    )
+
+    setup.run_setup(repo)
+
+    assert _frontmatter(path)["tools"] == "Read, mcp__swarm-ledger__brief_get"
+
+
 def test_role_file_without_frontmatter_is_left_alone(repo: Path):
     path = setup.role_file(repo, "coder")
     path.parent.mkdir(parents=True)

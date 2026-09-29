@@ -33,6 +33,8 @@ _KEY_LINE = re.compile(r"^([A-Za-z_][\w-]*)\s*:")
 _HOOK_EVENT_LINE = re.compile(r"^  ([A-Za-z]+):\s*$")
 _HOOK_ITEM_LINE = re.compile(r"^    - ")
 _LEDGER_HOOK = re.compile(r"hook\.py hook (\w+)")
+_TOOLS_LINE = re.compile(r"^tools\s*:\s*\S")
+WHOLE_LEDGER = "mcp__swarm-ledger"
 
 
 class SetupError(Exception):
@@ -139,9 +141,31 @@ def add_missing_hooks(user_frontmatter: str, template_frontmatter: str) -> tuple
     return "".join(lines), added
 
 
+def _tool_items(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def narrow_ledger_tools(user_frontmatter: str, template_frontmatter: str) -> tuple[str, bool]:
+    template_tools = key_blocks(template_frontmatter).get("tools", "").partition(":")[2]
+    ledger = [t for t in _tool_items(template_tools) if t.startswith(WHOLE_LEDGER + "__")]
+    lines = user_frontmatter.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if not _TOOLS_LINE.match(line):
+            continue
+        items = _tool_items(line.partition(":")[2])
+        if WHOLE_LEDGER not in items or not ledger:
+            return user_frontmatter, False
+        at = items.index(WHOLE_LEDGER)
+        items[at : at + 1] = [tool for tool in ledger if tool not in items]
+        lines[index] = "tools: " + ", ".join(items) + ("\n" if line.endswith("\n") else "")
+        return "".join(lines), True
+    return user_frontmatter, False
+
+
 def merge_role_file(existing: str, template: str) -> tuple[str, list[str], bool]:
     user_frontmatter, user_body = split_document(existing)
     template_frontmatter, template_body = split_document(template)
+    user_frontmatter, narrowed = narrow_ledger_tools(user_frontmatter, template_frontmatter)
     user_keys = key_blocks(user_frontmatter)
     template_keys = key_blocks(template_frontmatter)
     added = [key for key in template_keys if key not in user_keys]
@@ -149,6 +173,8 @@ def merge_role_file(existing: str, template: str) -> tuple[str, list[str], bool]
     if "hooks" in user_keys:
         frontmatter, hooks = add_missing_hooks(frontmatter, template_frontmatter)
         added += [f"hook {event}" for event in hooks]
+    if narrowed:
+        added.append(f"the role's swarm-ledger tools in place of {WHOLE_LEDGER}")
     return _join_document(frontmatter, template_body), added, user_body != template_body
 
 
