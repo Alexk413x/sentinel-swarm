@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shlex
@@ -57,7 +58,7 @@ def _quote_target(target: str) -> str:
     return shlex.quote(target)
 
 
-def _build_command(command_template: str, target: str | None) -> str:
+def build_command(command_template: str, target: str | None) -> str:
     if target is None:
         return " ".join(command_template.replace("{target}", "").split())
     return command_template.replace("{target}", _quote_target(target))
@@ -150,6 +151,36 @@ def summarize_output(output: str, ok: bool) -> str:
     return "\n...\n".join(parts)[-SUMMARY_CHARS:]
 
 
+def _git(repo_root: Path, *args: str, stdin: str | None = None) -> str | None:
+    try:
+        done = subprocess.run(
+            ["git", *args],
+            cwd=repo_root,
+            input=stdin,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
+def tree_fingerprint(repo_root: Path, claimed: list[str]) -> str | None:
+    head = _git(repo_root, "rev-parse", "HEAD")
+    tracked = _git(repo_root, "status", "--porcelain", "-z", "--untracked-files=no")
+    if head is None or tracked is None:
+        return None
+    digest = hashlib.sha256()
+    for part in (head, tracked):
+        digest.update(part.encode("utf-8", errors="replace"))
+    for path in sorted(set(claimed)):
+        target = repo_root / path
+        content = target.read_bytes() if target.is_file() else b"<missing>"
+        digest.update(path.encode("utf-8") + b"\0" + hashlib.sha256(content).digest())
+    return digest.hexdigest()
+
+
 def _host_env() -> dict[str, str]:
     # The ledger runs in its own venv; without this, `python` in the host's test command
     # resolves to the ledger's interpreter, which has no pytest.
@@ -166,7 +197,7 @@ def _host_env() -> dict[str, str]:
 def run_tests(
     command_template: str, target: str | None, cwd: Path, timeout_s: int = 600
 ) -> TestResult:
-    command = _build_command(command_template, target)
+    command = build_command(command_template, target)
     start = time.monotonic()
     try:
         completed = subprocess.run(

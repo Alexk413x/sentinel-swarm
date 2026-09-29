@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
@@ -1075,3 +1076,44 @@ def test_wake_lines_name_an_idle_verifier_of_a_completed_cr(ledger: Ledger) -> N
         f"change request {cr['cr_id']}" in line and "manager-1" in line and "verify" in line
         for line in lines
     )
+
+
+def _git_repo(root: Path) -> None:
+    for args in (
+        ["init", "-q", "-b", "main"],
+        ["-c", "user.email=t@example.com", "-c", "user.name=t", "add", "-A"],
+        ["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "init"],
+    ):
+        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+
+
+def test_tests_run_reuses_a_passing_run_on_an_unchanged_tree(ledger: Ledger, host: Path) -> None:
+    _git_repo(host)
+    ctx = _bootstrap(ledger)
+    coder = _spawn_coder(ledger, ctx, "coder-good", "pkg/good.py", "tests/test_good.py")
+
+    first = ledger.tests_run("coder-good", coder["agent_id"], "file", "tests/test_good.py")
+    second = ledger.tests_run("coder-good", coder["agent_id"], "file", "tests/test_good.py")
+
+    assert first["reused"] is False and first["ok"] is True
+    assert second["reused"] is True
+    assert second["reused_from"] == first["test_run_id"]
+    assert second["test_run_id"] != first["test_run_id"]
+    assert (second["passed"], second["duration_ms"]) == (first["passed"], 0)
+
+    forced = ledger.tests_run(
+        "coder-good", coder["agent_id"], "file", "tests/test_good.py", force=True
+    )
+    assert forced["reused"] is False
+
+
+def test_tests_run_runs_again_after_a_file_changes(ledger: Ledger, host: Path) -> None:
+    _git_repo(host)
+    ctx = _bootstrap(ledger)
+    coder = _spawn_coder(ledger, ctx, "coder-good", "pkg/good.py", "tests/test_good.py")
+    ledger.tests_run("coder-good", coder["agent_id"], "file", "tests/test_good.py")
+
+    (host / "pkg" / "good.py").write_text("def add(a, b):\n    return b + a\n", encoding="utf-8")
+    changed = ledger.tests_run("coder-good", coder["agent_id"], "file", "tests/test_good.py")
+
+    assert changed["reused"] is False

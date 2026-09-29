@@ -52,9 +52,8 @@
   `CODEBASE_KG_SHARED_TIMEOUT` seconds (default 10), the relay starts a private server
   for that session. Verified in codebase-kg 0.8.0's `shim.py`, `daemon.py`, and
   `server.py` on 2026-09-25, and in 0.8.2's `shim.py` on 2026-09-27.
-- The accessibility-tools plugins share themselves the same way from a11y 0.8.2,
-  android-driver 0.12.1, ios-driver 0.7.3, and web-driver 0.4.3. Each names a relay,
-  `bin/<server>-shim`, in its `.mcp.json`. The relay connects to one server per machine
+- The accessibility-tools plugins share themselves the same way from their AP-21
+  release. Each names a relay in its `.mcp.json`. The relay connects to one server per machine
   and server build, and falls back to a private stdio server when it cannot reach the
   shared one.
 - An older plugin version that names a plain `uv run` or `uvx` command runs one server

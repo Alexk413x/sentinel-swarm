@@ -682,14 +682,27 @@ def tests_run(
     caller: CallerName,
     scope: Literal["file", "module", "phase", "full"],
     target: str | None = None,
+    force: Annotated[
+        bool,
+        Field(description="Run the tests even when an earlier passing run can be reused."),
+    ] = False,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Runs the profile's test command for a scope; the required role scales Coder to Oracle.
 
     The result's output is a summary: the tail of a pass, or the first traceback and the
-    short test summary of a failure. test_run_get returns the full output.
+    short test summary of a failure. test_run_get returns the full output. When a passing
+    run in this run used the same command on an unchanged working tree, the ledger records
+    a copy of it instead of running again and returns reused: true with reused_from.
     """
-    return _call(_ledger().tests_run, caller=caller, agent_id=agent_id, scope=scope, target=target)
+    return _call(
+        _ledger().tests_run,
+        caller=caller,
+        agent_id=agent_id,
+        scope=scope,
+        target=target,
+        force=force,
+    )
 
 
 @mcp.tool(annotations=_READ_ONLY)

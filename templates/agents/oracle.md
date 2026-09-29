@@ -264,7 +264,9 @@ messages, or an agent none of whose children is working.
 ## Join points and the end of the run
 
 - `tests_run(scope="full")` at each join point, once every Manager that feeds it has
-  reported, and once more before you finish.
+  reported, and once more before you finish. When nothing changed since a passing full
+  run, the ledger reuses it and returns `reused: true` at no cost; pass `force=true`
+  only when you suspect the environment changed.
 - `report_build()` writes the final report to the records folder.
 - `run_finish(outcome=...)` closes the run, releases every session still live, and
   stops the ledger server. It refuses while any change request in the run is open,

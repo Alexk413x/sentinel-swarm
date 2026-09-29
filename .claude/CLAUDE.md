@@ -13,7 +13,7 @@ report, setup, and testing. The code graph maps every document, so codebase-kg's
 - `hooks/` — `hooks.json`, which carries no hooks, and a README with the per-role hook
   table. Each role's hooks live in its project agent file.
 - `assets/` — `icon.png`, the plugin icon that OS notifications show.
-- `templates/` — `agents/<role>.md`, the four role templates that setup writes to a host
+- `templates/` — `agents/<role>.md`, the five role templates that setup writes to a host
   repo's `.claude/agents/swarm-<role>.md`; `hook_shim.py`, which setup writes to
   `.sentinel-swarm/hook.py`; and the `.local.md` settings example. The plugin has no
   `agents/` folder, so no plugin agent can run as a subagent.
@@ -44,8 +44,9 @@ report, setup, and testing. The code graph maps every document, so codebase-kg's
 - Python 3.10+, `fastmcp`, `uv`. The shipped server runs with `uv run --frozen
   --no-dev`.
 - `hatchling` build backend, `pytest`, `pyright`, `ruff`.
-- Hook commands are written as `python3 ... || python ...`, so they run on hosts
-  where only one of the two names exists.
+- Hook commands are written as `python3 ... || python ...`, as in cartographer and
+  codebase-kg. a11y writes `python ... || python3 ...`. Either order runs on a host where
+  only one of the two names exists.
 - LF line endings. `.gitattributes` normalizes this on checkout.
 - `mcp/uv.lock` is committed.
 

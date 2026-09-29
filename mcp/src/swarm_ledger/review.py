@@ -14,7 +14,7 @@ from .drive import findings_named, open_findings
 from .identity import ROLES, Caller, LedgerError, require_role, resolve
 from .rubric import Rating
 from .settings import Settings
-from .testing import run_tests, summarize_output
+from .testing import TestResult, build_command, run_tests, summarize_output, tree_fingerprint
 
 _NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 
@@ -282,6 +282,7 @@ class ReviewMixin:
         agent_id: str,
         scope: Literal["file", "module", "phase", "full"],
         target: str | None = None,
+        force: bool = False,
     ) -> dict:
         if scope not in _SCOPE_ROLE:
             raise LedgerError(f"unknown test scope {scope!r}")
@@ -300,12 +301,40 @@ class ReviewMixin:
         if not self.settings.test_command:
             raise LedgerError("no test command in the profile")
 
-        result = run_tests(self.settings.test_command, target, self.repo_root)
+        claimed = [
+            path
+            for row in self.conn.execute(
+                "SELECT f.path, f.test_path FROM files f "
+                "JOIN modules m ON m.module_id = f.module_id "
+                "JOIN phases p ON p.phase_id = m.phase_id WHERE p.run_id = ?",
+                (c.run_id,),
+            )
+            for path in (row["path"], row["test_path"])
+            if path
+        ]
+        fingerprint = tree_fingerprint(self.repo_root, claimed)
+        earlier = None if force else self._reusable_run(c.run_id, target, fingerprint)
+        if earlier is not None:
+            result = TestResult(
+                command=earlier["command"],
+                exit_code=earlier["exit_code"],
+                passed=earlier["passed"],
+                failed=earlier["failed"],
+                skipped=earlier["skipped"],
+                errors=0,
+                output=earlier["output"] or "",
+                duration_ms=0,
+                ok=True,
+                reason=None,
+            )
+        else:
+            result = run_tests(self.settings.test_command, target, self.repo_root)
 
         with write_tx(self.conn) as conn:
             cur = conn.execute(
                 "INSERT INTO test_runs (run_id, agent_id, scope, target, command, exit_code, "
-                "passed, failed, skipped, output) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "passed, failed, skipped, output, fingerprint, reused_from) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     c.run_id,
                     c.agent_id,
@@ -317,11 +346,19 @@ class ReviewMixin:
                     result.failed,
                     result.skipped,
                     result.output,
+                    fingerprint,
+                    earlier["test_run_id"] if earlier is not None else None,
                 ),
             )
             test_run_id = cur.lastrowid
 
+        reuse = (
+            {"reused": True, "reused_from": earlier["test_run_id"]}
+            if earlier is not None
+            else {"reused": False}
+        )
         return {
+            **reuse,
             "test_run_id": test_run_id,
             "command": result.command,
             "exit_code": result.exit_code,
@@ -335,6 +372,26 @@ class ReviewMixin:
             "ok": result.ok,
             "reason": result.reason,
         }
+
+    def _reusable_run(
+        self, run_id: int | None, target: str | None, fingerprint: str | None
+    ) -> sqlite3.Row | None:
+        if fingerprint is None or not self.settings.test_command:
+            return None
+        command = build_command(self.settings.test_command, target)
+        for row in self.conn.execute(
+            "SELECT * FROM test_runs WHERE run_id = ? AND command = ? AND fingerprint = ? "
+            "AND reused_from IS NULL ORDER BY test_run_id DESC",
+            (run_id, command, fingerprint),
+        ):
+            if (
+                row["exit_code"] == 0
+                and (row["failed"] or 0) == 0
+                and (row["skipped"] or 0) == 0
+                and (row["passed"] or 0) >= 1
+            ):
+                return row
+        return None
 
     def test_run_get(self, caller: str, agent_id: str, test_run_id: int) -> dict:
         c = resolve(self.conn, caller, agent_id)

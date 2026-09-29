@@ -138,6 +138,14 @@ partial success.
   Output in another format returns its last 4,000 characters. `output_chars` gives the
   stored length, and `test_run_get(test_run_id)` returns the stored run with its full
   output to any agent of the run.
+- `tests_run` reuses a passing run instead of running again when an earlier run of the
+  same run used the same command on the same working tree: the same `HEAD`, the same
+  tracked changes (`git status --untracked-files=no`), and the same contents of every
+  file and test file claimed in the run. It records a new row that copies the earlier
+  result, with `reused_from` naming it and `duration_ms` 0, and returns `reused: true`.
+  Every gate then reads the new row as it reads any run. `force=true` always runs. Any
+  edit, shell change, or hand-up that changed a claimed or tracked file changes the
+  fingerprint, so a stale pass is never reused. A host outside git never reuses.
 - `run_status` and `status_tree` return a run summary (`run_id`, `state`, `outcome`,
   `branch`, `plugin_version`, `started_at`, and the decoded `repo_check`), not the run
   row. The PRD text comes back only with `include_prd=true`, and the settings snapshot

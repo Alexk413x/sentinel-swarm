@@ -203,6 +203,9 @@ CREATE TABLE IF NOT EXISTS test_runs (
     failed INTEGER,
     skipped INTEGER,
     output TEXT,
+    -- The working tree's state when the run started, and the earlier run a reuse copies.
+    fingerprint TEXT,
+    reused_from INTEGER REFERENCES test_runs (test_run_id) ON DELETE RESTRICT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 

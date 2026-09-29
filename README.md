@@ -71,8 +71,9 @@ knowledge/        code_graph.db, and prd/, the source of truth for how the swarm
 plans/            plans for work not built yet
 ```
 
-The plugin ships no `agents/` folder. Setup writes the four role files into the host
-repo, where their `hooks` frontmatter applies.
+The plugin ships no `agents/` folder. Setup writes the four core role files into the
+host repo, plus the Driver's when the host has cartographer and a driver plugin, and
+their `hooks` frontmatter applies there.
 
 ## Dev commands (mcp/)
 
