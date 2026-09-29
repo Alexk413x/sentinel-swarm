@@ -24,3 +24,6 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+
+# claude plugin eval writes each run here.
+evals/results/

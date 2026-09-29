@@ -140,3 +140,14 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   processes in all. (2026-09-25)
 - The Android emulator (`qemu`) used about 3.8 GB of memory. (2026-09-25)
 - Claude Code 2.1.284: `claude agents --json` lists a background session with `id`, `kind: "background"`, `sessionId`, `name`, `cwd`, `startedAt`, and `state`, and no `pid` or `status`. The plain listing holds only active sessions; `--all` adds completed ones. `claude --resume <id> --bg` on a session that is still running starts a copy under a new session id. Verified live 2026-09-28.
+- `claude plugin uninstall <plugin> --scope project --keep-data`, run from the project
+  folder, removes the project's install record and its `enabledPlugins` entry, and keeps
+  `<config>/plugins/data/<plugin>-<marketplace>/`. It works after the `directory`
+  marketplace's folder is deleted. The cached version folder stays. (2026-09-28)
+- `claude plugin marketplace remove <name>` also uninstalls every plugin from that
+  marketplace, in every project, and deletes their data folders. With no install left,
+  it only removes the record from `known_marketplaces.json` and the project's
+  `extraKnownMarketplaces`. (2026-09-28)
+- `claude plugin eval` refuses a plugin folder that holds a hard-linked file, such as a
+  uv venv linked from uv's cache. In its runs, a plugin whose `dependencies` are not
+  installed loads no skill. (2026-09-28, Claude Code 2.1.284)

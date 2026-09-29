@@ -30,6 +30,11 @@ report, setup, and testing. The code graph maps every document, so codebase-kg's
   `scripts/prds/<name>.md` as the prompt: `modules` (three waves: two independent phases,
   a subclass that depends on one, then a command that uses all three) or `textstats`
   (two dependent phases, about 10 files; about $12).
+- `scripts/bench.sh` — the benchmark: K headless smoke trials of one PRD, graded by
+  acceptance tests in `scripts/bench/` (`acceptance/<name>/` for the regression and dev
+  PRDs, `heldout/<name>/` for the held-out set, never used while tuning), with results
+  in `runs/bench/`. `scripts/evals.sh` runs the `evals/` skill-trigger suite with
+  `claude plugin eval`.
 - `.githooks/` — the codebase-kg staleness hooks. Run `sh .githooks/install.sh` once per
   clone.
 - `plans/` — plans for work not built yet, such as `a11y-relay-smoke-test.md`.

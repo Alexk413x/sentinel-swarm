@@ -65,7 +65,8 @@ skills/           swarm-protocol, run, status, resume, setup
 hooks/            hooks.json, which carries no hooks, and the per-role hook table
 templates/        agents/<role>.md role templates, hook_shim.py, and the settings example
 mcp/              the swarm-ledger Python server (separate project, see below)
-scripts/          smoke.sh, the end-to-end smoke test
+scripts/          smoke.sh, the end-to-end smoke test; bench.sh, the benchmark; evals.sh
+evals/            the claude plugin eval suite for skill triggering
 knowledge/        code_graph.db, and prd/, the source of truth for how the swarm works
 plans/            plans for work not built yet
 ```

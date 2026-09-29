@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import sqlite3
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .db import ledger_path
 from .identity import LedgerError
+from .metrics import run_metrics
 from .serve import is_answering, read_server_info
 from .sessions import claude_binary, is_running, list_sessions
 
@@ -170,14 +173,20 @@ def _sessions_and_server_checks(
 
 
 def run_checklist(repo_root: Path) -> list[Check]:
+    return evaluate(repo_root, with_metrics=False)[0]
+
+
+def evaluate(
+    repo_root: Path, with_metrics: bool = True
+) -> tuple[list[Check], dict[str, Any] | None]:
     db_path = ledger_path(repo_root)
     if not db_path.is_file():
-        return [Check("a run ledger exists", False, str(db_path))]
+        return [Check("a run ledger exists", False, str(db_path))], None
     conn = _connect(db_path)
     try:
         run = _latest_run(conn)
         if run is None:
-            return [Check("a run ledger exists", False, "the ledger has no run")]
+            return [Check("a run ledger exists", False, "the ledger has no run")], None
         run_id = run["run_id"]
         checks = [
             _outcome_check(run),
@@ -190,21 +199,48 @@ def run_checklist(repo_root: Path) -> list[Check]:
             _report_check(db_path),
             *_sessions_and_server_checks(conn, run_id, repo_root),
         ]
+        metrics = run_metrics(conn, run, repo_root) if with_metrics else None
     finally:
         conn.close()
-    return checks
+    return checks, metrics
+
+
+def _status(check: Check) -> str:
+    return "fail" if not check.passed else "warn" if check.warning else "pass"
+
+
+def document(repo_root: Path) -> dict[str, Any]:
+    checks, metrics = evaluate(repo_root)
+    return {
+        "schema": 1,
+        "repo": str(repo_root),
+        "passed": all(check.passed for check in checks),
+        "checks": [
+            {"name": check.name, "status": _status(check), "detail": check.detail}
+            for check in checks
+        ],
+        "metrics": metrics,
+    }
 
 
 def _line(check: Check) -> str:
-    label = "FAIL" if not check.passed else "WARN" if check.warning else "PASS"
+    label = _status(check).upper()
     return f"{label}  {check.name}: {check.detail}" if check.detail else f"{label}  {check.name}"
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m swarm_ledger.checklist")
     parser.add_argument("--repo", type=Path, default=None, help="host repo root; default: cwd")
+    parser.add_argument(
+        "--json", action="store_true", help="print the checks and the run's metrics as JSON"
+    )
     args = parser.parse_args(argv)
-    checks = run_checklist((args.repo or Path.cwd()).resolve())
+    repo_root = (args.repo or Path.cwd()).resolve()
+    if args.json:
+        doc = document(repo_root)
+        print(json.dumps(doc, indent=2))
+        return 0 if doc["passed"] else 1
+    checks = run_checklist(repo_root)
     for check in checks:
         print(_line(check))
     return 1 if any(not check.passed for check in checks) else 0
