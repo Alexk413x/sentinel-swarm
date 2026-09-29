@@ -73,7 +73,7 @@ done
 plugin_dir="${TMPDIR:-/tmp}/sentinel-swarm-plugin-$(date +%s)"
 mkdir -p "$plugin_dir"
 (cd "$root" && tar cf - --exclude=.venv --exclude=__pycache__ --exclude=.pytest_cache \
-  --exclude=.ruff_cache .claude-plugin .mcp.json assets skills hooks templates mcp) |
+  --exclude=.ruff_cache .claude-plugin assets skills hooks templates mcp) |
   (cd "$plugin_dir" && tar xf -)
 
 # Installs under its own dev version instead of the repo's pinned version, so this run's
@@ -103,14 +103,6 @@ EOF
 
 sed 's|^test_command:.*|test_command: python -m pytest -q -p no:cacheprovider {target}|' \
   "$root/templates/sentinel-swarm.local.md.example" > .claude/sentinel-swarm.local.md
-
-# This repo's own .mcp.json sits above host/, and its trust prompt stops a background session
-# that nobody can answer. Setup merges its own keys into this file.
-cat > .claude/settings.local.json <<'EOF'
-{
-  "disabledMcpjsonServers": ["swarm-ledger"]
-}
-EOF
 
 cat > "$run_dir/graph.json" <<EOF
 {

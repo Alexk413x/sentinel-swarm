@@ -32,8 +32,12 @@
   `run_finish`, and after `idle_exit_minutes` with no active run, or a paused run, and
   no session of the run running. A ledger tool call restarts the idle clock. A failed
   `claude agents --json` counts as no session running.
-- The plugin's `.mcp.json` also declares a stdio `swarm-ledger` entry. Swarm sessions
-  do not use it, because they start with `--strict-mcp-config`.
+- The plugin declares no MCP server of its own, so an ordinary session in a host repo
+  starts no ledger process and sees none of the ledger's tool names. An ordinary session
+  steers a live run with `python -m swarm_ledger.directive [--repo <root>] [--source
+  skill|outside_session|user_chat] [--sender <name>] [--reply-to <id>] "<text>"`, which
+  records the directive in the repo's ledger the way `directive_submit` does and prints
+  it as JSON. It exits 1 with the ledger's reason when no run is active.
 
 ## Records folder
 
@@ -76,7 +80,7 @@ partial success.
 | Briefs and agents | `brief_create`, `brief_get`, `brief_ack`, `agent_spawn`, `agent_resume`, `agent_release` |
 | Ownership | `claim_file`, `release_file`, `who_owns` |
 | Messages and directives | `message_post`, `message_inbox`, `directive_submit`, `directive_inbox`, `directive_resolve` |
-| Tests and graph | `tests_run`, `graph_upsert` |
+| Tests and graph | `tests_run`, `test_run_get`, `graph_upsert` |
 | Review | `score_record`, `handoff_submit`, `review_compare`, `approve`, `return_work`, `attempt_record`, `accept_incomplete`, `version_restore`, `module_review`, `phase_review` |
 | Issues | `issue_open`, `issue_list`, `issue_close`, `idea_record`, `issue_escalate` |
 | Agreements | `cr_open`, `cr_accept`, `cr_complete`, `cr_verify`, `cr_list`, `departure_record`, `departure_decide`, `shortfall_record`, `deferral_propose`, `agreement_decide`, `override_grant` |
@@ -88,6 +92,18 @@ partial success.
   runs the profile's test command with `{target}` replaced, or removed for no target,
   with the ledger's own venv dropped from `PATH` and `VIRTUAL_ENV`, and a 600-second
   timeout. It parses pytest and Go output. An agent never reports a test result itself.
+- `tests_run` stores the last 20,000 characters of output in the ledger, and returns a
+  summary of at most 4,000: the last 500 characters of a pass, or the first traceback
+  from the `FAILURES` section and the `short test summary info` section of a failure.
+  Output in another format returns its last 4,000 characters. `output_chars` gives the
+  stored length, and `test_run_get(test_run_id)` returns the stored run with its full
+  output to any agent of the run.
+- `run_status` and `status_tree` return a run summary (`run_id`, `state`, `outcome`,
+  `branch`, `plugin_version`, `started_at`, and the decoded `repo_check`), not the run
+  row. The PRD text comes back only with `include_prd=true`, and the settings snapshot
+  never does. Their agent lists carry names, not session ids (`parent` is the parent's
+  name), and leave out empty fields; a file's `owner` is the owner's name.
+  `agent_spawn` leaves empty fields and the settings snapshot out of its result.
 - `version_restore(version_id)` restores a saved version onto the Coder's own file.
 - The server itself shows a desktop notification for each notification it records:
   a Driver event or an issue that ends round 3 below the floor. It runs from

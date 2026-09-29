@@ -267,6 +267,18 @@ def test_cr_complete_succeeds_with_the_coders_own_test_run(ledger: Ledger) -> No
     assert completed["evidence_test_run_id"] == result["test_run_id"]
 
 
+def test_test_run_get_returns_the_full_output_to_a_member_of_the_run(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    coder = _spawn_coder(ledger, ctx, "coder-good", "pkg/good.py", "tests/test_good.py")
+    result = ledger.tests_run("coder-good", coder["agent_id"], "file", "tests/test_good.py")
+
+    row = ledger.test_run_get("lead-1", ctx["lead"]["agent_id"], result["test_run_id"])
+    assert row["test_run_id"] == result["test_run_id"]
+    assert len(row["output"]) == result["output_chars"]
+    with pytest.raises(LedgerError, match="no test run"):
+        ledger.test_run_get("lead-1", ctx["lead"]["agent_id"], result["test_run_id"] + 99)
+
+
 def test_cr_complete_refuses_a_non_recipient(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     coder = _spawn_coder(ledger, ctx, "coder-good", "pkg/good.py", "tests/test_good.py")

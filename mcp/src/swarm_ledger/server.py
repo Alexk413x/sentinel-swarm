@@ -61,6 +61,7 @@ _TOOL_NAMES: tuple[str, ...] = (
     "issue_escalate",
     "events",
     "tests_run",
+    "test_run_get",
     "graph_upsert",
     "score_record",
     "handoff_submit",
@@ -142,9 +143,14 @@ def run_start(
 
 
 @mcp.tool
-def run_status(caller: str, agent_id: str | None = None) -> dict[str, Any]:
-    """Returns the run's phases, modules, files, agents, issues, and directives; any agent may."""
-    return _call(_ledger().run_status, caller=caller, agent_id=agent_id)
+def run_status(
+    caller: str, include_prd: bool = False, agent_id: str | None = None
+) -> dict[str, Any]:
+    """Returns the run's phases, modules, files, agents, issues, and directives; any agent may.
+
+    The run's PRD text is left out unless include_prd is true.
+    """
+    return _call(_ledger().run_status, caller=caller, agent_id=agent_id, include_prd=include_prd)
 
 
 @mcp.tool
@@ -570,8 +576,18 @@ def tests_run(
     target: str | None = None,
     agent_id: str | None = None,
 ) -> dict[str, Any]:
-    """Runs the profile's test command for a scope; the required role scales Coder to Oracle."""
+    """Runs the profile's test command for a scope; the required role scales Coder to Oracle.
+
+    The result's output is a summary: the tail of a pass, or the first traceback and the
+    short test summary of a failure. test_run_get returns the full output.
+    """
     return _call(_ledger().tests_run, caller=caller, agent_id=agent_id, scope=scope, target=target)
+
+
+@mcp.tool
+def test_run_get(caller: str, test_run_id: int, agent_id: str | None = None) -> dict[str, Any]:
+    """Returns one recorded test run of this run, with its full output."""
+    return _call(_ledger().test_run_get, caller=caller, agent_id=agent_id, test_run_id=test_run_id)
 
 
 # -- Code graph -----------------------------------------------------------------------------
@@ -907,11 +923,14 @@ def version_restore(caller: str, version_id: int, agent_id: str | None = None) -
 
 
 @mcp.tool
-def status_tree(caller: str, agent_id: str | None = None) -> dict[str, Any]:
+def status_tree(
+    caller: str, include_prd: bool = False, agent_id: str | None = None
+) -> dict[str, Any]:
     """Returns the run's phase, module, and file status tree with live agents; any agent may.
     `open_findings` lists the Driver findings not yet fixed or stopped, and `fixes` lists each
-    brief that names findings, with their ids and titles."""
-    return _call(_ledger().status_tree, caller=caller, agent_id=agent_id)
+    brief that names findings, with their ids and titles. The run's PRD text is left out
+    unless include_prd is true."""
+    return _call(_ledger().status_tree, caller=caller, agent_id=agent_id, include_prd=include_prd)
 
 
 @mcp.tool
@@ -1020,11 +1039,3 @@ def ledger_info() -> dict[str, Any]:
         "tools": len(_TOOL_NAMES),
         "repo_root": str(ledger.repo_root),
     }
-
-
-def main() -> None:
-    mcp.run()
-
-
-if __name__ == "__main__":
-    main()

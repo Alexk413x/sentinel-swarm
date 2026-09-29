@@ -41,9 +41,8 @@ run `/reload-plugins`.
 
 - It empties `runs/hello/` (git-ignored), builds a host repo in `runs/hello/host/` with
   a README, a `pyproject.toml`, a settings file with the pytest test command, a
-  `.claude/settings.local.json` that disables this repo's own `swarm-ledger` server
-  from `.mcp.json`, a one-node code graph, and `git init -b main`. It copies the plugin
-  to a fresh temp folder, rewrites that copy's version to a dev version such as
+  one-node code graph, and `git init -b main`. It copies the plugin to a fresh temp
+  folder, rewrites that copy's version to a dev version such as
   `0.0.1-dev.<epoch seconds>` **(proposed)**, installs it at project scope under that
   version, runs setup, commits, and starts the Oracle through the installed copy's launcher. Each run
   also removes any older `*-dev.*` copy from the plugin cache, skipping one a live

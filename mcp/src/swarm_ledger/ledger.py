@@ -15,7 +15,7 @@ from .drive import DriveMixin, findings_named
 from .identity import ROLES, Caller, LedgerError, child_roles_of, require_role, resolve
 from .oversight import OversightMixin
 from .repo import RepoMixin
-from .review import ReviewMixin
+from .review import ReviewMixin, agent_names, live_agents, run_summary
 from .settings import load_settings
 
 _NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
@@ -369,7 +369,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
             )
         }
 
-    def run_status(self, caller: str, agent_id: str) -> dict:
+    def run_status(self, caller: str, agent_id: str, include_prd: bool = False) -> dict:
         conn = self.conn
         resolve(conn, caller, agent_id)
         run = self._active_run(conn)
@@ -386,6 +386,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                 (run_id,),
             )
         )
+        names = agent_names(conn, run_id)
         files = _rows(
             conn.execute(
                 "SELECT files.* FROM files "
@@ -395,12 +396,8 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                 (run_id,),
             )
         )
-        agents = _rows(
-            conn.execute(
-                "SELECT * FROM agents WHERE run_id = ? AND ended_at IS NULL ORDER BY started_at",
-                (run_id,),
-            )
-        )
+        for file_row in files:
+            file_row["owner"] = names.get(file_row.pop("owner_agent_id"))
         issues = _rows(
             conn.execute(
                 "SELECT * FROM issues WHERE run_id = ? AND state = 'open' ORDER BY issue_id",
@@ -416,11 +413,11 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
         )
 
         return {
-            "run": dict(run),
+            "run": run_summary(run, include_prd),
             "phases": phases,
             "modules": modules,
             "files": files,
-            "agents": agents,
+            "agents": live_agents(conn, run_id),
             "issues": issues,
             "directives": directives,
         }
@@ -1102,7 +1099,12 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
             )
 
         self._mark_channel(session_id)
-        return self._agent_dict(session_id)
+        spawned = self._agent_dict(session_id)
+        return {
+            key: value
+            for key, value in spawned.items()
+            if value is not None and key != "settings_json"
+        }
 
     def session_name(self, run_id: int, child_name: str) -> str:
         started_at = self.conn.execute(

@@ -65,8 +65,8 @@ The Oracle calls `run_start` in the new session, as it does for a new run.
 
 ## What the Oracle does next
 
-1. `run_status()`, `status_tree()`, and `issue_list()` for the run, its agents, and
-   what is still open.
+1. `run_status(include_prd=true)`, `status_tree()`, and `issue_list()` for the PRD,
+   the run, its agents, and what is still open.
 2. `message_inbox()` and `directive_inbox()` for anything that arrived while the
    session was gone.
 3. For each agent the ledger counts as live whose session is not running:

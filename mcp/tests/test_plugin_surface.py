@@ -83,12 +83,10 @@ def test_marketplace_manifest_parses(repo_root: Path):
     assert "codebase-kg" in data["allowCrossMarketplaceDependenciesOn"]
 
 
-def test_mcp_json_parses(repo_root: Path):
-    data = json.loads((repo_root / ".mcp.json").read_text(encoding="utf-8"))
-    server = data["mcpServers"]["swarm-ledger"]
-    assert server["command"] == "uv"
-    for expected in ("${CLAUDE_PLUGIN_ROOT}/mcp", "--frozen", "--no-dev", "swarm-ledger"):
-        assert expected in server["args"]
+def test_plugin_declares_no_mcp_server(repo_root: Path):
+    assert not (repo_root / ".mcp.json").exists()
+    manifest = json.loads((repo_root / ".claude-plugin" / "plugin.json").read_text("utf-8"))
+    assert "mcpServers" not in manifest
 
 
 def test_plugin_has_no_agents_folder(repo_root: Path):

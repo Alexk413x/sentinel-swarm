@@ -1,6 +1,6 @@
 ---
 name: swarm-protocol
-description: Reference for sentinel-swarm. Loads when the conversation mentions sentinel-swarm, the swarm, or its roles (Oracle, Manager, Lead, Coder), and when the user asks what the swarm is, how it works, what the rubric dimensions are, or what order a role calls the ledger in.
+description: Reference for sentinel-swarm. Loads when the conversation mentions sentinel-swarm, the swarm, or its roles (Oracle, Manager, Lead, Coder), and when the user asks what the swarm is, how it works, what the rubric dimensions are, what order a role calls the ledger in, or how to send a live run an instruction.
 ---
 
 # swarm-protocol
@@ -269,6 +269,19 @@ on a regression.
 Every role queries the codebase-kg code graph first. Grep and Glob are the fallback
 for when the graph does not have the answer or returns the wrong thing. Only the
 Coder writes to the graph, and only through the ledger's `graph_upsert`.
+
+## Steering a live run from an ordinary session
+
+An ordinary session has no ledger tools. To pass the user's instruction to a live
+run's Oracle, run this from the host repo root:
+
+```bash
+uv run --project "${CLAUDE_PLUGIN_ROOT}/mcp" --frozen --no-dev \
+  python -m swarm_ledger.directive --source outside_session --sender "<name>" "<text>"
+```
+
+The Oracle applies it at its next safe point. `--reply-to <directive id>` answers a
+question the Oracle asked.
 
 ## Source of truth
 

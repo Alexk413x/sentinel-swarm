@@ -59,10 +59,19 @@ open any row, watch it, and type into it. `claude agents` lists the same session
 
 ## Steer a live run
 
-An ordinary session can send the Oracle a directive through the ledger's
-`directive_submit`, with `source="skill"` or `source="outside_session"` and the
-sender's name. A directive steers the plan, a future phase, or the guidelines. It
-does not interrupt the agents; the Oracle applies it at its next safe point.
+An ordinary session sends the Oracle a directive with the directive command, from the
+host repo root:
+
+```bash
+uv run --project "${CLAUDE_PLUGIN_ROOT}/mcp" --frozen --no-dev \
+  python -m swarm_ledger.directive --source skill --sender "<your name>" "<the directive>"
+```
+
+Use `--source outside_session` when the text comes from the user outside this skill,
+and `--reply-to <directive id>` to answer a question the Oracle asked. It prints the
+recorded directive as JSON. A directive steers the plan, a future phase, or the
+guidelines. It does not interrupt the agents; the Oracle applies it at its next safe
+point.
 
 ## What to expect
 

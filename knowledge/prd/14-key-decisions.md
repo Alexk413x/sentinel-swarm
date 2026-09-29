@@ -87,3 +87,7 @@
 - 2026-09-28: `--headless` refuses an untrusted repo, like `--bg`.
 - 2026-09-28: The `run` and `resume` skills are user-invoked only (`disable-model-invocation: true`).
 - 2026-09-28: `claude plugin validate --strict` runs on the marketplace and the plugin before each commit, and in CI as a backup. The dev `CLAUDE.md` lives at `.claude/CLAUDE.md`.
+- 2026-09-28: A background session listed by `claude agents --json` without a dead state counts as running, since Claude Code 2.1.284 prints no `pid` for one.
+- 2026-09-28: `run_status` and `status_tree` return a run summary without the PRD (unless `include_prd=true`) or the settings snapshot, and name agents instead of giving session ids.
+- 2026-09-28: `tests_run` returns a summary of at most 4,000 characters; the ledger keeps the full output, which `test_run_get` returns.
+- 2026-09-28: The plugin declares no MCP server. The plugin-level stdio `swarm-ledger` entry, `server.main()`, and the `swarm-ledger` console script are removed; an ordinary session steers a live run with `python -m swarm_ledger.directive`.

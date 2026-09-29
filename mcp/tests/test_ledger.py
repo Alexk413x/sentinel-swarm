@@ -236,6 +236,17 @@ def test_run_status_reports_phases_agents_and_open_items(ledger: Ledger) -> None
     assert status["directives"] == []
 
 
+def test_run_status_and_status_tree_leave_out_the_prd_and_session_ids(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    for read in (ledger.run_status, ledger.status_tree):
+        result = read("oracle", ctx["oracle_id"])
+        assert "prd" not in result["run"]
+        assert "settings_json" not in result["run"]
+        assert all("agent_id" not in agent for agent in result["agents"])
+        assert {agent["name"] for agent in result["agents"]} >= {"oracle"}
+        assert read("oracle", ctx["oracle_id"], include_prd=True)["run"]["prd"]
+
+
 def test_run_finish_refuses_when_a_phase_is_not_approved(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     with pytest.raises(LedgerError):
@@ -927,3 +938,30 @@ def test_claim_file_reads_a_text_null_test_path_as_no_test_file(ledger: Ledger, 
     ctx = _bootstrap(ledger)
     claimed = ledger.claim_file("lead-1", ctx["lead"]["agent_id"], "pkg/__init__.py", given, "c-1")
     assert claimed["test_path"] is None
+
+
+def test_directive_command_records_a_directive_for_the_live_run(
+    ledger: Ledger, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from swarm_ledger import directive, env
+
+    _bootstrap(ledger)
+    monkeypatch.setenv(env.DB_PATH_VAR, str(ledger.repo_root / ".sentinel-swarm" / "ledger.db"))
+    code = directive.main(["--repo", str(ledger.repo_root), "--sender", "alex", "Skip docs."])
+
+    assert code == 0
+    row = json.loads(capsys.readouterr().out)
+    assert (row["source"], row["sender_name"], row["body"]) == ("skill", "alex", "Skip docs.")
+    assert [d["directive_id"] for d in ledger.run_status("oracle", "sess-1")["directives"]] == [
+        row["directive_id"]
+    ]
+
+
+def test_directive_command_fails_without_a_live_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from swarm_ledger import directive, env
+
+    monkeypatch.setenv(env.DB_PATH_VAR, str(tmp_path / "ledger.db"))
+    assert directive.main(["--repo", str(tmp_path), "Skip docs."]) == 1
+    assert "no active run" in capsys.readouterr().err

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from swarm_ledger.testing import run_tests
+from swarm_ledger.testing import SUMMARY_CHARS, run_tests, summarize_output
 
 _PYTHON = f'"{sys.executable}"' if " " in sys.executable else sys.executable
 
@@ -175,3 +175,40 @@ def test_run_tests_drops_the_placeholder_when_no_target_is_given(tmp_path: Path)
     result = run_tests(command_template + " {target}", None, tmp_path)
     assert "{target}" not in result.command
     assert result.ok is True
+
+
+_PYTEST_FAILURE = (
+    "============================= test session starts =============================\n"
+    + "collected 3 items\n\n"
+    + "tests/test_a.py .FF\n\n"
+    + "================================== FAILURES ===================================\n"
+    + "_________________________________ test_one __________________________________\n\n"
+    + "    def test_one():\n>       assert add(1, 1) == 3\nE       assert 2 == 3\n"
+    + ("tests/test_a.py:5: AssertionError\n" * 400)
+    + "_________________________________ test_two __________________________________\n\n"
+    + "    def test_two():\n>       assert False\nE       assert False\n\n"
+    + "=========================== short test summary info ===========================\n"
+    + "FAILED tests/test_a.py::test_one - assert 2 == 3\n"
+    + "FAILED tests/test_a.py::test_two - assert False\n"
+    + "========================= 2 failed, 1 passed in 0.10s =========================\n"
+)
+
+
+def test_summarize_output_keeps_the_first_traceback_and_the_short_summary() -> None:
+    summary = summarize_output(_PYTEST_FAILURE, ok=False)
+
+    assert len(summary) <= SUMMARY_CHARS
+    assert "test_one" in summary
+    assert "assert 2 == 3" in summary
+    assert "def test_two" not in summary
+    assert "FAILED tests/test_a.py::test_two - assert False" in summary
+    assert summary.rstrip().endswith("2 failed, 1 passed in 0.10s =========================")
+
+
+def test_summarize_output_keeps_the_tail_of_a_pass_or_an_unknown_format() -> None:
+    passing = "." * 5000 + "\n5 passed in 0.12s\n"
+    assert summarize_output(passing, ok=True).endswith("5 passed in 0.12s\n")
+    assert len(summarize_output(passing, ok=True)) <= 500
+
+    other = "x" * 10000 + "\nFAIL\tpkg 0.1s\n"
+    assert summarize_output(other, ok=False) == other[-SUMMARY_CHARS:]

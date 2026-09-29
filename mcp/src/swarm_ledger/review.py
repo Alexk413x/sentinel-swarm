@@ -14,7 +14,7 @@ from .drive import findings_named, open_findings
 from .identity import ROLES, Caller, LedgerError, require_role, resolve
 from .rubric import Rating
 from .settings import Settings
-from .testing import run_tests
+from .testing import run_tests, summarize_output
 
 _NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 
@@ -125,6 +125,42 @@ def _phase_name_at(conn: sqlite3.Connection, phase_id: int | None) -> str | None
         return None
     phase_row = conn.execute("SELECT name FROM phases WHERE phase_id = ?", (phase_id,)).fetchone()
     return phase_row["name"] if phase_row is not None else None
+
+
+_RUN_FIELDS = ("run_id", "state", "outcome", "branch", "plugin_version", "started_at")
+
+
+def run_summary(run: sqlite3.Row | dict, include_prd: bool = False) -> dict:
+    row = dict(run)
+    summary = {key: row.get(key) for key in _RUN_FIELDS}
+    if row.get("repo_check_json"):
+        summary["repo_check"] = json.loads(row["repo_check_json"])
+    if include_prd:
+        summary["prd"] = row.get("prd")
+    return summary
+
+
+def agent_names(conn: sqlite3.Connection, run_id: int) -> dict[str, str]:
+    return {
+        row["agent_id"]: row["name"]
+        for row in conn.execute("SELECT agent_id, name FROM agents WHERE run_id = ?", (run_id,))
+    }
+
+
+def live_agents(conn: sqlite3.Connection, run_id: int) -> list[dict]:
+    names = agent_names(conn, run_id)
+    rows = conn.execute(
+        "SELECT name, role, state, current_activity, parent_agent_id, model, effort, "
+        "session_name, last_heartbeat_at FROM agents "
+        "WHERE run_id = ? AND ended_at IS NULL ORDER BY started_at",
+        (run_id,),
+    ).fetchall()
+    agents = []
+    for row in rows:
+        agent = dict(row)
+        agent["parent"] = names.get(agent.pop("parent_agent_id"))
+        agents.append({key: value for key, value in agent.items() if value is not None})
+    return agents
 
 
 class ReviewMixin:
@@ -293,11 +329,22 @@ class ReviewMixin:
             "failed": result.failed,
             "skipped": result.skipped,
             "errors": result.errors,
-            "output": result.output,
+            "output": summarize_output(result.output, result.ok),
+            "output_chars": len(result.output),
             "duration_ms": result.duration_ms,
             "ok": result.ok,
             "reason": result.reason,
         }
+
+    def test_run_get(self, caller: str, agent_id: str, test_run_id: int) -> dict:
+        c = resolve(self.conn, caller, agent_id)
+        row = self.conn.execute(
+            "SELECT * FROM test_runs WHERE test_run_id = ? AND run_id = ?",
+            (test_run_id, c.run_id),
+        ).fetchone()
+        if row is None:
+            raise LedgerError(f"no test run {test_run_id} in this run")
+        return dict(row)
 
     # -- Code graph -----------------------------------------------------------
 
@@ -1248,11 +1295,12 @@ class ReviewMixin:
 
     # -- Reporting ------------------------------------------------------------------
 
-    def status_tree(self, caller: str, agent_id: str) -> dict:
+    def status_tree(self, caller: str, agent_id: str, include_prd: bool = False) -> dict:
         conn = self.conn
         resolve(conn, caller, agent_id)
         run = self._active_run(conn)
         run_id = run["run_id"]
+        owner_names = agent_names(conn, run_id)
 
         phases = []
         for phase in conn.execute(
@@ -1281,7 +1329,7 @@ class ReviewMixin:
                         {
                             "file_id": file_row["file_id"],
                             "path": file_row["path"],
-                            "owner": file_row["owner_agent_id"],
+                            "owner": owner_names.get(file_row["owner_agent_id"]),
                             "state": file_row["state"],
                             "latest_handoff_state": (
                                 latest_handoff["state"] if latest_handoff is not None else None
@@ -1310,18 +1358,10 @@ class ReviewMixin:
                 }
             )
 
-        agents = _rows(
-            conn.execute(
-                "SELECT agent_id, name, role, state, last_heartbeat_at FROM agents "
-                "WHERE run_id = ? AND ended_at IS NULL ORDER BY started_at",
-                (run_id,),
-            )
-        )
-
         return {
-            "run": dict(run),
+            "run": run_summary(run, include_prd),
             "phases": phases,
-            "agents": agents,
+            "agents": live_agents(conn, run_id),
             "open_findings": open_findings(conn, run_id),
             "fixes": self._fixes(conn, run_id),
         }

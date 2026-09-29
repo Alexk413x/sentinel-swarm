@@ -9,7 +9,6 @@ report, setup, and testing. The code graph maps every document, so codebase-kg's
 ## Layout
 
 - `.claude-plugin/` — `plugin.json`, `marketplace.json`.
-- `.mcp.json` — the `swarm-ledger` MCP server entry.
 - `skills/` — `swarm-protocol`, `run`, `plan`, `status`, `resume`, `setup`.
 - `hooks/` — `hooks.json`, which carries no hooks, and a README with the per-role hook
   table. Each role's hooks live in its project agent file.
@@ -19,6 +18,8 @@ report, setup, and testing. The code graph maps every document, so codebase-kg's
   `.sentinel-swarm/hook.py`; and the `.local.md` settings example. The plugin has no
   `agents/` folder, so no plugin agent can run as a subagent.
 - `mcp/` — the swarm-ledger Python server. A separate project; see `mcp/README.md`.
+  The plugin declares no MCP server: each host repo runs its own HTTP ledger server,
+  and `python -m swarm_ledger.directive` steers a live run from an ordinary session.
   `python -m swarm_ledger.setup` prepares a host repo, and `python -m
   swarm_ledger.launch` starts the Oracle session.
 - `knowledge/` — `code_graph.db`, the codebase-kg map of this repo, and `prd/`, the

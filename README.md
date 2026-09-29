@@ -52,7 +52,6 @@ code graph before it plans or writes, and the Coder updates it for its own file.
 
 ```
 .claude-plugin/   plugin.json and marketplace.json
-.mcp.json         the swarm-ledger MCP server entry
 skills/           swarm-protocol, run, plan, status, resume, setup
 hooks/            hooks.json, which carries no hooks, and the per-role hook table
 templates/        agents/<role>.md role templates, hook_shim.py, and the settings example

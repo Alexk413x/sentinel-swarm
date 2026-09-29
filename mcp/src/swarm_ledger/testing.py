@@ -10,6 +10,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _MAX_OUTPUT_CHARS = 20000
+SUMMARY_CHARS = 4000
+_TRACEBACK_CHARS = 2500
+_PASS_TAIL_CHARS = 500
+_FAILURES_RE = re.compile(r"^=+ (FAILURES|ERRORS) =+$", re.MULTILINE)
+_SECTION_RE = re.compile(r"^(_{3,} .* _{3,}|=+ .* =+)$", re.MULTILINE)
+_SHORT_SUMMARY_RE = re.compile(r"^=+ short test summary info =+$", re.MULTILINE)
 
 _NO_TESTS_RAN_RE = re.compile(r"no tests ran")
 _PASSED_RE = re.compile(r"(\d+)\s+passed\b")
@@ -121,6 +127,27 @@ def _combine_output(stdout: str | bytes | None, stderr: str | bytes | None) -> s
 
 def _cap_output(output: str) -> str:
     return output[-_MAX_OUTPUT_CHARS:]
+
+
+def summarize_output(output: str, ok: bool) -> str:
+    if ok:
+        return output[-_PASS_TAIL_CHARS:]
+    parts: list[str] = []
+    failures = _FAILURES_RE.search(output)
+    if failures:
+        rest = output[failures.end() :]
+        first = _SECTION_RE.search(rest)
+        if first:
+            after = rest[first.end() :]
+            end = _SECTION_RE.search(after)
+            block = rest[first.start() : first.end() + (end.start() if end else len(after))]
+            parts.append(block.strip()[:_TRACEBACK_CHARS])
+    summary = _SHORT_SUMMARY_RE.search(output)
+    if summary:
+        parts.append(output[summary.start() :].strip())
+    if not parts:
+        return output[-SUMMARY_CHARS:]
+    return "\n...\n".join(parts)[-SUMMARY_CHARS:]
 
 
 def _host_env() -> dict[str, str]:

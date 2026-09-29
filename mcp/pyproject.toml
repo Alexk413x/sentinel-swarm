@@ -1,7 +1,7 @@
 [project]
 name = "swarm-ledger"
 version = "0.0.1"
-description = "Local stdio MCP server for the sentinel-swarm plugin: a SQLite ledger of runs, phases, briefs, file claims, reviews, scores, and agent activity."
+description = "Per-repo HTTP MCP server for the sentinel-swarm plugin: a SQLite ledger of runs, phases, briefs, file claims, reviews, scores, and agent activity."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "Alexk413x", email = "alexk413x@gmail.com" }]
@@ -10,9 +10,6 @@ dependencies = [
     "fastmcp>=4.0.3,<5",
     "pyyaml>=6.0.3",
 ]
-
-[project.scripts]
-swarm-ledger = "swarm_ledger.server:main"
 
 [build-system]
 requires = ["hatchling>=1.29.0"]
