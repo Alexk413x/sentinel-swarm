@@ -157,7 +157,8 @@ mkdir -p "$plugin_dir"
 
 # Installs under its own dev version instead of the repo's pinned version, so this run's
 # install never replaces a cached copy another session still has open.
-dev_version="0.0.1-dev.$(date +%s)"
+base_version=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['version'])"   "$(win "$root/.claude-plugin/plugin.json")")
+dev_version="$base_version-dev.$(date +%s)"
 python -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d['version']=sys.argv[2]; \
 json.dump(d, open(p, 'w'), indent=2)" \
   "$(win "$plugin_dir/.claude-plugin/plugin.json")" "$dev_version"

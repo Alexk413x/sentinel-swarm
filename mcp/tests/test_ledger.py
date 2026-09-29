@@ -994,3 +994,8 @@ def test_directive_command_fails_without_a_live_run(
     monkeypatch.setenv(env.DB_PATH_VAR, str(tmp_path / "ledger.db"))
     assert directive.main(["--repo", str(tmp_path), "Skip docs."]) == 1
     assert "no active run" in capsys.readouterr().err
+
+
+def test_run_start_records_the_oracles_effort(ledger: Ledger) -> None:
+    started = ledger.run_start(prd="Build X", session_id="sess-1")
+    assert started["oracle"]["effort"] == ledger.settings.effort["oracle"]

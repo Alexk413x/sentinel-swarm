@@ -192,14 +192,14 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
         lock.acquire(self.repo_root, run_id, os.getpid())
 
         conn.execute(
-            "INSERT INTO agents "
-            "(agent_id, name, role, runtime, model, run_id, state, session_name, started_at) "
-            f"VALUES (?, ?, 'oracle', ?, ?, ?, 'working', ?, {_NOW})",
+            "INSERT INTO agents (agent_id, name, role, runtime, model, effort, run_id, state, "
+            f"session_name, started_at) VALUES (?, ?, 'oracle', ?, ?, ?, ?, 'working', ?, {_NOW})",
             (
                 session_id,
                 oracle_name,
                 self.settings.runtime.get("oracle"),
                 agentfiles.oracle_model(self.repo_root, self.settings.models.get("oracle", [])),
+                self.settings.effort.get("oracle"),
                 run_id,
                 session_name,
             ),
@@ -276,7 +276,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                     oracle["name"],
                     oracle["runtime"],
                     agentfiles.oracle_model(self.repo_root, self.settings.models.get("oracle", [])),
-                    oracle["effort"],
+                    oracle["effort"] or self.settings.effort.get("oracle"),
                     oracle["settings_json"],
                     run["run_id"],
                     oracle["phase_at_start"],

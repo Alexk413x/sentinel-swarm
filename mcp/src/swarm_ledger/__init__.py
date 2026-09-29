@@ -1,7 +1,7 @@
 import os
 import sys
 
-__version__ = "0.0.1"
+__version__ = "0.1.0"
 
 # uv has already used this venv; a child uv run, such as codebase-kg's or the host's test
 # command, would otherwise sync its own project into the ledger's venv.

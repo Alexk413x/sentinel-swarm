@@ -382,7 +382,7 @@ def test_smoke_sh_rewrites_a_dev_version_before_install(repo_root: Path) -> None
     install_at = text.index("plugin marketplace add")
     version_at = text.index("d['version']=sys.argv[2]")
     assert version_at < install_at
-    assert "0.0.1-dev." in text
+    assert 'dev_version="$base_version-dev.' in text
 
 
 def test_smoke_sh_cleans_up_old_dev_cache_copies(repo_root: Path) -> None:

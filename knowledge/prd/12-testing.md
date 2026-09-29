@@ -43,7 +43,7 @@ run `/reload-plugins`.
   a README, a `pyproject.toml`, a settings file with the pytest test command, a
   one-node code graph, and `git init -b main`. It copies the plugin to a fresh temp
   folder, rewrites that copy's version to a dev version such as
-  `0.0.1-dev.<epoch seconds>` **(proposed)**, installs it at project scope under that
+  `<plugin version>-dev.<epoch seconds>`, for example `0.1.0-dev.1790650000` **(proposed)**, installs it at project scope under that
   version, runs setup, commits, and starts the Oracle through the installed copy's launcher. Each run
   also removes any older `*-dev.*` copy from the plugin cache, skipping one a live
   session still has open, so a run never replaces a cached copy another session holds.
