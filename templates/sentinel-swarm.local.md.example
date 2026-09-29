@@ -75,6 +75,11 @@ lint_command:
 # Left empty; no default parallelism cap is set yet.
 parallelism_cap:
 
+# Left empty; no time budget. Minutes the run should take. Each wake-up and watchdog line
+# for the Oracle or a Manager then ends with "elapsed <n>s / <budget>s" instead of
+# "elapsed <n>s". The budget is advisory: nothing stops the run at the limit.
+time_budget_minutes:
+
 # Left empty; repo_check then tries main, then master, then reports no base branch.
 base_branch:
 

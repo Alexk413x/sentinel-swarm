@@ -161,6 +161,35 @@ def test_settings_overrides_from_frontmatter_fall_back_key_by_key(tmp_path: Path
     assert settings.models["oracle"] == ["opus", "fable"]
 
 
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        ("", None),
+        ("time_budget_minutes:\n", None),
+        ("time_budget_minutes: 45\n", 45),
+        ("time_budget_minutes: '30'\n", 30),
+        ("time_budget_minutes: 0\n", None),
+        ("time_budget_minutes: -5\n", None),
+        ("time_budget_minutes: soon\n", None),
+        ("time_budget_minutes: true\n", None),
+    ],
+)
+def test_time_budget_minutes_reads_a_positive_whole_number_or_nothing(
+    tmp_path: Path, line: str, expected: int | None
+) -> None:
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir()
+    (claude_dir / "sentinel-swarm.local.md").write_text(f"---\n{line}---\n", encoding="utf-8")
+    settings = load_settings(tmp_path)
+    assert settings.time_budget_minutes == expected
+    assert json.loads(settings.snapshot())["time_budget_minutes"] == expected
+
+
+def test_the_settings_example_leaves_the_time_budget_empty(repo_root: Path) -> None:
+    text = (repo_root / "templates" / "sentinel-swarm.local.md.example").read_text(encoding="utf-8")
+    assert "\ntime_budget_minutes:\n" in text
+
+
 def test_settings_snapshot_is_json(tmp_path: Path) -> None:
     settings = load_settings(tmp_path)
     data = json.loads(settings.snapshot())

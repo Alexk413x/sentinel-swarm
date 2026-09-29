@@ -1095,7 +1095,8 @@ def drive_issue(
     """Records one Driver finding against an open exploration and wakes the Oracle; the Driver
     calls this for each finding, including a failed build. `finding` holds `fingerprint`,
     `title`, `steps`, `expected`, `actual`, `severity` (blocker, major, or minor), `area`, and
-    `evidence` (paths into cartographer's run folder)."""
+    `evidence` (paths into cartographer's run folder). The result's `next_checkin_due_at` and
+    `next_checkin_in_s` give when the exploration's next check-in is due."""
     return _call(
         _ledger().drive_issue,
         caller=caller,
@@ -1116,7 +1117,8 @@ def drive_checkin(
 ) -> dict[str, Any]:
     """Records a 30-minute progress check-in for an open exploration and wakes the Oracle; the
     Driver calls this. The watchdog does not report the Driver as stuck while its check-ins are
-    on time."""
+    on time. The result's `next_checkin_due_at` and `next_checkin_in_s` give when the next
+    check-in is due."""
     return _call(
         _ledger().drive_checkin,
         caller=caller,

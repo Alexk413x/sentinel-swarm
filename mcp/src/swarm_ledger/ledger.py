@@ -1164,7 +1164,10 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                 (c.agent_id, target["agent_id"]),
             )
         )
-        message = " ".join(w["pointer"] for w in owed) or _RESUME_POINTER
+        message = wake.timed(
+            " ".join(w["pointer"] for w in owed) or _RESUME_POINTER,
+            wake.signal_for(self.conn, target["agent_id"]),
+        )
         bg_id = sessions.resume(
             target["agent_id"],
             message,
@@ -1246,13 +1249,18 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
             live=self._is_live(wakeup["to_agent_id"]),
             channel=target["channel"] if target is not None else "none",
             hub=self.hub,
+            signal=wake.signal_for(self.conn, wakeup["to_agent_id"]),
         )
         if delivery.pushed:
             self._record_push(wakeup["wakeup_id"])
         return delivery.next
 
     def fallback_step(self, wakeup: dict) -> str:
-        return wake.fallback(wakeup, self._is_live(wakeup["to_agent_id"])).next
+        return wake.fallback(
+            wakeup,
+            self._is_live(wakeup["to_agent_id"]),
+            wake.signal_for(self.conn, wakeup["to_agent_id"]),
+        ).next
 
     def _is_live(self, session_id: str) -> bool | None:
         try:

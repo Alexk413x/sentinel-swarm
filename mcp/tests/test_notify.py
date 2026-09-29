@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from swarm_ledger import notify, sessions, watch, watchdog
+from swarm_ledger import notify, sessions, wake, watch, watchdog
 from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import events
 from swarm_ledger.identity import LedgerError
@@ -534,12 +534,15 @@ def test_a_push_from_another_role_pays_nothing(ledger: Ledger, claude: FakeClaud
 
 
 def test_the_monitor_prints_an_owed_push_once(ledger: Ledger, claude: FakeClaude) -> None:
-    _owe_push(ledger, claude)
+    ctx = _owe_push(ledger, claude)
     now = watchdog.utcnow()
 
     _, lines = watch.poll(ledger.conn, now)
     assert lines == [
-        "Notification 1 is owed to the user: "
-        + notify.push_call("Driver done: exploration 1 clean, 0 open bugs")
+        wake.timed(
+            "Notification 1 is owed to the user: "
+            + notify.push_call("Driver done: exploration 1 clean, 0 open bugs"),
+            wake.time_signal(ledger.conn, ctx["run_id"], now),
+        )
     ]
     assert watch.poll(ledger.conn, now) == (True, [])

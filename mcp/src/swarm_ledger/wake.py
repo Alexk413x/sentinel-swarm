@@ -26,6 +26,9 @@ CONFIRM_WINDOW = timedelta(seconds=30)
 CONFIRM_POLL_S = 1.0
 # A transcript line can be stamped a moment before the ledger records the push.
 _CLOCK_SKEW = timedelta(seconds=5)
+# Only the Opus leads get the elapsed time: Sonnet can read text appended to a message as a
+# possible injection (knowledge/prd/05-sessions.md, "Time signal").
+TIMED_ROLES = ("oracle", "manager")
 
 Kind = Literal["pushed", "send", "resume", "send_or_resume"]
 
@@ -99,19 +102,53 @@ class EventHub:
 HUB = EventHub()
 
 
-def wakeup_event(wakeup: Mapping[str, Any]) -> dict[str, Any]:
+def time_signal(
+    conn: sqlite3.Connection, run_id: int | None, now: datetime | None = None
+) -> str | None:
+    run = conn.execute(
+        "SELECT started_at, settings_json FROM runs WHERE run_id = ?", (run_id,)
+    ).fetchone()
+    started = parse_stamp(run["started_at"]) if run is not None else None
+    if run is None or started is None:
+        return None
+    elapsed = max(0, int(((now or utcnow()) - started).total_seconds()))
+    try:
+        budget = json.loads(run["settings_json"] or "{}").get("time_budget_minutes")
+    except (ValueError, AttributeError):
+        budget = None
+    if isinstance(budget, int) and budget > 0:
+        return f"elapsed {elapsed}s / {budget * 60}s"
+    return f"elapsed {elapsed}s"
+
+
+def signal_for(
+    conn: sqlite3.Connection, agent_id: str | None, now: datetime | None = None
+) -> str | None:
+    agent = conn.execute(
+        "SELECT run_id, role FROM agents WHERE agent_id = ?", (agent_id,)
+    ).fetchone()
+    if agent is None or agent["role"] not in TIMED_ROLES:
+        return None
+    return time_signal(conn, agent["run_id"], now)
+
+
+def timed(text: str, signal: str | None) -> str:
+    return f"{text} {signal}" if text and signal else text
+
+
+def wakeup_event(wakeup: Mapping[str, Any], signal: str | None = None) -> dict[str, Any]:
     return {
         "kind": WAKEUP_EVENT,
-        "content": str(wakeup["pointer"]),
+        "content": timed(str(wakeup["pointer"]), signal),
         "meta": {"wakeup_id": str(wakeup["wakeup_id"]), "reason": str(wakeup["reason"])},
     }
 
 
-def _calls(wakeup: Mapping[str, Any]) -> tuple[str | None, str]:
+def _calls(wakeup: Mapping[str, Any], signal: str | None = None) -> tuple[str | None, str]:
     session_name = wakeup.get("to_session_name")
     send = None
     if session_name:
-        pointer = wakeup.get("pointer")
+        pointer = timed(str(wakeup.get("pointer") or ""), signal)
         message = f", message={json.dumps(pointer)}" if pointer else ""
         send = f"SendMessage(to={json.dumps(session_name)}{message})"
     return send, f"agent_resume(target_name={json.dumps(wakeup['to_name'])})"
@@ -124,8 +161,9 @@ def route_wakeup(
     live: bool | None,
     channel: str = "none",
     hub: EventHub | None = None,
+    signal: str | None = None,
 ) -> Delivery:
-    send, resume = _calls(wakeup)
+    send, resume = _calls(wakeup, signal)
     target = str(wakeup["to_name"])
 
     def instruction() -> Delivery:
@@ -139,14 +177,14 @@ def route_wakeup(
         hub is not None
         and channel in ("launched", "confirmed")
         and wakeup.get("wakeup_id") is not None
-        and hub.push(str(wakeup["to_agent_id"]), wakeup_event(wakeup))
+        and hub.push(str(wakeup["to_agent_id"]), wakeup_event(wakeup, signal))
     ):
         return Delivery("pushed", target, send, resume)
     return instruction()
 
 
-def fallback(wakeup: Mapping[str, Any], live: bool | None) -> Delivery:
-    return route_wakeup(wakeup, transport="sendmessage", live=live)
+def fallback(wakeup: Mapping[str, Any], live: bool | None, signal: str | None = None) -> Delivery:
+    return route_wakeup(wakeup, transport="sendmessage", live=live, signal=signal)
 
 
 async def event_stream(

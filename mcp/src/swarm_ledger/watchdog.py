@@ -550,9 +550,10 @@ def _unconfirmed_pushes(conn: sqlite3.Connection, run_id: int, now: datetime) ->
         if row["to_role"] == "oracle":
             step = f"Act on it: {pointer}"
         else:
+            message = wake.timed(pointer, wake.signal_for(conn, row["to_agent_id"], now))
             step = (
                 f"Deliver it with SendMessage(to={json.dumps(row['to_session_name'])}, "
-                f"message={json.dumps(pointer)})."
+                f"message={json.dumps(message)})."
             )
         findings.append(
             Finding(
@@ -775,7 +776,10 @@ class Watchdog:
             self._pause(run, oracle, now)
             return
 
-        message = f"The watchdog reported {waiting} finding(s). Read directive_inbox."
+        message = wake.timed(
+            f"The watchdog reported {waiting} finding(s). Read directive_inbox.",
+            wake.time_signal(self.conn, run["run_id"], now),
+        )
         try:
             sessions.resume(
                 oracle["agent_id"],

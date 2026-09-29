@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sqlite3
 import sys
@@ -218,6 +219,11 @@ def _review_scores() -> list[dict]:
 
 
 # -- schema migration ---------------------------------------------------------------------
+
+
+def _untimed(text: str) -> str:
+    assert re.search(r" elapsed \d+s(?: / \d+s)?", text), text
+    return re.sub(r" elapsed \d+s(?: / \d+s)?", "", text)
 
 
 def test_connect_adds_the_floor_pass_column_to_an_older_handoffs_table(tmp_path: Path) -> None:
@@ -695,7 +701,8 @@ def test_attempt_record_escalates_a_plateaued_issue_and_owes_the_manager_a_wake_
 
     result = ledger.attempt_record("lead-1", ctx["lead"]["agent_id"], file_id)
     assert result["outcome"] == "plateau"
-    assert result["escalated"] == [
+    (escalated,) = result["escalated"]
+    assert [{**escalated, "next": _untimed(escalated["next"])}] == [
         {
             "issue_id": issue_id,
             "round": 2,
@@ -740,7 +747,7 @@ def test_issue_escalate_owes_a_wake_up_too(ledger: Ledger, monkeypatch: pytest.M
 
     escalated = ledger.issue_escalate("lead-1", ctx["lead"]["agent_id"], issue["issue_id"])
     assert escalated["escalated_to"] == "manager-1"
-    assert escalated["next"] == (
+    assert _untimed(escalated["next"]) == (
         'SendMessage(to="host-r1-manager-1", '
         f'message="Issue {issue["issue_id"]} is escalated to you for round 2. '
         'Read it with issue_list.")'

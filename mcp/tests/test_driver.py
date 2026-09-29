@@ -2,15 +2,22 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from swarm_ledger import agentfiles, sessions, setup
+from swarm_ledger.clock import stamp
 from swarm_ledger.db import connect, write_tx
-from swarm_ledger.drive import STOP_ATTEMPTS_IN_A_ROW, STOP_ATTEMPTS_TOTAL, compute_loop_status
+from swarm_ledger.drive import (
+    STOP_ATTEMPTS_IN_A_ROW,
+    STOP_ATTEMPTS_TOTAL,
+    compute_loop_status,
+    next_checkin,
+)
 from swarm_ledger.hooks import events
 from swarm_ledger.identity import LedgerError, child_roles_of
 from swarm_ledger.ledger import Ledger, repo_slug
@@ -159,6 +166,11 @@ def _seed_exploration(
 
 
 # -- Pure loop-status computation -------------------------------------------------------------
+
+
+def _untimed(text: str) -> str:
+    assert re.search(r" elapsed \d+s(?: / \d+s)?", text), text
+    return re.sub(r" elapsed \d+s(?: / \d+s)?", "", text)
 
 
 def test_fingerprint_streak_and_attempts() -> None:
@@ -455,6 +467,45 @@ def test_drive_checkin_records_progress_and_wakes_the_oracle(
     assert result["next"] is not None
 
 
+def _due(result: dict) -> timedelta:
+    due = datetime.fromisoformat(result["next_checkin_due_at"].replace("Z", "+00:00"))
+    return due - datetime.fromisoformat(result["last_checkin_at"].replace("Z", "+00:00"))
+
+
+def test_drive_checkin_and_drive_issue_return_the_next_checkin_as_data(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _open_request(ledger, claude)
+    checkin = ledger.drive_checkin(
+        "driver-e1", ctx["driver_id"], ctx["request_id"], "3 of 8", "tapped", "on track"
+    )
+    assert _due(checkin) == DRIVER_CHECKIN_INTERVAL
+    assert DRIVER_CHECKIN_INTERVAL.total_seconds() - 60 < checkin["next_checkin_in_s"] <= 1800
+
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE drive_requests SET last_checkin_at = ? WHERE request_id = ?",
+            (stamp(utcnow() - timedelta(minutes=40)), ctx["request_id"]),
+        )
+    issue = ledger.drive_issue("driver-e1", ctx["driver_id"], ctx["request_id"], _FINDING)
+    request = ledger.conn.execute(
+        "SELECT last_checkin_at FROM drive_requests WHERE request_id = ?", (ctx["request_id"],)
+    ).fetchone()
+    assert _due({**issue, "last_checkin_at": request[0]}) == DRIVER_CHECKIN_INTERVAL
+    assert issue["next_checkin_in_s"] == 0
+
+
+def test_drive_next_checkin_counts_from_the_start_with_no_checkin_yet() -> None:
+    opened = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
+    fields = next_checkin(
+        {"last_checkin_at": None, "opened_at": stamp(opened)}, opened + timedelta(minutes=10)
+    )
+    assert fields == {
+        "next_checkin_due_at": stamp(opened + DRIVER_CHECKIN_INTERVAL),
+        "next_checkin_in_s": 1200,
+    }
+
+
 def _driver_row(ledger: Ledger, driver_id: str) -> sqlite3.Row:
     return ledger.conn.execute("SELECT * FROM agents WHERE agent_id = ?", (driver_id,)).fetchone()
 
@@ -497,7 +548,7 @@ def test_drive_done_owes_the_oracle_a_wake_up_and_returns_the_send_message(
         f"Driver exploration 1 (request {ctx['request_id']}) ended: clean, no findings. "
         "Its result is in the ledger."
     )
-    assert result["next"] == (
+    assert _untimed(result["next"]) == (
         f"SendMessage(to={json.dumps(wakeup['to_session_name'])}, "
         f"message={json.dumps(wakeup['pointer'])})"
     )

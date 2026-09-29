@@ -35,6 +35,16 @@ def normalize_transport(raw: object) -> str:
     return value if value in WAKE_TRANSPORTS else DEFAULT_WAKE_TRANSPORT
 
 
+def normalize_budget(raw: object) -> int | None:
+    if isinstance(raw, bool):
+        return None
+    try:
+        minutes = int(str(raw).strip())
+    except ValueError:
+        return None
+    return minutes if minutes > 0 else None
+
+
 def normalize_notify(raw: object) -> list[str]:
     if isinstance(raw, str):
         raw = [raw]
@@ -84,6 +94,7 @@ class Settings:
     build_command: str | None = None
     lint_command: str | None = None
     parallelism_cap: int | None = None
+    time_budget_minutes: int | None = None
     # Empty means repo_check tries main, then master, then reports no base branch.
     base_branch: str | None = None
     # Per-role --effort for agent_spawn; a role with no entry runs at its model's default.
@@ -179,6 +190,7 @@ def load_settings(repo_root: Path) -> Settings:
         build_command=data.get("build_command") or defaults.build_command,
         lint_command=data.get("lint_command") or defaults.lint_command,
         parallelism_cap=data.get("parallelism_cap") or defaults.parallelism_cap,
+        time_budget_minutes=normalize_budget(data.get("time_budget_minutes")),
         base_branch=data.get("base_branch") or defaults.base_branch,
         effort=effort,
         prompt_cache_ttl=prompt_cache_ttl,

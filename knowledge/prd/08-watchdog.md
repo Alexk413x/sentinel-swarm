@@ -71,6 +71,11 @@ transcript shows it. See "Wake-up delivery" in [05-sessions.md](05-sessions.md).
   writes `runs.watch_heartbeat_at`. It also prints, once, each `PushNotification` call
   the Oracle owes the user. **(proposed)** It exits when the run is not active. The newest
   listener owns the run, and an older one exits.
+- Each line the listener prints ends with the run's elapsed time, `elapsed <n>s` or
+  `elapsed <n>s / <budget>s`, since every line goes to the Oracle. So does the resume
+  message below. A `wake_unconfirmed` step that tells the Oracle to deliver a Manager's
+  wake-up carries the suffix in its `SendMessage` message; one for a Lead or a Coder
+  carries none. See "Time signal" in [05-sessions.md](05-sessions.md).
 - The Oracle arms it right after `run_start`, and again whenever it expires, with
   exactly this call:
   `Monitor(command="python3 .sentinel-swarm/hook.py watch || python .sentinel-swarm/hook.py watch", description="sentinel-swarm watchdog", timeout_ms=1800000)`.

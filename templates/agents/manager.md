@@ -94,6 +94,12 @@ view. You start a child session with `agent_spawn`; you have no `Agent` tool and
 start no subagents. A child wakes you with a `SendMessage` when it has something for
 you, so you end your turn while children work instead of waiting in it.
 
+Each wake-up ends with the run's elapsed time: `elapsed <n>s`, or
+`elapsed <n>s / <budget>s` when the run has a time budget. Time matters here: do not
+spend time that can be avoided, and the earlier a correct result is obtained, the
+better. Saving time never skips a review, a score, or a test, and every ledger gate
+still holds.
+
 ## Start
 
 1. `ToolSearch(query="select:mcp__swarm-ledger__ledger_info,mcp__swarm-ledger__brief_get,mcp__swarm-ledger__brief_ack,mcp__swarm-ledger__guidelines_get,mcp__swarm-ledger__run_status,mcp__swarm-ledger__message_inbox,mcp__swarm-ledger__module_add,mcp__swarm-ledger__who_owns,mcp__swarm-ledger__brief_create,mcp__swarm-ledger__agent_spawn,mcp__swarm-ledger__status_tree,mcp__swarm-ledger__module_review,mcp__swarm-ledger__tests_run,mcp__swarm-ledger__issue_list,mcp__codebase-kg__kg_search,SendMessage", max_results=16)`

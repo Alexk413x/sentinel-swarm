@@ -273,3 +273,12 @@ reviewed:
 - The `swarm_ledger` package removes `UV_PROJECT_ENVIRONMENT` from its environment at
   import when it names the package's own venv, so codebase-kg's `uv run` and the host's
   test command never sync their projects into the ledger's venv.
+
+Built on 2026-09-28, the time signal (see "Time signal" in
+[05-sessions.md](05-sessions.md)), choices Alex has not reviewed:
+
+- The budget comes from the run's settings snapshot taken at `run_start`, so a change to
+  the settings file applies to the next run.
+- Only `drive_issue` and `drive_checkin` return the check-in fields, since
+  `drive_done` and `drive_unavailable` close the exploration; `next_checkin_in_s` stops
+  at 0 once the check-in is due.

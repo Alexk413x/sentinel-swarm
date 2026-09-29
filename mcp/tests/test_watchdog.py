@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from swarm_ledger import serve, sessions, watch, watchdog
+from swarm_ledger import serve, sessions, wake, watch, watchdog
 from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import HANDLERS as _HANDLERS
 from swarm_ledger.hooks import events
@@ -82,6 +82,11 @@ def now() -> datetime:
 
 def _run_id(ledger: Ledger) -> int:
     return ledger.run_start(prd="Build X", session_id=ORACLE)["run"]["run_id"]
+
+
+def _signal(ledger: Ledger, now: datetime) -> str | None:
+    run_id = ledger.conn.execute("SELECT MAX(run_id) FROM runs").fetchone()[0]
+    return wake.time_signal(ledger.conn, run_id, now)
 
 
 def _agent(
@@ -543,7 +548,7 @@ def _wakes(ledger: Ledger) -> list[str]:
 def test_the_watchdog_wakes_a_stopped_oracle_at_most_every_five_minutes_then_pauses(
     ledger: Ledger, claude: FakeClaude, now: datetime
 ) -> None:
-    _run_id(ledger)
+    run_id = _run_id(ledger)
     _agent(ledger, "sess-coder-1", "coder", "working", started=now)
     claude.run(ORACLE, status="stopped")
     dog = _dog(ledger, Exits())
@@ -551,7 +556,11 @@ def test_the_watchdog_wakes_a_stopped_oracle_at_most_every_five_minutes_then_pau
     dog.tick(now)
     assert claude.resumed == []
     dog.tick(now + timedelta(seconds=30))
-    assert claude.resumed == [(ORACLE, "The watchdog reported 1 finding(s). Read directive_inbox.")]
+    message = wake.timed(
+        "The watchdog reported 1 finding(s). Read directive_inbox.",
+        wake.time_signal(ledger.conn, run_id, now + timedelta(seconds=30)),
+    )
+    assert claude.resumed == [(ORACLE, message)]
     dog.tick(now + timedelta(minutes=2))
     assert len(claude.resumed) == 1
     dog.tick(now + timedelta(minutes=6))
@@ -740,7 +749,9 @@ def test_the_listener_prints_each_watchdog_directive_once_and_beats(
 
     keep, lines = watch.poll(ledger.conn, now)
     assert keep is True
-    assert lines == ["Watchdog directive 1: Watchdog finding stuck: line two"]
+    assert lines == [
+        f"Watchdog directive 1: Watchdog finding stuck: line two {_signal(ledger, now)}"
+    ]
     assert ledger.conn.execute("SELECT watch_heartbeat_at FROM runs").fetchone()[0] == (
         watchdog.stamp(now)
     )
@@ -779,7 +790,7 @@ def test_the_listener_loop_prints_new_directives_then_exits_on_pause(
             ledger.run_pause("oracle", ORACLE, "waiting on the user")
 
     assert watch.watch(ledger.conn, out, sleep=sleep, clock=lambda: now) == 0
-    assert out.getvalue() == "Watchdog directive 1: First.\n"
+    assert out.getvalue() == f"Watchdog directive 1: First. {_signal(ledger, now)}\n"
     assert naps == [2.0, 2.0]
 
 
@@ -792,7 +803,7 @@ def test_a_newer_listener_retires_the_older_one(ledger: Ledger, now: datetime) -
     assert watch.poll(ledger.conn, now, "old") == (False, [])
     keep, lines = watch.poll(ledger.conn, now, "new")
     assert keep
-    assert lines == ["Watchdog directive 1: For the new listener."]
+    assert lines == [f"Watchdog directive 1: For the new listener. {_signal(ledger, now)}"]
 
 
 def test_the_listener_loop_exits_once_another_listener_claims_the_run(

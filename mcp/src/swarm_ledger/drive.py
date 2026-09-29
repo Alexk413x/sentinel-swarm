@@ -3,13 +3,16 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import AbstractContextManager
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from . import agentfiles, notify
+from .clock import parse_stamp, stamp, utcnow
 from .db import write_tx
 from .identity import Caller, LedgerError, require_role, resolve
 from .settings import Settings
+from .watchdog import DRIVER_CHECKIN_INTERVAL
 
 _NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 SEVERITIES = ("blocker", "major", "minor")
@@ -337,6 +340,15 @@ def findings_named(conn: sqlite3.Connection, finding_ids: list[int]) -> list[dic
         )
     }
     return [rows[i] for i in finding_ids if i in rows]
+
+
+def next_checkin(request: dict, now: datetime | None = None) -> dict[str, Any]:
+    last = parse_stamp(request.get("last_checkin_at")) or parse_stamp(request.get("opened_at"))
+    if last is None:
+        return {"next_checkin_due_at": None, "next_checkin_in_s": None}
+    due = last + DRIVER_CHECKIN_INTERVAL
+    left = int((due - (now or utcnow())).total_seconds())
+    return {"next_checkin_due_at": stamp(due), "next_checkin_in_s": max(0, left)}
 
 
 def _severities_help() -> str:
@@ -735,7 +747,7 @@ class DriveMixin:
         require_role(c, "driver")
         if c.run_id is None:
             raise LedgerError(f"{caller!r} has no run")
-        self._own_open_request(c, request_id)
+        request = self._own_open_request(c, request_id)
 
         fingerprint = str(finding.get("fingerprint") or "").strip()
         title = str(finding.get("title") or "").strip()
@@ -782,6 +794,7 @@ class DriveMixin:
         )
         result["next"] = self.next_step(wakeup)
         result["loop_status"] = self._drive_loop_status(c.run_id)
+        result.update(next_checkin(request))
         return result
 
     def drive_checkin(
@@ -821,6 +834,7 @@ class DriveMixin:
             ).fetchone()
         )
         result["next"] = self.next_step(wakeup)
+        result.update(next_checkin(result))
         return result
 
     def drive_done(

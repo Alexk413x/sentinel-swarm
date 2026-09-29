@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import signal
 import sqlite3
 import subprocess
@@ -20,7 +21,17 @@ from typing import Any
 
 import pytest
 
-from swarm_ledger import agentfiles, bridge, launch, serve, sessions, setup, wake, watchdog
+from swarm_ledger import (
+    agentfiles,
+    bridge,
+    launch,
+    serve,
+    sessions,
+    setup,
+    wake,
+    watch,
+    watchdog,
+)
 from swarm_ledger.db import connect, write_tx
 from swarm_ledger.hooks import events
 from swarm_ledger.ledger import Ledger
@@ -162,6 +173,11 @@ RESUME = 'agent_resume(target_name="oracle")'
 # -- route_wakeup ---------------------------------------------------------------------------
 
 
+def _untimed(text: str) -> str:
+    assert re.search(r" elapsed \d+s(?: / \d+s)?", text), text
+    return re.sub(r" elapsed \d+s(?: / \d+s)?", "", text)
+
+
 def test_the_sendmessage_setting_returns_todays_instruction_and_never_pushes(
     hub: wake.EventHub, subscribe
 ) -> None:
@@ -293,7 +309,7 @@ def test_next_step_pushes_to_a_launched_oracle_and_records_it(
     assert wakeup["pushed_at"] is not None
     assert wakeup["sent_at"] is None
     (event,) = sub.events()
-    assert event["content"] == wakeup["pointer"]
+    assert re.fullmatch(re.escape(wakeup["pointer"]) + r" elapsed \d+s", event["content"])
     assert event["meta"] == {"wakeup_id": str(wakeup["wakeup_id"]), "reason": "message_post"}
 
 
@@ -308,9 +324,11 @@ def test_the_sendmessage_setting_keeps_todays_next_exactly(
     posted = ledger.message_post("manager-1", MANAGER, "oracle", "phase-1 is done")
 
     (wakeup,) = _wakeups(ledger)
+    message = json.loads(posted["next"].split("message=", 1)[1].removesuffix(")"))
     assert posted["next"] == (
-        f"SendMessage(to={json.dumps(ORACLE_SESSION)}, message={json.dumps(wakeup['pointer'])})"
+        f"SendMessage(to={json.dumps(ORACLE_SESSION)}, message={json.dumps(message)})"
     )
+    assert re.fullmatch(re.escape(wakeup["pointer"]) + r" elapsed \d+s", message)
     assert wakeup["pushed_at"] is None
     assert sub.events() == []
 
@@ -379,6 +397,124 @@ def test_the_watchdog_wake_call_routes_through_the_switch(ledger: Ledger, listin
     call = watchdog._wake_call(manager, running, "channel")
     assert call == f"SendMessage(to={json.dumps(MANAGER_SESSION)})"
     assert watchdog._wake_call(manager, {}, "channel") == 'agent_resume(target_name="manager-1")'
+
+
+# -- time signal -----------------------------------------------------------------------------
+
+SIGNAL = "elapsed 340s / 1200s"
+NOW = datetime(2026, 9, 28, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def test_the_signal_ends_the_send_message_and_the_pushed_event(
+    hub: wake.EventHub, subscribe
+) -> None:
+    timed = f"Message 3 is waiting in the ledger. {SIGNAL}"
+    delivery = wake.route_wakeup(_wakeup(), transport="sendmessage", live=True, signal=SIGNAL)
+    assert delivery.next == f'SendMessage(to="host-oracle", message={json.dumps(timed)})'
+    assert wake.fallback(_wakeup(), False, SIGNAL).next == RESUME
+
+    sub = subscribe(ORACLE)
+    pushed = wake.route_wakeup(
+        _wakeup(), transport="channel", live=True, channel="launched", hub=hub, signal=SIGNAL
+    )
+    assert pushed.pushed
+    assert sub.events()[0]["content"] == timed
+
+
+def test_a_wake_up_with_no_pointer_gets_no_signal() -> None:
+    delivery = wake.route_wakeup(
+        _wakeup(pointer=None), transport="sendmessage", live=True, signal=SIGNAL
+    )
+    assert delivery.next == 'SendMessage(to="host-oracle")'
+
+
+def _age_run(ledger: Ledger, seconds: int, budget: int | None = None) -> None:
+    snapshot = json.loads(ledger.conn.execute("SELECT settings_json FROM runs").fetchone()[0])
+    snapshot["time_budget_minutes"] = budget
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE runs SET started_at = ?, settings_json = ?",
+            (watchdog.stamp(NOW - timedelta(seconds=seconds)), json.dumps(snapshot)),
+        )
+
+
+def _member(ledger: Ledger, agent_id: str, role: str, name: str | None = None) -> None:
+    name = name or f"{role}-1"
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "INSERT INTO agents (agent_id, name, role, run_id, state, session_name, "
+            "parent_agent_id) VALUES (?, ?, ?, 1, 'idle', ?, ?)",
+            (agent_id, name, role, f"host-{name}", MANAGER),
+        )
+
+
+@pytest.mark.parametrize("budget,expected", [(None, "elapsed 340s"), (20, SIGNAL)])
+def test_the_signal_measures_from_the_run_start_against_the_budget(
+    ledger: Ledger, listing: list[dict], budget: int | None, expected: str
+) -> None:
+    _bootstrap(ledger, listing)
+    _age_run(ledger, 340, budget)
+    assert wake.time_signal(ledger.conn, 1, NOW) == expected
+
+
+@pytest.mark.parametrize(
+    "role,timed", [("lead", False), ("coder", False), ("driver", False), ("manager", True)]
+)
+def test_only_the_oracle_and_a_manager_get_the_signal(
+    ledger: Ledger, listing: list[dict], role: str, timed: bool
+) -> None:
+    _bootstrap(ledger, listing)
+    _age_run(ledger, 340, 20)
+    assert wake.signal_for(ledger.conn, ORACLE, NOW) == SIGNAL
+    _member(ledger, f"{role}-agent", role, f"{role}-9")
+    assert wake.signal_for(ledger.conn, f"{role}-agent", NOW) == (SIGNAL if timed else None)
+
+
+def test_next_carries_the_signal_for_a_manager_and_none_for_a_lead(
+    ledger: Ledger, listing: list[dict]
+) -> None:
+    _bootstrap(ledger, listing)
+    _member(ledger, "lead-agent", "lead")
+    _running(listing, "lead-agent", "host-lead-1")
+
+    to_manager = ledger.message_post("oracle", ORACLE, "manager-1", "phase-1 changed")
+    to_lead = ledger.message_post("manager-1", MANAGER, "lead-1", "module changed")
+
+    assert re.search(r' elapsed \d+s"\)$', to_manager["next"])
+    assert "elapsed" not in to_lead["next"]
+    assert all("elapsed" not in w["pointer"] for w in _wakeups(ledger))
+
+
+def test_agent_resume_ends_a_managers_message_with_the_signal(
+    ledger: Ledger, listing: list[dict], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _bootstrap(ledger, listing)
+    ledger.message_post("oracle", ORACLE, "manager-1", "phase-1 changed")
+    listing[:] = [e for e in listing if e["sessionId"] != MANAGER]
+    sent: list[str] = []
+    monkeypatch.setattr(
+        sessions, "resume", lambda agent_id, message, **_: sent.append(message) or None
+    )
+
+    result = ledger.agent_resume("oracle", ORACLE, "manager-1")
+
+    assert re.search(r"\. elapsed \d+s$", result["message"])
+    assert sent == [result["message"]]
+
+
+def test_each_watch_line_ends_with_the_signal(ledger: Ledger, listing: list[dict]) -> None:
+    _bootstrap(ledger, listing)
+    _age_run(ledger, 340, 20)
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "INSERT INTO directives (run_id, source, sender_name, body) "
+            "VALUES (1, 'watchdog', 'watchdog', 'Watchdog finding stuck')"
+        )
+
+    keep, lines = watch.poll(ledger.conn, NOW)
+
+    assert keep
+    assert lines == [f"Watchdog directive 1: Watchdog finding stuck {SIGNAL}"]
 
 
 # -- confirmation ----------------------------------------------------------------------------
@@ -528,7 +664,7 @@ def test_stop_blocks_an_old_unconfirmed_push_with_send_message(
 
     assert blocked is not None and blocked["decision"] == "block"
     send = f"SendMessage(to={json.dumps(ORACLE_SESSION)}, message={json.dumps(wakeup['pointer'])})"
-    assert f"- {send}" in blocked["reason"]
+    assert f"- {send}" in _untimed(blocked["reason"])
     assert "Nothing to send" not in blocked["reason"]
     assert _wakeups(ledger)[0]["sent_at"] is None
 
