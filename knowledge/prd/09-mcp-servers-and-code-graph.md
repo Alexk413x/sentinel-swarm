@@ -17,6 +17,11 @@
   (`agentfiles.OPTIONAL_SERVERS` for a11y, `agentfiles.DRIVER_OPTIONAL_SERVERS` for the
   Driver's own, joined only when `role == "driver"`). Every other role's session never
   gets them, even when the plugins are installed. **(proposed)**
+- The Driver's own servers are keyed by the name a plugin install gives them,
+  `plugin_<plugin>_<server>`: `plugin_cartographer_cartographer`,
+  `plugin_android-driver_android-driver-kg`, and so on. Their tools then carry the
+  `mcp__plugin_…` names that cartographer's agents grant and its hooks match. The a11y
+  servers keep their bare keys until a11y renames its tools to the plugin form.
 - An Oracle launch that carries the channel also lists `swarm-events`, the stdio entry
   `python .sentinel-swarm/hook.py channel`. It has no tools. No other launch lists it.
   See "Wake-up delivery" in [05-sessions.md](05-sessions.md). **(proposed)**
@@ -58,7 +63,9 @@
 
 ## The code graph
 
-codebase-kg is a required dependency (`>=0.7.0`). An up-to-date graph lets each agent
+codebase-kg is a required dependency (`>=0.8.2`). 0.8.2 is the floor because it is the
+first release whose relay shares one server per machine and runs on Windows (the
+`.cmd` fix); 0.7.x starts its own `uv run` servers in every session. An up-to-date graph lets each agent
 find what exists while many agents change the code at once. The graph file,
 `knowledge/code_graph.db`, belongs to the host repo and is committed with its code.
 
@@ -73,6 +80,8 @@ find what exists while many agents change the code at once. The graph file,
   in the ledger process, through `uv run` in the `mcp` folder of the highest numbered
   version under `~/.claude/plugins/cache/codebase-kg/codebase-kg/`, or in
   `SENTINEL_SWARM_KG_ROOT`. **(mechanism proposed)**
+- Setup sets `post_edit_nudge: false` in the host's `.claude/codebase-kg.local.md`, so
+  codebase-kg's edit hook does not send a Coder to `/codebase-kg:refresh`.
 - A node that anchors on several files is updated through the Lead. **(proposed)**
 - Anchors are `"<path>#<Symbol>"` for every top-level function and class. A file with no
   functions or classes is anchored by its path alone: `"anchors": ["<path>"]`. A Coder

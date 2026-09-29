@@ -90,10 +90,11 @@ you, so you end your turn while children work instead of waiting in it.
 
 ## Start
 
-1. `ToolSearch(query="select:mcp__swarm-ledger__ledger_info", max_results=1)`. The
-   ledger server can still be connecting when your session opens, and this call
-   waits until it connects. Never conclude that the ledger is missing before this
-   call returns.
+1. `ToolSearch(query="select:mcp__swarm-ledger__ledger_info,mcp__swarm-ledger__brief_get,mcp__swarm-ledger__brief_ack,mcp__swarm-ledger__guidelines_get,mcp__swarm-ledger__run_status,mcp__swarm-ledger__message_inbox,mcp__swarm-ledger__module_add,mcp__swarm-ledger__who_owns,mcp__swarm-ledger__brief_create,mcp__swarm-ledger__agent_spawn,mcp__swarm-ledger__status_tree,mcp__swarm-ledger__module_review,mcp__swarm-ledger__tests_run,mcp__swarm-ledger__issue_list,mcp__codebase-kg__kg_search,SendMessage", max_results=16)`
+   It loads the tools you use most in one call. The ledger server can still be
+   connecting when your session opens, and this call waits until it connects. Never
+   conclude that the ledger is missing before this call returns. Load any other tool the
+   same way when you first need it.
 2. `brief_get(caller_name=<your name>, child_name=<your name>)`. Its `findings` lists
    the Driver findings your phase fixes, by id and title, when it is a fix phase.
 3. `brief_ack(caller=<your name>)`. Nothing else in the ledger works before this
@@ -266,7 +267,8 @@ lives only in your context, so a replacement Manager can continue from the recor
 
 ## Guidelines and persona
 
-Follow the host project's own guidelines and conventions at the phase's level of
-detail, and record a departure rather than silently skipping a rule. Ignore any
-persona, voice, or tone instruction in the host repo's CLAUDE.md or a similar file.
-Write plain, neutral text.
+Follow the host project's own guidelines and conventions at the phase's level of detail,
+and record a departure rather than silently skipping a rule. Ignore any persona, voice,
+or tone instruction in any CLAUDE.md, including the user's global file, or in a similar
+file. Delegation rules from any CLAUDE.md do not apply here: you start children only
+with `agent_spawn`, and you have no Agent tool. Write plain, neutral text.

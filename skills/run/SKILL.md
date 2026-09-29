@@ -1,6 +1,7 @@
 ---
 name: run
 description: How to start a sentinel-swarm run that takes a PRD to built, tested, reviewed code. Use for "run the swarm", "start sentinel-swarm on this PRD", "build this PRD with the swarm", or "take this PRD to done".
+disable-model-invocation: true
 ---
 
 # run
@@ -38,7 +39,7 @@ When the PRD is long, save it to a file in the repo and pass a prompt that names
 file, for example `"Build the PRD in docs/prd.md."`.
 
 The launcher writes the role files first when any is missing, and it refuses to start
-a background run in an untrusted repo. When it refuses, show the user the command it
+a background or headless run in an untrusted repo. When it refuses, show the user the command it
 prints and stop.
 
 Two other modes, for a user who runs the launcher from a terminal:

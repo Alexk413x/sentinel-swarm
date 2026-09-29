@@ -53,9 +53,9 @@ if [ "$mode" = results ]; then
   exit "$rc"
 fi
 
-# A background session cannot answer the trust prompt. Checking first also keeps the launcher
-# from printing the trust command a second time after setup.
-if [ "$mode" = bg ]; then
+# A background or headless session cannot answer the trust prompt, and -p does not count as
+# accepting it. Checking first also keeps the launcher from printing the trust command twice.
+if [ "$mode" = bg ] || [ "$mode" = headless ]; then
   mkdir -p "$host"
   uv run --quiet --project "$(win "$root/mcp")" \
     python -m swarm_ledger.setup --check-trust --repo "$(win "$host")" || exit 1

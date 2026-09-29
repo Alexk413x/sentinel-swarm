@@ -13,7 +13,7 @@ from ..agentfiles import plugin_installed
 from ..db import ensure_git_exclude, write_tx
 from ..identity import ROLES, LedgerError
 from ..ledger import Ledger
-from ..watchdog import MONITOR_CALL, WATCH_COMMAND, parse_stamp, utcnow
+from ..watchdog import MONITOR_CALL, REGISTER_GRACE, WATCH_COMMAND, parse_stamp, utcnow
 
 _CODEBASE_KG_PLUGIN = "codebase-kg@codebase-kg"
 
@@ -24,7 +24,9 @@ _POSIX = os.name != "nt"
 _UNSTAMPED_TOOLS = frozenset({"ledger_info", "brief_get", "who_owns", "directive_submit", "events"})
 # The Driver is the one role with an Agent tool, and only for cartographer's own
 # subagents: it never runs a subagent of its own or any other plugin's.
-_DRIVER_SUBAGENTS = frozenset({"map-driver", "map-reviewer"})
+_DRIVER_SUBAGENTS = frozenset(
+    {"map-driver", "map-reviewer", "cartographer:map-driver", "cartographer:map-reviewer"}
+)
 _SHELL_OPERATORS = re.compile(r"[;&|<>`\n]|\$\(")
 _LIVE_RUN = "state IN ('active', 'paused')"
 _PAUSE_HINT = "If the run is blocked on something only the user can fix, call run_pause(reason)."
@@ -779,6 +781,21 @@ def _watch_unarmed(run: dict) -> bool:
     return expires is not None and expires - now <= _WATCH_RENEW
 
 
+def _child_starting(live: list[dict]) -> bool:
+    now = utcnow()
+    recent = [
+        a
+        for a in live
+        if a["state"] == "registered"
+        and (started := parse_stamp(a.get("started_at"))) is not None
+        and now - started <= REGISTER_GRACE
+    ]
+    if not recent:
+        return False
+    live_ids = _live_session_ids()
+    return live_ids is None or any(a["agent_id"] in live_ids for a in recent)
+
+
 def _oracle_work_block(ledger: Ledger, run: dict, oracle: dict) -> dict | None:
     needs_user = ledger.conn.execute(
         "SELECT 1 FROM directives WHERE run_id = ? AND state = 'open' AND outcome = 'needs_user'",
@@ -795,7 +812,7 @@ def _oracle_work_block(ledger: Ledger, run: dict, oracle: dict) -> dict | None:
             (run["run_id"],),
         )
     ]
-    if any(a["state"] == "working" for a in live):
+    if any(a["state"] == "working" for a in live) or _child_starting(live):
         return None
 
     plan_unlocked = ledger.plan_unlocked(oracle["name"], oracle["agent_id"])

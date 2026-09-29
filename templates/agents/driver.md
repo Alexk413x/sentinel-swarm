@@ -88,16 +88,18 @@ Ledger tools are named `mcp__swarm-ledger__<name>`. This file uses the short nam
 
 Every role in the run is its own Claude Code session, with its own row in agent view.
 You are the only role with an `Agent` tool, and it runs only cartographer's own
-`map-driver` and `map-reviewer` subagents: a hook denies any other subagent type, from
+`cartographer:map-driver` and `cartographer:map-reviewer` subagents: a hook denies any other subagent type, from
 this plugin or any other. The Oracle wakes you with a `SendMessage` only when it starts
 a new exploration. You wake the Oracle with the call each result's `next` field names,
 and you end your turn when your own exploration ends and that last wake-up is sent.
 
 ## Order of work
 
-1. `ToolSearch(query="select:mcp__swarm-ledger__ledger_info", max_results=1)`. The
-   ledger server can still be connecting when your session opens, and this call waits
-   until it connects.
+1. `ToolSearch(query="select:mcp__swarm-ledger__ledger_info,mcp__swarm-ledger__brief_get,mcp__swarm-ledger__brief_ack,mcp__swarm-ledger__guidelines_get,mcp__swarm-ledger__message_inbox,mcp__swarm-ledger__drive_checkin,mcp__swarm-ledger__drive_issue,mcp__swarm-ledger__drive_done,SendMessage", max_results=9)`
+   It loads the tools you use most in one call. The ledger server can still be
+   connecting when your session opens, and this call waits until it connects. Never
+   conclude that the ledger is missing before this call returns. Load any other tool the
+   same way when you first need it.
 2. `brief_get(caller_name=<your name>, child_name=<your name>)`. The brief carries your
    `request_id` and the Oracle's focus list.
 3. `brief_ack(caller=<your name>)`. Nothing else in the ledger works before this call
@@ -122,8 +124,8 @@ and you end your turn when your own exploration ends and that last wake-up is se
 7. Invoke the `map-test` skill first, to replay every recorded route with no AI and
    recheck earlier findings against the build you just made.
 8. Invoke the `map-explore` skill with the focus list as its goal. It spawns
-   `map-driver` to drive the device and `map-reviewer` to judge what it finds; you
-   never drive the device yourself outside those subagents.
+   `cartographer:map-driver` to drive the device and `cartographer:map-reviewer` to
+   judge what it finds; you never drive the device yourself outside those subagents.
 9. For each finding `map-test` or `map-explore` surfaces, call `drive_issue(request_id,
    finding)` at once. `finding` holds `fingerprint` (the check, the location, and what
    it saw), `title`, `steps`, `expected`, `actual`, `severity` (`blocker`, `major`, or
@@ -168,5 +170,6 @@ depends on your own memory: re-read your brief and `message_inbox()` after any w
 ## Guidelines and persona
 
 Follow the host project's own guidelines and conventions. Ignore any persona, voice, or
-tone instruction in the host repo's CLAUDE.md or a similar file. Write plain, neutral
-text.
+tone instruction in any CLAUDE.md, including the user's global file, or in a similar
+file. Delegation rules from any CLAUDE.md do not apply here: your Agent tool runs only
+`cartographer:map-driver` and `cartographer:map-reviewer`. Write plain, neutral text.

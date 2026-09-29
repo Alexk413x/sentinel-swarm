@@ -77,7 +77,9 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
   `.sentinel-swarm/` to the git excludes.
 - `pre_agent`: denies `Agent` to every swarm session, unconditionally, except a Driver
   session calling cartographer's `map-driver` or `map-reviewer` subagent, which it
-  allows. No override rule covers it: the rule that no role runs an arbitrary subagent
+  allows under the bare name or the plugin form (`cartographer:map-driver`,
+  `cartographer:map-reviewer`). Another plugin's agent of the same name is denied.
+  No override rule covers it: the rule that no role runs an arbitrary subagent
   has no legitimate exception, so `pre_agent` never calls `override_consume`.
   **(proposed)**
 - `pre_send_message`: denies a `SendMessage` whose `to` does not name a registered

@@ -1,6 +1,7 @@
 ---
 name: resume
 description: Continues an unfinished sentinel-swarm run from its ledger records, after a pause or a crash. Use for "resume the swarm run", "continue the last run", "pick the swarm back up", or "a swarm session died".
+disable-model-invocation: true
 ---
 
 # resume

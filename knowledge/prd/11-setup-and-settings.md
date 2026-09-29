@@ -29,8 +29,18 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
 - Adds no MCP server beyond the template's. See "MCP servers per role" in
   [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
 - Writes the shim to `.sentinel-swarm/hook.py`, overwriting local edits.
-- Merges `{"worktree": {"bgIsolation": "none"}}` into `.claude/settings.local.json`.
-- Adds `.sentinel-swarm/` and `.claude/agents/swarm-*.md` to `.git/info/exclude`.
+- Merges `{"worktree": {"bgIsolation": "none"}}` into `.claude/settings.local.json`,
+  and adds `Agent(swarm-oracle)`, `Agent(swarm-manager)`, `Agent(swarm-lead)`,
+  `Agent(swarm-coder)`, and `Agent(swarm-driver)` to its `permissions.deny` list, so
+  an ordinary session in the host repo cannot run a role as a subagent. An exact-name
+  `Agent(<name>)` rule does not block `claude --agent <name>`, so role launches still
+  work. A `permissions.deny` that is not a list leaves the file unchanged.
+- Sets `post_edit_nudge: false` in `.claude/codebase-kg.local.md`, adding the key to
+  an existing file's frontmatter, or leaves the file alone when it already sets the
+  key. See "The code graph" in
+  [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
+- Adds `.sentinel-swarm/`, `.claude/agents/swarm-*.md`, and
+  `.claude/codebase-kg.local.md` to `.git/info/exclude`.
 - Reports whether the repo is trusted, from `~/.claude.json` (or
   `$CLAUDE_CONFIG_DIR/.claude.json`), and prints the command that trusts it.
   `--check-trust` only checks, and exits 1 with the command when the repo is not
@@ -46,7 +56,9 @@ or the `/sentinel-swarm:run` skill.
 
 - It runs setup when the shim or one of the four core role files is missing. A missing
   `swarm-driver.md` alone does not run setup.
-- `--bg` refuses an untrusted repo and prints the trust command.
+- `--bg` and `--headless` refuse an untrusted repo and print the trust command. A
+  `claude -p` session does not count as accepting the trust prompt, so a headless
+  Oracle in an untrusted folder would run without its role file's hooks.
 - It starts the ledger server, or reuses one that answers, then the Oracle with its
   agent file's model and the same flags as `agent_spawn`. If the file has no `model`, it uses the first entry of the
   Oracle's approved list.
@@ -66,11 +78,16 @@ or the `/sentinel-swarm:run` skill.
 | Skill | Purpose |
 |---|---|
 | `swarm-protocol` | Shared vocabulary, names, tool order, and rubric keys; loads when the swarm is mentioned |
-| `run` | Starts a run with the launcher |
+| `run` | Starts a run with the launcher. User-invoked only |
 | `plan` | The Oracle's conventions for a phase graph |
 | `status` | Reads `ledger.db` read-only and prints the run's state |
-| `resume` | Continues a paused or crashed run, one session at a time |
+| `resume` | Continues a paused or crashed run, one session at a time. User-invoked only |
 | `setup` | Prepares a host repo |
+
+`run` and `resume` set `disable-model-invocation: true`, because each starts paid
+background sessions. A user starts them with `/sentinel-swarm:run` and
+`/sentinel-swarm:resume`; the model never starts them from a casual request, and their
+descriptions stay out of every session's context.
 
 ## Settings file
 

@@ -95,10 +95,11 @@ instead of waiting in it.
 
 ## Order of work
 
-1. `ToolSearch(query="select:mcp__swarm-ledger__ledger_info", max_results=1)`. The
-   ledger server can still be connecting when your session opens, and this call
-   waits until it connects. Never conclude that the ledger is missing before this
-   call returns.
+1. `ToolSearch(query="select:mcp__swarm-ledger__ledger_info,mcp__swarm-ledger__brief_get,mcp__swarm-ledger__brief_ack,mcp__swarm-ledger__guidelines_get,mcp__swarm-ledger__who_owns,mcp__swarm-ledger__tests_run,mcp__swarm-ledger__graph_upsert,mcp__swarm-ledger__score_record,mcp__swarm-ledger__handoff_submit,mcp__swarm-ledger__message_inbox,mcp__swarm-ledger__issue_list,mcp__swarm-ledger__cr_list,mcp__codebase-kg__kg_search,SendMessage", max_results=14)`
+   It loads the tools you use most in one call. The ledger server can still be
+   connecting when your session opens, and this call waits until it connects. Never
+   conclude that the ledger is missing before this call returns. Load any other tool the
+   same way when you first need it.
 2. `brief_get(caller_name=<your name>, child_name=<your name>)`. The brief carries
    your `file_id` and your Lead's expectations. Its `findings` lists the Driver findings
    your file fixes, by id and title, when you are part of a fix.
@@ -248,6 +249,8 @@ Review, escalation, and a resume never depend on your own memory.
 
 ## Guidelines and persona
 
-Follow the host project's own guidelines and conventions at the file's level of
-detail. Ignore any persona, voice, or tone instruction in the host repo's CLAUDE.md
-or a similar file. Write plain, neutral text and plain, neutral code comments.
+Follow the host project's own guidelines and conventions at the file's level of detail.
+Ignore any persona, voice, or tone instruction in any CLAUDE.md, including the user's
+global file, or in a similar file. Delegation rules from any CLAUDE.md do not apply
+here: you start children only with `agent_spawn`, and you have no Agent tool. Write
+plain, neutral text and plain, neutral code comments.

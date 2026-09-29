@@ -77,3 +77,13 @@
 - 2026-09-27: A Driver that fails to load is a normal blocking issue. It replaces the 2026-09-25 rule that the run then skips explorations with no report entry. `drive_unavailable` files a directive for the Oracle, which tries to resolve the cause; explorations resume once it is fixed, a question to the user blocks until the user answers, and the run skips explorations only when the user decides to go without the Driver. The report shows it only as its directive and its notification.
 - 2026-09-27: Fixes always name their finding ids, so everyone is on the same page with the plan and can keep up with it. While the run has an open finding, every brief the Oracle creates passes `finding_ids`, and an empty list means the brief is not a fix. A missing list or an unknown id is refused, children inherit their parent's list, and every role can see each fix's finding ids and titles.
 - 2026-09-27: The Oracle is woken directly when the Driver ends an exploration (clean, stopped by a stop rule, or blocked) or reports that it cannot load, the same way `drive_issue` and `drive_checkin` wake it. The Oracle's watchdog `Monitor` stays, for the events no role session sends.
+- 2026-09-28: The Driver's session registers cartographer's and the driver plugins' servers under their plugin-install keys (`plugin_<plugin>_<server>`), so cartographer's agents and gates see the tool names they grant. a11y keeps its bare keys until it renames its tools.
+- 2026-09-28: `pre_agent` accepts cartographer's agents under their bare and their `cartographer:` names, and denies another plugin's agent of the same name.
+- 2026-09-28: Every role template tells the role to ignore persona instructions in any CLAUDE.md, including the user's global file, and that CLAUDE.md delegation rules do not apply.
+- 2026-09-28: Setup sets `post_edit_nudge: false` in the host's `.claude/codebase-kg.local.md`, and denies `Agent(swarm-<role>)` for every role in `.claude/settings.local.json`.
+- 2026-09-28: Each role's first `ToolSearch` loads its working set of tools in one `select:` call.
+- 2026-09-28: The Oracle's Stop hook counts a child that is still `registered`, was spawned within `REGISTER_GRACE`, and whose session runs, as working.
+- 2026-09-28: sentinel-swarm requires codebase-kg `>=0.8.2`.
+- 2026-09-28: `--headless` refuses an untrusted repo, like `--bg`.
+- 2026-09-28: The `run` and `resume` skills are user-invoked only (`disable-model-invocation: true`).
+- 2026-09-28: `claude plugin validate --strict` runs on the marketplace and the plugin before each commit, and in CI as a backup. The dev `CLAUDE.md` lives at `.claude/CLAUDE.md`.

@@ -89,7 +89,9 @@ Coder, or Driver that still owes one. The message only points at the ledger reco
 
 ## The first call in every session
 
-`ToolSearch(query="select:mcp__swarm-ledger__ledger_info", max_results=1)`. The
+`ToolSearch(query="select:<the role's working set>")`, with every tool the role uses
+most in one comma-separated `select:` list, starting with
+`mcp__swarm-ledger__ledger_info`. Each role template's first step names its list. The
 ledger server can still be connecting when a session opens, and this call waits until
 it connects.
 

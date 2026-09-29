@@ -138,8 +138,11 @@ def test_present_role_files_skip_setup(env, monkeypatch: pytest.MonkeyPatch):
     assert launch.main(["--repo", str(env["repo"]), "go"]) == 0
 
 
-def test_bg_refuses_an_untrusted_repo(env, capsys: pytest.CaptureFixture[str]):
-    code = launch.main(["--repo", str(env["repo"]), "--bg", "go"])
+@pytest.mark.parametrize("flag", ["--bg", "--headless"])
+def test_bg_and_headless_refuse_an_untrusted_repo(
+    env, capsys: pytest.CaptureFixture[str], flag: str
+):
+    code = launch.main(["--repo", str(env["repo"]), flag, "go"])
 
     assert code == 1
     assert env["run"].calls == []
@@ -176,6 +179,7 @@ def test_bg_names_the_oracle_session_after_the_repo(env, capsys: pytest.CaptureF
 
 
 def test_headless_pipes_the_prompt_into_the_transcript(env, tmp_path: Path):
+    _trust(env["config"], env["repo"])
     transcript = tmp_path / "out" / "transcript.jsonl"
 
     code = launch.main(

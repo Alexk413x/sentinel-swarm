@@ -3,8 +3,8 @@
 Read `knowledge/prd/README.md` first. The `knowledge/prd/` folder is the source of
 truth for how sentinel-swarm works, one document per subject: roles, the run lifecycle,
 scoring, agreements, sessions, the ledger server, hooks, the watchdog, MCP servers, the
-report, setup, and testing. The code graph maps every document, so `kg_search` finds
-the one for a subject. `plans/` holds only plans for work not built yet.
+report, setup, and testing. The code graph maps every document, so codebase-kg's
+`kg_search` finds the one for a subject. `plans/` holds only plans for work not built yet.
 
 ## Layout
 
@@ -63,7 +63,9 @@ the one for a subject. `plans/` holds only plans for work not built yet.
   line to `14-key-decisions.md`. When you add or rename a document, update the table in
   `knowledge/prd/README.md` and refresh the code graph.
 - Before committing, run the four checks from `mcp/`: `uv run pytest`, `uv run
-  pyright`, `uv run ruff check`, `uv run ruff format --check`.
+  pyright`, `uv run ruff check`, `uv run ruff format --check`. Then run `claude plugin
+  validate --strict .` and `claude plugin validate --strict .claude-plugin/plugin.json`
+  from the repo root. Local results are the gate; CI is a backup.
 - `mcp/tests/test_plugin_surface.py` guards the surface contract described here:
   the role templates' frontmatter and hooks, the empty `hooks.json`, and the plugin
   manifest fields.

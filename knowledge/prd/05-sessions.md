@@ -176,6 +176,10 @@ and the launcher then loads no channel.
 - Otherwise it never blocks while the run is paused.
 - It does not block for pending work while any Manager, Lead, or Coder is working:
   waiting on running children is a valid stop. **(proposed)**
+- A child that is still `registered`, was spawned no more than 2 minutes ago
+  (`REGISTER_GRACE`), and whose session is running counts as working, because it has
+  not yet acknowledged its brief. The Oracle then stops instead of waking a child that
+  is starting. A child that never starts is reported by the watchdog.
 - It does not block for pending work while a directive waits on the user, with outcome
   `needs_user`. **(proposed)**
 - Otherwise it blocks while the run has unlocked phases, submitted handoffs, live file

@@ -23,8 +23,11 @@ TEMPLATES_DIR = PLUGIN_ROOT / "templates"
 SHIM_TEMPLATE = TEMPLATES_DIR / "hook_shim.py"
 SHIM_PATH = Path(".sentinel-swarm") / "hook.py"
 SETTINGS_LOCAL_PATH = Path(".claude") / "settings.local.json"
-EXCLUDE_LINES = (".sentinel-swarm/", ".claude/agents/swarm-*.md")
+KG_SETTINGS_PATH = Path(".claude") / "codebase-kg.local.md"
+EXCLUDE_LINES = (".sentinel-swarm/", ".claude/agents/swarm-*.md", KG_SETTINGS_PATH.as_posix())
 WORKTREE_SETTINGS: dict[str, Any] = {"worktree": {"bgIsolation": "none"}}
+# Exact names: an Agent(<name>) deny blocks the Agent tool but not a `claude --agent` launch.
+ROLE_AGENT_DENY = tuple(f"Agent(swarm-{role})" for role in ROLES)
 
 _KEY_LINE = re.compile(r"^([A-Za-z_][\w-]*)\s*:")
 _HOOK_EVENT_LINE = re.compile(r"^  ([A-Za-z]+):\s*$")
@@ -235,11 +238,45 @@ def merge_settings_local(repo: Path, report: SetupReport) -> None:
             report.add(f"left {shown} unchanged: it is not a JSON object")
             return
     merged = _deep_merge(data, WORKTREE_SETTINGS)
+    permissions = merged.get("permissions", {})
+    deny = permissions.get("deny", []) if isinstance(permissions, dict) else None
+    if not isinstance(deny, list):
+        report.add(f"left {shown} unchanged: its permissions.deny is not a list")
+        return
+    merged["permissions"] = {
+        **permissions,
+        "deny": [*deny, *(rule for rule in ROLE_AGENT_DENY if rule not in deny)],
+    }
     if path.is_file() and merged == data:
         report.add(f"unchanged {shown}")
         return
     _write_text(path, json.dumps(merged, indent=2) + "\n")
-    report.add(f"set worktree.bgIsolation to none in {shown}")
+    report.add(f"set worktree.bgIsolation to none and denied swarm roles as subagents in {shown}")
+
+
+def quiet_codebase_kg_nudge(repo: Path, report: SetupReport) -> None:
+    path = repo / KG_SETTINGS_PATH
+    shown = KG_SETTINGS_PATH.as_posix()
+    block = "---\npost_edit_nudge: false\n---\n"
+    text = path.read_text(encoding="utf-8") if path.is_file() else None
+    if text is None:
+        _write_text(path, block)
+    else:
+        try:
+            head, _ = split_document(text)
+        except SetupError:
+            head = None
+        if head is None:
+            _write_text(path, block + text)
+        elif "post_edit_nudge" in key_blocks(head):
+            report.add(f"unchanged {shown}: post_edit_nudge is already set")
+            return
+        else:
+            first = text.index("\n") + 1
+            _write_text(path, text[:first] + "post_edit_nudge: false\n" + text[first:])
+    report.add(
+        f"set post_edit_nudge: false in {shown} (the host's own sessions lose the nudge too)"
+    )
 
 
 def ensure_excludes(repo: Path, report: SetupReport) -> None:
@@ -301,6 +338,7 @@ def run_setup(repo: Path) -> SetupReport:
     write_role_files(repo, report)
     write_shim(repo, report)
     merge_settings_local(repo, report)
+    quiet_codebase_kg_nudge(repo, report)
     ensure_excludes(repo, report)
     report.trusted = is_trusted(repo)
     report.trust_note = f"{repo} is trusted" if report.trusted else trust_instructions(repo)

@@ -122,8 +122,8 @@ def launch(repo: Path, prompt: str, mode: Mode, transcript: Path | None = None) 
     repo = repo.resolve()
     if _needs_setup(repo):
         report = setup.run_setup(repo)
-        print(report.text(with_trust=mode != "bg" or report.trusted))
-    if mode == "bg" and not setup.is_trusted(repo):
+        print(report.text(with_trust=mode == "interactive" or report.trusted))
+    if mode != "interactive" and not setup.is_trusted(repo):
         sys.stderr.write(setup.trust_instructions(repo) + "\n")
         return 1
     name = oracle_session_name(repo)

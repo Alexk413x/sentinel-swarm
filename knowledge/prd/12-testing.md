@@ -11,6 +11,18 @@ uv run ruff check
 uv run ruff format --check
 ```
 
+Then, from the repo root, validate the marketplace and the plugin. Both must pass with
+`--strict`:
+
+```
+claude plugin validate --strict .
+claude plugin validate --strict .claude-plugin/plugin.json
+```
+
+The local run is the gate. CI runs the same checks as a backup. The dev instructions
+live in `.claude/CLAUDE.md`, not at the plugin root, because the validator warns about a
+root `CLAUDE.md`, which a plugin install does not load.
+
 `mcp/tests/test_plugin_surface.py` guards the surface contract: the role templates'
 frontmatter and hooks, the empty `hooks.json`, the manifest fields, the skills'
 frontmatter, and one version across `plugin.json`, `mcp/pyproject.toml`, and the
@@ -38,8 +50,8 @@ run `/reload-plugins`.
   session still has open, so a run never replaces a cached copy another session holds.
 - No flag opens an interactive Oracle. `--bg` checks trust first, then starts a
   background session; `bash scripts/smoke.sh --results` prints the results and then the
-  automated checklist below, with a non-zero exit if a check fails. `--headless` runs
-  `claude -p` and writes `runs/hello/transcript.jsonl` and `runs/hello/stderr.txt`.
+  automated checklist below, with a non-zero exit if a check fails. `--headless` checks trust
+  too, then runs `claude -p` and writes `runs/hello/transcript.jsonl` and `runs/hello/stderr.txt`.
 - The default prompt asks for `hello.py`, which writes `Hello, world!` to
   `hello_world.txt`. After the run, `smoke.sh` runs `hello.py` or `hello_world.py` and
   prints the file, because the shell gate lets the swarm run only test commands.

@@ -17,7 +17,8 @@ _SETUP_HINT = "run /sentinel-swarm:setup"
 OPTIONAL_SERVERS: dict[str, tuple[str, ...]] = {
     "a11y@accessibility-tools": ("a11y-tools", "a11y-kg")
 }
-# (proposed) Joined only into the Driver's own session, never any other role's.
+# (proposed) Joined only into the Driver's own session, never any other role's, under the
+# plugin-install key, so cartographer's agents and gates see the tool names they grant.
 CARTOGRAPHER_PLUGIN = "cartographer@cartographer"
 DRIVER_PLUGINS = (
     "android-driver@accessibility-tools",
@@ -63,16 +64,30 @@ def plugin_installed(repo_root: Path, plugin_id: str) -> bool:
     )
 
 
+def _plugin_key(plugin_id: str, server: str) -> str:
+    return f"plugin_{plugin_id.split('@', 1)[0]}_{server}"
+
+
 def optional_servers(repo_root: Path, role: str | None = None) -> dict[str, Any]:
-    groups = dict(OPTIONAL_SERVERS)
-    if role == "driver":
-        groups.update(DRIVER_OPTIONAL_SERVERS)
-    return {
-        server: {"command": "python", "args": [".sentinel-swarm/hook.py", "mcp", plugin, server]}
-        for plugin, servers in groups.items()
+    def entry(plugin: str, server: str) -> dict[str, Any]:
+        return {"command": "python", "args": [".sentinel-swarm/hook.py", "mcp", plugin, server]}
+
+    servers = {
+        server: entry(plugin, server)
+        for plugin, names in OPTIONAL_SERVERS.items()
         if plugin_installed(repo_root, plugin)
-        for server in servers
+        for server in names
     }
+    if role == "driver":
+        servers.update(
+            {
+                _plugin_key(plugin, server): entry(plugin, server)
+                for plugin, names in DRIVER_OPTIONAL_SERVERS.items()
+                if plugin_installed(repo_root, plugin)
+                for server in names
+            }
+        )
+    return servers
 
 
 def driver_available(repo_root: Path) -> bool:

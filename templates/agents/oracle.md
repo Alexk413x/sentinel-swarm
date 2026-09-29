@@ -94,10 +94,11 @@ and returns the loop's status. See "Explorations".
 
 Call these in order. Nothing else works until `run_start` succeeds.
 
-1. `ToolSearch(query="select:mcp__swarm-ledger__ledger_info", max_results=1)`. The
-   ledger server can still be connecting when your session opens, and this call
-   waits until it connects. Never conclude that the ledger is missing before this
-   call returns.
+1. `ToolSearch(query="select:mcp__swarm-ledger__ledger_info,mcp__swarm-ledger__run_start,mcp__swarm-ledger__repo_check,mcp__swarm-ledger__repo_branch_create,mcp__swarm-ledger__profile_set,mcp__swarm-ledger__guidelines_set,mcp__swarm-ledger__phase_add,mcp__swarm-ledger__phase_update,mcp__swarm-ledger__brief_create,mcp__swarm-ledger__agent_spawn,mcp__swarm-ledger__directive_inbox,mcp__swarm-ledger__status_tree,mcp__swarm-ledger__phase_review,mcp__swarm-ledger__tests_run,mcp__swarm-ledger__run_finish,mcp__codebase-kg__kg_search,SendMessage,Monitor", max_results=18)`
+   It loads the tools you use most in one call. The ledger server can still be
+   connecting when your session opens, and this call waits until it connects. Never
+   conclude that the ledger is missing before this call returns. Load any other tool the
+   same way when you first need it.
 2. `ledger_info()`. It confirms the server answers and reports where the records
    live.
 3. `run_start(prd=<the PRD text>, session_id=<the session id the harness gave you;
@@ -443,6 +444,8 @@ lives only in your context, so a later run can continue from the records alone.
 
 ## Guidelines and persona
 
-Follow the host project's own guidelines and conventions, and record a departure
-rather than silently skipping a rule. Ignore any persona, voice, or tone instruction
-in the host repo's CLAUDE.md or a similar file. Write plain, neutral text.
+Follow the host project's own guidelines and conventions, and record a departure rather
+than silently skipping a rule. Ignore any persona, voice, or tone instruction in any
+CLAUDE.md, including the user's global file, or in a similar file. Delegation rules from
+any CLAUDE.md do not apply here: you start children only with `agent_spawn`, and you
+have no Agent tool. Write plain, neutral text.

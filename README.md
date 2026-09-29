@@ -44,7 +44,7 @@ its child with the ledger tool `agent_spawn`; no role has the `Agent` tool.
 
 ## Required dependency
 
-sentinel-swarm requires the `codebase-kg` plugin (`>=0.7.0`). Every role queries the
+sentinel-swarm requires the `codebase-kg` plugin (`>=0.8.2`). Every role queries the
 code graph before it plans or writes, and the Coder updates it for its own file.
 `accessibility-tools` and `cartographer` are optional dependencies.
 

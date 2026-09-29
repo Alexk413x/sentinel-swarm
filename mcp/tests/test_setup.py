@@ -69,7 +69,10 @@ def test_fresh_repo_gets_every_file(repo: Path):
         encoding="utf-8"
     ) == setup.SHIM_TEMPLATE.read_text(encoding="utf-8")
     settings = json.loads((repo / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
-    assert settings == {"worktree": {"bgIsolation": "none"}}
+    assert settings == {
+        "worktree": {"bgIsolation": "none"},
+        "permissions": {"deny": [f"Agent(swarm-{role})" for role in setup.ROLES]},
+    }
     exclude = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8").splitlines()
     assert ".sentinel-swarm/" in exclude
     assert ".claude/agents/swarm-*.md" in exclude
@@ -170,9 +173,83 @@ def test_settings_local_merge_keeps_other_keys(repo: Path):
 
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data == {
-        "permissions": {"allow": ["Read"]},
+        "permissions": {"allow": ["Read"], "deny": list(setup.ROLE_AGENT_DENY)},
         "worktree": {"other": 1, "bgIsolation": "none"},
     }
+
+
+def test_settings_local_merge_keeps_existing_deny_rules_once(repo: Path):
+    path = repo / ".claude" / "settings.local.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"permissions": {"deny": ["Bash(rm:*)", "Agent(swarm-coder)"]}}),
+        encoding="utf-8",
+    )
+
+    setup.run_setup(repo)
+    setup.run_setup(repo)
+
+    deny = json.loads(path.read_text(encoding="utf-8"))["permissions"]["deny"]
+    assert deny[:2] == ["Bash(rm:*)", "Agent(swarm-coder)"]
+    assert sorted(deny[2:] + ["Agent(swarm-coder)"]) == sorted(setup.ROLE_AGENT_DENY)
+
+
+def test_settings_local_with_a_non_list_deny_is_left_alone(repo: Path):
+    path = repo / ".claude" / "settings.local.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"permissions": {"deny": "Bash"}}), encoding="utf-8")
+
+    report = setup.run_setup(repo)
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {"permissions": {"deny": "Bash"}}
+    assert any("permissions.deny is not a list" in line for line in report.lines)
+
+
+def test_setup_turns_off_the_codebase_kg_nudge(repo: Path):
+    path = repo / ".claude" / "codebase-kg.local.md"
+
+    report = setup.run_setup(repo)
+
+    assert path.read_text(encoding="utf-8") == "---\npost_edit_nudge: false\n---\n"
+    assert any(line.startswith("set post_edit_nudge: false") for line in report.lines)
+    exclude = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8").splitlines()
+    assert ".claude/codebase-kg.local.md" in exclude
+
+    again = setup.run_setup(repo)
+    assert path.read_text(encoding="utf-8") == "---\npost_edit_nudge: false\n---\n"
+    assert any("post_edit_nudge is already set" in line for line in again.lines)
+
+
+def test_setup_adds_the_nudge_key_to_existing_codebase_kg_settings(repo: Path):
+    path = repo / ".claude" / "codebase-kg.local.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("---\nroot: app/src\n---\nnotes\n", encoding="utf-8")
+
+    setup.run_setup(repo)
+
+    assert path.read_text(encoding="utf-8") == (
+        "---\npost_edit_nudge: false\nroot: app/src\n---\nnotes\n"
+    )
+
+
+def test_setup_keeps_a_codebase_kg_nudge_the_host_set(repo: Path):
+    path = repo / ".claude" / "codebase-kg.local.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("---\npost_edit_nudge: true\n---\n", encoding="utf-8")
+
+    setup.run_setup(repo)
+
+    assert path.read_text(encoding="utf-8") == "---\npost_edit_nudge: true\n---\n"
+
+
+def test_setup_prepends_frontmatter_to_codebase_kg_settings_without_it(repo: Path):
+    path = repo / ".claude" / "codebase-kg.local.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("plain notes\n", encoding="utf-8")
+
+    setup.run_setup(repo)
+
+    assert path.read_text(encoding="utf-8") == "---\npost_edit_nudge: false\n---\nplain notes\n"
 
 
 def test_invalid_settings_local_is_left_alone(repo: Path):
@@ -206,7 +283,12 @@ def test_excludes_append_to_an_existing_file(repo: Path):
     setup.run_setup(repo)
 
     lines = path.read_text(encoding="utf-8").splitlines()
-    assert lines == ["# git ls-files --others", ".sentinel-swarm/", ".claude/agents/swarm-*.md"]
+    assert lines == [
+        "# git ls-files --others",
+        ".sentinel-swarm/",
+        ".claude/agents/swarm-*.md",
+        ".claude/codebase-kg.local.md",
+    ]
 
 
 def test_not_a_git_checkout_is_reported(tmp_path: Path, config_dir: Path):

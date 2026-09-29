@@ -269,11 +269,11 @@ def test_oracle_may_brief_a_manager_or_a_driver() -> None:
 
 def test_optional_servers_join_driver_plugins_only_for_the_driver_role(host: Path) -> None:
     servers = agentfiles.optional_servers(host, "driver")
-    assert {"cartographer", "web-driver-kg"} <= set(servers)
+    assert {"plugin_cartographer_cartographer", "plugin_web-driver_web-driver-kg"} <= set(servers)
+    assert servers["plugin_cartographer_cartographer"]["args"][-1] == "cartographer"
 
     coder_servers = agentfiles.optional_servers(host, "coder")
-    assert "cartographer" not in coder_servers
-    assert "web-driver-kg" not in coder_servers
+    assert not any("cartographer" in key or "web-driver" in key for key in coder_servers)
 
 
 def test_driver_available_needs_cartographer_and_a_driver_plugin(tmp_path: Path) -> None:
@@ -811,16 +811,22 @@ def test_pre_agent_allows_only_cartographers_subagents_for_a_driver(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
     ctx = _open_request(ledger, claude)
-    for subagent in ("map-driver", "map-reviewer"):
+    for subagent in (
+        "map-driver",
+        "map-reviewer",
+        "cartographer:map-driver",
+        "cartographer:map-reviewer",
+    ):
         data = {"agent_id": ctx["driver_id"], "tool_input": {"subagent_type": subagent}}
         assert events.handle_pre_agent(ledger, data) is None
 
-    denied = events.handle_pre_agent(
-        ledger, {"agent_id": ctx["driver_id"], "tool_input": {"subagent_type": "general-purpose"}}
-    )
-    assert denied is not None
-    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "map-driver" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    for other in ("general-purpose", "other:map-driver"):
+        denied = events.handle_pre_agent(
+            ledger, {"agent_id": ctx["driver_id"], "tool_input": {"subagent_type": other}}
+        )
+        assert denied is not None
+        assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "map-driver" in denied["hookSpecificOutput"]["permissionDecisionReason"]
 
 
 def test_pre_shell_allows_only_the_build_command_for_a_driver(

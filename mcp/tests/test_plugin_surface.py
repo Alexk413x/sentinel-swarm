@@ -234,6 +234,12 @@ def test_skill_file_exists_with_name_and_description(repo_root: Path, name: str)
 
 
 @pytest.mark.parametrize("name", SKILLS)
+def test_only_the_skills_that_start_sessions_are_user_invoked(repo_root: Path, name: str):
+    fields, _ = _split(repo_root / "skills" / name / "SKILL.md")
+    assert fields.get("disable-model-invocation", False) is (name in ("run", "resume"))
+
+
+@pytest.mark.parametrize("name", SKILLS)
 def test_skills_do_not_name_subagents_or_old_prefixes(repo_root: Path, name: str):
     text = (repo_root / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
     assert "mcp__plugin_" not in text

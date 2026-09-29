@@ -948,3 +948,40 @@ def test_token_totals_count_each_response_once_and_price_its_model(tmp_path: Pat
     assert totals["input_tokens"] == 10
     assert totals["tool_uses"] == 1
     assert totals["cost_usd"] == pytest.approx((10 * 2 + 1_000_000 * 10 + 100 * 0.2) / 1e6)
+
+
+def _registered_child(ledger: Ledger, ctx: dict, agent_id: str, age_seconds: int) -> None:
+    ledger.agent_register_start(agent_id, "manager", parent_agent_id=ctx["oracle_id"])
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET run_id = ?, "
+            "started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?) WHERE agent_id = ?",
+            (ctx["run_id"], f"-{age_seconds} seconds", agent_id),
+        )
+
+
+def test_stop_lets_the_oracle_stop_while_a_new_child_starts(
+    ledger: Ledger, claude_sessions: list[dict]
+) -> None:
+    ctx = _bootstrap(ledger)
+    for agent_id in (ctx["lead"]["agent_id"], ctx["manager"]["agent_id"]):
+        _go_idle(ledger, agent_id)
+    _registered_child(ledger, ctx, "mgr-new", age_seconds=10)
+    _running(claude_sessions, "mgr-new", "host-r1-manager-2")
+
+    assert events.handle_stop(ledger, {"session_id": ctx["oracle_id"]}) is None
+
+
+def test_stop_blocks_the_oracle_when_a_new_child_is_not_running_or_is_late(
+    ledger: Ledger, claude_sessions: list[dict]
+) -> None:
+    ctx = _bootstrap(ledger)
+    for agent_id in (ctx["lead"]["agent_id"], ctx["manager"]["agent_id"]):
+        _go_idle(ledger, agent_id)
+    _registered_child(ledger, ctx, "mgr-dead", age_seconds=10)
+    _registered_child(ledger, ctx, "mgr-late", age_seconds=300)
+    _running(claude_sessions, "mgr-late", "host-r1-manager-3")
+
+    blocked = events.handle_stop(ledger, {"session_id": ctx["oracle_id"]})
+    assert blocked is not None
+    assert "none working" in blocked["reason"]

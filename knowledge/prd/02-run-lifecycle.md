@@ -5,8 +5,11 @@
 The launcher starts the ledger server, then the Oracle session with the PRD as its first
 message. The Oracle then calls, in order:
 
-1. `ToolSearch(query="select:mcp__swarm-ledger__ledger_info", max_results=1)`. This
-   call waits for a ledger server that is still connecting. Every role makes it first.
+1. `ToolSearch(query="select:<the role's working set>")`. This call waits for a ledger
+   server that is still connecting. Every role makes it first, with one `select:` that
+   names the ledger tools, the `kg_search` tool, and the deferred built-in tools its
+   template uses most, so the role spends one model turn loading tools instead of
+   one per tool. The list lives in each role template's first step.
 2. `ledger_info()`.
 3. `run_start(prd, session_id)`. It opens the run and registers the Oracle.
 4. `repo_check(fetch)`, then `repo_branch_create(name)` or a question to the user. See
