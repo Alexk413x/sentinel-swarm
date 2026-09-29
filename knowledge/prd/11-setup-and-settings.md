@@ -141,6 +141,7 @@ descriptions stay out of every session's context.
 | `test_command` | empty | Must contain `{target}`, for example `python -m pytest -q -p no:cacheprovider {target}` |
 | `build_command`, `lint_command` | empty | Optional; the Coder's shell gate allows them, and the Driver's allows `build_command` only **(proposed)** |
 | `parallelism_cap` | empty | No limit when empty; also counts other swarms' live sessions on the machine |
+| `time_budget_minutes` | empty | Advisory minutes for the run. Each wake-up and watchdog line for the Oracle or a Manager ends with `elapsed <n>s / <budget>s`, or `elapsed <n>s` when empty. A value that is not a positive whole number reads as empty. See "Time signal" in [05-sessions.md](05-sessions.md) |
 | `base_branch` | empty | `repo_check` tries `main`, then `master` |
 | `effort.<role>` | `medium` for every role | `--effort <level>` for that role's sessions. A settings file with no `effort` key gets `medium` for every role; a role left empty runs at its model's default. A brief's own `effort` overrides it |
 | `prompt_cache_ttl.<role>` | `5m` for the Coder, empty for the others | `promptCacheTtl` (`"5m"` or `"1h"`) for that role's sessions |

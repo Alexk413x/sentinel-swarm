@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TextIO
 
-from . import env, notify
+from . import env, notify, wake
 from .db import connect, write_tx
 from .watchdog import stamp, utcnow
 
@@ -58,7 +58,8 @@ def poll(
     lines = [
         f"Watchdog directive {row['directive_id']}: {' '.join(row['body'].split())}" for row in rows
     ]
-    return True, lines + owed
+    signal = wake.time_signal(conn, run["run_id"], now)
+    return True, [wake.timed(line, signal) for line in lines + owed]
 
 
 def watch(

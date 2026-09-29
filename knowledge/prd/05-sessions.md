@@ -157,6 +157,38 @@ and the launcher then loads no channel.
 - The Coder's Stop hook also blocks once, per Coder, when the Coder stops while working
   with no handoff, and names `handoff_submit` or a `message_post` to its Lead.
 
+## Time signal
+
+Opus 5.5 paces its work to the elapsed time it sees, and a time budget mostly keeps more
+agents working in parallel. Sonnet 5.5 can read text that arrives after a tool result as
+a possible injection. So only the Oracle and the Managers see the elapsed time.
+
+- Every wake-up whose target is the Oracle or a Manager ends with the run's elapsed
+  time, measured from `runs.started_at`: `elapsed <n>s`, or `elapsed <n>s / <budget>s`
+  when `time_budget_minutes` is set. See "Settings file" in
+  [11-setup-and-settings.md](11-setup-and-settings.md).
+- The suffix goes on the delivered text only: the pushed channel event's content, the
+  `SendMessage` message in `next` and in the Stop hook's owed calls, and the message
+  `agent_resume` sends. The `wakeups` row keeps the bare pointer, so transcript
+  confirmation still finds it.
+- `wake.signal_for` gives the suffix only for a target whose role is `oracle` or
+  `manager`. A wake-up for a Lead, a Coder, or a Driver carries none, and no tool
+  result carries a countdown for them.
+- Each line the watchdog listener prints, and the watchdog's own resume message to the
+  Oracle, ends with the same suffix. See [08-watchdog.md](08-watchdog.md).
+- The Oracle and Manager templates explain the suffix where they describe wake-ups, with
+  the sentence "Time matters here: do not spend time that can be avoided, and the
+  earlier a correct result is obtained, the better." Saving time never skips a review,
+  a score, or a test, and every ledger gate still holds.
+- The budget is advisory. Nothing stops a run at the limit; the watchdog and the
+  escalation budget stay the only controls on a runaway agent.
+- The Driver sees no elapsed time. `drive_issue` and `drive_checkin` return
+  `next_checkin_due_at` and `next_checkin_in_s` instead. See "Explorations" in
+  [02-run-lifecycle.md](02-run-lifecycle.md).
+- The budget comes from the run's settings snapshot, `runs.settings_json`, taken at
+  `run_start`, so a change to the settings file applies to the next run. An old run
+  whose snapshot has no budget shows the elapsed time alone. **(proposed)**
+
 ## Messages
 
 - `message_post(to_name, body)` sends to any agent registered in the run and refuses

@@ -260,6 +260,13 @@ when" in [05-sessions.md](05-sessions.md).
   check-in and owes the Oracle a wake-up. The watchdog does not report the Driver as
   stuck while its check-ins arrive within 30 minutes plus a 5-minute grace; see
   [08-watchdog.md](08-watchdog.md). **(proposed)**
+- The Driver cannot see wall time, so `drive_issue` and `drive_checkin` return when the
+  next check-in is due, as data: `next_checkin_due_at`, the last check-in (or the
+  exploration's start, with none yet) plus 30 minutes, and `next_checkin_in_s`, the
+  seconds left until then. No sentence is appended to the result. See "Time signal" in
+  [05-sessions.md](05-sessions.md). `next_checkin_in_s` stops at 0 once the check-in is
+  due, and `drive_done` and `drive_unavailable`, which close the exploration, return
+  neither field. **(proposed)**
 - `drive_done(request_id, blocked=None)` ends the exploration, and the Oracle is woken
   directly: the Driver's own wake-up tells it how the exploration ended. The Driver's
   session is released and stopped once that wake-up goes out. The mechanism is

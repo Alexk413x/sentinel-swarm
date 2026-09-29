@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -207,6 +208,11 @@ def _hand_up_and_accept_phase(ledger: Ledger, ctx: Ctx) -> dict:
 
 
 # -- the CLI wrapper ------------------------------------------------------------------------
+
+
+def _untimed(text: str) -> str:
+    assert re.search(r" elapsed \d+s(?: / \d+s)?", text), text
+    return re.sub(r" elapsed \d+s(?: / \d+s)?", "", text)
 
 
 def test_the_binary_comes_from_sentinel_swarm_claude(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -488,7 +494,7 @@ def test_message_post_returns_a_send_message_to_a_running_recipient(
         f"Message {posted['message_id']} from lead-1 is waiting in the ledger; "
         "read it with message_inbox."
     )
-    assert posted["next"] == f'SendMessage(to="{session}", message="{pointer}")'
+    assert _untimed(posted["next"]) == f'SendMessage(to="{session}", message="{pointer}")'
     owed = ledger.owed_wakeups(ctx.lead[1])
     assert [(w["to_name"], w["to_session_name"], w["reason"]) for w in owed] == [
         ("manager-1", session, "message_post")
@@ -515,7 +521,7 @@ def test_phase_update_handed_up_owes_the_oracle_a_wake_up(
     ledger.agent_release(*ctx.manager, ctx.lead[1])
     _accept_module(ledger, ctx)
     phase = ledger.phase_update(*ctx.manager, ctx.phase_id, "handed_up")
-    assert phase["next"] == (
+    assert _untimed(phase["next"]) == (
         'SendMessage(to="my-host-oracle", '
         f'message="Phase {ctx.phase_id} (phase-1) is handed up and waiting in the ledger.")'
     )

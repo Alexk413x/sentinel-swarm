@@ -141,7 +141,9 @@ and you end your turn when your own exploration ends and that last wake-up is se
 10. Every 30 minutes of wall time, call `drive_checkin(request_id, covered, steps,
     notes)` and send the wake-up its `next` field names. The watchdog does not report
     you as stuck while your check-ins are on time; missing one for too long is what
-    makes it report you.
+    makes it report you. Each `drive_issue` and `drive_checkin` result carries
+    `next_checkin_due_at`, the UTC time the next check-in is due, and
+    `next_checkin_in_s`, the seconds left until then (0 once it is due).
 11. When the focus list is covered, or cartographer's `map-explore` has nothing left to
     try, shut the device down and call `drive_done(request_id)`. Make the call its
     `next` field names, then stop. That wake-up tells the Oracle how the exploration

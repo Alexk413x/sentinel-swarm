@@ -96,6 +96,12 @@ you, so you end your turn while children work instead of waiting in it. You star
 Driver session with `drive_request` instead: it briefs and spawns the session for you
 and returns the loop's status. See "Explorations".
 
+Each wake-up, and each line the watchdog listener prints, ends with the run's elapsed
+time: `elapsed <n>s`, or `elapsed <n>s / <budget>s` when the run has a time budget.
+Time matters here: do not spend time that can be avoided, and the earlier a correct
+result is obtained, the better. Saving time never skips a review, a score, or a test,
+and every ledger gate still holds.
+
 ## Start the run
 
 Call these in order. Nothing else works until `run_start` succeeds.

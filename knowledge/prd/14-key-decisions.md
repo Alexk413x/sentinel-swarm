@@ -104,3 +104,6 @@
 - 2026-09-28: The Coder's prompt cache TTL is 5 minutes by default; the other roles keep Claude Code's default.
 - 2026-09-28: The Coder template sets no uncapped self-review loop; the self score, the `tests_run` gate, and the Lead's blind review are its checks.
 - 2026-09-28: The Oracle's phase-planning conventions live in its role template ("Plan the phases"), and the `plan` skill is removed: the Oracle has no `Skill` tool, and `skills:` does not preload under `--agent`.
+- 2026-09-28: Each wake-up and watchdog line delivered to the Oracle or a Manager ends with the run's elapsed time since `runs.started_at`: `elapsed <n>s`, or `elapsed <n>s / <budget>s` when the optional top-level setting `time_budget_minutes` is set. Wake-ups and tool results for a Lead, a Coder, or a Driver carry no elapsed time.
+- 2026-09-28: The Oracle and Manager templates carry the time-signal sentence "Time matters here: do not spend time that can be avoided, and the earlier a correct result is obtained, the better." once, where they describe wake-ups, with the rule that saving time skips no review, score, or test and every ledger gate still holds.
+- 2026-09-28: The Driver's `drive_*` results carry when its next check-in is due as structured fields, `next_checkin_due_at` and `next_checkin_in_s`, not as a sentence appended to the result.
