@@ -193,7 +193,8 @@ and the launcher then loads no channel.
 
 ## Liveness, resume, and release
 
-- A session is running when `claude agents --json` shows a `pid` and its status and
+- A session is running when `claude agents --json` shows a `pid`, or lists it with
+  `kind: "background"` (Claude Code 2.1.284 prints no `pid` for one), and its status and
   state are not `stopped`, `exited`, `crashed`, `failed`, `killed`, `dead`, or
   `completed`. State `done` counts as running.
 - `agent_resume(target_name)` resumes a live agent of the run whose session is not

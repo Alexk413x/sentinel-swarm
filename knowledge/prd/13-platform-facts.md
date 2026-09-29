@@ -131,3 +131,4 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   0.7.0, or 14 with both a11y servers in their `uvx` form, and 15 to 20 MCP-related
   processes in all. (2026-09-25)
 - The Android emulator (`qemu`) used about 3.8 GB of memory. (2026-09-25)
+- Claude Code 2.1.284: `claude agents --json` lists a background session with `id`, `kind: "background"`, `sessionId`, `name`, `cwd`, `startedAt`, and `state`, and no `pid` or `status`. The plain listing holds only active sessions; `--all` adds completed ones. `claude --resume <id> --bg` on a session that is still running starts a copy under a new session id. Verified live 2026-09-28.

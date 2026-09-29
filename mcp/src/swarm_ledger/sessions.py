@@ -94,7 +94,10 @@ def list_sessions() -> list[dict]:
 
 def is_running(entry: dict) -> bool:
     states = {str(entry.get(key) or "").lower() for key in ("status", "state")}
-    return bool(entry.get("pid")) and not (states & _DEAD)
+    # Claude Code 2.1.284 prints no pid for a background session; the plain listing holds only
+    # active ones, so a background entry without a dead state is running.
+    present = bool(entry.get("pid")) or entry.get("kind") == "background"
+    return present and not (states & _DEAD)
 
 
 def find_session(sessions: list[dict], session_id: str) -> dict | None:

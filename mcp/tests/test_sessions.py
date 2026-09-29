@@ -689,3 +689,10 @@ def test_dev_channels_go_last_on_spawn_and_resume(
     tail = ["--dangerously-load-development-channels", "plugin:q@m"]
     assert claude.calls[0][0][-2:] == tail
     assert claude.calls[-1][0] == ["--resume", "3378dc08-full-id", "--bg", "Re-read.", *tail]
+
+
+def test_a_background_entry_without_a_pid_counts_as_running() -> None:
+    entry = {"id": "fda406cd", "kind": "background", "sessionId": "s-1", "state": "blocked"}
+    assert sessions.is_running(entry)
+    assert not sessions.is_running(entry | {"state": "stopped"})
+    assert not sessions.is_running({"kind": "interactive", "sessionId": "s-2", "status": "idle"})
