@@ -2,6 +2,14 @@
 
 ## Install
 
+sentinel-swarm runs in Claude Code only: the CLI, the desktop app, or an IDE extension.
+Every workflow starts `claude --bg` sessions from a local shell, the role gates are
+frontmatter hooks in project agent files, and each host repo runs its own ledger server.
+claude.ai chat ignores agents, hooks, and local servers, and Cowork runs shell commands
+in a VM without the `claude` CLI, so neither surface can run a swarm. The plugin is not
+uploaded to claude.ai or added to organization sync. A future launcher stays out of a
+top-level `bin/` folder.
+
 1. Install sentinel-swarm at project scope in the host repo. `--plugin-dir` is not
    enough, because the launcher does not resolve its agents. codebase-kg must be
    installed too. Install cartographer and a driver plugin (android-driver, ios-driver,

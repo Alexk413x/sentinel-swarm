@@ -6,6 +6,15 @@ PRD to built, tested, reviewed code. Enforced reviews, a shared
 ledger, and a scoring rubric hold every role accountable, and every hand-off
 requires recorded evidence, not a claim.
 
+## Where it runs
+
+sentinel-swarm runs in Claude Code only: the CLI, the desktop app, or an IDE extension,
+on Windows or macOS. Every workflow starts `claude --bg` sessions from a local shell, the
+role gates are hooks in project agent files, and each host repo runs its own ledger
+server. claude.ai chat and Cowork cannot do any of that, so do not upload the plugin to
+claude.ai or add its marketplace to organization sync. Keep any future launcher out of a
+top-level `bin/` folder.
+
 ## Status
 
 Pre-release. A small run works from start to finish: the hello-world smoke test

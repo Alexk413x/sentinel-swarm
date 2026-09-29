@@ -8,7 +8,9 @@ tree. A shared SQLite ledger, served by the `swarm-ledger` MCP server, holds the
 state and every gate. Hooks in each role's agent file make the ledger unavoidable.
 
 The plugin ships as a private marketplace plugin for Alex's own use. It must work on
-Windows and macOS, install into other repos, and adapt to each host project. The swarm
+Windows and macOS, install into other repos, and adapt to each host project. It runs in
+Claude Code only (the CLI, the desktop app, or an IDE extension); see "Install" in
+[11-setup-and-settings.md](11-setup-and-settings.md). The swarm
 writes unit tests only. End-to-end testing is a separate process outside the swarm.
 
 ## How to read these documents

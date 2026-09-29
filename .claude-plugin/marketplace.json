@@ -16,7 +16,7 @@
     {
       "name": "sentinel-swarm",
       "source": ".",
-      "description": "An agent swarm, Oracle, Manager, Lead, Coder, and an optional Driver, that takes a PRD to built, tested, reviewed code through enforced reviews, a shared ledger, and a scoring rubric. Design complete, skeleton only: nothing runs yet.",
+      "description": "An agent swarm, Oracle, Manager, Lead, Coder, and an optional Driver, that takes a PRD to built, tested, reviewed code through enforced reviews, a shared ledger, and a scoring rubric. Runs in Claude Code only (CLI, desktop, or IDE) on Windows or macOS: every role is a local background session with its own hooks and a per-repo ledger server, so claude.ai and Cowork cannot run it.",
       "category": "development",
       "tags": [
         "agent-swarm",

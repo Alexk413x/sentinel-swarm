@@ -99,3 +99,4 @@
 - 2026-09-28: `score_record`'s schema lists the rubric's dimension and criterion keys, and its description no longer repeats them. The ledger keeps its own rating validation and refusal message.
 - 2026-09-28: No ledger tool schema lists `agent_id`. The server's middleware takes the stamped value out of each call and hands it to the tool for that request. `caller`, `targeted`, and `finding_ids` carry parameter descriptions.
 - 2026-09-28: A ledger tool that writes nothing carries `readOnlyHint: true`, so Claude Code runs several of them from one message in parallel. A tool that marks a row read or notified is not read-only.
+- 2026-09-28: sentinel-swarm runs in Claude Code only. The README, the marketplace entry, and PRD 11 say so; the plugin is not uploaded to claude.ai or added to organization sync.
