@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import sqlite3
 import threading
@@ -9,11 +8,14 @@ from collections.abc import AsyncGenerator, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from .agentfiles import CHANNEL_SERVER
 from .clock import parse_stamp, stamp, utcnow
 from .db import write_tx
+
+if TYPE_CHECKING:
+    import asyncio
 
 CHANNEL_ENTRY = f"server:{CHANNEL_SERVER}"
 EVENTS_PATH = "/events"
@@ -150,6 +152,9 @@ def fallback(wakeup: Mapping[str, Any], live: bool | None) -> Delivery:
 async def event_stream(
     hub: EventHub, session_id: str, *, ping_s: float = PING_S
 ) -> AsyncGenerator[bytes, None]:
+    # Imported here: every hook imports this module, and only the server streams events.
+    import asyncio
+
     queue: asyncio.Queue = asyncio.Queue()
     token = hub.subscribe(session_id, asyncio.get_running_loop(), queue)
     try:

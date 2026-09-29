@@ -10,8 +10,8 @@ import pytest
 from swarm_ledger import lock, sessions
 from swarm_ledger.agentfiles import session_options
 from swarm_ledger.db import connect, write_tx
+from swarm_ledger.hooks import HANDLERS as _HANDLERS
 from swarm_ledger.hooks import events
-from swarm_ledger.hooks.__main__ import _HANDLERS
 from swarm_ledger.identity import LedgerError
 from swarm_ledger.ledger import Ledger, looks_like_swarm_session
 from swarm_ledger.settings import load_settings

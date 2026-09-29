@@ -26,6 +26,8 @@ KG_TOOLS = (
 LEDGER_PREFIX = "mcp__swarm-ledger__"
 LEDGER_MODULES = ("ledger", "review", "agreements", "oversight", "drive", "repo")
 ALL_ROLES = frozenset(ROLES)
+SYNC_POST_MATCHER = "SendMessage|PushNotification|Monitor|Write|Edit|MultiEdit|NotebookEdit"
+ASYNC_EVENTS = frozenset({"post_activity"})
 HOOK_TABLE = (
     ("SessionStart", None, "session_start", ALL_ROLES),
     ("PreToolUse", "Agent", "pre_agent", ALL_ROLES),
@@ -34,7 +36,8 @@ HOOK_TABLE = (
     ("PreToolUse", "Monitor", "pre_monitor", ALL_ROLES),
     ("PreToolUse", "SendMessage", "pre_send_message", ALL_ROLES),
     ("PreToolUse", "mcp__swarm-ledger__.*", "pre_ledger", ALL_ROLES),
-    ("PostToolUse", None, "post_any", ALL_ROLES),
+    ("PostToolUse", SYNC_POST_MATCHER, "post_any", ALL_ROLES),
+    ("PostToolUse", None, "post_activity", ALL_ROLES),
     ("PostToolUse", "Bash|PowerShell", "post_shell", frozenset({"coder"})),
     ("PreCompact", None, "pre_compact", ALL_ROLES),
     ("Stop", None, "stop", ALL_ROLES),
@@ -281,11 +284,18 @@ def test_template_hooks_match_the_spec_table(repo_root: Path, role: str):
         if role not in roles:
             continue
         group: dict = {} if matcher is None else {"matcher": matcher}
-        group["hooks"] = [
-            {"type": "command", "command": _hook_command(ledger_event), "timeout": 60}
-        ]
+        hook: dict = {"type": "command", "command": _hook_command(ledger_event), "timeout": 60}
+        if ledger_event in ASYNC_EVENTS:
+            hook["async"] = True
+        group["hooks"] = [hook]
         expected.setdefault(event, []).append(group)
     assert hooks == expected
+
+
+def test_the_sync_post_matcher_names_the_tools_post_activity_skips():
+    from swarm_ledger.hooks.events import SYNC_POST_TOOLS
+
+    assert SYNC_POST_MATCHER.split("|") == list(SYNC_POST_TOOLS)
 
 
 def test_only_the_oracle_lists_monitor(repo_root: Path):

@@ -35,6 +35,16 @@ _HOOK_ITEM_LINE = re.compile(r"^    - ")
 _LEDGER_HOOK = re.compile(r"hook\.py hook (\w+)")
 _TOOLS_LINE = re.compile(r"^tools\s*:\s*\S")
 WHOLE_LEDGER = "mcp__swarm-ledger"
+# Entries an earlier template shipped: setup swaps one it finds unedited for the template's.
+_SUPERSEDED_HOOKS = {
+    "post_any": (
+        "    - hooks:\n"
+        "        - type: command\n"
+        '          command: "python3 .sentinel-swarm/hook.py hook post_any'
+        ' || python .sentinel-swarm/hook.py hook post_any"\n'
+        "          timeout: 60"
+    ),
+}
 
 
 class SetupError(Exception):
@@ -162,6 +172,22 @@ def narrow_ledger_tools(user_frontmatter: str, template_frontmatter: str) -> tup
     return user_frontmatter, False
 
 
+def replace_superseded_hooks(
+    user_frontmatter: str, template_frontmatter: str
+) -> tuple[str, list[str]]:
+    template = {event: text for _, event, text in _hook_entries(template_frontmatter)}
+    replaced: list[str] = []
+    for _, event, text in _hook_entries(user_frontmatter):
+        old = text.rstrip()
+        if event not in template or old != _SUPERSEDED_HOOKS.get(event):
+            continue
+        if old not in user_frontmatter:
+            continue
+        user_frontmatter = user_frontmatter.replace(old, template[event].rstrip(), 1)
+        replaced.append(event)
+    return user_frontmatter, replaced
+
+
 def merge_role_file(existing: str, template: str) -> tuple[str, list[str], bool]:
     user_frontmatter, user_body = split_document(existing)
     template_frontmatter, template_body = split_document(template)
@@ -171,6 +197,8 @@ def merge_role_file(existing: str, template: str) -> tuple[str, list[str], bool]
     added = [key for key in template_keys if key not in user_keys]
     frontmatter = _with_newline(user_frontmatter) + "".join(template_keys[key] for key in added)
     if "hooks" in user_keys:
+        frontmatter, replaced = replace_superseded_hooks(frontmatter, template_frontmatter)
+        added += [f"updated hook {event}" for event in replaced]
         frontmatter, hooks = add_missing_hooks(frontmatter, template_frontmatter)
         added += [f"hook {event}" for event in hooks]
     if narrowed:

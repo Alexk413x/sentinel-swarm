@@ -171,6 +171,40 @@ def test_setup_narrows_a_whole_server_ledger_grant_and_keeps_other_tools(repo: P
     line = next(line for line in report.lines if "swarm-coder.md" in line)
     assert "the role's swarm-ledger tools in place of mcp__swarm-ledger" in line
 
+
+def _old_post_any(timeout: int = 60) -> str:
+    return (
+        "  PostToolUse:\n"
+        "    - hooks:\n"
+        "        - type: command\n"
+        '          command: "python3 .sentinel-swarm/hook.py hook post_any || '
+        'python .sentinel-swarm/hook.py hook post_any"\n'
+        f"          timeout: {timeout}\n"
+    )
+
+
+def _with_old_post_any(template: str, timeout: int = 60) -> str:
+    start = template.index("  PostToolUse:\n")
+    end = template.index("    - matcher:", template.index("hook post_activity"))
+    return template[:start] + _old_post_any(timeout) + template[end:]
+
+
+def _post_tool_use(path: Path) -> list[dict]:
+    return sorted(_frontmatter(path)["hooks"]["PostToolUse"], key=json.dumps)
+
+
+def test_setup_splits_an_unedited_old_post_any_into_the_sync_and_async_entries(repo: Path):
+    template_path = setup.template_file("coder")
+    template = template_path.read_text(encoding="utf-8")
+    path = setup.role_file(repo, "coder")
+    path.parent.mkdir(parents=True)
+    path.write_bytes(_with_old_post_any(template).encode("utf-8"))
+
+    report = setup.run_setup(repo)
+
+    assert _post_tool_use(path) == _post_tool_use(template_path)
+    line = next(line for line in report.lines if "swarm-coder.md" in line)
+    assert "updated hook post_any" in line and "hook post_activity" in line
     merged = path.read_text(encoding="utf-8")
     setup.run_setup(repo)
     assert path.read_text(encoding="utf-8") == merged
@@ -187,6 +221,21 @@ def test_setup_keeps_an_explicit_ledger_tool_list(repo: Path):
     setup.run_setup(repo)
 
     assert _frontmatter(path)["tools"] == "Read, mcp__swarm-ledger__brief_get"
+
+
+def test_setup_keeps_an_edited_post_any_and_adds_post_activity(repo: Path):
+    template = setup.template_file("coder").read_text(encoding="utf-8")
+    path = setup.role_file(repo, "coder")
+    path.parent.mkdir(parents=True)
+    path.write_bytes(_with_old_post_any(template, timeout=30).encode("utf-8"))
+
+    setup.run_setup(repo)
+
+    groups = _frontmatter(path)["hooks"]["PostToolUse"]
+    post_any = [g for g in groups if "hook post_any" in g["hooks"][0]["command"]]
+    assert post_any == [{"hooks": [{**post_any[0]["hooks"][0], "timeout": 30}]}]
+    assert "matcher" not in post_any[0]
+    assert sum("hook post_activity" in g["hooks"][0]["command"] for g in groups) == 1
 
 
 def test_role_file_without_frontmatter_is_left_alone(repo: Path):

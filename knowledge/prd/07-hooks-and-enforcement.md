@@ -19,7 +19,8 @@
 | `PreToolUse` | `Monitor` | `pre_monitor` | all |
 | `PreToolUse` | `SendMessage` | `pre_send_message` | all |
 | `PreToolUse` | `mcp__swarm-ledger__.*` | `pre_ledger` | all |
-| `PostToolUse` | all | `post_any` | all |
+| `PostToolUse` | `SendMessage\|PushNotification\|Monitor\|Write\|Edit\|MultiEdit\|NotebookEdit` | `post_any` | all |
+| `PostToolUse` | all, `async: true` | `post_activity` | all |
 | `PostToolUse` | `Bash\|PowerShell` | `post_shell` | Coder |
 | `PreCompact` | all | `pre_compact` | all |
 | `Stop` | all | `stop` | all |
@@ -32,12 +33,23 @@ Every hook command is
 `.sentinel-swarm/hook.py` is a standard-library shim that setup copies from
 `templates/hook_shim.py`. It has these commands:
 
-- `hook <event>` finds the sentinel-swarm install for this repo in
+- `hook <event>` posts the hook input to the running ledger server at
+  `POST /hook/<event>`, on the port in `.sentinel-swarm/server.json`, with the repo
+  root in the `X-Sentinel-Swarm-Repo` header, and prints the answer. See "The hook
+  route" in [06-ledger-server.md](06-ledger-server.md). It falls back when there is
+  no `server.json`, the connection is not accepted within 0.25 seconds, no answer comes
+  within 10 seconds (40 for `stop` and `session_end`), or the answer is not a 200 that
+  carries the repo header. The fallback finds the sentinel-swarm install for this repo in
   `~/.claude/plugins/installed_plugins.json` (scope `local`, then `project`, each with a
   matching `projectPath`, then `user`), and runs
   `uv run --project <installPath>/mcp --frozen --no-dev python -m swarm_ledger.hooks <event>`
   with stdin and stdout passed through. A plugin upgrade changes the registry, not the
-  agent files.
+  agent files. Both paths print the same bytes.
+- Every `uv run` of the shim sets `UV_PROJECT_ENVIRONMENT` to the ledger's venv in the
+  plugin data folder, keyed by `mcp/uv.lock`. See "The ledger's venv" in
+  [11-setup-and-settings.md](11-setup-and-settings.md).
+- For `post_activity`, the shim adds `sentinel_swarm_fired_at`, the time the hook
+  fired, to the hook input.
 - `mcp <plugin_id> <server>` starts another plugin's MCP server the same way, from its
   `.mcp.json`, or its manifest's `mcpServers` when it has no `.mcp.json`, with
   `${CLAUDE_PLUGIN_ROOT}` and `${VAR:-default}` expanded in the command, the arguments,
@@ -52,8 +64,8 @@ Every hook command is
   it writes the reason to stderr and exits 1, and the session gets no channel.
   **(proposed)**
 
-When the registry, the install, `uv`, or the ledger hook fails, or a hook runs longer
-than 50 seconds, a gating event (`pre_agent`, `pre_write`, `pre_shell`, `pre_monitor`,
+When the server does not answer and then the registry, the install, `uv`, or the
+ledger hook fails, or the two paths together run longer than 50 seconds, a gating event (`pre_agent`, `pre_write`, `pre_shell`, `pre_monitor`,
 `pre_send_message`, `pre_ledger`) answers `deny` with the reason, and every event adds
 a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 
@@ -109,13 +121,21 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
   **(proposed)** No tool schema lists `agent_id`: the ledger server's middleware takes
   the stamped value out of the arguments. See "Tools" in
   [06-ledger-server.md](06-ledger-server.md).
-- `post_any`: writes the heartbeat and current activity, sets an idle agent to working,
+- `post_any`: runs synchronously after `SendMessage`, `PushNotification`, `Monitor`,
+  and the write tools, because the Stop hook and `handoff_submit` read what it records.
+  It writes the heartbeat and current activity, sets an idle agent to working,
   records the transcript path, records the watchdog arm time, clears owed wake-ups on a
   `SendMessage` and then releases a Driver whose exploration is closed and that owes
   nothing more, and after a Coder's write marks its file stale, so the handoff needs a
   newer self review. On the Oracle's `PushNotification` call, it marks one owed
-  notification sent, whatever the call's result, even after the run finished. It needs
-  no matcher of its own: `post_any` already runs after every tool. **(proposed)**
+  notification sent, whatever the call's result, even after the run finished.
+  **(proposed)**
+- `post_activity`: runs with `async: true` after every tool, so no tool call waits for
+  it. It returns at once for the tools `post_any` covers, so the two never both run for
+  one call. Otherwise it writes the heartbeat and current activity and records the
+  transcript path. It sets an idle agent to working only when the agent's last move to
+  `idle` came before `sentinel_swarm_fired_at`: an async hook can land after the Stop
+  hook, and the tool call it reports came before the stop.
 - `post_shell`: after a Coder's shell call, lists changed paths with `git status`.
   A change outside the Coder's claim, other claimed files of the run, the records
   folder, and `knowledge/` is recorded as a `violation` event and posted to its Lead.

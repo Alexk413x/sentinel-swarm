@@ -9,10 +9,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from swarm_ledger import sessions
+from swarm_ledger import sessions, wake
+from swarm_ledger.clock import stamp, utcnow
 from swarm_ledger.db import write_tx
-from swarm_ledger.hooks import events
-from swarm_ledger.hooks.__main__ import _HANDLERS
+from swarm_ledger.hooks import HANDLERS as _HANDLERS
+from swarm_ledger.hooks import events, run_event
 from swarm_ledger.ledger import Ledger
 
 
@@ -364,6 +365,51 @@ def test_post_any_sets_stale_since_after_an_edit(ledger: Ledger) -> None:
     assert file_row["stale_since"] is not None
 
 
+def _agent_row(ledger: Ledger, agent_id: str) -> dict:
+    row = ledger.conn.execute("SELECT * FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
+    return dict(row)
+
+
+def test_post_activity_skips_the_tools_the_synchronous_post_any_covers(ledger: Ledger) -> None:
+    lead_id = _bootstrap(ledger)["lead"]["agent_id"]
+    ledger.agent_idle(lead_id, "stop")
+    for tool in events.SYNC_POST_TOOLS:
+        assert events.handle_post_activity(ledger, {"agent_id": lead_id, "tool_name": tool}) is None
+    row = _agent_row(ledger, lead_id)
+    assert row["state"] == "idle"
+    assert row["current_activity"] not in events.SYNC_POST_TOOLS
+
+
+def test_post_activity_records_the_heartbeat_and_wakes_an_idle_agent(ledger: Ledger) -> None:
+    lead_id = _bootstrap(ledger)["lead"]["agent_id"]
+    ledger.agent_idle(lead_id, "stop")
+    data = {"agent_id": lead_id, "tool_name": "Read", "transcript_path": "lead.jsonl"}
+    assert events.handle_post_activity(ledger, data) is None
+    row = _agent_row(ledger, lead_id)
+    assert row["state"] == "working"
+    assert row["current_activity"] == "Read"
+    assert row["last_heartbeat_at"] is not None
+    assert row["transcript_path"] == "lead.jsonl"
+
+
+def test_post_activity_fired_before_the_stop_does_not_wake_the_agent(ledger: Ledger) -> None:
+    lead_id = _bootstrap(ledger)["lead"]["agent_id"]
+    ledger.agent_idle(lead_id, "stop")
+    early = {
+        "agent_id": lead_id,
+        "tool_name": "Grep",
+        events.FIRED_AT_KEY: "2000-01-01T00:00:00.000Z",
+    }
+    events.handle_post_activity(ledger, early)
+    row = _agent_row(ledger, lead_id)
+    assert row["state"] == "idle"
+    assert row["current_activity"] == "Grep"
+
+    later = {**early, events.FIRED_AT_KEY: stamp(utcnow().replace(year=utcnow().year + 1))}
+    events.handle_post_activity(ledger, later)
+    assert _agent_row(ledger, lead_id)["state"] == "working"
+
+
 # -- stop for a Manager, Lead, or Coder ---------------------------------------------------
 
 
@@ -501,6 +547,44 @@ def test_main_pre_write_deny_via_subprocess(ledger: Ledger, host: Path, repo_roo
     assert result.returncode == 0
     decision = json.loads(result.stdout)
     assert decision["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_run_event_prints_what_the_hook_subprocess_prints(
+    ledger: Ledger, host: Path, repo_root: Path
+) -> None:
+    ctx = _bootstrap(ledger)
+    ledger.conn.close()
+    payload = json.dumps(
+        {
+            "agent_id": ctx["lead"]["agent_id"],
+            "tool_input": {"file_path": str(host / "src" / "a.py")},
+        }
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "swarm_ledger.hooks", "pre_write"],
+        input=payload,
+        capture_output=True,
+        text=True,
+        env=_subprocess_env(host, repo_root),
+        timeout=30,
+    )
+    stdout, stderr = run_event("pre_write", payload, host, hub=wake.EventHub())
+    assert (stdout, stderr) == (result.stdout, result.stderr)
+    assert json.loads(stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_run_event_reports_an_unknown_event_and_a_failure_on_stderr(host: Path) -> None:
+    assert run_event("nope", "{}", host) == ("", "swarm_ledger.hooks: unknown event 'nope'\n")
+    stdout, stderr = run_event("pre_write", "not valid json{", host)
+    assert stdout == ""
+    assert stderr.startswith("swarm_ledger.hooks pre_write: ")
+
+
+def test_a_ledger_given_a_hub_uses_it_and_otherwise_uses_the_server_hub(host: Path) -> None:
+    own = wake.EventHub()
+    path = host / ".sentinel-swarm" / "ledger.db"
+    assert Ledger(host, db_path=path, hub=own).hub is own
+    assert Ledger(host, db_path=path).hub is wake.HUB
 
 
 def test_main_malformed_json_exits_zero_with_empty_stdout(host: Path, repo_root: Path) -> None:

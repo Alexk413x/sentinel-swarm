@@ -276,7 +276,8 @@ An ordinary session has no ledger tools. To pass the user's instruction to a liv
 run's Oracle, run this from the host repo root:
 
 ```bash
-uv run --project "${CLAUDE_PLUGIN_ROOT}/mcp" --frozen --no-dev \
+venv="$(python3 "${CLAUDE_PLUGIN_ROOT}/mcp/ledger_venv.py" || python "${CLAUDE_PLUGIN_ROOT}/mcp/ledger_venv.py")"
+UV_PROJECT_ENVIRONMENT="$venv" uv run --project "${CLAUDE_PLUGIN_ROOT}/mcp" --frozen --no-dev \
   python -m swarm_ledger.directive --source outside_session --sender "<name>" "<text>"
 ```
 

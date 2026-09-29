@@ -31,7 +31,8 @@ Run the launcher from the host repo root. It starts the repo's ledger server, th
 starts the Oracle as a background session named `<repo>-oracle-<MMDD-HHMMSS>`:
 
 ```bash
-uv run --project "${CLAUDE_PLUGIN_ROOT}/mcp" --frozen --no-dev \
+venv="$(python3 "${CLAUDE_PLUGIN_ROOT}/mcp/ledger_venv.py" || python "${CLAUDE_PLUGIN_ROOT}/mcp/ledger_venv.py")"
+UV_PROJECT_ENVIRONMENT="$venv" uv run --project "${CLAUDE_PLUGIN_ROOT}/mcp" --frozen --no-dev \
   python -m swarm_ledger.launch --bg "<the PRD text>"
 ```
 
@@ -63,7 +64,8 @@ An ordinary session sends the Oracle a directive with the directive command, fro
 host repo root:
 
 ```bash
-uv run --project "${CLAUDE_PLUGIN_ROOT}/mcp" --frozen --no-dev \
+venv="$(python3 "${CLAUDE_PLUGIN_ROOT}/mcp/ledger_venv.py" || python "${CLAUDE_PLUGIN_ROOT}/mcp/ledger_venv.py")"
+UV_PROJECT_ENVIRONMENT="$venv" uv run --project "${CLAUDE_PLUGIN_ROOT}/mcp" --frozen --no-dev \
   python -m swarm_ledger.directive --source skill --sender "<your name>" "<the directive>"
 ```
 

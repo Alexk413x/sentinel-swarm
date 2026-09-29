@@ -5,10 +5,10 @@ import os
 import re
 import shlex
 import subprocess
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from .. import notify, pricing, sessions, wake
+from .. import pricing, sessions
 from ..agentfiles import plugin_installed
 from ..db import ensure_git_exclude, write_tx
 from ..identity import ROLES, LedgerError
@@ -19,6 +19,10 @@ _CODEBASE_KG_PLUGIN = "codebase-kg@codebase-kg"
 
 _RECORDS_DIR = ".sentinel-swarm"
 _WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+# Must equal the synchronous post_any matcher in templates/agents/*.md: the Stop hook and
+# handoff_submit read what post_any records for these tools, so it cannot run async.
+SYNC_POST_TOOLS = ("SendMessage", "PushNotification", "Monitor", *_WRITE_TOOLS)
+FIRED_AT_KEY = "sentinel_swarm_fired_at"
 _READONLY_GIT = frozenset({"status", "diff", "log", "show", "ls-files", "branch"})
 _POSIX = os.name != "nt"
 _UNSTAMPED_TOOLS = frozenset({"ledger_info", "brief_get", "who_owns", "directive_submit", "events"})
@@ -353,7 +357,30 @@ def handle_pre_ledger(ledger: Ledger, data: dict) -> dict:
     }
 
 
-# -- 6. PostToolUse: every tool ----------------------------------------------------
+# -- 6. PostToolUse: post_any and post_activity ----------------------------------------------------
+
+
+def _idle_since(ledger: Ledger, agent_id: str, fired_at: datetime | None) -> bool:
+    if fired_at is None:
+        return False
+    row = ledger.conn.execute(
+        "SELECT MAX(at) AS at FROM agent_events WHERE agent_id = ? AND to_state = 'idle'",
+        (agent_id,),
+    ).fetchone()
+    idle_at = parse_stamp(row["at"]) if row is not None else None
+    return idle_at is not None and idle_at >= fired_at
+
+
+def _record_activity(
+    ledger: Ledger, caller: dict, data: dict, tool_name: str, fired_at: datetime | None = None
+) -> None:
+    ledger.agent_heartbeat(caller["agent_id"], tool_name)
+    # An async post_activity can land after the Stop hook set the agent idle; the tool call it
+    # reports then came before the stop and must not wake the agent.
+    if caller["state"] == "idle" and not _idle_since(ledger, caller["agent_id"], fired_at):
+        ledger.agent_active(caller["agent_id"], "post_tool_use")
+    if data.get("transcript_path") and not caller["transcript_path"]:
+        ledger.agent_transcript(caller["agent_id"], str(data["transcript_path"]))
 
 
 def handle_post_any(ledger: Ledger, data: dict) -> None:
@@ -361,6 +388,8 @@ def handle_post_any(ledger: Ledger, data: dict) -> None:
     if data.get("tool_name") == "PushNotification":
         run_id = _oracle_run_id(ledger, caller_id)
         if run_id is not None:
+            from .. import notify
+
             message = str((data.get("tool_input") or {}).get("message") or "")
             notify.mark_sent(ledger.conn, run_id, message)
     if _active_run_row(ledger) is None:
@@ -370,11 +399,7 @@ def handle_post_any(ledger: Ledger, data: dict) -> None:
         return None
 
     tool_name = str(data.get("tool_name") or "")
-    ledger.agent_heartbeat(caller["agent_id"], tool_name)
-    if caller["state"] == "idle":
-        ledger.agent_active(caller["agent_id"], "post_tool_use")
-    if data.get("transcript_path") and not caller["transcript_path"]:
-        ledger.agent_transcript(caller["agent_id"], str(data["transcript_path"]))
+    _record_activity(ledger, caller, data, tool_name)
 
     if tool_name == "Monitor" and caller["role"] == "oracle":
         tool_input = data.get("tool_input") or {}
@@ -392,6 +417,17 @@ def handle_post_any(ledger: Ledger, data: dict) -> None:
         rel = _repo_relative(ledger, raw_path)
         if rel is not None:
             ledger.mark_stale(caller["agent_id"], rel)
+    return None
+
+
+def handle_post_activity(ledger: Ledger, data: dict) -> None:
+    tool_name = str(data.get("tool_name") or "")
+    if tool_name in SYNC_POST_TOOLS or _active_run_row(ledger) is None:
+        return None
+    caller = _swarm_caller(ledger, _caller_id(data))
+    if caller is None:
+        return None
+    _record_activity(ledger, caller, data, tool_name, parse_stamp(data.get(FIRED_AT_KEY)))
     return None
 
 
@@ -596,6 +632,8 @@ def _live_session_ids() -> set[str] | None:
 
 
 def _wake_hint(ledger: Ledger, agent: dict, live_ids: set[str] | None) -> str:
+    from .. import wake
+
     delivery = wake.route_wakeup(
         {
             "to_agent_id": agent["agent_id"],
@@ -605,7 +643,7 @@ def _wake_hint(ledger: Ledger, agent: dict, live_ids: set[str] | None) -> str:
         transport=ledger.settings.wake_transport,
         live=None if live_ids is None else agent["agent_id"] in live_ids,
         channel=agent.get("channel") or "none",
-        hub=wake.HUB,
+        hub=ledger.hub,
     )
     if delivery.send is None:
         return f"resume it with {delivery.resume}"
@@ -710,6 +748,8 @@ def _wake_lines(ledger: Ledger, run_id: int, live: list[dict]) -> list[str]:
 
 
 def _push_reason(ledger: Ledger, run_id: int | None) -> str | None:
+    from .. import notify
+
     owed = notify.owed(ledger.conn, run_id) if run_id is not None else []
     if not owed:
         return None
@@ -874,6 +914,8 @@ def _oracle_work_block(ledger: Ledger, run: dict, oracle: dict) -> dict | None:
 
 
 def _owed_steps(ledger: Ledger, agent_id: str) -> list[str]:
+    from .. import wake
+
     owed = ledger.owed_wakeups(agent_id)
     pushed = [w for w in owed if w["pushed_at"] is not None]
     unconfirmed = {w["wakeup_id"] for w in wake.await_confirmation(ledger.conn, pushed)}

@@ -9,7 +9,6 @@ import sys
 import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from xml.sax.saxutils import escape
 
 from .clock import stamp, utcnow
 from .db import write_tx
@@ -50,6 +49,8 @@ def _asset(name: str) -> Path | None:
 
 
 def _toast_script(title: str, message: str, icon: Path | None, logo: Path | None) -> str:
+    from xml.sax.saxutils import escape
+
     def text(value: str) -> str:
         return escape(value, {'"': "&quot;", "'": "&apos;"})
 

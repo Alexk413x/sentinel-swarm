@@ -16,12 +16,24 @@
 - The ledger server runs no other MCP server. Each plugin shares its own servers
   through its own relay. See "Plugin servers" in
   [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
-- Tool calls run one at a time under one lock, on one SQLite connection.
+- Tool calls run one at a time under one lock, on one SQLite connection. A hook
+  request on `/hook/<event>` runs outside that lock, on its own connection.
 - The server loads the settings file once: the watchdog at start, and the ledger at the
   first tool call. `profile_set` changes the commands for the server process and the
   run's settings snapshot, not the file. The hooks read the file on every call, so the
   Coder's shell gate follows the file's commands.
 - The watchdog runs on a thread inside the server.
+- The hook route: `POST /hook/<event>` runs the handler `python -m swarm_ledger.hooks
+  <event>` runs, on the request body, and returns exactly the bytes that command would
+  print. Each request opens its own `Ledger`, so it reads the settings file again, and
+  closes it after the handler. It runs on a worker thread, off the event loop, and
+  never takes the tool-call lock. It uses an empty wake-up hub, as the subprocess does,
+  so a hook never pushes a wake-up through a channel. The handler's stderr goes to the
+  server log. The route answers 403 unless the caller is `127.0.0.1` or `::1` and the
+  `Host` header names `127.0.0.1` or `localhost`, 404 for an unknown event, and 409
+  unless the `X-Sentinel-Swarm-Repo` header names this server's repo root. A 200
+  answer carries the header back. See "The shim" in
+  [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md).
 - `GET /events?session=<session id>` holds one session's `swarm-events` event stream
   open: newline-delimited JSON, one event per line, and a `{"kind": "ping"}` line after
   15 seconds without an event. The request records `launched` on that session's agent
@@ -117,7 +129,8 @@ partial success.
 - `tests_run(scope, target)` is role-bound: `file` to the Coder (its own path or test
   path only), `module` to the Lead, `phase` to the Manager, `full` to the Oracle. It
   runs the profile's test command with `{target}` replaced, or removed for no target,
-  with the ledger's own venv dropped from `PATH` and `VIRTUAL_ENV`, and a 600-second
+  with the ledger's own venv dropped from `PATH`, `VIRTUAL_ENV`, and
+  `UV_PROJECT_ENVIRONMENT`, and a 600-second
   timeout. It parses pytest and Go output. An agent never reports a test result itself.
 - `tests_run` stores the last 20,000 characters of output in the ledger, and returns a
   summary of at most 4,000: the last 500 characters of a pass, or the first traceback
