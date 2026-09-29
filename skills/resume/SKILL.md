@@ -27,7 +27,8 @@ ledger counts as live but are gone.
 Start the Oracle again from the host repo root, with a prompt that says to resume:
 
 ```bash
-uv run --project "${CLAUDE_PLUGIN_ROOT}/mcp" --frozen --no-dev \
+venv="$(python3 "${CLAUDE_PLUGIN_ROOT}/mcp/ledger_venv.py" || python "${CLAUDE_PLUGIN_ROOT}/mcp/ledger_venv.py")"
+UV_PROJECT_ENVIRONMENT="$venv" uv run --project "${CLAUDE_PLUGIN_ROOT}/mcp" --frozen --no-dev \
   python -m swarm_ledger.launch --bg "Resume the sentinel-swarm run in this repo."
 ```
 
@@ -42,7 +43,8 @@ When a paused run's Oracle session is still open and the server has exited, star
 server first, then type "continue" in the Oracle's row:
 
 ```bash
-uv run --project "${CLAUDE_PLUGIN_ROOT}/mcp" --frozen --no-dev python -c \
+venv="$(python3 "${CLAUDE_PLUGIN_ROOT}/mcp/ledger_venv.py" || python "${CLAUDE_PLUGIN_ROOT}/mcp/ledger_venv.py")"
+UV_PROJECT_ENVIRONMENT="$venv" uv run --project "${CLAUDE_PLUGIN_ROOT}/mcp" --frozen --no-dev python -c \
   "from pathlib import Path; from swarm_ledger.serve import ensure_server; print(ensure_server(Path('.')))"
 ```
 

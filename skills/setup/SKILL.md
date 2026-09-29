@@ -66,8 +66,14 @@ phase down.
 Run from the host repo root:
 
 ```bash
-uv run --project "${CLAUDE_PLUGIN_ROOT}/mcp" --frozen --no-dev python -m swarm_ledger.setup
+venv="$(python3 "${CLAUDE_PLUGIN_ROOT}/mcp/ledger_venv.py" || python "${CLAUDE_PLUGIN_ROOT}/mcp/ledger_venv.py")"
+UV_PROJECT_ENVIRONMENT="$venv" uv run --project "${CLAUDE_PLUGIN_ROOT}/mcp" --frozen --no-dev \
+  python -m swarm_ledger.setup
 ```
+
+The first line finds the ledger's venv, which the hooks share. It lives in the plugin
+data folder, keyed by the lock file, so a plugin update does not rebuild it inside the
+plugin cache.
 
 It is safe to run again, and it prints what it changed:
 

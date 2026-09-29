@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -17,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 PLUGIN_ID = "sentinel-swarm@sentinel-swarm"
+DATA_FOLDER = "sentinel-swarm-sentinel-swarm"
 GATING_EVENTS = frozenset(
     {"pre_agent", "pre_write", "pre_shell", "pre_ledger", "pre_monitor", "pre_send_message"}
 )
@@ -55,6 +57,12 @@ def config_dir() -> Path:
 
 def registry_path() -> Path:
     return config_dir() / "plugins" / "installed_plugins.json"
+
+
+def ledger_venv(project: Path) -> Path:
+    # Mirrors mcp/ledger_venv.py: the hooks and the skills must share one venv.
+    digest = hashlib.sha256((project / "uv.lock").read_bytes()).hexdigest()[:12]
+    return config_dir() / "plugins" / "data" / DATA_FOLDER / f"venv-{digest}"
 
 
 def _same_path(raw: object, repo: Path) -> bool:
@@ -148,12 +156,17 @@ def ledger_command(repo: Path, module: str, *args: str) -> tuple[list[str], dict
     project = install / "mcp"
     if not (project / "pyproject.toml").is_file():
         raise ShimError(f"the ledger code is missing from {project}")
+    try:
+        venv = ledger_venv(project)
+    except OSError as exc:
+        raise ShimError(f"cannot read the ledger lock file in {project}: {exc}") from None
     uv = shutil.which("uv")
     if uv is None:
         raise ShimError("uv is not on PATH")
     env = dict(os.environ)
     env.setdefault("CLAUDE_PROJECT_DIR", str(repo))
     env["CLAUDE_PLUGIN_ROOT"] = str(install)
+    env["UV_PROJECT_ENVIRONMENT"] = str(venv)
     command = [uv, "run", "--project", str(project), "--frozen", "--no-dev"]
     command += ["python", "-m", module, *args]
     return command, env

@@ -98,7 +98,8 @@ partial success.
 - `tests_run(scope, target)` is role-bound: `file` to the Coder (its own path or test
   path only), `module` to the Lead, `phase` to the Manager, `full` to the Oracle. It
   runs the profile's test command with `{target}` replaced, or removed for no target,
-  with the ledger's own venv dropped from `PATH` and `VIRTUAL_ENV`, and a 600-second
+  with the ledger's own venv dropped from `PATH`, `VIRTUAL_ENV`, and
+  `UV_PROJECT_ENVIRONMENT`, and a 600-second
   timeout. It parses pytest and Go output. An agent never reports a test result itself.
 - `version_restore(version_id)` restores a saved version onto the Coder's own file.
 - The server itself shows a desktop notification for each notification it records:

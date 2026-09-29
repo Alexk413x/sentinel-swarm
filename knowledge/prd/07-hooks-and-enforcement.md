@@ -45,6 +45,9 @@ Every hook command is
   `uv run --project <installPath>/mcp --frozen --no-dev python -m swarm_ledger.hooks <event>`
   with stdin and stdout passed through. A plugin upgrade changes the registry, not the
   agent files. Both paths print the same bytes.
+- Every `uv run` of the shim sets `UV_PROJECT_ENVIRONMENT` to the ledger's venv in the
+  plugin data folder, keyed by `mcp/uv.lock`. See "The ledger's venv" in
+  [11-setup-and-settings.md](11-setup-and-settings.md).
 - For `post_activity`, the shim adds `sentinel_swarm_fired_at`, the time the hook
   fired, to the hook input.
 - `mcp <plugin_id> <server>` starts another plugin's MCP server the same way, from its

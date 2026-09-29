@@ -256,3 +256,11 @@ reviewed:
   shipped with the template's entry, and keeps an edited one. The first such entry is
   the unmatched synchronous `post_any`, which setup splits into the matched `post_any`
   and the async `post_activity`.
+
+Built on 2026-09-28, the ledger's venv outside the plugin cache (see "The ledger's venv"
+in [11-setup-and-settings.md](11-setup-and-settings.md)), choices Alex has not
+reviewed:
+
+- The `swarm_ledger` package removes `UV_PROJECT_ENVIRONMENT` from its environment at
+  import when it names the package's own venv, so codebase-kg's `uv run` and the host's
+  test command never sync their projects into the ledger's venv.

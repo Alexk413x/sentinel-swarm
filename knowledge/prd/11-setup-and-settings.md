@@ -10,6 +10,27 @@
 2. Trust the host folder once: run `claude` in it and accept the trust prompt.
 3. Run setup, then the launcher.
 
+## The ledger's venv
+
+Every `uv run` of the plugin's own `mcp` project uses one venv outside the plugin cache:
+`<config>/plugins/data/sentinel-swarm-sentinel-swarm/venv-<key>`, where `<config>` is
+`$CLAUDE_CONFIG_DIR` or `~/.claude`, and `<key>` is the first 12 hex digits of the
+SHA-256 of `mcp/uv.lock`. `uv` gets it as `UV_PROJECT_ENVIRONMENT`.
+
+- `${CLAUDE_PLUGIN_ROOT}` changes on every update, so a venv inside the cache folder
+  would be rebuilt, about 82 MB, for each version.
+- Two versions with the same lock share one venv, and a version with a new lock gets a
+  new venv, so an update never syncs a venv that a running session still uses.
+- `mcp/ledger_venv.py`, standard library only, computes the path. The skills run it
+  and pass its output as `UV_PROJECT_ENVIRONMENT`. The hook shim computes the same path
+  itself, because it cannot import the file, and a test checks that the two agree.
+  Neither reads `CLAUDE_PLUGIN_DATA`, which is not reliable inside an agent-file hook.
+- The `swarm_ledger` package removes `UV_PROJECT_ENVIRONMENT` from its own environment
+  at import when it names the package's own venv, so no child process inherits it. A
+  child `uv run`, such as codebase-kg's `graph_upsert` or the host's test command, would
+  otherwise sync its own project into the ledger's venv. **(proposed)**
+- `scripts/smoke.sh` uses the same venv for its `uv sync` and `uv run` calls.
+
 ## Setup
 
 `python -m swarm_ledger.setup [--repo <root>] [--check-trust]`, or the

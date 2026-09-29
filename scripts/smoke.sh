@@ -26,6 +26,11 @@ kg_dir="${KG_PLUGIN_DIR:-$(ls -d "$HOME"/.claude/plugins/cache/codebase-kg/codeb
 
 win() { if command -v cygpath >/dev/null; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
 
+# The venv the hooks use: in the plugin data folder, keyed by mcp/uv.lock. The installed
+# copy has the same lock as this repo, so both share it.
+ledger_venv="$(python "$(win "$root/mcp/ledger_venv.py")")"
+ledger_uv() { UV_PROJECT_ENVIRONMENT="$ledger_venv" uv "$@"; }
+
 report_results() {
   for script in hello.py hello_world.py; do
     if [ -f "$host/$script" ]; then
@@ -48,7 +53,7 @@ if [ "$mode" = results ]; then
   # || rc=$? instead of a bare call: set -e would otherwise stop the script here on a FAIL
   # check, skipping the exit below that turns it into this script's own exit code.
   rc=0
-  uv run --quiet --project "$(win "$root/mcp")" --frozen --no-dev \
+  ledger_uv run --quiet --project "$(win "$root/mcp")" --frozen --no-dev \
     python -m swarm_ledger.checklist --repo "$(win "$host")" || rc=$?
   exit "$rc"
 fi
@@ -57,7 +62,7 @@ fi
 # accepting it. Checking first also keeps the launcher from printing the trust command twice.
 if [ "$mode" = bg ] || [ "$mode" = headless ]; then
   mkdir -p "$host"
-  uv run --quiet --project "$(win "$root/mcp")" \
+  ledger_uv run --quiet --project "$(win "$root/mcp")" --frozen --no-dev \
     python -m swarm_ledger.setup --check-trust --repo "$(win "$host")" || exit 1
 fi
 
@@ -148,12 +153,12 @@ git config core.autocrlf false
 version=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['version'])" \
   "$(win "$plugin_dir/.claude-plugin/plugin.json")")
 installed_mcp="$(win "$HOME/.claude/plugins/cache/sentinel-swarm/sentinel-swarm/$version/mcp")"
-uv sync --quiet --project "$installed_mcp" --frozen --no-dev
+ledger_uv sync --quiet --project "$installed_mcp" --frozen --no-dev
 
 swarm() {
   local module="$1"
   shift
-  uv run --quiet --project "$installed_mcp" --frozen --no-dev \
+  ledger_uv run --quiet --project "$installed_mcp" --frozen --no-dev \
     python -m "swarm_ledger.$module" --repo "$(win "$host")" "$@"
 }
 launch() { swarm launch "$@"; }

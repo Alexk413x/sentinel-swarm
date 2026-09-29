@@ -36,6 +36,11 @@ in this order: scope `local`, then `project` with a matching `projectPath`, then
 swarm_ledger.hooks <event>` and passes stdin and stdout through. A plugin upgrade
 changes the registry, not the agent files.
 
+Every `uv run` of the shim sets `UV_PROJECT_ENVIRONMENT` to
+`<config>/plugins/data/sentinel-swarm-sentinel-swarm/venv-<first 12 hex of sha256(mcp/uv.lock)>`,
+where `<config>` is `$CLAUDE_CONFIG_DIR` or `~/.claude`, so the venv lives outside the
+versioned plugin cache. `mcp/ledger_venv.py` prints the same path for the skills.
+
 The per-event behavior lives in `mcp/src/swarm_ledger/hooks/events.py`, as functions
 `handle_<event>(ledger, data)` that tests call directly, in-process.
 
