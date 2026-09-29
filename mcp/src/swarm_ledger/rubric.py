@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 DIMENSIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
     (
@@ -118,6 +118,45 @@ REVIEW_SCORE_SHAPE = (
 def schema_help() -> str:
     parts = [f"{key}: {', '.join(criteria)}" for key, criteria in _CRITERIA_BY_DIMENSION.items()]
     return RATING_SHAPE + ". Keys: " + "; ".join(parts)
+
+
+def ratings_schema() -> dict[str, Any]:
+    return {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "dimension": {"type": "string", "enum": list(DIMENSION_KEYS)},
+                "criterion": {"type": "string"},
+                "value": {"type": "integer", "minimum": 1, "maximum": 10},
+                "reason": {"type": "string", "description": "Required below 9."},
+                "ref": {"type": "string", "description": "file:line; required below 9."},
+            },
+            "required": ["dimension", "criterion", "value"],
+            "oneOf": [
+                {
+                    "properties": {
+                        "dimension": {"const": key},
+                        "criterion": {"enum": list(criteria)},
+                    }
+                }
+                for key, criteria in _CRITERIA_BY_DIMENSION.items()
+            ],
+        },
+    }
+
+
+def applicable_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {key: {"type": ["string", "null"]} for key in DIMENSION_KEYS},
+        "required": list(DIMENSION_KEYS),
+        "additionalProperties": False,
+    }
+
+
+def dimensions_schema() -> dict[str, Any]:
+    return {"type": "array", "items": {"type": "string", "enum": list(DIMENSION_KEYS)}}
 
 
 @dataclass

@@ -125,8 +125,8 @@
   file, and `run_finish` accepts the run.
 - **Tools:** Read, Grep, Glob, AskUserQuestion, ToolSearch, WebSearch, WebFetch,
   SendMessage, Monitor (the watchdog call only), PushNotification (the notifications
-  the ledger records for the user) **(proposed)**, the ledger, and the codebase-kg read
-  tools. No write tool and no shell.
+  the ledger records for the user) **(proposed)**, its ledger tools, and the
+  codebase-kg read tools. No write tool and no shell.
 
 ### Manager
 
@@ -144,8 +144,8 @@
 - **Must not:** write a project file, score a file, or direct a Coder without going
   through the Coder's Lead. **(proposed)**
 - **Done when:** the Oracle approves the phase.
-- **Tools:** Read, Grep, Glob, ToolSearch, SendMessage, WebSearch, WebFetch, the
-  ledger, and the codebase-kg read tools.
+- **Tools:** Read, Grep, Glob, ToolSearch, SendMessage, WebSearch, WebFetch, its
+  ledger tools, and the codebase-kg read tools.
 
 ### Lead
 
@@ -178,7 +178,7 @@
 - **Must not:** edit a file it does not own. It files a change request instead.
 - **Done when:** its Lead approves the file or accepts it as incomplete.
 - **Tools:** Read, Grep, Glob, Write, Edit, Bash and PowerShell (gated), ToolSearch,
-  SendMessage, WebSearch, WebFetch, the ledger, and the codebase-kg read tools. It
+  SendMessage, WebSearch, WebFetch, its ledger tools, and the codebase-kg read tools. It
   changes the graph only through `graph_upsert`.
 
 ### Driver
@@ -229,7 +229,7 @@
 - **Done when:** it calls `drive_done` and sends the wake-up its `next` names.
 - **Tools:** Read, Grep, Glob, ToolSearch, SendMessage, Bash and PowerShell (gated to
   `build_command`), Agent (gated to cartographer's `map-driver` and `map-reviewer`
-  subagents only), Skill **(proposed)**, the ledger, and the codebase-kg read tools. No
+  subagents only), Skill **(proposed)**, its ledger tools, and the codebase-kg read tools. No
   Write or Edit. cartographer's MCP server and the installed driver plugins' servers
   join its session only, the same way the a11y servers join every role's: see
   [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).

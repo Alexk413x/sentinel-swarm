@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +9,7 @@ import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
-from swarm_ledger import __version__, sessions
+from swarm_ledger import __version__, rubric, sessions
 from swarm_ledger import server as server_module
 from swarm_ledger.server import _TOOL_NAMES, configure, mcp
 
@@ -51,6 +52,147 @@ async def _call_tool(name: str, arguments: dict[str, Any]) -> Any:
 
 def test_ledger_info_is_registered():
     assert asyncio.run(_list_tool_names()) == set(_TOOL_NAMES)
+
+
+async def _list_tools() -> list[Any]:
+    async with Client(mcp) as client:
+        return list(await client.list_tools())
+
+
+def test_no_tool_schema_lists_agent_id_and_every_root_is_an_object():
+    tools = asyncio.run(_list_tools())
+    assert {tool.name for tool in tools} == set(_TOOL_NAMES)
+    for tool in tools:
+        assert tool.input_schema.get("type") == "object", tool.name
+        assert "agent_id" not in tool.input_schema.get("properties", {}), tool.name
+
+
+def test_the_read_only_tools_carry_the_read_only_hint():
+    read_only = {
+        tool.name
+        for tool in asyncio.run(_list_tools())
+        if tool.annotations is not None and tool.annotations.read_only_hint
+    }
+    assert read_only == {
+        "ledger_info",
+        "brief_get",
+        "who_owns",
+        "issue_list",
+        "cr_list",
+        "run_status",
+        "status_tree",
+        "guidelines_get",
+        "plan_unlocked",
+        "events",
+        "analytics_query",
+        "test_run_get",
+    }
+
+
+def test_caller_targeted_and_finding_ids_are_described():
+    by_name = {tool.name: tool.input_schema["properties"] for tool in asyncio.run(_list_tools())}
+    assert by_name["run_status"]["caller"]["description"]
+    assert by_name["return_work"]["targeted"]["description"]
+    assert by_name["score_record"]["targeted"]["description"]
+    assert "Driver finding ids" in json.dumps(by_name["brief_create"]["finding_ids"])
+
+
+def test_score_record_schema_carries_every_rubric_key():
+    tool = next(t for t in asyncio.run(_list_tools()) if t.name == "score_record")
+    properties = tool.input_schema["properties"]
+    pairs = {
+        branch["properties"]["dimension"]["const"]: tuple(branch["properties"]["criterion"]["enum"])
+        for branch in properties["ratings"]["items"]["oneOf"]
+    }
+    assert pairs == {key: tuple(c for c, _ in criteria) for key, _, criteria in rubric.DIMENSIONS}
+    assert properties["applicable"]["required"] == list(rubric.DIMENSION_KEYS)
+    assert rubric.schema_help() not in (tool.description or "")
+    assert len(tool.description or "") < 300
+
+
+async def _call_with_agent_id() -> dict[str, Any]:
+    async with Client(mcp) as client:
+        return (
+            await client.call_tool(
+                "run_start", {"prd": "Build X", "session_id": "sess-1", "agent_id": "stamped-1"}
+            )
+        ).data
+
+
+def test_a_stamped_agent_id_reaches_the_handler(host: Path):
+    assert asyncio.run(_call_with_agent_id())["oracle"]["agent_id"] == "stamped-1"
+
+
+async def _score_with_an_unknown_criterion() -> str:
+    async with Client(mcp) as client:
+        await client.call_tool("run_start", {"prd": "Build X", "session_id": "sess-1"})
+        try:
+            await client.call_tool(
+                "score_record",
+                {
+                    "caller": "oracle",
+                    "agent_id": "sess-1",
+                    "file_id": 1,
+                    "ratings": [{"dimension": "testing", "criterion": "nope", "value": 9}],
+                    "applicable": {key: None for key in rubric.DIMENSION_KEYS},
+                    "kind": "self",
+                },
+            )
+        except ToolError as exc:
+            return str(exc)
+        raise AssertionError("expected score_record to raise a ToolError")
+
+
+def test_score_record_arguments_pass_the_schema_to_the_ledger(host: Path):
+    message = asyncio.run(_score_with_an_unknown_criterion())
+    assert message == "the oracle role may not call score_record"
+
+
+async def _manager_calls(tools: list[str]) -> list[str]:
+    results: list[str] = []
+    async with Client(mcp) as client:
+        await client.call_tool("run_start", {"prd": "Build X", "session_id": "sess-1"})
+        await client.call_tool(
+            "brief_create",
+            {
+                "caller": "oracle",
+                "agent_id": "sess-1",
+                "child_name": "manager-1",
+                "child_role": "manager",
+                "model": "opus",
+                "body": "Own phase-1.",
+            },
+        )
+        await client.call_tool("brief_ack", {"caller": "manager-1", "agent_id": "mgr-1"})
+        for tool in tools:
+            try:
+                await client.call_tool(tool, {"caller": "manager-1", "agent_id": "mgr-1"})
+                results.append("allowed")
+            except ToolError as exc:
+                results.append(str(exc))
+    return results
+
+
+def test_a_role_calls_only_its_own_ledger_tools(host: Path):
+    assert asyncio.run(_manager_calls(["plan_unlocked", "guidelines_get"])) == [
+        "the manager role may not call plan_unlocked",
+        "allowed",
+    ]
+
+
+async def _events_for(targets: list[str]) -> list[list[dict[str, Any]]]:
+    async with Client(mcp) as client:
+        await client.call_tool("run_start", {"prd": "Build X", "session_id": "sess-1"})
+        return [
+            (await client.call_tool("events", {"target_agent_id": target})).data
+            for target in targets
+        ]
+
+
+def test_events_filters_on_target_agent_id(host: Path):
+    nobody, oracle = asyncio.run(_events_for(["nobody", "sess-1"]))
+    assert nobody == []
+    assert oracle and all(event["agent_id"] == "sess-1" for event in oracle)
 
 
 def test_ledger_info_reports_ready_status_and_tool_count(host: Path):

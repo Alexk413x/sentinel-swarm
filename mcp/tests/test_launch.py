@@ -75,7 +75,8 @@ def test_interactive_puts_the_prompt_first_and_builds_the_flags(env):
         "args": [".sentinel-swarm/hook.py", "mcp", "codebase-kg@codebase-kg", "codebase-kg"],
     }
     tools = _option(command, "--allowedTools").split(",")
-    assert "mcp__swarm-ledger" in tools
+    assert "mcp__swarm-ledger__run_start" in tools
+    assert "mcp__swarm-ledger" not in tools
     assert "ToolSearch" in tools
     assert "Agent" not in tools
     assert json.loads(_option(command, "--settings")) == {"worktree": {"bgIsolation": "none"}}

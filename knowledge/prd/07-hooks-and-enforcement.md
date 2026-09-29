@@ -106,7 +106,9 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
   else its `session_id`. For the five tools that take no identity (`ledger_info`,
   `brief_get`, `who_owns`, `directive_submit`, `events`), it removes `agent_id`
   instead. It answers `allow`, so a ledger call never asks for permission.
-  **(proposed)**
+  **(proposed)** No tool schema lists `agent_id`: the ledger server's middleware takes
+  the stamped value out of the arguments. See "Tools" in
+  [06-ledger-server.md](06-ledger-server.md).
 - `post_any`: writes the heartbeat and current activity, sets an idle agent to working,
   records the transcript path, records the watchdog arm time, clears owed wake-ups on a
   `SendMessage` and then releases a Driver whose exploration is closed and that owes
@@ -149,7 +151,8 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 | Every dimension is scored on every review | `score_record` refuses a set that leaves a dimension out |
 | A model comes from the approved list | `brief_create` |
 | No agent starts without a brief | `agent_spawn` and `brief_ack` |
-| No agent fakes its identity | `pre_ledger` stamps `agent_id`; every tool matches `caller` to it |
+| No agent fakes its identity | `pre_ledger` stamps `agent_id`; the server's middleware takes it out of the arguments; every tool matches `caller` to it |
+| A role calls only its own ledger tools | The role file's `tools` allowlist, which names each `mcp__swarm-ledger__<tool>` in `identity.ROLE_TOOLS`; `server._call` refuses a live agent's call outside its set **(proposed)** |
 | A handoff needs passing tests and a current graph | `handoff_submit` |
 | No approval without a handoff and two sets of scores | `approve` |
 | The Lead scores before it sees the Coder's scores | `score_record` refuses a Lead review after `review_compare` |

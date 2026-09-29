@@ -4,7 +4,7 @@ description: Runs only inside a sentinel-swarm run, and only when the host has c
 model: sonnet
 color: yellow
 permissionMode: default
-tools: Read, Grep, Glob, ToolSearch, SendMessage, Bash, PowerShell, Agent, Skill, mcp__swarm-ledger, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference, mcp__codebase-kg__kg_parity_gaps, mcp__codebase-kg__kg_stats, mcp__codebase-kg__kg_validate
+tools: Read, Grep, Glob, ToolSearch, SendMessage, Bash, PowerShell, Agent, Skill, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__brief_ack, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__drive_issue, mcp__swarm-ledger__drive_checkin, mcp__swarm-ledger__drive_done, mcp__swarm-ledger__drive_unavailable, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference, mcp__codebase-kg__kg_parity_gaps, mcp__codebase-kg__kg_stats, mcp__codebase-kg__kg_validate
 mcpServers:
   - codebase-kg:
       command: python

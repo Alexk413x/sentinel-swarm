@@ -20,7 +20,8 @@ The rubric is identical for every scorer. Every number is a setting in
 Nine dimensions, each with fixed criteria: meets the brief, testing, error handling,
 security, architecture, code structure, performance, maintainability, and accessibility.
 `mcp/src/swarm_ledger/rubric.py` holds every dimension and criterion key and its text.
-The split of design into architecture and code structure is **(proposed)**.
+`score_record`'s JSON schema lists the same keys, built from it. The split of design
+into architecture and code structure is **(proposed)**.
 
 - A scorer rates every criterion of every applicable dimension. A dimension that does
   not apply, such as accessibility on a back-end file, is marked not applicable with a

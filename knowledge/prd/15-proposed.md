@@ -247,3 +247,12 @@ ends an exploration or reports it cannot load (see "Explorations" in
   since a delivery miss is not a Driver error.
 - `drive_request` releases every Driver of the run still live before it starts the next
   one, so a closed Driver never counts against the parallelism caps.
+
+Built on 2026-09-28 with the per-role ledger tool sets, choices Alex has not reviewed:
+
+- `server._call` refuses a live agent's call to a ledger tool outside its role's
+  `identity.ROLE_TOOLS` set, with "the <role> role may not call <tool>", so a host role
+  file that still grants the whole server cannot reach another role's tools. An
+  `agent_id` that no live agent holds passes the check.
+- `events` names its filter `target_agent_id`. Its old `agent_id` filter shared the
+  stamped identity's name, so the hook and the middleware both removed it.

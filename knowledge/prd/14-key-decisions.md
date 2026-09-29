@@ -91,3 +91,8 @@
 - 2026-09-28: `run_status` and `status_tree` return a run summary without the PRD (unless `include_prd=true`) or the settings snapshot, and name agents instead of giving session ids.
 - 2026-09-28: `tests_run` returns a summary of at most 4,000 characters; the ledger keeps the full output, which `test_run_get` returns.
 - 2026-09-28: The plugin declares no MCP server. The plugin-level stdio `swarm-ledger` entry, `server.main()`, and the `swarm-ledger` console script are removed; an ordinary session steers a live run with `python -m swarm_ledger.directive`.
+- 2026-09-28: Each role's `tools` line names every ledger tool the role may call, as `mcp__swarm-ledger__<tool>`, never the whole server. `identity.ROLE_TOOLS` holds the sets: each holds `ledger_info`, every tool the ledger's role checks grant the role, and every tool its template calls. A test checks the templates and the role checks against it.
+- 2026-09-28: Setup replaces a host role file's one-line `mcp__swarm-ledger` grant with the template's ledger tool names and keeps the file's other tools.
+- 2026-09-28: `score_record`'s schema lists the rubric's dimension and criterion keys, and its description no longer repeats them. The ledger keeps its own rating validation and refusal message.
+- 2026-09-28: No ledger tool schema lists `agent_id`. The server's middleware takes the stamped value out of each call and hands it to the tool for that request. `caller`, `targeted`, and `finding_ids` carry parameter descriptions.
+- 2026-09-28: A ledger tool that writes nothing carries `readOnlyHint: true`, so Claude Code runs several of them from one message in parallel. A tool that marks a row read or notified is not read-only.

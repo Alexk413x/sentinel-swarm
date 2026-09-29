@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import re
 import sys
@@ -22,6 +23,8 @@ KG_TOOLS = (
     "kg_stats",
     "kg_validate",
 )
+LEDGER_PREFIX = "mcp__swarm-ledger__"
+LEDGER_MODULES = ("ledger", "review", "agreements", "oversight", "drive", "repo")
 ALL_ROLES = frozenset(ROLES)
 HOOK_TABLE = (
     ("SessionStart", None, "session_start", ALL_ROLES),
@@ -140,11 +143,102 @@ def test_template_tools(repo_root: Path, role: str):
     assert "Workflow" not in tools
     assert "ToolSearch" in tools
     assert "SendMessage" in tools
-    assert "mcp__swarm-ledger" in tools
+    assert "mcp__swarm-ledger" not in tools
     for tool in KG_TOOLS:
         assert f"mcp__codebase-kg__{tool}" in tools
     assert not any(t.startswith("mcp__plugin_") for t in tools)
     assert not any("a11y" in t or "driver" in t for t in tools)
+
+
+def _ledger_tools(names: list[str] | set[str]) -> set[str]:
+    return {name[len(LEDGER_PREFIX) :] for name in names if name.startswith(LEDGER_PREFIX)}
+
+
+def _required_roles() -> dict[str, set[str]]:
+    import swarm_ledger
+    from swarm_ledger.review import _SCOPE_ROLE
+    from swarm_ledger.server import _TOOL_NAMES
+
+    source = Path(swarm_ledger.__file__).parent
+    required: dict[str, set[str]] = {}
+    for module in LEDGER_MODULES:
+        tree = ast.parse((source / f"{module}.py").read_text(encoding="utf-8"))
+        for method in ast.walk(tree):
+            if not isinstance(method, ast.FunctionDef) or method.name not in _TOOL_NAMES:
+                continue
+            checks = [
+                node
+                for node in ast.walk(method)
+                if isinstance(node, ast.Call) and ast.unparse(node.func) == "require_role"
+            ]
+            if not checks:
+                continue
+            roles = required.setdefault(method.name, set())
+            for call in checks:
+                for arg in call.args[1:]:
+                    if isinstance(arg, ast.Constant):
+                        roles.add(str(arg.value))
+                    elif isinstance(arg, ast.Subscript) and ast.unparse(arg.value) == "_SCOPE_ROLE":
+                        roles.update(_SCOPE_ROLE.values())
+                    else:
+                        raise AssertionError(f"unrecognized role check in {method.name}")
+            roles.update(
+                str(node.comparators[0].value)
+                for node in ast.walk(method)
+                if isinstance(node, ast.Compare)
+                and ast.unparse(node.left).endswith(".role")
+                and isinstance(node.ops[0], ast.Eq)
+                and isinstance(node.comparators[0], ast.Constant)
+            )
+    return required
+
+
+@pytest.mark.parametrize("role", ROLES)
+def test_template_ledger_tools_are_the_roles_tool_set(repo_root: Path, role: str):
+    from swarm_ledger.identity import ROLE_TOOLS
+
+    tools = _tools(_split(_template(repo_root, role))[0])
+    assert _ledger_tools(tools) == ROLE_TOOLS[role]
+    assert "ledger_info" in ROLE_TOOLS[role]
+
+
+@pytest.mark.parametrize("role", ROLES)
+def test_template_body_calls_only_the_roles_ledger_tools(repo_root: Path, role: str):
+    from swarm_ledger.identity import ROLE_TOOLS
+    from swarm_ledger.server import _TOOL_NAMES
+
+    _, body = _split(_template(repo_root, role))
+    working_set = re.search(r'ToolSearch\(query="select:([^"]+)"', body)
+    assert working_set, f"{role} has no ToolSearch working set"
+    assert _ledger_tools(set(working_set.group(1).split(","))) <= ROLE_TOOLS[role]
+    called = {name for name in _TOOL_NAMES if re.search(rf"\b{name}\(", body)}
+    assert called <= ROLE_TOOLS[role]
+
+
+def test_role_tool_sets_match_the_ledgers_role_checks():
+    from swarm_ledger.identity import ROLE_TOOLS
+
+    required = _required_roles()
+    assert {"run_finish", "tests_run", "score_record", "drive_done"} <= set(required)
+    for tool, roles in required.items():
+        holders = {role for role in ROLES if tool in ROLE_TOOLS[role]}
+        assert holders == roles, tool
+
+
+def test_only_a_role_with_children_briefs_spawns_and_releases():
+    from swarm_ledger.identity import ROLE_TOOLS, child_roles_of
+
+    parents = {role for role in ROLES if child_roles_of(role)}
+    for tool in ("brief_create", "agent_spawn", "agent_release"):
+        assert {role for role in ROLES if tool in ROLE_TOOLS[role]} == parents, tool
+
+
+def test_every_ledger_tool_belongs_to_a_role():
+    from swarm_ledger.identity import ROLE_TOOLS
+    from swarm_ledger.server import _TOOL_NAMES
+
+    held = set().union(*ROLE_TOOLS.values())
+    assert held == set(_TOOL_NAMES)
 
 
 def test_only_coder_writes_and_edits(repo_root: Path):

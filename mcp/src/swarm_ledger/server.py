@@ -4,19 +4,85 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Literal, TypeVar
+from typing import Annotated, Any, Literal, TypeVar
 
 from fastmcp import FastMCP
+from fastmcp.dependencies import Depends
 from fastmcp.exceptions import ToolError
+from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
+from pydantic import Field, WithJsonSchema
 
 from . import __version__, env, rubric
-from .identity import LedgerError
+from .identity import LedgerError, require_role_tool
 from .ledger import Ledger
 
-mcp = FastMCP("swarm-ledger")
-
 T = TypeVar("T")
+
+_TOOL: ContextVar[str | None] = ContextVar("swarm_ledger_tool", default=None)
+_AGENT_ID: ContextVar[str | None] = ContextVar("swarm_ledger_agent_id", default=None)
+
+
+class StampedAgentId(Middleware):
+    async def on_call_tool(
+        self, context: MiddlewareContext[Any], call_next: CallNext[Any, Any]
+    ) -> Any:
+        arguments = dict(context.message.arguments or {})
+        agent_id = arguments.pop("agent_id", None)
+        message = context.message.model_copy(update={"arguments": arguments})
+        tool_token = _TOOL.set(context.message.name)
+        agent_token = _AGENT_ID.set(agent_id if isinstance(agent_id, str) else None)
+        try:
+            return await call_next(context.copy(message=message))
+        finally:
+            _AGENT_ID.reset(agent_token)
+            _TOOL.reset(tool_token)
+
+
+def _stamped_agent_id() -> str | None:
+    return _AGENT_ID.get()
+
+
+mcp = FastMCP("swarm-ledger", middleware=[StampedAgentId()])
+
+_STAMPED_AGENT_ID: str | None = Depends(_stamped_agent_id)
+_READ_ONLY: dict[str, Any] = {"readOnlyHint": True}
+
+CallerName = Annotated[str, Field(description="Your own agent name, as the ledger registered it.")]
+_FINDING_IDS = Field(
+    default=None,
+    description="The Driver finding ids the child fixes; [] when it fixes none. The Oracle must "
+    "pass it while the run has an open finding. Omitted by a Manager or Lead, the child "
+    "inherits the caller's own brief's list.",
+)
+
+
+def _schema(schema: dict[str, Any], description: str) -> WithJsonSchema:
+    return WithJsonSchema({**schema, "description": description})
+
+
+Dimensions = Annotated[list[str], WithJsonSchema(rubric.dimensions_schema())]
+TargetedDimensions = Annotated[
+    list[str], _schema(rubric.dimensions_schema(), "The dimension keys the fix must raise.")
+]
+_LEAD_TARGETED = Field(
+    default=None,
+    description="For a Lead review after a return: the dimension keys the fix aimed at.",
+)
+Ratings = Annotated[
+    list[dict[str, Any]],
+    _schema(
+        rubric.ratings_schema(), "One rating for every criterion of every applicable dimension."
+    ),
+]
+Applicable = Annotated[
+    dict[str, str | None],
+    _schema(
+        rubric.applicable_schema(),
+        "Every dimension key: null when it applies, or a one-line reason it does not.",
+    ),
+]
 
 _instance: Ledger | None = None
 _root: Path | None = None
@@ -121,6 +187,9 @@ def _call(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
     last_call_at = time.monotonic()
     try:
         with _CALL_LOCK:
+            tool = _TOOL.get()
+            if tool is not None:
+                require_role_tool(_ledger().conn, tool, _AGENT_ID.get())
             return fn(*args, **kwargs)
     except LedgerError as exc:
         raise ToolError(str(exc)) from exc
@@ -136,15 +205,15 @@ def run_start(
     prd: str,
     session_id: str,
     oracle_name: str = "oracle",
-    agent_id: str | None = None,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Starts a run from a PRD and registers the Oracle; the Oracle calls this."""
     return _call(_ledger().run_start, prd, agent_id or session_id, oracle_name)
 
 
-@mcp.tool
+@mcp.tool(annotations=_READ_ONLY)
 def run_status(
-    caller: str, include_prd: bool = False, agent_id: str | None = None
+    caller: CallerName, include_prd: bool = False, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Returns the run's phases, modules, files, agents, issues, and directives; any agent may.
 
@@ -154,7 +223,9 @@ def run_status(
 
 
 @mcp.tool
-def run_finish(caller: str, outcome: str, agent_id: str | None = None) -> dict[str, Any]:
+def run_finish(
+    caller: CallerName, outcome: str, agent_id: str | None = _STAMPED_AGENT_ID
+) -> dict[str, Any]:
     """Finishes the active run once every phase is approved; the Oracle calls this."""
     result = _call(_ledger().run_finish, caller=caller, agent_id=agent_id, outcome=outcome)
     if on_run_finish is not None:
@@ -174,10 +245,10 @@ def run_finish(caller: str, outcome: str, agent_id: str | None = None) -> dict[s
 
 @mcp.tool
 def run_pause(
-    caller: str,
+    caller: CallerName,
     reason: str,
     phases: list[int] | None = None,
-    agent_id: str | None = None,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Pauses the run, or just the named phases, on a blocker only the user can fix; the Oracle
     calls this. With phases, the run stays active: agent_spawn refuses those phases until
@@ -188,7 +259,9 @@ def run_pause(
 
 
 @mcp.tool
-def phase_resume(caller: str, phase_ids: list[int], agent_id: str | None = None) -> dict[str, Any]:
+def phase_resume(
+    caller: CallerName, phase_ids: list[int], agent_id: str | None = _STAMPED_AGENT_ID
+) -> dict[str, Any]:
     """Clears a scoped pause from the named phases so agent_spawn can start work in them again;
     the Oracle calls this."""
     return _call(_ledger().phase_resume, caller=caller, agent_id=agent_id, phase_ids=phase_ids)
@@ -198,14 +271,18 @@ def phase_resume(caller: str, phase_ids: list[int], agent_id: str | None = None)
 
 
 @mcp.tool
-def repo_check(caller: str, fetch: bool = False, agent_id: str | None = None) -> dict[str, Any]:
+def repo_check(
+    caller: CallerName, fetch: bool = False, agent_id: str | None = _STAMPED_AGENT_ID
+) -> dict[str, Any]:
     """Checks the repo's branch and clean state against its base branch and upstream, and
     records the result on the run; the Oracle calls this before planning."""
     return _call(_ledger().repo_check, caller=caller, agent_id=agent_id, fetch=fetch)
 
 
 @mcp.tool
-def repo_branch_create(caller: str, name: str, agent_id: str | None = None) -> dict[str, Any]:
+def repo_branch_create(
+    caller: CallerName, name: str, agent_id: str | None = _STAMPED_AGENT_ID
+) -> dict[str, Any]:
     """Creates a run branch from the base branch once repo_check reports obvious_start; the
     Oracle calls this."""
     return _call(_ledger().repo_branch_create, caller=caller, agent_id=agent_id, name=name)
@@ -213,11 +290,11 @@ def repo_branch_create(caller: str, name: str, agent_id: str | None = None) -> d
 
 @mcp.tool
 def profile_set(
-    caller: str,
+    caller: CallerName,
     test_command: str | None = None,
     build_command: str | None = None,
     lint_command: str | None = None,
-    agent_id: str | None = None,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Sets the run's test, build, and lint commands; the Oracle calls this."""
     return _call(
@@ -231,23 +308,25 @@ def profile_set(
 
 
 @mcp.tool
-def guidelines_set(caller: str, body: str, agent_id: str | None = None) -> dict[str, Any]:
+def guidelines_set(
+    caller: CallerName, body: str, agent_id: str | None = _STAMPED_AGENT_ID
+) -> dict[str, Any]:
     """Records the run's latest guidelines body; the Oracle calls this."""
     return _call(_ledger().guidelines_set, caller=caller, agent_id=agent_id, body=body)
 
 
-@mcp.tool
-def guidelines_get(caller: str, agent_id: str | None = None) -> dict[str, Any]:
+@mcp.tool(annotations=_READ_ONLY)
+def guidelines_get(caller: CallerName, agent_id: str | None = _STAMPED_AGENT_ID) -> dict[str, Any]:
     """Returns the run's latest guidelines body; any registered agent calls this."""
     return _call(_ledger().guidelines_get, caller=caller, agent_id=agent_id)
 
 
 @mcp.tool
 def phase_add(
-    caller: str,
+    caller: CallerName,
     name: str,
     depends_on: list[int] | None = None,
-    agent_id: str | None = None,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Adds a phase to the plan with optional phase dependencies; the Oracle calls this."""
     return _call(
@@ -257,7 +336,7 @@ def phase_add(
 
 @mcp.tool
 def phase_update(
-    caller: str, phase_id: int, state: str, agent_id: str | None = None
+    caller: CallerName, phase_id: int, state: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Updates a phase's state; handed_up returns the wake-up call to make as `next`."""
     return _call(
@@ -265,15 +344,17 @@ def phase_update(
     )
 
 
-@mcp.tool
-def plan_unlocked(caller: str, agent_id: str | None = None) -> list[dict[str, Any]]:
+@mcp.tool(annotations=_READ_ONLY)
+def plan_unlocked(
+    caller: CallerName, agent_id: str | None = _STAMPED_AGENT_ID
+) -> list[dict[str, Any]]:
     """Lists phases whose dependencies are all approved; any registered agent calls this."""
     return _call(_ledger().plan_unlocked, caller=caller, agent_id=agent_id)
 
 
 @mcp.tool
 def module_add(
-    caller: str, phase_id: int, name: str, agent_id: str | None = None
+    caller: CallerName, phase_id: int, name: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Adds a module to the caller's own phase; a Manager calls this."""
     return _call(
@@ -286,7 +367,7 @@ def module_add(
 
 @mcp.tool
 def brief_create(
-    caller: str,
+    caller: CallerName,
     child_name: str,
     child_role: str,
     model: str,
@@ -294,15 +375,12 @@ def brief_create(
     phase_id: int | None = None,
     module_id: int | None = None,
     file_id: int | None = None,
-    finding_ids: list[int] | None = None,
-    agent_id: str | None = None,
+    finding_ids: list[int] | None = _FINDING_IDS,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Creates a brief for the caller's child role (Oracle->Manager, Manager->Lead, Lead->Coder).
-    `finding_ids` names the Driver findings the child fixes, and [] means it fixes none. While
-    the run has an open finding, the Oracle must pass it; the refusal lists the open ids and
-    titles. Omitted by a Manager or Lead, the child inherits the caller's own brief's list.
-    Refuses an unknown finding, one that hit a stop rule, or one whose area has an open
-    pattern stop directive."""
+    A refusal for missing `finding_ids` lists the open ids and titles. Refuses an unknown
+    finding, one that hit a stop rule, or one whose area has an open pattern stop directive."""
     return _call(
         _ledger().brief_create,
         caller=caller,
@@ -318,8 +396,8 @@ def brief_create(
     )
 
 
-@mcp.tool
-def brief_get(caller_name: str, child_name: str) -> dict[str, Any]:
+@mcp.tool(annotations=_READ_ONLY)
+def brief_get(caller_name: CallerName, child_name: str) -> dict[str, Any]:
     """Returns the latest brief for a child name; a new agent calls it before it has an agent_id.
     `findings` lists the id, fingerprint, title, severity, and area of each finding it fixes."""
     return _call(_ledger().brief_get, caller_name=caller_name, child_name=child_name)
@@ -327,7 +405,7 @@ def brief_get(caller_name: str, child_name: str) -> dict[str, Any]:
 
 @mcp.tool
 def brief_ack(
-    caller: str, agent_type: str | None = None, agent_id: str | None = None
+    caller: CallerName, agent_type: str | None = None, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Binds the caller's name to its agent_id via an unacked brief; a new child agent calls it."""
     return _call(_ledger().brief_ack, caller=caller, agent_id=agent_id, agent_type=agent_type)
@@ -337,7 +415,9 @@ def brief_ack(
 
 
 @mcp.tool
-def agent_release(caller: str, target_agent_id: str, agent_id: str | None = None) -> dict[str, Any]:
+def agent_release(
+    caller: CallerName, target_agent_id: str, agent_id: str | None = _STAMPED_AGENT_ID
+) -> dict[str, Any]:
     """Releases an agent it directly parented; any parent role calls this for its own child."""
     return _call(
         _ledger().agent_release,
@@ -348,13 +428,17 @@ def agent_release(caller: str, target_agent_id: str, agent_id: str | None = None
 
 
 @mcp.tool
-def agent_spawn(caller: str, child_name: str, agent_id: str | None = None) -> dict[str, Any]:
+def agent_spawn(
+    caller: CallerName, child_name: str, agent_id: str | None = _STAMPED_AGENT_ID
+) -> dict[str, Any]:
     """Starts the session for a briefed child and registers it; the brief's parent calls this."""
     return _call(_ledger().agent_spawn, caller=caller, agent_id=agent_id, child_name=child_name)
 
 
 @mcp.tool
-def agent_resume(caller: str, target_name: str, agent_id: str | None = None) -> dict[str, Any]:
+def agent_resume(
+    caller: CallerName, target_name: str, agent_id: str | None = _STAMPED_AGENT_ID
+) -> dict[str, Any]:
     """Resumes a stopped session of the run with the wake-ups owed to it; any agent calls it."""
     return _call(_ledger().agent_resume, caller=caller, agent_id=agent_id, target_name=target_name)
 
@@ -364,11 +448,11 @@ def agent_resume(caller: str, target_name: str, agent_id: str | None = None) -> 
 
 @mcp.tool
 def claim_file(
-    caller: str,
+    caller: CallerName,
     path: str,
     test_path: str | None,
     for_name: str,
-    agent_id: str | None = None,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Claims a file path for a coder under the caller's module; a Lead calls this."""
     return _call(
@@ -382,12 +466,14 @@ def claim_file(
 
 
 @mcp.tool
-def release_file(caller: str, path: str, agent_id: str | None = None) -> dict[str, Any]:
+def release_file(
+    caller: CallerName, path: str, agent_id: str | None = _STAMPED_AGENT_ID
+) -> dict[str, Any]:
     """Releases a live claim on a file path; a Lead calls this."""
     return _call(_ledger().release_file, caller=caller, agent_id=agent_id, path=path)
 
 
-@mcp.tool
+@mcp.tool(annotations=_READ_ONLY)
 def who_owns(path: str) -> dict[str, Any]:
     """Looks up the live owner of a file path; any caller may call this."""
     return _call(_ledger().who_owns, path=path)
@@ -398,7 +484,7 @@ def who_owns(path: str) -> dict[str, Any]:
 
 @mcp.tool
 def message_post(
-    caller: str, to_name: str, body: str, agent_id: str | None = None
+    caller: CallerName, to_name: str, body: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Posts a message to an agent of the run by name; returns the wake-up call as `next`."""
     return _call(
@@ -407,7 +493,9 @@ def message_post(
 
 
 @mcp.tool
-def message_inbox(caller: str, agent_id: str | None = None) -> list[dict[str, Any]]:
+def message_inbox(
+    caller: CallerName, agent_id: str | None = _STAMPED_AGENT_ID
+) -> list[dict[str, Any]]:
     """Returns and marks read the caller's unread messages; any registered agent calls this."""
     return _call(_ledger().message_inbox, caller=caller, agent_id=agent_id)
 
@@ -435,18 +523,20 @@ def directive_submit(
 
 
 @mcp.tool
-def directive_inbox(caller: str, agent_id: str | None = None) -> list[dict[str, Any]]:
+def directive_inbox(
+    caller: CallerName, agent_id: str | None = _STAMPED_AGENT_ID
+) -> list[dict[str, Any]]:
     """Returns the run's open directives; the Oracle calls this."""
     return _call(_ledger().directive_inbox, caller=caller, agent_id=agent_id)
 
 
 @mcp.tool
 def directive_resolve(
-    caller: str,
+    caller: CallerName,
     directive_id: int,
     outcome: str,
     resolution: str,
-    agent_id: str | None = None,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Resolves an open directive with an outcome; the Oracle calls this.
 
@@ -468,12 +558,12 @@ def directive_resolve(
 
 @mcp.tool
 def override_grant(
-    caller: str,
+    caller: CallerName,
     rule: str,
     target_agent_name: str,
     target: str,
     reason: str,
-    agent_id: str | None = None,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Grants a one-time override of a rule for an agent; the Oracle calls this.
 
@@ -496,7 +586,11 @@ def override_grant(
 
 @mcp.tool
 def issue_open(
-    caller: str, file_id: int, title: str, body: str, agent_id: str | None = None
+    caller: CallerName,
+    file_id: int,
+    title: str,
+    body: str,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Opens an issue against a file; any registered agent calls this. An issue a Manager
     opens starts at round 2, and one the Oracle opens starts at round 3."""
@@ -510,9 +604,9 @@ def issue_open(
     )
 
 
-@mcp.tool
+@mcp.tool(annotations=_READ_ONLY)
 def issue_list(
-    caller: str, file_id: int | None = None, agent_id: str | None = None
+    caller: CallerName, file_id: int | None = None, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> list[dict[str, Any]]:
     """Lists the run's issues, optionally filtered to one file; any registered agent calls this.
     For a Lead, hides issues its own module's self-review opened until the Lead records its
@@ -522,7 +616,7 @@ def issue_list(
 
 @mcp.tool
 def issue_close(
-    caller: str, issue_id: int, resolution: str, agent_id: str | None = None
+    caller: CallerName, issue_id: int, resolution: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Closes an open issue with a resolution; the file's Lead, its Manager, or the Oracle."""
     return _call(
@@ -536,7 +630,11 @@ def issue_close(
 
 @mcp.tool
 def idea_record(
-    caller: str, issue_id: int, body: str, outcome: str, agent_id: str | None = None
+    caller: CallerName,
+    issue_id: int,
+    body: str,
+    outcome: str,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Records an idea tried against an issue and its outcome; any registered agent calls this."""
     return _call(
@@ -550,7 +648,9 @@ def idea_record(
 
 
 @mcp.tool
-def issue_escalate(caller: str, issue_id: int, agent_id: str | None = None) -> dict[str, Any]:
+def issue_escalate(
+    caller: CallerName, issue_id: int, agent_id: str | None = _STAMPED_AGENT_ID
+) -> dict[str, Any]:
     """Escalates an issue to its next round, names the receiver in escalated_to, and messages
     it; only the issue's owner and the owner's parent chain call it. Returns the wake-up call
     to make as `next`."""
@@ -560,10 +660,10 @@ def issue_escalate(caller: str, issue_id: int, agent_id: str | None = None) -> d
 # -- Events -----------------------------------------------------------------------------
 
 
-@mcp.tool
-def events(agent_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+@mcp.tool(annotations=_READ_ONLY)
+def events(target_agent_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
     """Lists recent agent lifecycle events, optionally filtered to one agent; any caller may."""
-    return _call(_ledger().events, agent_id=agent_id, limit=limit)
+    return _call(_ledger().events, agent_id=target_agent_id, limit=limit)
 
 
 # -- Tests --------------------------------------------------------------------------------
@@ -571,10 +671,10 @@ def events(agent_id: str | None = None, limit: int = 200) -> list[dict[str, Any]
 
 @mcp.tool
 def tests_run(
-    caller: str,
+    caller: CallerName,
     scope: Literal["file", "module", "phase", "full"],
     target: str | None = None,
-    agent_id: str | None = None,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Runs the profile's test command for a scope; the required role scales Coder to Oracle.
 
@@ -584,8 +684,10 @@ def tests_run(
     return _call(_ledger().tests_run, caller=caller, agent_id=agent_id, scope=scope, target=target)
 
 
-@mcp.tool
-def test_run_get(caller: str, test_run_id: int, agent_id: str | None = None) -> dict[str, Any]:
+@mcp.tool(annotations=_READ_ONLY)
+def test_run_get(
+    caller: CallerName, test_run_id: int, agent_id: str | None = _STAMPED_AGENT_ID
+) -> dict[str, Any]:
     """Returns one recorded test run of this run, with its full output."""
     return _call(_ledger().test_run_get, caller=caller, agent_id=agent_id, test_run_id=test_run_id)
 
@@ -595,7 +697,7 @@ def test_run_get(caller: str, test_run_id: int, agent_id: str | None = None) -> 
 
 @mcp.tool
 def graph_upsert(
-    caller: str, nodes: list[dict[str, Any]], agent_id: str | None = None
+    caller: CallerName, nodes: list[dict[str, Any]], agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Upserts code graph nodes anchored on the caller's own claimed file; a Coder calls this."""
     return _call(_ledger().graph_upsert, caller=caller, agent_id=agent_id, nodes=nodes)
@@ -604,19 +706,19 @@ def graph_upsert(
 # -- Scoring ----------------------------------------------------------------------------------
 
 
-@mcp.tool(
-    description="Records a self or lead review; a Coder records self, a Lead records lead. "
-    "Ratings cover every criterion of every applicable dimension. " + rubric.schema_help()
-)
+@mcp.tool
 def score_record(
-    caller: str,
+    caller: CallerName,
     file_id: int,
-    ratings: list[dict[str, Any]],
-    applicable: dict[str, str | None],
+    ratings: Ratings,
+    applicable: Applicable,
     kind: Literal["self", "lead"],
-    targeted: list[str] | None = None,
-    agent_id: str | None = None,
+    targeted: Dimensions | None = _LEAD_TARGETED,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
+    """Records a self or lead review; a Coder records self, a Lead records lead. Every
+    dimension is scored: rate each criterion of an applicable dimension, and give a reason and
+    a ref for any rating below 9."""
     return _call(
         _ledger().score_record,
         caller=caller,
@@ -634,11 +736,11 @@ def score_record(
 
 @mcp.tool
 def handoff_submit(
-    caller: str,
+    caller: CallerName,
     file_id: int,
     open_issues: list[str],
     departures: list[str],
-    agent_id: str | None = None,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Submits a Coder's file once its tests pass and its graph is current; returns `next`."""
     return _call(
@@ -655,14 +757,19 @@ def handoff_submit(
 
 
 @mcp.tool
-def review_compare(caller: str, handoff_id: int, agent_id: str | None = None) -> dict[str, Any]:
+def review_compare(
+    caller: CallerName, handoff_id: int, agent_id: str | None = _STAMPED_AGENT_ID
+) -> dict[str, Any]:
     """Compares a handoff's self and lead review scores and flags disagreements; a Lead calls it."""
     return _call(_ledger().review_compare, caller=caller, agent_id=agent_id, handoff_id=handoff_id)
 
 
 @mcp.tool
 def approve(
-    caller: str, handoff_id: int, notes: str | None = None, agent_id: str | None = None
+    caller: CallerName,
+    handoff_id: int,
+    notes: str | None = None,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Approves a handoff once its lead review passes and no issue is open; a Lead calls this.
     Also accepts a floor pass: every dimension at or above the rubric floor, no criterion
@@ -677,11 +784,11 @@ def approve(
 
 @mcp.tool
 def return_work(
-    caller: str,
+    caller: CallerName,
     handoff_id: int,
     issues: list[str],
-    targeted: list[str],
-    agent_id: str | None = None,
+    targeted: TargetedDimensions,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Returns a handoff to its Coder with issues to fix; a Lead calls this; returns `next`."""
     return _call(
@@ -695,7 +802,9 @@ def return_work(
 
 
 @mcp.tool
-def attempt_record(caller: str, file_id: int, agent_id: str | None = None) -> dict[str, Any]:
+def attempt_record(
+    caller: CallerName, file_id: int, agent_id: str | None = _STAMPED_AGENT_ID
+) -> dict[str, Any]:
     """Classifies a file's latest attempt as improved, plateau, or regression; a Lead calls it.
     When a plateau or regression moves an issue to round 2 or 3, `escalated` lists each
     escalation with its `escalated_to` agent and the wake-up call to make as its `next`."""
@@ -704,7 +813,7 @@ def attempt_record(caller: str, file_id: int, agent_id: str | None = None) -> di
 
 @mcp.tool
 def accept_incomplete(
-    caller: str, handoff_id: int, reason: str, agent_id: str | None = None
+    caller: CallerName, handoff_id: int, reason: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Accepts a handoff as incomplete and opens a deferral; a Lead calls this."""
     return _call(
@@ -721,13 +830,13 @@ def accept_incomplete(
 
 @mcp.tool
 def module_review(
-    caller: str,
+    caller: CallerName,
     module_id: int,
     outcome: Literal["accepted", "returned"],
     notes: str,
     disagreement_notes: dict[str, str] | None = None,
     scores: list[dict[str, Any]] | None = None,
-    agent_id: str | None = None,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Records the Manager's review of a module before it hands the phase up; an accepted
     review refuses while a departure in the module waits on the Lead or the Manager, and a
@@ -748,13 +857,13 @@ def module_review(
 
 @mcp.tool
 def phase_review(
-    caller: str,
+    caller: CallerName,
     phase_id: int,
     outcome: Literal["accepted", "returned"],
     notes: str,
     low_score_notes: dict[str, str] | None = None,
     scores: list[dict[str, Any]] | None = None,
-    agent_id: str | None = None,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Records the Oracle's review of a handed-up phase before phase_update(approved); an
     accepted review refuses while a departure in the phase is not signed off or reworked, and
@@ -778,7 +887,10 @@ def phase_review(
 
 @mcp.tool
 def deferral_propose(
-    caller: str, body: str, file_id: int | None = None, agent_id: str | None = None
+    caller: CallerName,
+    body: str,
+    file_id: int | None = None,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Proposes a deferral, optionally tied to a file; any registered agent calls this."""
     return _call(
@@ -788,11 +900,11 @@ def deferral_propose(
 
 @mcp.tool
 def agreement_decide(
-    caller: str,
+    caller: CallerName,
     deferral_id: int,
     decision: Literal["agreed", "denied"],
     reason: str,
-    agent_id: str | None = None,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Decides an open deferral as agreed or denied; the proposer's parent role or above calls."""
     return _call(
@@ -806,7 +918,9 @@ def agreement_decide(
 
 
 @mcp.tool
-def cr_open(caller: str, path: str, body: str, agent_id: str | None = None) -> dict[str, Any]:
+def cr_open(
+    caller: CallerName, path: str, body: str, agent_id: str | None = _STAMPED_AGENT_ID
+) -> dict[str, Any]:
     """Opens a change request on a path the caller does not own; any role calls this. The
     ledger routes it to the file's owner, or up the chain when the owner has ended."""
     return _call(_ledger().cr_open, caller=caller, agent_id=agent_id, path=path, body=body)
@@ -814,7 +928,11 @@ def cr_open(caller: str, path: str, body: str, agent_id: str | None = None) -> d
 
 @mcp.tool
 def cr_accept(
-    caller: str, cr_id: int, accept: bool, reason: str, agent_id: str | None = None
+    caller: CallerName,
+    cr_id: int,
+    accept: bool,
+    reason: str,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Accepts or declines an open change request; only its recipient calls this. A decline
     needs a non-empty reason."""
@@ -829,7 +947,9 @@ def cr_accept(
 
 
 @mcp.tool
-def cr_complete(caller: str, cr_id: int, notes: str, agent_id: str | None = None) -> dict[str, Any]:
+def cr_complete(
+    caller: CallerName, cr_id: int, notes: str, agent_id: str | None = _STAMPED_AGENT_ID
+) -> dict[str, Any]:
     """Completes an accepted change request with evidence; only its recipient calls this. It
     refuses without a passing test run or an approved handoff for the path since acceptance."""
     return _call(_ledger().cr_complete, caller=caller, agent_id=agent_id, cr_id=cr_id, notes=notes)
@@ -837,7 +957,7 @@ def cr_complete(caller: str, cr_id: int, notes: str, agent_id: str | None = None
 
 @mcp.tool
 def cr_verify(
-    caller: str, cr_id: int, ok: bool, notes: str, agent_id: str | None = None
+    caller: CallerName, cr_id: int, ok: bool, notes: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Verifies a completed change request; only the requester or its nearest live ancestor
     calls this. A failed verification goes back to accepted and owes the recipient a wake-up."""
@@ -846,9 +966,9 @@ def cr_verify(
     )
 
 
-@mcp.tool
+@mcp.tool(annotations=_READ_ONLY)
 def cr_list(
-    caller: str, state: str | None = None, agent_id: str | None = None
+    caller: CallerName, state: str | None = None, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> list[dict[str, Any]]:
     """Lists the change requests the caller sent or received; the Oracle sees every one."""
     return _call(_ledger().cr_list, caller=caller, agent_id=agent_id, state=state)
@@ -856,11 +976,11 @@ def cr_list(
 
 @mcp.tool
 def departure_record(
-    caller: str,
+    caller: CallerName,
     body: str,
     file_id: int | None = None,
     guideline_id: int | None = None,
-    agent_id: str | None = None,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Records a departure from the guidelines; a Coder for its own file, or a Lead, Manager,
     or Oracle for work in its scope."""
@@ -876,12 +996,12 @@ def departure_record(
 
 @mcp.tool
 def departure_decide(
-    caller: str,
+    caller: CallerName,
     departure_id: int,
     decision: Literal["agree", "push_back"],
     reason: str,
     solution: str | None = None,
-    agent_id: str | None = None,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Decides a departure at the next level of its sign-off chain: the file's Lead decides an
     open one, the phase's Manager a lead_agreed one, and the Oracle a manager_agreed one, whose
@@ -901,7 +1021,10 @@ def departure_decide(
 
 @mcp.tool
 def shortfall_record(
-    caller: str, body: str, file_id: int | None = None, agent_id: str | None = None
+    caller: CallerName,
+    body: str,
+    file_id: int | None = None,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Records a shortfall: a solution that works but that nobody found better; any role
     calls this, and it needs no decision."""
@@ -914,7 +1037,9 @@ def shortfall_record(
 
 
 @mcp.tool
-def version_restore(caller: str, version_id: int, agent_id: str | None = None) -> dict[str, Any]:
+def version_restore(
+    caller: CallerName, version_id: int, agent_id: str | None = _STAMPED_AGENT_ID
+) -> dict[str, Any]:
     """Restores a saved version onto the coder's own owned file; a Coder calls this."""
     return _call(_ledger().version_restore, caller=caller, agent_id=agent_id, version_id=version_id)
 
@@ -922,9 +1047,9 @@ def version_restore(caller: str, version_id: int, agent_id: str | None = None) -
 # -- Reporting ------------------------------------------------------------------------------------
 
 
-@mcp.tool
+@mcp.tool(annotations=_READ_ONLY)
 def status_tree(
-    caller: str, include_prd: bool = False, agent_id: str | None = None
+    caller: CallerName, include_prd: bool = False, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Returns the run's phase, module, and file status tree with live agents; any agent may.
     `open_findings` lists the Driver findings not yet fixed or stopped, and `fixes` lists each
@@ -934,19 +1059,23 @@ def status_tree(
 
 
 @mcp.tool
-def report_build(caller: str, agent_id: str | None = None) -> dict[str, Any]:
+def report_build(caller: CallerName, agent_id: str | None = _STAMPED_AGENT_ID) -> dict[str, Any]:
     """Builds and writes the run's report.md from its current state; the Oracle calls this."""
     return _call(_ledger().report_build, caller=caller, agent_id=agent_id)
 
 
-@mcp.tool
-def analytics_query(caller: str, sql: str, agent_id: str | None = None) -> dict[str, Any]:
+@mcp.tool(annotations=_READ_ONLY)
+def analytics_query(
+    caller: CallerName, sql: str, agent_id: str | None = _STAMPED_AGENT_ID
+) -> dict[str, Any]:
     """Runs a single read-only SELECT against the ledger database; the Oracle calls it."""
     return _call(_ledger().analytics_query, caller=caller, agent_id=agent_id, sql=sql)
 
 
 @mcp.tool
-def drive_request(caller: str, focus: str, agent_id: str | None = None) -> dict[str, Any]:
+def drive_request(
+    caller: CallerName, focus: str, agent_id: str | None = _STAMPED_AGENT_ID
+) -> dict[str, Any]:
     """Requests an exploration and starts its Driver session; the Oracle calls this once the
     previous exploration and every fix it spawned have finished. Refuses when the host has no
     Driver available (cartographer and a driver plugin), while an exploration is still open,
@@ -958,7 +1087,10 @@ def drive_request(caller: str, focus: str, agent_id: str | None = None) -> dict[
 
 @mcp.tool
 def drive_issue(
-    caller: str, request_id: int, finding: dict[str, Any], agent_id: str | None = None
+    caller: CallerName,
+    request_id: int,
+    finding: dict[str, Any],
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Records one Driver finding against an open exploration and wakes the Oracle; the Driver
     calls this for each finding, including a failed build. `finding` holds `fingerprint`,
@@ -975,12 +1107,12 @@ def drive_issue(
 
 @mcp.tool
 def drive_checkin(
-    caller: str,
+    caller: CallerName,
     request_id: int,
     covered: str,
     steps: str,
     notes: str,
-    agent_id: str | None = None,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Records a 30-minute progress check-in for an open exploration and wakes the Oracle; the
     Driver calls this. The watchdog does not report the Driver as stuck while its check-ins are
@@ -998,7 +1130,10 @@ def drive_checkin(
 
 @mcp.tool
 def drive_done(
-    caller: str, request_id: int, blocked: str | None = None, agent_id: str | None = None
+    caller: CallerName,
+    request_id: int,
+    blocked: str | None = None,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Ends an exploration; the Driver calls this. Any newly detected stop-rule directive is
     filed for the Oracle, and the Driver owes the Oracle a wake-up that says how the
@@ -1017,7 +1152,9 @@ def drive_done(
 
 
 @mcp.tool
-def drive_unavailable(caller: str, reason: str, agent_id: str | None = None) -> dict[str, Any]:
+def drive_unavailable(
+    caller: CallerName, reason: str, agent_id: str | None = _STAMPED_AGENT_ID
+) -> dict[str, Any]:
     """Files a [driver-unavailable] directive when the Driver's plugin servers fail to load;
     the Driver or the Oracle calls this with what failed. Any open exploration is abandoned and
     the user is notified. Called by the Oracle, it releases the Driver at once. Called by the
@@ -1028,7 +1165,7 @@ def drive_unavailable(caller: str, reason: str, agent_id: str | None = None) -> 
     return _call(_ledger().drive_unavailable, caller=caller, agent_id=agent_id, reason=reason)
 
 
-@mcp.tool
+@mcp.tool(annotations=_READ_ONLY)
 def ledger_info() -> dict[str, Any]:
     """Returns the server's name, version, status, tool count, and repo root."""
     ledger = _call(_ledger)

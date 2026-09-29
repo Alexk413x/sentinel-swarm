@@ -20,6 +20,10 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
   `swarm-coder.md` from `templates/agents/<role>.md`. For an existing file it keeps the
   user's frontmatter, adds any key the template has that the file lacks, adds every
   ledger hook the template has that the file lacks, and replaces the prompt body.
+  When the file's one-line `tools` value still lists the whole server,
+  `mcp__swarm-ledger`, setup puts the template's `mcp__swarm-ledger__<tool>` names in
+  its place and keeps every other tool the file lists. A `tools` value that already
+  names ledger tools one by one, or a block-form list, stays as it is.
   A new file's MCP server `command` is `python` on Windows, and `python3` elsewhere
   when `python3` is on `PATH`. **(proposed)**
 - Writes `swarm-driver.md` the same way, but only when the host has
