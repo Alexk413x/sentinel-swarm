@@ -12,6 +12,9 @@ dist/
 # Per-project local config
 .claude/*.local.md
 
+# A swarm run's records, when this repo hosts a run.
+.sentinel-swarm/
+
 # Smoke-test runs: scripts/smoke.sh rebuilds runs/hello/ on each run.
 runs/
 

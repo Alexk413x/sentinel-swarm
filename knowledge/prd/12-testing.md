@@ -11,13 +11,15 @@ uv run ruff check
 uv run ruff format --check
 ```
 
-Then, from the repo root, validate the marketplace and the plugin. Both must pass with
-`--strict`:
+Then, from the repo root, run the mod's tests and validate the plugin with `--strict`:
 
 ```
-claude plugin validate --strict .
+claude plugin test .
 claude plugin validate --strict .claude-plugin/plugin.json
 ```
+
+The repo ships no marketplace, so there is no marketplace to validate. CI also runs the
+launcher and the frontmatter tests on Python 3.9, the oldest Python the ledger supports.
 
 The local run is the gate. CI runs the same checks as a backup. The dev instructions
 live in `.claude/CLAUDE.md`, not at the plugin root, because the validator warns about a
@@ -25,7 +27,7 @@ root `CLAUDE.md`, which a plugin install does not load.
 
 `mcp/tests/test_plugin_surface.py` guards the surface contract: the role templates'
 frontmatter (which carries no hooks), the empty `hooks.json`, the manifest fields, the skills'
-frontmatter, and one version across `plugin.json`, `mcp/pyproject.toml`, and the
+frontmatter, the ledger's standard-library-only imports, and one version across `plugin.json`, `mcp/pyproject.toml`, and the
 package.
 
 This repo maps itself in `knowledge/code_graph.db`. Run `sh .githooks/install.sh` once
@@ -51,7 +53,13 @@ run `/reload-plugins`.
   knowledge/code_graph.db`. It copies the plugin (`.claude-plugin`, `assets`, `skills`,
   `hooks`, `templates`, `types`, `mcp`) to a fresh temp folder, rewrites that copy's version to a dev version such as
   `<plugin version>-dev.<epoch seconds>`, for example `0.1.0-dev.1790650000`, installs it at project scope under that
-  version, runs setup, commits, and starts the Oracle through the installed copy's launcher. Each run
+  version, runs setup, commits, and starts the Oracle through the installed copy's launcher.
+  The repo has no marketplace of its own, so the script writes a one-plugin
+  `marketplace.json` named `sentinel-swarm` into the copy, with `source: "./"` and
+  `allowCrossMarketplaceDependenciesOn` for codebase-kg, accessibility-tools, and
+  cartographer, and adds the copy as a `directory` marketplace. The smoke install is
+  `sentinel-swarm@sentinel-swarm`. Every ledger step runs `python -I -S
+  <plugin>/mcp/launch/ledger.py <module>`, so the run needs no venv. Each run
   also removes any older `*-dev.*` copy from the plugin cache, skipping one a live
   session still has open, so a run never replaces a cached copy another session holds.
 - No flag opens an interactive Oracle. `--bg` checks trust first, then starts a
@@ -71,7 +79,7 @@ run `/reload-plugins`.
   host's `.claude/agents/swarm-oracle.md` to the first entry, because the launcher
   starts the Oracle on that file's model before the approved list.
 - The run tears down its plugin records when it ends. It runs `claude plugin uninstall
-  sentinel-swarm@sentinel-swarm --scope project --keep-data` from the host folder, then
+  sentinel-swarm@sentinel-swarm --scope project` from the host folder, then
   `claude plugin uninstall codebase-kg@alexk413x --scope project --keep-data` from the
   host folder, then `claude plugin marketplace remove sentinel-swarm`. Teardown never
   removes the `alexk413x` marketplace. Teardown runs at the end of the
@@ -81,9 +89,6 @@ run `/reload-plugins`.
   points at. After teardown, `~/.claude/plugins/known_marketplaces.json` has no
   `sentinel-swarm` entry that points at the temp folder. Teardown never deletes a
   session.
-  - `--keep-data`, on teardown's uninstall and on the uninstall before each install,
-    keeps the plugin data folder, which holds the ledger venv that every smoke host
-    and live session shares.
   - Teardown removes the marketplace only when its record is a smoke copy (a
     `directory` source named `sentinel-swarm-plugin-*`) and no install uses it any
     more. `claude plugin marketplace remove` uninstalls every plugin from the
@@ -166,8 +171,8 @@ Run it with `bash scripts/evals.sh [claude plugin eval options]`, such as
 `--runs 1 --ablation none` for a cheap pass, which costs about $1.25 and takes about 5
 minutes. The script runs the suite against a copy of the plugin, changed in two ways:
 
-- The copy has no `mcp/.venv`. uv hard-links a venv's files from its cache, and
-  `claude plugin eval` refuses a plugin that holds a hard-linked file.
+- The copy has no `mcp/.venv`, the dev environment. uv hard-links a venv's files from
+  its cache, and `claude plugin eval` refuses a plugin that holds a hard-linked file.
 - The copy's `plugin.json` has no `dependencies`. Each eval run starts from an empty
   configuration without codebase-kg, and a plugin with a missing dependency loads no
   skill, so every positive case would fail.
@@ -176,7 +181,7 @@ Results go to `evals/results/` (git-ignored).
 
 ## After a run
 
-`bash scripts/smoke.sh --results` runs `python -m swarm_ledger.checklist` against the
+`bash scripts/smoke.sh --results` runs `mcp/launch/ledger.py checklist` against the
 latest run in the ledger and prints `PASS`, `WARN`, or `FAIL` for each check below, then
 exits non-zero if any check fails. It expects the run to have ended in a
 clean, success-like outcome, the shape a default hello-world run should reach; a
@@ -199,7 +204,7 @@ with no run, prints one `FAIL`.
   with a `WARN` when the claude binary is not on `PATH`. A session list that
   `claude agents --json` cannot produce fails the session check.
 
-`python -m swarm_ledger.checklist --json` prints the same checks and the latest run's
+`mcp/launch/ledger.py checklist --json` prints the same checks and the latest run's
 metrics as one JSON document, with the same exit code; without `--json` the output is
 the text above. The document has `schema` (1), `repo`, `passed` (no check failed),
 `checks` (each with `name`, `status` of `pass`, `warn`, or `fail`, and `detail`), and

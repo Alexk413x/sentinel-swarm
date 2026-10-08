@@ -5,10 +5,12 @@ reviewed code. Four roles do the work: the Oracle, the Managers, the Leads, and 
 Coders. A fifth, the Driver, builds and explores the app between waves when the host
 has cartographer and a driver plugin installed. Every role runs as its own Claude Code session in the host repo's one working
 tree. A shared SQLite ledger, served by the `swarm-ledger` MCP server, holds the run's
-state and every gate. Hooks in each role's agent file make the ledger unavoidable.
+state and every gate. The plugin's mod runs every role's hooks and makes the ledger
+unavoidable.
 
-The plugin ships as a private marketplace plugin for Alex's own use. It must work on
-Windows and macOS, install into other repos, and adapt to each host project. It runs in
+The plugin is public. It installs as `sentinel-swarm@alexk413x` from the `alexk413x`
+marketplace (`Alexk413x/marketplace`) under the no-resale licence in `LICENSE`. It must
+work on Windows and macOS, install into other repos, and adapt to each host project. It runs in
 Claude Code only (the CLI, the desktop app, or an IDE extension); see "Install" in
 [11-setup-and-settings.md](11-setup-and-settings.md). The swarm
 writes unit tests only. End-to-end testing is a separate process outside the swarm.

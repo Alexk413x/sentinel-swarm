@@ -1,26 +1,55 @@
 # sentinel-swarm
 
-A Claude Code plugin that runs an agent swarm, Oracle, Manager, Lead, and Coder, plus a
-Driver that tests the app when the host has cartographer and a driver plugin, to take a
-PRD to built, tested, reviewed code. Enforced reviews, a shared
-ledger, and a scoring rubric hold every role accountable, and every hand-off
-requires recorded evidence, not a claim.
+A Claude Code plugin that runs an agent swarm to take a PRD to built, tested, reviewed
+code. An Oracle plans the run, Managers own phases, Leads own modules, and Coders write
+one file each. A Driver tests the app between waves when the host has cartographer and a
+driver plugin. Enforced reviews, a shared ledger, and a scoring rubric hold every role
+accountable, and every hand-off requires recorded evidence, not a claim.
 
-## Where it runs
+## Install
 
-sentinel-swarm runs in Claude Code only: the CLI, the desktop app, or an IDE extension,
-on Windows or macOS. Every workflow starts `claude --bg` sessions from a local shell, the
-plugin's mod gates each role session, and each host repo runs its own ledger
-server. claude.ai chat and Cowork cannot do any of that, so do not upload the plugin to
-claude.ai or add its marketplace to organization sync. Keep any future launcher out of a
-top-level `bin/` folder.
+```sh
+claude plugin marketplace add Alexk413x/marketplace
+claude plugin install codebase-kg@alexk413x --scope project
+claude plugin install sentinel-swarm@alexk413x --scope project
+```
 
-## Status
+Run the install commands from the repo the swarm builds in. sentinel-swarm depends on
+[codebase-kg](https://github.com/Alexk413x/codebase-kg), and Claude Code refuses to load
+sentinel-swarm in a project where codebase-kg is not installed. Every role queries the
+code graph before it plans or writes, and each Coder updates the graph for its own file.
 
-Pre-release. A small run works from start to finish: the hello-world smoke test
-passes with every role as its own background session, and a stopped session resumes
-and finishes its work. `knowledge/prd/16-open-items.md` lists what is not built yet and
-what comes next.
+> **Pre-1.0.** A small run works from start to finish: the hello-world smoke test passes
+> with every role as its own background session, and a stopped session resumes and
+> finishes its work. The hook transport runs on function hooks, an early-access Claude
+> Code API that changes between releases.
+
+## Requirements
+
+- Claude Code 2.1.294 or later: the CLI, the desktop app, or an IDE extension, on
+  Windows or macOS. claude.ai chat and Cowork cannot run a swarm, because every role is a
+  local background session with its own hooks.
+- Python 3.9 or newer on `PATH` as `py`, `python3`, or `python`. The ledger imports only
+  the standard library, so it needs no venv. On a Python older than codebase-kg's floor
+  (3.10), graph writes run codebase-kg through `uv`, so install `uv` too.
+- git.
+- A trusted host folder: run `claude` in it once and accept the trust prompt.
+  `claude --bg` refuses an untrusted folder.
+- Optional: cartographer and a driver plugin (android-driver, ios-driver, or
+  web-driver) for the Driver. Without them the run finishes on unit tests alone.
+
+## Run a swarm
+
+1. Run `/sentinel-swarm:setup` in the host repo. It writes the role files to
+   `.claude/agents/swarm-<role>.md`, the hook shim to `.sentinel-swarm/hook.py`, the
+   settings file, and the git excludes, and it builds the code graph when there is none.
+2. Run `/sentinel-swarm:run` with the PRD. It starts the repo's ledger server and the
+   Oracle as a background session.
+3. Watch the run in agent view: every role is its own session. `/sentinel-swarm:status`
+   reads the run's state, and `/sentinel-swarm:resume` picks up a stopped run.
+
+The run and resume skills only run when you ask for them. The swarm works in your current
+working tree and commits nothing.
 
 ## Roles
 
@@ -30,68 +59,46 @@ what comes next.
 | Manager | green | opus | Oracle |
 | Lead | purple | sonnet | Manager |
 | Coder | orange | sonnet | Lead |
+| Driver | yellow | sonnet | Oracle |
 
 Each parent-child pair follows the same cycle: brief, work, self-review, hand up,
-review, then approve, return, or accept as incomplete. Only the Coder writes
-project files. See `knowledge/prd/01-roles.md` for what each role owns and must not do.
+review, then approve, return, or accept as incomplete. Only the Coder writes project
+files. A parent starts its child with the ledger tool `agent_spawn`; no role has the
+`Agent` tool except the Driver, which may run only cartographer's agents.
 
-Every role runs as its own Claude Code session, listed in agent view. A parent starts
-its child with the ledger tool `agent_spawn`; no role has the `Agent` tool.
+## What it runs, reads and writes
 
-## Running a swarm
+- **Runs:** `claude --bg` sessions for every role; one ledger server per host repo, on a
+  loopback port with a bearer token; the host's test, build, and lint commands; `git`; and
+  codebase-kg's tools.
+- **Reads:** the host repo, `.claude/sentinel-swarm.local.md`, and Claude Code's plugin
+  registry, to find the installed plugins.
+- **Writes:** the role files in `.claude/agents/`, the run's records in `.sentinel-swarm/`
+  (the ledger database, the server's port and token, and the report), and the project
+  files the Coders write. It shows desktop notifications unless `notify` turns them off.
 
-1. Install the plugin at project scope in the host repo.
-2. Trust the host folder once: run `claude` in it and accept the trust prompt.
-3. Run `python -m swarm_ledger.setup` (or `/sentinel-swarm:setup`). It writes the
-   role files to `.claude/agents/swarm-<role>.md`, the hook shim to
-   `.sentinel-swarm/hook.py`, and the git excludes. The role files carry no hooks:
-   the plugin's mod runs them.
-4. Run `python -m swarm_ledger.launch "<prompt>"` (or `/sentinel-swarm:run`). It
-   starts the repo's ledger server and the Oracle session. Add `--bg` for a
-   background session or `--headless` for `claude -p`.
+## Develop
 
-`scripts/smoke.sh` does all of this for a scratch host repo in `runs/hello/`.
+The ledger is a Python project under `mcp/`. Run every check before you commit:
 
-## Required dependency
-
-sentinel-swarm requires the `codebase-kg` plugin (`>=0.8.2`), installed as
-`codebase-kg@alexk413x` from the `alexk413x` marketplace (`Alexk413x/marketplace`).
-Claude Code refuses to load sentinel-swarm in a project where it is not installed. Every role queries the
-code graph before it plans or writes, and the Coder updates it for its own file.
-`accessibility-tools` and `cartographer` are optional dependencies.
-
-## Repo layout
-
-```
-.claude-plugin/   plugin.json and marketplace.json
-skills/           swarm-protocol, run, status, resume, setup
-hooks/            hooks.json, which carries no hooks, and the per-role hook table
-templates/        agents/<role>.md role templates, hook_shim.py, and the settings example
-mcp/              the swarm-ledger Python server (separate project, see below)
-scripts/          smoke.sh, the end-to-end smoke test; bench.sh, the benchmark; evals.sh
-evals/            the claude plugin eval suite for skill triggering
-knowledge/        code_graph.db, and prd/, the source of truth for how the swarm works
-plans/            plans for work not built yet
-```
-
-The plugin ships no `agents/` folder. Setup writes the four core role files into the
-host repo, plus the Driver's when the host has cartographer and a driver plugin.
-
-## Dev commands (mcp/)
-
-The ledger server is a separate Python project under `mcp/`.
-
-```
+```sh
 cd mcp
 uv sync
 uv run pytest
 uv run pyright
 uv run ruff check
 uv run ruff format --check
+cd ..
+claude plugin test .
+claude plugin validate --strict .claude-plugin/plugin.json
 ```
 
-## Design documents
+`scripts/smoke.sh` runs a hello-world swarm in a scratch host repo under `runs/hello/`.
+`knowledge/prd/README.md` indexes the specification, one document per subject; the code
+must match it. Run `sh .githooks/install.sh` once per clone.
 
-Read `knowledge/prd/README.md`, which lists one document per subject. The PRD is the
-specification the code must match. Anything marked **(needs implementation)** is
-specified but not built yet. `plans/` holds plans for work not built yet.
+## Licence
+
+Free to use, including at work, and free to fork and share. You may not sell it, a fork
+of it, or paid setup or hosting of it, and you may not use it for fraud or scams. See
+[LICENSE](LICENSE) for the full terms.

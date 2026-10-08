@@ -10,13 +10,21 @@ in a VM without the `claude` CLI, so neither surface can run a swarm. The plugin
 uploaded to claude.ai or added to organization sync. A future launcher stays out of a
 top-level `bin/` folder.
 
-1. Install sentinel-swarm at project scope in the host repo. `--plugin-dir` is not
-   enough, because the launcher does not resolve its agents. Install
-   `codebase-kg@alexk413x` at project scope too: add the marketplace with `claude
-   plugin marketplace add --scope project Alexk413x/marketplace`, then run `claude
-   plugin install codebase-kg@alexk413x --scope project`. Install cartographer and a driver plugin (android-driver, ios-driver,
-   or web-driver, from the accessibility-tools marketplace) as well for a Driver;
-   without them the run finishes on unit tests alone.
+1. Add the `alexk413x` marketplace and install sentinel-swarm and codebase-kg at project
+   scope in the host repo:
+
+   ```
+   claude plugin marketplace add --scope project Alexk413x/marketplace
+   claude plugin install codebase-kg@alexk413x --scope project
+   claude plugin install sentinel-swarm@alexk413x --scope project
+   ```
+
+   `--plugin-dir` is not enough, because the launcher does not resolve its agents. The
+   `alexk413x` marketplace installs each plugin from its repository's `release` branch,
+   which `.github/workflows/release.yml` builds from `main` without development files.
+   The repository ships no marketplace of its own. Install cartographer and a driver
+   plugin (android-driver, ios-driver, or web-driver, from the accessibility-tools
+   marketplace) as well for a Driver; without them the run finishes on unit tests alone.
 2. Trust the host folder once: run `claude` in it and accept the trust prompt.
    The project-scope install is what loads the plugin's mod in each role session; no
    other step installs it. `claude --bg` refuses an untrusted folder, so the mod never
@@ -26,30 +34,35 @@ top-level `bin/` folder.
    at all. The launcher and the ledger refuse that case; see "Launch" below.
 3. Run setup, then the launcher.
 
-## The ledger's venv
+Requirements: Claude Code 2.1.294 or later, for the mod; Python 3.9 or newer as `py`,
+`python3`, or `python` on `PATH`; git; and Windows or macOS. `uv` is needed only when that
+Python is older than codebase-kg's floor, for `graph_upsert`'s fallback; see
+[09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
 
-Every `uv run` of the plugin's own `mcp` project uses one venv outside the plugin cache:
-`<config>/plugins/data/sentinel-swarm-sentinel-swarm/venv-<key>`, where `<config>` is
-`$CLAUDE_CONFIG_DIR` or `~/.claude`, and `<key>` is the first 12 hex digits of the
-SHA-256 of `mcp/uv.lock`. `uv` gets it as `UV_PROJECT_ENVIRONMENT`.
+sentinel-swarm is public under the no-resale licence in `LICENSE`: Apache 2.0 terms plus
+the no-resale and prohibited-use conditions.
 
-- `${CLAUDE_PLUGIN_ROOT}` changes on every update, so a venv inside the cache folder
-  would be rebuilt, about 82 MB, for each version.
-- Two versions with the same lock share one venv, and a version with a new lock gets a
-  new venv, so an update never syncs a venv that a running session still uses.
-- `mcp/ledger_venv.py`, standard library only, computes the path. The skills run it
-  and pass its output as `UV_PROJECT_ENVIRONMENT`. The hook shim computes the same path
-  itself, because it cannot import the file, and a test checks that the two agree.
-  Neither reads `CLAUDE_PLUGIN_DATA`, which is not reliable inside a hook command.
-- The `swarm_ledger` package removes `UV_PROJECT_ENVIRONMENT` from its own environment
-  at import when it names the package's own venv, so no child process inherits it. A
-  child `uv run`, such as `graph_upsert`'s fallback or the host's test command, would
-  otherwise sync its own project into the ledger's venv.
-- `scripts/smoke.sh` uses the same venv for its `uv sync` and `uv run` calls.
+## How the ledger runs
+
+The ledger imports only the standard library, so it needs no venv, no `uv`, and no install
+step. Every entry point runs `<python> -I -S <plugin root>/mcp/launch/ledger.py <module>
+[args]`, which puts `mcp/src` on `sys.path` and runs `swarm_ledger.<module>`.
+
+- The skills pick `py -3`, else `python3`, else `python`, and run the launcher with it.
+- The hook shim and `hook.py watch` run the launcher on the base interpreter that runs the
+  shim. The server starts its workers and, from `serve --detach` or the launcher, itself on
+  the base interpreter (`sys._base_executable`) with `-I -S`.
+- The code runs on Python 3.9: pyright checks `mcp/src` and `mcp/launch` against 3.9, and CI
+  runs the launcher and the frontmatter tests on 3.9. The dev tools (`fastmcp`, `pytest`,
+  `pyright`, `ruff`, PyYAML) need 3.10 and live in the `dev` dependency group.
+- `swarm_ledger.frontmatter` parses the YAML subset the settings file and the role files
+  use: block mappings and sequences, flow lists and mappings, quoted and plain scalars,
+  and literal and folded block scalars. A test checks it against PyYAML on every shipped
+  template.
 
 ## Setup
 
-`python -m swarm_ledger.setup [--repo <root>] [--check-trust]`, or the
+`mcp/launch/ledger.py setup [--repo <root>] [--check-trust]`, or the
 `/sentinel-swarm:setup` skill, which also creates the settings file, fills in the
 commands from the detected stack, confirms codebase-kg, and builds the graph. Setup:
 
@@ -97,7 +110,7 @@ startup.
 
 ## Launch
 
-`python -m swarm_ledger.launch [--repo <root>] [--bg | --headless [--transcript <file>]] "<prompt>"`,
+`mcp/launch/ledger.py launch [--repo <root>] [--bg | --headless [--transcript <file>]] "<prompt>"`,
 or the `/sentinel-swarm:run` skill.
 
 - It runs setup when the shim or one of the four core role files is missing. A missing
