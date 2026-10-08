@@ -131,3 +131,5 @@
 - 2026-10-08: Only `drive_request` starts a Driver; `brief_create` refuses `child_role="driver"`.
 - 2026-10-08: Each role template's start sequence names its graph search level: system (Oracle), component (Manager), file (Lead), symbol (Coder), screen (Driver).
 - 2026-10-08: The Lead holds `graph_upsert` for nodes whose anchors lie on its module's files; a Coder's stay on its own file.
+- 2026-10-08: A Manager's, Lead's, Coder's, and Driver's `session_start` hook makes its start calls (`brief_ack`, `ledger_info`, `brief_get`, `guidelines_get`, and `run_status` for a Manager or Lead) and returns them as context; the brief it hands over counts as a read for `handoff_submit`. The Oracle keeps its own start calls.
+- 2026-10-08: The Coder loads `score_record` and `handoff_submit`, and the Driver `drive_done`, with a second `ToolSearch` just before the first call, not in the up-front `select:`.

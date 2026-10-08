@@ -212,11 +212,111 @@ def test_template_body_calls_only_the_roles_ledger_tools(repo_root: Path, role: 
     from swarm_ledger.server import _TOOL_NAMES
 
     _, body = _split(_template(repo_root, role))
-    working_set = re.search(r'ToolSearch\(query="select:([^"]+)"', body)
-    assert working_set, f"{role} has no ToolSearch working set"
-    assert _ledger_tools(set(working_set.group(1).split(","))) <= ROLE_TOOLS[role]
+    selects = _selects(body)
+    assert selects, f"{role} has no ToolSearch working set"
+    for selected in selects:
+        assert _ledger_tools(selected) <= ROLE_TOOLS[role]
     called = {name for name in _TOOL_NAMES if re.search(rf"\b{name}\(", body)}
     assert called <= ROLE_TOOLS[role]
+
+
+def _selects(body: str) -> list[set[str]]:
+    return [set(m.split(",")) for m in re.findall(r'ToolSearch\(query="select:([^"]+)"', body)]
+
+
+def _ledger_set(*names: str) -> set[str]:
+    return {f"{LEDGER_PREFIX}{name}" for name in names}
+
+
+SELECT_SETS = {
+    "oracle": _ledger_set(
+        "ledger_info",
+        "run_start",
+        "repo_check",
+        "repo_branch_create",
+        "profile_set",
+        "guidelines_set",
+        "phase_add",
+        "phase_update",
+        "brief_create",
+        "agent_spawn",
+        "directive_inbox",
+        "status_tree",
+        "phase_review",
+        "tests_run",
+        "run_finish",
+    )
+    | {"mcp__codebase-kg__kg_search", "SendMessage", "Monitor"},
+    "manager": _ledger_set(
+        "message_inbox",
+        "module_add",
+        "who_owns",
+        "brief_create",
+        "agent_spawn",
+        "status_tree",
+        "module_review",
+        "tests_run",
+        "issue_list",
+    )
+    | {"mcp__codebase-kg__kg_search", "SendMessage"},
+    "lead": _ledger_set(
+        "message_inbox",
+        "claim_file",
+        "brief_create",
+        "agent_spawn",
+        "score_record",
+        "review_compare",
+        "approve",
+        "return_work",
+        "tests_run",
+        "issue_list",
+    )
+    | {"mcp__codebase-kg__kg_search", "SendMessage"},
+    "coder": _ledger_set(
+        "who_owns", "tests_run", "graph_upsert", "message_inbox", "issue_list", "cr_list"
+    )
+    | {"mcp__codebase-kg__kg_search", "SendMessage"},
+    "driver": _ledger_set("message_inbox", "drive_checkin", "drive_issue") | {"SendMessage"},
+}
+END_SELECTS = {
+    "coder": _ledger_set("score_record", "handoff_submit"),
+    "driver": _ledger_set("drive_done"),
+}
+HOOK_START_CALLS = _ledger_set(
+    "ledger_info", "brief_get", "brief_ack", "guidelines_get", "run_status"
+)
+
+
+@pytest.mark.parametrize("role", ROLES)
+def test_template_up_front_select_is_the_expected_set(repo_root: Path, role: str):
+    _, body = _split(_template(repo_root, role))
+    selects = _selects(body)
+    assert selects[0] == SELECT_SETS[role]
+    max_results = re.search(r'ToolSearch\(query="select:[^"]+", max_results=(\d+)\)', body)
+    assert max_results and int(max_results.group(1)) == len(SELECT_SETS[role])
+
+
+@pytest.mark.parametrize("role", [r for r in ROLES if r != "oracle"])
+def test_hook_start_calls_stay_out_of_the_up_front_select(repo_root: Path, role: str):
+    _, body = _split(_template(repo_root, role))
+    assert not _selects(body)[0] & HOOK_START_CALLS
+    assert "SessionStart" in body
+    assert "brief_ack(caller=<your name>)" not in body
+
+
+@pytest.mark.parametrize("role", sorted(END_SELECTS))
+def test_end_tools_load_in_their_own_select_before_the_first_call(repo_root: Path, role: str):
+    _, body = _split(_template(repo_root, role))
+    found = [
+        m.start()
+        for m in re.finditer(r'ToolSearch\(query="select:([^"]+)"', body)
+        if set(m.group(1).split(",")) == END_SELECTS[role]
+    ]
+    assert len(found) == 1
+    end_select = found[0]
+    for tool in END_SELECTS[role]:
+        name = tool.removeprefix(LEDGER_PREFIX)
+        assert end_select < body.index(f"{name}("), f"{role} calls {name} before loading it"
 
 
 def test_role_tool_sets_match_the_ledgers_role_checks():

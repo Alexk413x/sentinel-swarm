@@ -1,6 +1,6 @@
 # Upgrade roadmap: efficiency, messaging, other platforms
 
-Status: part 1 is a build plan; steps 0, 1, 2 and 2b are done, the rest is not started. Part 2 is an exploration
+Status: part 1 is a build plan; steps 0, 1, 2, 2b, 2c, 3 and 4 are done, the rest is not started. Part 2 is an exploration
 **(proposed)**, not a build plan. Written 2026-10-07 on branch `feat/kg-start-end-cli`. It replaces
 the root `cli-plan.md`.
 
@@ -531,6 +531,28 @@ template text for item 6. Item 5 waits on its delivery path.
 
 ### Step 3. Start-up calls in the `SessionStart` hook
 
+Built on 2026-10-08, with its tests in `mcp/tests/test_hooks.py`; not run live yet. Choices made
+while building:
+
+- The hook binds any `registered` swarm session that is not the Oracle, on any `source`, and
+  returns the context without binding for a session already bound, on any `source` (`resume`,
+  `compact`, `clear`).
+- "Refused until `brief_ack` succeeds" had no gate: a `registered` row already resolved for most
+  tools. `pre_ledger` now denies a `registered` session every ledger tool but `brief_ack` and the
+  five that take no identity. It is a hook gate, not a ledger gate, so it does not hold for a
+  client without the hook; a ledger gate in `identity.resolve` would, and is left for step 5's
+  identity work.
+- Claude Code caps `additionalContext` at 10,000 characters and saves a longer one to a file the
+  model is not told to read. The hook stays under 9,500: a result that does not fit is left out,
+  and the context names the call to make instead.
+- `ledger_info` in the context leaves out the tool count, which only `server.py` knows.
+- The step 2b brief re-read gate: when the brief is in the context, the hook records
+  `briefs.last_read_by_child_at`, as `pre_ledger` does for `brief_get`. On a first start this
+  changes nothing, because the gate applies only after a return. On a session restarted after a
+  return (`agent_resume`, or a compaction), the brief text is fresh in the context, so it counts
+  as the re-read. A Coder woken by `SendMessage` in a live session gets no `SessionStart` and
+  still calls `brief_get`.
+
 The role's `SessionStart` hook already posts to the ledger, runs as code, and knows the session id,
 which is the role's `agent_id`. Roles have no Bash, so a CLI would not help them. Moving the start
 calls into the hook saves the schemas and the tool turns.
@@ -547,6 +569,11 @@ Tests: a hook test per role for the returned context; a resume test that binds o
 test where the agent's next ledger call is refused until `brief_ack` succeeds.
 
 ### Step 4. End tools out of the up-front `select:`
+
+Built on 2026-10-08. `test_plugin_surface.py` checks each template's up-front `select:` and its
+`max_results` against an expected set, that no child's set names a start-call tool, and that the
+Coder's and Driver's end-tool `select:` comes before the first call of each tool. The `textstats`
+smoke run is not run yet.
 
 - Coder: `score_record` and `handoff_submit` leave the up-front `select:`. The handoff step starts
   with one `ToolSearch select:` for them.
@@ -607,24 +634,34 @@ in-process ledger return equal results.
 
 ## Context savings
 
-| Role | Allowed ledger tools (bytes) | Up-front `select:` ledger tools (bytes) | Plus `kg_search` |
-|---|---|---|---|
-| Oracle | 47 (27,110) | 15 (9,042) | 900 |
-| Manager | 33 (18,818) | 14 (8,865) | 900 |
-| Lead | 34 (22,473) | 15 (12,441) | 900 |
-| Coder | 24 (15,402) | 12 (9,367) | 900 |
-| Driver | 10 (6,106) | 8 (4,734) | 0 |
+Measured 2026-10-08 with `scripts/bench/ledger_load.py --agents 1 --rounds 1 --shim-reps 1`,
+before and after steps 3 and 4, on the step 2c tree. Bytes count `name`, `description` and
+`inputSchema` of each ledger tool from the live server's `tools/list`, as in step 1. `kg_search`
+and the built-in tools are not counted (`kg_search` is about 900 B).
 
-The ledger exposes 67 tools, 41,802 bytes of `tools/list` JSON (measured 2026-10-07).
+| Role | Allowed ledger tools (bytes) | Up-front `select:` before (bytes) | Up-front `select:` after (bytes) |
+|---|---|---|---|
+| Oracle | 47 (25,518) | 15 (9,018) | 15 (9,018), unchanged |
+| Manager | 33 (18,785) | 14 (8,869) | 9 (6,876) |
+| Lead | 35 (23,201) | 15 (12,692) | 10 (10,699) |
+| Coder | 25 (15,322) | 12 (8,788) | 6 (3,031) |
+| Driver | 10 (5,690) | 8 (4,400) | 3 (1,916) |
+
+The ledger exposes 67 tools: 40,929 bytes by this count, 50,551 bytes with every field of
+`tools/list`. The moved tools: `ledger_info` 196 B, `brief_get` 610 B, `brief_ack` 415 B,
+`guidelines_get` 323 B, `run_status` 449 B, `score_record` 3,683 B, `handoff_submit` 530 B,
+`drive_done` 940 B.
 
 | Change | Per session | 10-agent run (1 Oracle, 1 Manager, 2 Leads, 6 Coders) |
 |---|---|---|
-| Step 3: start calls in the hook | 1,705 B and 4 tool turns (Coder, Driver); 2,232 B and 5 turns (Manager, Lead) | 16.9 KB and 39 tool turns |
-| Step 4: Coder end tools loaded at handoff | 4,062 B until handoff | 24.4 KB until handoff |
-| Step 4: Driver `drive_done` loaded at the end | 973 B until the exploration ends | 973 B |
+| Step 3: start calls in the hook | 1,544 B and 3 ledger calls (Coder, Driver); 1,993 B and 4 ledger calls (Manager, Lead) | 15.2 KB and 30 ledger calls |
+| Step 4: Coder end tools loaded at handoff | 4,213 B until the first handoff | 25.3 KB until handoff |
+| Step 4: Driver `drive_done` loaded at the end | 940 B until the exploration ends | 940 B |
 
-At about 4 bytes a token, step 3 saves about 4,200 tokens across a 10-agent run. Each session's
-share is re-sent as cached input on every turn, and the 39 fewer tool turns save more than the bytes.
+The calls the hook makes were `brief_get`, `brief_ack` and `guidelines_get`, plus `run_status` for
+a Manager or Lead; the templates loaded `ledger_info` but did not call it. Their results still
+reach the session, as hook context instead of tool results. At about 4 bytes a token, step 3
+saves about 3,800 tokens of schemas across a 10-agent run, re-sent as cached input on every turn.
 
 ## Success numbers
 
@@ -633,8 +670,8 @@ share is re-sent as cached input on every turn, and the 39 fewer tool turns save
 | Processes for a role session's HTTP plugin servers | 0 (step 0 done) | 0 |
 | Cross-run `message_inbox` reads | 0 by test (step 2) | 0 |
 | Members stopped with unread mail, `modules` smoke run | Not measured | 0 |
-| Coder up-front `select:` | 10,267 B, 4 start calls | 4,500 B, 0 start calls |
-| Manager / Lead up-front `select:` | 9,765 / 13,341 B | 7,533 / 11,109 B |
+| Coder up-front `select:` (ledger tools) | 3,031 B, 0 start calls (steps 3 and 4; was 8,788 B, 3 calls) | 4,500 B, 0 start calls |
+| Manager / Lead up-front `select:` (ledger tools) | 6,876 / 10,699 B (step 3; was 8,869 / 12,692 B) | 7,533 / 11,109 B |
 | Tool call median, 1 agent | 15 ms (step 1) | No slower than step 1 |
 | Tool call and hook median, 16 agents | 273 ms and 52 ms (step 1) | Below 150 ms; build step 7 if missed |
 | Calls that fail at 16 agents | 0 (step 1) | 0 |

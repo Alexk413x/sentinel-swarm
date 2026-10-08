@@ -698,32 +698,174 @@ def test_session_start_marks_a_resumed_idle_session_working(ledger: Ledger) -> N
     ctx = _bootstrap(ledger)
     lead_id = ctx["lead"]["agent_id"]
     _go_idle(ledger, lead_id)
-    assert events.handle_session_start(ledger, {"session_id": lead_id}) is None
+    result = events.handle_session_start(ledger, {"session_id": lead_id, "source": "resume"})
+    assert result is not None
+    assert "already bound" in result["hookSpecificOutput"]["additionalContext"]
     assert _state(ledger, lead_id) == "working"
 
 
-def test_session_start_leaves_a_spawned_session_registered_for_brief_ack(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
-    module = ledger.module_add("mgr-p1-phase-1", "mgr-agent", ctx["phase_id"], "module-2")
-    ledger.brief_create(
-        "mgr-p1-phase-1",
-        "mgr-agent",
-        "lead-p1-module-2",
-        "lead",
-        "sonnet",
-        "Own it.",
-        module_id=module["module_id"],
-    )
+def _registered(ledger: Ledger, ctx: dict, role: str) -> tuple[str, str]:
+    run_id, oracle_id = ctx["run_id"], ctx["oracle_id"]
+    parent = {"manager": oracle_id, "lead": "mgr-agent", "coder": "lead-agent"}.get(role, oracle_id)
+    if role == "manager":
+        phase = ledger.phase_add("oracle", oracle_id, "phase-2")
+        ledger.phase_update("oracle", oracle_id, phase["phase_id"], "unlocked")
+        name = "mgr-p2-phase-2"
+        ledger.brief_create(
+            "oracle", oracle_id, name, "manager", "opus", "Own phase-2.", phase_id=phase["phase_id"]
+        )
+    elif role == "lead":
+        module = ledger.module_add("mgr-p1-phase-1", "mgr-agent", ctx["phase_id"], "module-2")
+        name = "lead-p1-module-2"
+        ledger.brief_create(
+            "mgr-p1-phase-1",
+            "mgr-agent",
+            name,
+            "lead",
+            "sonnet",
+            "Own module-2.",
+            module_id=module["module_id"],
+        )
+    elif role == "coder":
+        name = "coder-p1-module-1-new"
+        claimed = ledger.claim_file(
+            "lead-p1-module-1", "lead-agent", "src/new.py", "tests/test_new.py", name
+        )
+        ledger.brief_create(
+            "lead-p1-module-1",
+            "lead-agent",
+            name,
+            "coder",
+            "sonnet",
+            "Implement new.py.",
+            module_id=ctx["module_id"],
+            file_id=claimed["file_id"],
+        )
+    else:
+        name = "driver-e1"
+        with write_tx(ledger.conn) as conn:
+            conn.execute(
+                "INSERT INTO briefs (run_id, parent_agent_id, child_name, child_role, model, "
+                "body) VALUES (?, ?, ?, 'driver', 'sonnet', 'Explore the login screen.')",
+                (run_id, oracle_id, name),
+            )
+    agent_id = f"sess-{name}"
     with write_tx(ledger.conn) as conn:
         conn.execute(
             "INSERT INTO agents (agent_id, name, role, parent_agent_id, run_id, state, "
-            "session_name, bg_id) VALUES ('sess-lead-2', 'lead-p1-module-2', 'lead', "
-            "'mgr-agent', ?, 'registered', 'host-r1-lead-2', 'bg2')",
-            (ctx["manager"]["run_id"],),
+            "session_name, bg_id) VALUES (?, ?, ?, ?, ?, 'registered', ?, 'bg')",
+            (agent_id, name, role, parent, run_id, f"host-r1-{name}"),
         )
-    assert events.handle_session_start(ledger, {"session_id": "sess-lead-2"}) is None
-    assert _state(ledger, "sess-lead-2") == "registered"
-    assert ledger.brief_ack("lead-p1-module-2", "sess-lead-2")["state"] == "working"
+    return name, agent_id
+
+
+def _start_context(ledger: Ledger, agent_id: str, source: str = "startup") -> str:
+    result = events.handle_session_start(ledger, {"session_id": agent_id, "source": source})
+    assert result is not None
+    assert result["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+    return result["hookSpecificOutput"]["additionalContext"]
+
+
+@pytest.mark.parametrize("role", ["manager", "lead", "coder", "driver"])
+def test_session_start_binds_a_spawned_role_and_returns_its_start_calls(
+    ledger: Ledger, role: str
+) -> None:
+    ctx = _bootstrap(ledger)
+    ledger.guidelines_set("oracle", ctx["oracle_id"], "Use stdlib only.")
+    name, agent_id = _registered(ledger, ctx, role)
+
+    context = _start_context(ledger, agent_id)
+
+    assert _state(ledger, agent_id) == "working"
+    assert f"brief_ack(caller={name!r})" in context
+    assert "ledger_info() returned" in context
+    assert f'"repo_root":{json.dumps(str(ledger.repo_root))}' in context
+    assert f"brief_get(caller_name={name!r}, child_name={name!r}) returned" in context
+    assert f'"child_name":"{name}"' in context
+    assert "guidelines_get() returned" in context
+    assert "Use stdlib only." in context
+    assert ("run_status() returned" in context) == (role in ("manager", "lead"))
+    assert len(context) <= 10_000
+
+
+def test_session_start_records_the_brief_the_hook_hands_over_as_read(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    name, agent_id = _registered(ledger, ctx, "coder")
+    _start_context(ledger, agent_id)
+    row = ledger.conn.execute(
+        "SELECT last_read_by_child_at FROM briefs WHERE child_name = ?", (name,)
+    ).fetchone()
+    assert row["last_read_by_child_at"] is not None
+
+
+def test_session_start_on_resume_returns_the_context_without_binding_again(
+    ledger: Ledger,
+) -> None:
+    ctx = _bootstrap(ledger)
+    name, agent_id = _registered(ledger, ctx, "coder")
+    _start_context(ledger, agent_id)
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE briefs SET last_read_by_child_at = NULL WHERE child_name = ?", (name,))
+
+    context = _start_context(ledger, agent_id, source="resume")
+
+    assert "already bound" in context
+    assert f'"child_name":"{name}"' in context
+    acks = [e for e in ledger.events(agent_id=agent_id) if e["reason"] == "brief_ack"]
+    assert len(acks) == 1
+    row = ledger.conn.execute(
+        "SELECT last_read_by_child_at FROM briefs WHERE child_name = ?", (name,)
+    ).fetchone()
+    assert row["last_read_by_child_at"] is not None
+
+
+def test_session_start_returns_a_refused_bind_and_the_ledger_waits_for_brief_ack(
+    ledger: Ledger,
+) -> None:
+    ctx = _bootstrap(ledger)
+    name, agent_id = _registered(ledger, ctx, "lead")
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE briefs SET acked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+            "WHERE child_name = ?",
+            (name,),
+        )
+
+    context = _start_context(ledger, agent_id)
+
+    assert "refused" in context
+    assert "no unacked brief" in context
+    assert _state(ledger, agent_id) == "registered"
+
+    def pre_ledger(tool: str) -> str:
+        data = {"session_id": agent_id, "tool_name": f"mcp__swarm-ledger__{tool}"}
+        return events.handle_pre_ledger(ledger, data)["hookSpecificOutput"]["permissionDecision"]
+
+    assert pre_ledger("run_status") == "deny"
+    assert pre_ledger("brief_get") == "allow"
+    assert pre_ledger("brief_ack") == "allow"
+
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE briefs SET acked_at = NULL WHERE child_name = ?", (name,))
+    assert ledger.brief_ack(name, agent_id)["state"] == "working"
+    assert pre_ledger("run_status") == "allow"
+
+
+def test_session_start_leaves_out_a_start_call_over_the_context_cap(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    ledger.guidelines_set("oracle", ctx["oracle_id"], "x" * 12_000)
+    name, agent_id = _registered(ledger, ctx, "coder")
+
+    context = _start_context(ledger, agent_id)
+
+    assert len(context) <= 10_000
+    assert "guidelines_get() is left out" in context
+    assert f'"child_name":"{name}"' in context
+
+
+def test_session_start_makes_no_start_calls_for_the_oracle(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    assert events.handle_session_start(ledger, {"session_id": ctx["oracle_id"]}) is None
 
 
 def test_stop_blocks_a_coder_before_marking_it_idle(ledger: Ledger) -> None:

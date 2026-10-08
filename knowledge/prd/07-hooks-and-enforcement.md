@@ -81,7 +81,13 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 ## What each hook does
 
 - `session_start`: for a swarm session, records the transcript path and sets an idle
-  agent to working. For any other session, it reports an active or paused run; checks
+  agent to working. For a Manager, Lead, Coder, or Driver, it also makes the start
+  calls: `brief_ack` when the agent is still `registered`, then `ledger_info`,
+  `brief_get`, `guidelines_get`, and, for a Manager or Lead, `run_status`, returned as
+  `additionalContext` under 9,500 characters. A refused `brief_ack` comes back as the
+  context. When the brief is in the context, it records `briefs.last_read_by_child_at`.
+  See "Start calls" in [05-sessions.md](05-sessions.md). For the Oracle it returns
+  nothing. For any other session, it reports an active or paused run; checks
   the plugin registry for codebase-kg, reports it when it is not installed, and, only
   once it is installed, reports a missing `knowledge/code_graph.db`; and adds
   `.sentinel-swarm/` to the git excludes.
@@ -122,7 +128,8 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
   yet in the ledger counts as a swarm session when its `agent_type` is `swarm-<role>`.
   No override rule covers it.
 - `pre_ledger`: stamps `agent_id`, and denies `override_grant` to anyone but the
-  Oracle. On a `brief_get` whose `child_name` is the calling session's own agent name,
+  Oracle. It denies a swarm session still in state `registered` every ledger tool but
+  `brief_ack` and the five tools that take no identity, and names `brief_ack`. On a `brief_get` whose `child_name` is the calling session's own agent name,
   it records `briefs.last_read_by_child_at`, which `handoff_submit` reads. The identity stamp itself takes no override: faking `agent_id` is what the
   stamp exists to prevent. The stamp is the hook input's `agent_id`, or
   else its `session_id`. For the five tools that take no identity (`ledger_info`,
@@ -187,7 +194,8 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 | After 3 waves that fix nothing, the Oracle reports what is left | `drive_done` records the directive and the notification that list what is left; the report shows both |
 | Every dimension is scored on every review | `score_record` refuses a set that leaves a dimension out |
 | A model comes from the approved list | `brief_create` |
-| No agent starts without a brief | `agent_spawn` and `brief_ack` |
+| No agent starts without a brief | `agent_spawn` and `brief_ack`, which `session_start` calls |
+| A child does no ledger work before it binds | `pre_ledger` denies a `registered` session every tool but `brief_ack` and the tools that take no identity |
 | No agent fakes its identity | `pre_ledger` stamps `agent_id`; the server's middleware takes it out of the arguments; every tool matches `caller` to it |
 | A role calls only its own ledger tools | The role file's `tools` allowlist, which names each `mcp__swarm-ledger__<tool>` in `identity.ROLE_TOOLS`; `server._call` refuses a live agent's call outside its set |
 | A handoff needs passing tests and a current graph | `handoff_submit` |

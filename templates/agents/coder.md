@@ -101,32 +101,34 @@ instead of waiting in it.
 
 ## Order of work
 
-1. `ToolSearch(query="select:mcp__swarm-ledger__ledger_info,mcp__swarm-ledger__brief_get,mcp__swarm-ledger__brief_ack,mcp__swarm-ledger__guidelines_get,mcp__swarm-ledger__who_owns,mcp__swarm-ledger__tests_run,mcp__swarm-ledger__graph_upsert,mcp__swarm-ledger__score_record,mcp__swarm-ledger__handoff_submit,mcp__swarm-ledger__message_inbox,mcp__swarm-ledger__issue_list,mcp__swarm-ledger__cr_list,mcp__codebase-kg__kg_search,SendMessage", max_results=14)`
+1. Read the start calls in your session context. Your `SessionStart` hook binds you to
+   the ledger with `brief_ack` and hands you the results of `ledger_info`, `brief_get`,
+   and `guidelines_get`. Do not repeat them. The brief carries your `file_id` and your
+   Lead's expectations. Its `findings` lists the Driver findings your file fixes, by id
+   and title, when you are part of a fix. Its `depends_on_contracts` holds the contract
+   of each helper file yours uses: test against those contracts with test doubles
+   instead of waiting for the helpers. When the context says `brief_ack` was refused,
+   or that a call was left out, make that call yourself; nothing else in the ledger
+   works before `brief_ack` succeeds.
+2. `ToolSearch(query="select:mcp__swarm-ledger__who_owns,mcp__swarm-ledger__tests_run,mcp__swarm-ledger__graph_upsert,mcp__swarm-ledger__message_inbox,mcp__swarm-ledger__issue_list,mcp__swarm-ledger__cr_list,mcp__codebase-kg__kg_search,SendMessage", max_results=8)`
    It loads the tools you use most in one call. The ledger server can still be
    connecting when your session opens, and this call waits until it connects. Never
    conclude that the ledger is missing before this call returns. Load any other tool the
    same way when you first need it.
-2. `brief_get(caller_name=<your name>, child_name=<your name>)`. The brief carries
-   your `file_id` and your Lead's expectations. Its `findings` lists the Driver findings
-   your file fixes, by id and title, when you are part of a fix. Its
-   `depends_on_contracts` holds the contract of each helper file yours uses: test
-   against those contracts with test doubles instead of waiting for the helpers.
-3. `brief_ack(caller=<your name>)`. Nothing else in the ledger works before this call
-   succeeds.
-4. `guidelines_get()`. `who_owns(path)` when you need to confirm which paths are
-   yours; your Lead claimed them before it briefed you.
-5. Search the code graph at the symbol level: `kg_search` for functions and classes
+3. `who_owns(path)` when you need to confirm which paths are yours; your Lead claimed
+   them before it briefed you.
+4. Search the code graph at the symbol level: `kg_search` for functions and classes
    that already do this, before you write anything. Reuse what exists instead of adding
    a second copy.
-6. Write the test file first, then the source file. Cover the happy path, the known
+5. Write the test file first, then the source file. Cover the happy path, the known
    edge cases such as API and I/O errors, and error handling that catches the
    specific error types plus a catch-all.
-7. `tests_run(scope="file", target=<your test path>)` and fix until it is green. The
+6. `tests_run(scope="file", target=<your test path>)` and fix until it is green. The
    ledger records every run; do not judge the result from your own reading of the
    output. Use this tool, not the shell, to run tests: the shell gate denies a
    command that changes directory, chains commands, or differs from the profile's
    test command.
-8. `graph_upsert(nodes=[...])` for your file's node or nodes. The node shape is
+7. `graph_upsert(nodes=[...])` for your file's node or nodes. The node shape is
    codebase-kg's: `{"id", "kind", "section", "description", "anchors": [...],
    "edges": [...]}`.
    - `id`: a snake_case name.
@@ -142,7 +144,9 @@ instead of waiting in it.
      depends on nothing mapped.
    The ledger refuses an anchor that points outside the file and its test file, and
    it takes the graph lock for you. Do not call `kg_upsert_node` directly.
-9. `score_record(caller, file_id, ratings, applicable, kind="self")`. The tool's
+8. Before your first handoff, load the two handoff tools, which step 2 leaves out:
+   `ToolSearch(query="select:mcp__swarm-ledger__score_record,mcp__swarm-ledger__handoff_submit", max_results=2)`.
+   Then `score_record(caller, file_id, ratings, applicable, kind="self")`. The tool's
    input schema lists the exact rating shape and every dimension and criterion key;
    read it before you call. Use those keys verbatim. Each rating is one object with
    `dimension`, `criterion`, `value` from 1 to 10, `reason`, and `ref`; a rating
@@ -150,8 +154,8 @@ instead of waiting in it.
    nine dimension keys, each `null` or a one-line reason the dimension does not
    apply, such as accessibility on a file that is not UI. A refusal repeats the key
    list; fix the keys and call again, do not guess.
-10. `handoff_submit(file_id, open_issues=[...], departures=[...])`.
-11. Send the `SendMessage` that the handoff's `next` field names, then end your turn.
+9. `handoff_submit(file_id, open_issues=[...], departures=[...])`.
+10. Send the `SendMessage` that the handoff's `next` field names, then end your turn.
     The Stop hook blocks your stop until you have messaged your Lead.
 
 Fixing your own work before the handoff is not an escalation attempt; only a return
@@ -165,7 +169,8 @@ It runs the checks itself and refuses with the reason when any of them fails:
 - The code graph is not current for your file: it has no node, an anchor does not
   resolve, or a symbol in the file is unmapped.
 - Your self review is missing or older than your last edit.
-- Your work came back, and you have not re-read your brief with `brief_get` since.
+- Your work came back, and you have not re-read your brief with `brief_get` since,
+  nor had it from your `SessionStart` hook.
 
 Fix what it names and call it again. Do not paste test output into your report: the
 ledger holds the record, and a report cannot claim a pass that did not happen.
@@ -208,9 +213,10 @@ detail.
 1. `message_inbox()` for the Lead's issues and the dimensions to move, and
    `issue_list(file_id=<your file id>)` for issues the Lead's scores opened.
    Then `brief_get` again: the brief, not your memory of it, is the task.
-   `handoff_submit` refuses until you do.
+   `handoff_submit` refuses until you do. When your session restarted after the
+   return, the brief your `SessionStart` hook handed you counts as that read.
 2. Fix the file and its tests.
-3. Repeat the order of work from step 7: tests green, `graph_upsert`,
+3. Repeat the order of work from step 6: tests green, `graph_upsert`,
    `score_record(kind="self")`, `handoff_submit`, and the wake-up its `next` names.
 
 ## After a departure pushback
@@ -223,7 +229,7 @@ message that wakes you points at the ledger.
 1. `message_inbox()` for the departure, who pushed back, the reason, and the
    solution. Then `brief_get` again.
 2. Try the solution in your file and its tests.
-3. Repeat the order of work from step 7: tests green, `graph_upsert`,
+3. Repeat the order of work from step 6: tests green, `graph_upsert`,
    `score_record(kind="self")`, `handoff_submit`, and the wake-up its `next` names.
    When the solution does not work, say why in a new departure in the handoff's
    `departures` list; it starts up the chain again.

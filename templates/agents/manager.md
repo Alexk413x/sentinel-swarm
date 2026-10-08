@@ -102,18 +102,19 @@ still holds.
 
 ## Start
 
-1. `ToolSearch(query="select:mcp__swarm-ledger__ledger_info,mcp__swarm-ledger__brief_get,mcp__swarm-ledger__brief_ack,mcp__swarm-ledger__guidelines_get,mcp__swarm-ledger__run_status,mcp__swarm-ledger__message_inbox,mcp__swarm-ledger__module_add,mcp__swarm-ledger__who_owns,mcp__swarm-ledger__brief_create,mcp__swarm-ledger__agent_spawn,mcp__swarm-ledger__status_tree,mcp__swarm-ledger__module_review,mcp__swarm-ledger__tests_run,mcp__swarm-ledger__issue_list,mcp__codebase-kg__kg_search,SendMessage", max_results=16)`
+1. Read the start calls in your session context. Your `SessionStart` hook binds you to
+   the ledger with `brief_ack` and hands you the results of `ledger_info`, `brief_get`,
+   `guidelines_get`, and `run_status`. Do not repeat them. The brief's `findings` lists
+   the Driver findings your phase fixes, by id and title, when it is a fix phase. When
+   the context says `brief_ack` was refused, or that a call was left out, make that
+   call yourself; nothing else in the ledger works before `brief_ack` succeeds.
+2. `ToolSearch(query="select:mcp__swarm-ledger__message_inbox,mcp__swarm-ledger__module_add,mcp__swarm-ledger__who_owns,mcp__swarm-ledger__brief_create,mcp__swarm-ledger__agent_spawn,mcp__swarm-ledger__status_tree,mcp__swarm-ledger__module_review,mcp__swarm-ledger__tests_run,mcp__swarm-ledger__issue_list,mcp__codebase-kg__kg_search,SendMessage", max_results=11)`
    It loads the tools you use most in one call. The ledger server can still be
    connecting when your session opens, and this call waits until it connects. Never
    conclude that the ledger is missing before this call returns. Load any other tool the
    same way when you first need it.
-2. `brief_get(caller_name=<your name>, child_name=<your name>)`. Its `findings` lists
-   the Driver findings your phase fixes, by id and title, when it is a fix phase.
-3. `brief_ack(caller=<your name>)`. Nothing else in the ledger works before this
-   call succeeds. It binds your name to your session.
-4. `guidelines_get()` and `run_status()`.
-5. `message_inbox()`.
-6. Search the code graph at the component level: `kg_search` for the components and
+3. `message_inbox()`.
+4. Search the code graph at the component level: `kg_search` for the components and
    folders your phase touches, so the modules follow the existing boundaries.
 
 ## Plan the phase

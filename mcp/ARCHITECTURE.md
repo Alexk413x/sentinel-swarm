@@ -46,7 +46,7 @@ piece can be built and tested alone.
 - `brief_ack` binds the name to the `agent_id`: it succeeds only when a brief exists for that name, no live agent holds the name, and the `agent_id` is not bound to another name.
 - After the bind, every call resolves the `agent_id` to its registry row and refuses a `caller` that does not match.
 - The Oracle is bound at `run_start`, with the session id as its `agent_id`.
-- `agent_spawn` registers a child's row with the new session's id before the child starts, and the child's `brief_ack` binds it.
+- `agent_spawn` registers a child's row with the new session's id before the child starts. The child's `session_start` hook calls `brief_ack` to bind it, and `pre_ledger` denies a still-registered child every tool but `brief_ack` and the tools that take no identity.
 
 ## Errors
 

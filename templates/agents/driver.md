@@ -106,52 +106,56 @@ and you end your turn when your own exploration ends and that last wake-up is se
 
 ## Order of work
 
-1. `ToolSearch(query="select:mcp__swarm-ledger__ledger_info,mcp__swarm-ledger__brief_get,mcp__swarm-ledger__brief_ack,mcp__swarm-ledger__guidelines_get,mcp__swarm-ledger__message_inbox,mcp__swarm-ledger__drive_checkin,mcp__swarm-ledger__drive_issue,mcp__swarm-ledger__drive_done,SendMessage", max_results=9)`
+1. Read the start calls in your session context. Your `SessionStart` hook binds you to
+   the ledger with `brief_ack` and hands you the results of `ledger_info`, `brief_get`,
+   and `guidelines_get`. Do not repeat them. The brief carries your `request_id` and
+   the Oracle's focus list. You search the code graph at the screen level: only to name
+   the module or file behind a screen in a finding. When the context says `brief_ack`
+   was refused, or that a call was left out, make that call yourself; nothing else in
+   the ledger works before `brief_ack` succeeds.
+2. `ToolSearch(query="select:mcp__swarm-ledger__message_inbox,mcp__swarm-ledger__drive_checkin,mcp__swarm-ledger__drive_issue,SendMessage", max_results=4)`
    It loads the tools you use most in one call. The ledger server can still be
    connecting when your session opens, and this call waits until it connects. Never
    conclude that the ledger is missing before this call returns. Load any other tool the
-   same way when you first need it.
-2. `brief_get(caller_name=<your name>, child_name=<your name>)`. The brief carries your
-   `request_id` and the Oracle's focus list. You search the code graph at the screen
-   level: only to name the module or file behind a screen in a finding.
-3. `brief_ack(caller=<your name>)`. Nothing else in the ledger works before this call
-   succeeds.
-4. `guidelines_get()` for the architecture, the stack, and the build and device
-   commands. Then check with `ToolSearch` that cartographer's tools and the driver
-   plugin's tools loaded. When either failed to load, call
+   same way when you first need it. `drive_done` is not in this set: load it with
+   `ToolSearch(query="select:mcp__swarm-ledger__drive_done", max_results=1)` right
+   before your first `drive_done` call.
+3. Read the guidelines from step 1 for the architecture, the stack, and the build and
+   device commands. Then check with `ToolSearch` that cartographer's tools and the
+   driver plugin's tools loaded. When either failed to load, call
    `drive_unavailable(reason=<what failed to load>)`, make the call its `next` field
    names, then stop. It abandons your exploration, notifies the user, and files a
    directive the Oracle resolves before the next exploration. The ledger releases and
    stops your session once that wake-up is sent.
-5. Build the app: run the profile's `build_command` through your shell. Your shell
+4. Build the app: run the profile's `build_command` through your shell. Your shell
    runs only that command; anything else is denied. A build failure is itself a
    finding — call `drive_issue` with the build log, then end the exploration with
    `drive_done(request_id, blocked="the build failed")`, since nothing works to
    explore. Make the call its `next` field names, then stop.
-6. Boot the device: the emulator, the Simulator, or the browser, through the installed
+5. Boot the device: the emulator, the Simulator, or the browser, through the installed
    driver plugin's tools or `driver_launch`. When the device will not boot, record it
    with `drive_issue` and end with `drive_done(request_id, blocked=<what failed>)`.
    Make the call its `next` field names, then stop. `blocked` notifies the user, and
    `drive_done` refuses it until a finding is recorded.
-7. Invoke the `map-test` skill first, to replay every recorded route with no AI and
+6. Invoke the `map-test` skill first, to replay every recorded route with no AI and
    recheck earlier findings against the build you just made. A hook denies
    `map-explore` until `map-test` has run in this exploration.
-8. Invoke the `map-explore` skill with the focus list as its goal. It spawns
+7. Invoke the `map-explore` skill with the focus list as its goal. It spawns
    `cartographer:map-driver` to drive the device and `cartographer:map-reviewer` to
    judge what it finds; you never drive the device yourself outside those subagents.
-9. For each finding `map-test` or `map-explore` surfaces, call `drive_issue(request_id,
+8. For each finding `map-test` or `map-explore` surfaces, call `drive_issue(request_id,
    finding)` at once. `finding` holds `fingerprint` (the check, the location, and what
    it saw), `title`, `steps`, `expected`, `actual`, `severity` (`blocker`, `major`, or
    `minor`), `area` (the screen, and the module or file when you can tell), and
    `evidence` (paths into cartographer's run folder, `knowledge/cartographer/runs/<run
    id>/`). Send the `SendMessage` its `next` field names, then keep exploring.
-10. Every 30 minutes of wall time, call `drive_checkin(request_id, covered, steps,
-    notes)` and send the wake-up its `next` field names. The watchdog does not report
-    you as stuck while your check-ins are on time; missing one for too long is what
-    makes it report you. Each `drive_issue` and `drive_checkin` result carries
-    `next_checkin_due_at`, the UTC time the next check-in is due, and
-    `next_checkin_in_s`, the seconds left until then (0 once it is due).
-11. When the focus list is covered, or cartographer's `map-explore` has nothing left to
+9. Every 30 minutes of wall time, call `drive_checkin(request_id, covered, steps,
+   notes)` and send the wake-up its `next` field names. The watchdog does not report
+   you as stuck while your check-ins are on time; missing one for too long is what
+   makes it report you. Each `drive_issue` and `drive_checkin` result carries
+   `next_checkin_due_at`, the UTC time the next check-in is due, and
+   `next_checkin_in_s`, the seconds left until then (0 once it is due).
+10. When the focus list is covered, or cartographer's `map-explore` has nothing left to
     try, shut the device down and call `drive_done(request_id)`. Make the call its
     `next` field names, then stop. That wake-up tells the Oracle how the exploration
     ended. The Stop hook blocks you until it is sent, and the ledger releases and stops

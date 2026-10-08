@@ -41,6 +41,11 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   does not wait for it, does not use its output, and does not enforce its `timeout`, so
   it can finish after a later hook such as `Stop`. From the hooks documentation, not
   yet checked in a live session. (2026-09-28)
+- A hook's `additionalContext` is capped at 10,000 characters. Claude Code saves a
+  longer one to a file, shows the model the path and a preview of up to 2,000
+  characters, and does not ask the model to read the file. `SessionStart` receives
+  `source` `startup`, `resume`, `clear`, `compact`, or `fork`. From the hooks
+  documentation, not yet checked in a live session. (2026-10-08)
 - On Windows, a TCP connection to a closed port on `127.0.0.1` takes about 2 seconds to
   fail with `ConnectionRefusedError`. (2026-09-28)
 - Inside an agent-file hook, `CLAUDE_PLUGIN_ROOT` points at an unrelated plugin.
