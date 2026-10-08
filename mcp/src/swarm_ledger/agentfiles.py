@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -33,10 +34,25 @@ DRIVER_OPTIONAL_SERVERS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _registry_path() -> Path:
+RELAY_ARGS = [".sentinel-swarm/hook.py", "mcp"]
+SCOPES = ("local", "project", "user")
+_PLACEHOLDER = re.compile(r"\$\{([^}]*)\}")
+
+
+def _config_dir() -> Path:
     raw = os.environ.get("CLAUDE_CONFIG_DIR")
-    base = Path(raw) if raw else Path.home() / ".claude"
-    return base / "plugins" / "installed_plugins.json"
+    return Path(raw) if raw else Path.home() / ".claude"
+
+
+def _registry_path() -> Path:
+    return _config_dir() / "plugins" / "installed_plugins.json"
+
+
+def _read_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
 
 
 def _same_path(raw: object, repo_root: Path) -> bool:
@@ -50,18 +66,105 @@ def _same_path(raw: object, repo_root: Path) -> bool:
         return False
 
 
-def plugin_installed(repo_root: Path, plugin_id: str) -> bool:
-    try:
-        data = json.loads(_registry_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False
+def _installs(repo_root: Path, plugin_id: str) -> list[dict[str, Any]]:
+    data = _read_json(_registry_path())
     plugins = data.get("plugins") if isinstance(data, dict) else None
     entries = plugins.get(plugin_id) if isinstance(plugins, dict) else None
-    return any(
-        isinstance(entry, dict)
-        and (entry.get("scope") == "user" or _same_path(entry.get("projectPath"), repo_root))
+    return [
+        entry
         for entry in entries or []
-    )
+        if isinstance(entry, dict)
+        and (entry.get("scope") == "user" or _same_path(entry.get("projectPath"), repo_root))
+    ]
+
+
+def plugin_installed(repo_root: Path, plugin_id: str) -> bool:
+    return bool(_installs(repo_root, plugin_id))
+
+
+def _install_path(repo_root: Path, plugin_id: str) -> Path | None:
+    entries = _installs(repo_root, plugin_id)
+    for scope in SCOPES:
+        for entry in entries:
+            install = entry.get("installPath")
+            if entry.get("scope") == scope and isinstance(install, str) and Path(install).is_dir():
+                return Path(install)
+    return None
+
+
+def _plugin_option(repo_root: Path, plugin_id: str, install: Path, key: str) -> str | None:
+    value: Any = None
+    for settings in (
+        _config_dir() / "settings.json",
+        repo_root / ".claude" / "settings.json",
+        repo_root / ".claude" / "settings.local.json",
+    ):
+        data = _read_json(settings)
+        configs = data.get("pluginConfigs") if isinstance(data, dict) else None
+        config = configs.get(plugin_id) if isinstance(configs, dict) else None
+        options = config.get("options") if isinstance(config, dict) else None
+        if isinstance(options, dict) and options.get(key) is not None:
+            value = options[key]
+    if value is None:
+        manifest = _read_json(install / ".claude-plugin" / "plugin.json")
+        user_config = manifest.get("userConfig") if isinstance(manifest, dict) else None
+        option = user_config.get(key) if isinstance(user_config, dict) else None
+        value = option.get("default") if isinstance(option, dict) else None
+    if value is None or isinstance(value, (dict, list)):
+        return None
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return str(value)
+
+
+def http_entry(repo_root: Path, plugin_id: str, server: str) -> dict[str, Any] | None:
+    """The plugin's HTTP entry for `server`, expanded for `--mcp-config`; None if it has none."""
+    install = _install_path(repo_root, plugin_id)
+    if install is None:
+        return None
+    data = _read_json(install / ".mcp.json")
+    if not isinstance(data, dict):
+        data = _read_json(install / ".claude-plugin" / "plugin.json")
+    servers = data.get("mcpServers") if isinstance(data, dict) else None
+    entry = servers.get(server) if isinstance(servers, dict) else None
+    if not isinstance(entry, dict) or entry.get("type") != "http":
+        return None
+
+    def expand(text: str) -> str | None:
+        missing = False
+
+        def substitute(match: re.Match[str]) -> str:
+            nonlocal missing
+            name = match.group(1)
+            if name == "CLAUDE_PLUGIN_ROOT":
+                return str(install)
+            if name.startswith("user_config."):
+                value = _plugin_option(repo_root, plugin_id, install, name[len("user_config.") :])
+                if value is not None:
+                    return value
+            missing = True
+            return ""
+
+        out = _PLACEHOLDER.sub(substitute, text)
+        return None if missing else out
+
+    resolved: dict[str, Any] = {"type": "http"}
+    for key in ("url", "headersHelper"):
+        raw = entry.get(key)
+        if raw is None:
+            continue
+        if not isinstance(raw, str) or (value := expand(raw)) is None:
+            return None
+        resolved[key] = value
+    return resolved if "url" in resolved else None
+
+
+def _direct(repo_root: Path, entry: Any) -> Any:
+    """A relay entry as the plugin's own HTTP entry when it has one, so no relay process starts."""
+    args = entry.get("args") if isinstance(entry, dict) else None
+    if not isinstance(args, list) or len(args) != 4 or args[:2] != RELAY_ARGS:
+        return entry
+    return http_entry(repo_root, str(args[2]), str(args[3])) or entry
 
 
 def _plugin_key(plugin_id: str, server: str) -> str:
@@ -164,8 +267,10 @@ def session_options(
     extra = optional_servers(repo_root, role)
     servers = {
         LEDGER_SERVER: {"type": "http", "url": ledger_url},
-        **mcp_servers(agent_file),
-        **extra,
+        **{
+            name: _direct(repo_root, entry)
+            for name, entry in {**mcp_servers(agent_file), **extra}.items()
+        },
     }
     if channel:
         servers[CHANNEL_SERVER] = dict(CHANNEL_CONFIG)

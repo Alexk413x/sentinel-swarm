@@ -194,3 +194,108 @@ def test_session_options_run_every_plugin_server_through_the_stdio_shim(
             "command": "python",
             "args": [".sentinel-swarm/hook.py", "mcp", "a11y@accessibility-tools", name],
         }
+
+
+def _kg_install(root: Path, port_default: int = 47821) -> Path:
+    install = root / "kg-install"
+    (install / ".claude-plugin").mkdir(parents=True)
+    (install / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "codebase-kg": {
+                        "type": "http",
+                        "url": "http://127.0.0.1:${user_config.server_port}/mcp",
+                        "headersHelper": 'py -3 "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_headers.py"',
+                    }
+                }
+            }
+        ),
+        "utf-8",
+    )
+    (install / ".claude-plugin" / "plugin.json").write_text(
+        json.dumps(
+            {
+                "name": "codebase-kg",
+                "userConfig": {"server_port": {"type": "number", "default": port_default}},
+            }
+        ),
+        "utf-8",
+    )
+    return install
+
+
+def _kg_registry(config_dir: Path, install: Path) -> None:
+    path = config_dir / "plugins" / "installed_plugins.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "plugins": {
+                    "codebase-kg@codebase-kg": [{"scope": "user", "installPath": str(install)}]
+                }
+            }
+        ),
+        "utf-8",
+    )
+
+
+def _servers(host: Path) -> dict:
+    options = session_options(host, "coder", None, "http://127.0.0.1:1/mcp")
+    return json.loads(options[options.index("--mcp-config") + 1])["mcpServers"]
+
+
+def test_session_options_connect_an_http_plugin_server_directly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = tmp_path / "host"
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    install = _kg_install(tmp_path)
+    _kg_registry(config_dir, install)
+    _write(host, "coder", _CODER)
+
+    assert _servers(host)["codebase-kg"] == {
+        "type": "http",
+        "url": "http://127.0.0.1:47821/mcp",
+        "headersHelper": f'py -3 "{install}/mcp/launch/kg_headers.py"',
+    }
+
+
+def test_session_options_use_the_users_port_setting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = tmp_path / "host"
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    _kg_registry(config_dir, _kg_install(tmp_path))
+    _write(host, "coder", _CODER)
+    (config_dir / "settings.json").write_text(
+        json.dumps(
+            {"pluginConfigs": {"codebase-kg@codebase-kg": {"options": {"server_port": 47900}}}}
+        ),
+        "utf-8",
+    )
+    (host / ".claude" / "settings.local.json").write_text(
+        json.dumps(
+            {"pluginConfigs": {"codebase-kg@codebase-kg": {"options": {"server_port": 47901}}}}
+        ),
+        "utf-8",
+    )
+
+    assert _servers(host)["codebase-kg"]["url"] == "http://127.0.0.1:47901/mcp"
+
+
+def test_session_options_keep_the_relay_for_an_unresolved_placeholder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = tmp_path / "host"
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    install = _kg_install(tmp_path)
+    manifest = install / ".claude-plugin" / "plugin.json"
+    manifest.write_text(json.dumps({"name": "codebase-kg"}), "utf-8")
+    _kg_registry(config_dir, install)
+    _write(host, "coder", _CODER)
+
+    assert _servers(host)["codebase-kg"]["args"][:2] == [".sentinel-swarm/hook.py", "mcp"]

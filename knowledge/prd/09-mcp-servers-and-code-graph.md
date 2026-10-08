@@ -42,6 +42,14 @@
   `python .sentinel-swarm/hook.py mcp <plugin_id> <server>`. The shim runs the command
   that the plugin's own `.mcp.json` names, in the plugin's own environment. When that
   command is the plugin's relay, the relay does the sharing.
+- When the plugin's own entry for that server is `"type": "http"`, `session_options`
+  writes that entry into the role's `--mcp-config` instead of the shim's: `url` and
+  `headersHelper` with `${CLAUDE_PLUGIN_ROOT}` set to the install folder and each
+  `${user_config.<key>}` set to the user's `pluginConfigs` option, else the manifest's
+  `userConfig` default. No relay process starts. An entry with a placeholder it cannot
+  fill keeps the shim. codebase-kg 0.12.0 and later serves HTTP on one server per machine
+  and resolves each session's graph from its roots. Verified live on 2026-10-07: a
+  `--strict-mcp-config` session with codebase-kg's `headersHelper` called `kg_search`.
 - codebase-kg 0.8.0 and later names its relay, `bin/kg-shim`, in its `.mcp.json`. The
   relay is one small process that connects to one codebase-kg server per machine and
   server build: the plugin version plus a digest of its Python files. Its handshake
