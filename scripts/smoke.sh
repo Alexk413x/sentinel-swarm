@@ -27,10 +27,12 @@ export SENTINEL_SWARM_CLAUDE="${SENTINEL_SWARM_CLAUDE:-$claude_bin}"
 
 win() { if command -v cygpath >/dev/null; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
 
-# The venv the hooks use: in the plugin data folder, keyed by mcp/uv.lock. The installed
-# copy has the same lock as this repo, so both share it.
-ledger_venv="$(python "$(win "$root/mcp/ledger_venv.py")")"
-ledger_uv() { UV_PROJECT_ENVIRONMENT="$ledger_venv" uv "$@"; }
+# Runs a ledger module from a plugin folder on the base interpreter, as the hooks and skills do.
+ledger_at() {
+  local plugin="$1"
+  shift
+  python -I -S "$(win "$plugin/mcp/launch/ledger.py")" "$@"
+}
 
 marketplace_state() {
   python -c '
@@ -65,13 +67,12 @@ sys.exit(0 if row is not None and row[0] is None else 1)
 ' "$(win "$host/.sentinel-swarm/ledger.db")"
 }
 
-# --keep-data: the ledger venv lives in the plugin data folder, which every smoke host and live
-# session shares. For the same reason the marketplace goes only once no install uses it:
-# removing it uninstalls every plugin from it and deletes their data.
+# The marketplace goes only once no install uses it: removing it uninstalls every plugin from it,
+# in every project.
 teardown() {
   if [ -d "$host/.claude" ]; then
-    (cd "$host" && "$claude_bin" plugin uninstall sentinel-swarm@sentinel-swarm --scope project \
-      --keep-data) >/dev/null 2>&1 || true
+    (cd "$host" && "$claude_bin" plugin uninstall sentinel-swarm@sentinel-swarm \
+      --scope project) >/dev/null 2>&1 || true
   fi
   local state
   state="$(marketplace_state)"
@@ -120,8 +121,7 @@ if [ "$mode" = results ]; then
   # || rc=$? instead of a bare call: set -e would otherwise stop the script here on a FAIL
   # check, skipping the exit below that turns it into this script's own exit code.
   rc=0
-  ledger_uv run --quiet --project "$(win "$root/mcp")" --frozen --no-dev \
-    python -m swarm_ledger.checklist --repo "$(win "$host")" || rc=$?
+  ledger_at "$root" checklist --repo "$(win "$host")" || rc=$?
   teardown_after_run
   exit "$rc"
 fi
@@ -130,8 +130,7 @@ fi
 # accepting it. Checking first also keeps the launcher from printing the trust command twice.
 if [ "$mode" = bg ] || [ "$mode" = headless ]; then
   mkdir -p "$host"
-  ledger_uv run --quiet --project "$(win "$root/mcp")" --frozen --no-dev \
-    python -m swarm_ledger.setup --check-trust --repo "$(win "$host")" || exit 1
+  ledger_at "$root" setup --check-trust --repo "$(win "$host")" || exit 1
 fi
 
 # An earlier run's install and marketplace go first: Windows empties the temp folder that the
@@ -160,6 +159,17 @@ dev_version="$base_version-dev.$(date +%s)"
 python -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d['version']=sys.argv[2]; \
 json.dump(d, open(p, 'w'), indent=2)" \
   "$(win "$plugin_dir/.claude-plugin/plugin.json")" "$dev_version"
+
+# A one-plugin directory marketplace for the copy. The codebase-kg dependency comes from the
+# alexk413x marketplace, which this marketplace must allow.
+cat > "$plugin_dir/.claude-plugin/marketplace.json" <<'EOF'
+{
+  "name": "sentinel-swarm",
+  "owner": { "name": "Alexk413x" },
+  "allowCrossMarketplaceDependenciesOn": ["codebase-kg", "accessibility-tools", "cartographer"],
+  "plugins": [{ "name": "sentinel-swarm", "source": "./" }]
+}
+EOF
 
 # Empties the folder instead of deleting it: Windows refuses to delete a folder that a shell has open.
 mkdir -p "$run_dir"
@@ -230,19 +240,17 @@ uv run --no-project --quiet "$kg_dir/mcp/launch/kg_cli.py" build "$(win "$run_di
 # installed copy lives in the plugin cache, outside host/, so Claude Code does not ask before a
 # Coder's writes.
 "$claude_bin" plugin marketplace add --scope project "$(win "$plugin_dir")" >/dev/null
-"$claude_bin" plugin uninstall sentinel-swarm@sentinel-swarm --scope project --keep-data \
+"$claude_bin" plugin uninstall sentinel-swarm@sentinel-swarm --scope project \
   >/dev/null 2>&1 || true
 "$claude_bin" plugin install sentinel-swarm@sentinel-swarm --scope project -y >/dev/null
 version=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['version'])" \
   "$(win "$plugin_dir/.claude-plugin/plugin.json")")
-installed_mcp="$(win "$HOME/.claude/plugins/cache/sentinel-swarm/sentinel-swarm/$version/mcp")"
-ledger_uv sync --quiet --project "$installed_mcp" --frozen --no-dev
+installed="$config_dir/plugins/cache/sentinel-swarm/sentinel-swarm/$version"
 
 swarm() {
   local module="$1"
   shift
-  ledger_uv run --quiet --project "$installed_mcp" --frozen --no-dev \
-    python -m "swarm_ledger.$module" --repo "$(win "$host")" "$@"
+  ledger_at "$installed" "$module" --repo "$(win "$host")" "$@"
 }
 launch() { swarm launch "$@"; }
 
@@ -250,7 +258,8 @@ launch() { swarm launch "$@"; }
 # changes during the run shows up in the Coders' git status checks.
 swarm setup
 if [ -n "${SMOKE_SETTINGS:-}" ]; then
-  ledger_uv run --quiet --project "$installed_mcp" --frozen --no-dev \
+  # host_settings.py writes YAML, so it runs in the dev environment, which has PyYAML.
+  uv run --quiet --project "$(win "$root/mcp")" --frozen \
     python "$(win "$root/scripts/host_settings.py")" --repo "$(win "$host")" \
     --override "$(win "$SMOKE_SETTINGS")"
 fi

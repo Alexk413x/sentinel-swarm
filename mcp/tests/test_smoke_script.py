@@ -19,6 +19,6 @@ def test_smoke_sh_cleans_up_old_dev_cache_copies(repo_root: Path) -> None:
 def test_smoke_sh_results_runs_the_checklist(repo_root: Path) -> None:
     text = (repo_root / "scripts" / "smoke.sh").read_text(encoding="utf-8")
     results_at = text.index('mode" = results')
-    checklist_at = text.index("swarm_ledger.checklist")
+    checklist_at = text.index('ledger_at "$root" checklist')
     exit_at = text.index('exit "$rc"')
     assert results_at < checklist_at < exit_at
