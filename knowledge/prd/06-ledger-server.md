@@ -38,7 +38,7 @@
   reason and exits 1.
 - `ensure_server` probes `/health`, which needs no token, and `python -m
   swarm_ledger.directive` opens the ledger database directly, so neither sends the
-  token. The hook shim and the `swarm-events` bridge read it from `http-token`.
+  token. The hook shim reads it from `http-token`.
 - After a 403, Claude Code records the server in `~/.claude/mcp-needs-auth-cache.json`,
   a JSON object keyed by server name with a `timestamp` per entry, and stops connecting
   to it, in later sessions too. A live session gets a 403 only when someone deletes or
@@ -61,21 +61,12 @@
   <event>` runs, on the request body, and returns exactly the bytes that command would
   print. Each request opens its own `Ledger`, so it reads the settings file again, and
   closes it after the handler. It runs on a worker thread, off the event loop, and
-  never takes the tool-call lock. It uses an empty wake-up hub, as the subprocess does,
-  so a hook never pushes a wake-up through a channel. The handler's stderr goes to the
-  server log. Besides the access checks above, the route answers 403 unless the caller
+  never takes the tool-call lock. The handler's stderr goes to the server log. Besides the access checks above, the route answers 403 unless the caller
   is `127.0.0.1` or `::1` and the `Host` header names `127.0.0.1` or `localhost`, 404
   for an unknown event, and 409
   unless the `X-Sentinel-Swarm-Repo` header names this server's repo root. A 200
   answer carries the header back. See "The shim" in
   [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md).
-- `GET /events?session=<session id>` holds one session's `swarm-events` event stream
-  open: newline-delimited JSON, one event per line, and a `{"kind": "ping"}` line after
-  15 seconds without an event. The request records `launched` on that session's agent
-  row, and the stream registers the session until the connection closes. A request
-  without `session` gets 400. The `swarm-events` bridge sends the token. See
-  "Wake-up delivery" in
-  [05-sessions.md](05-sessions.md).
 - Lifetime: the launcher starts the server before the Oracle. It exits after
   `run_finish`, and after `idle_exit_minutes` with no active run, or a paused run, and
   no session of the run running. A ledger tool call restarts the idle clock. A failed
@@ -125,6 +116,15 @@ the project's code in the host repo itself. Tracking is `local` only.
 `mcp/src/swarm_ledger/server.py` registers every tool as a thin wrapper over a `Ledger`
 method. A refused call raises a tool error with the reason. A gate never returns a
 partial success.
+
+Before any tool runs, the server checks the stamped `agent_id`, for every client:
+
+- A swarm session still in state `registered` may call only `brief_ack` and the five
+  tools that take no identity (`ledger_info`, `brief_get`, `who_owns`,
+  `directive_submit`, `events`). Any other tool fails with "you are not bound to the
+  ledger yet: call brief_ack(caller=...)". `pre_ledger` denies the same calls first;
+  see [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md).
+- A live agent may call only its role's tools (`identity.ROLE_TOOLS`).
 
 | Group | Tools |
 |---|---|

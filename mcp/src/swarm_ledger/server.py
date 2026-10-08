@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 import threading
 import time
 from collections.abc import Callable
@@ -15,7 +14,7 @@ from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from pydantic import Field, WithJsonSchema
 
 from . import __version__, env, rubric
-from .identity import LedgerError, require_role_tool
+from .identity import LedgerError, require_bound, require_role_tool
 from .ledger import Ledger
 
 T = TypeVar("T")
@@ -174,14 +173,6 @@ def _ledger() -> Ledger:
     return _instance
 
 
-def channel_registered(session_id: str) -> None:
-    try:
-        with _CALL_LOCK:
-            _ledger().channel_registered(session_id)
-    except Exception as exc:
-        print(f"swarm-events: cannot record the channel of {session_id}: {exc}", file=sys.stderr)
-
-
 def _call(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
     global last_call_at
     last_call_at = time.monotonic()
@@ -189,6 +180,7 @@ def _call(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
         with _CALL_LOCK:
             tool = _TOOL.get()
             if tool is not None:
+                require_bound(_ledger().conn, tool, _AGENT_ID.get())
                 require_role_tool(_ledger().conn, tool, _AGENT_ID.get())
             return fn(*args, **kwargs)
     except LedgerError as exc:

@@ -25,9 +25,6 @@
   `plugin_android-driver_android-driver-kg`, and so on. Their tools then carry the
   `mcp__plugin_…` names that cartographer's agents grant and its hooks match. The a11y
   servers keep their bare keys until a11y renames its tools to the plugin form.
-- An Oracle launch that carries the channel also lists `swarm-events`, the stdio entry
-  `python .sentinel-swarm/hook.py channel`. It has no tools. No other launch lists it.
-  See "Wake-up delivery" in [05-sessions.md](05-sessions.md).
 - Tool names: `mcp__swarm-ledger__<tool>` and `mcp__codebase-kg__<tool>`.
 - Each role keeps a fixed `tools` allowlist in its agent file. It names each ledger tool
   the role may call, from `identity.ROLE_TOOLS`, never the whole `mcp__swarm-ledger`

@@ -36,9 +36,7 @@ claude "You are <name>. Read your brief from the swarm ledger and follow it." --
   `claude` wrapper, which the launcher bypasses by calling the binary directly. The
   variable is empty today. Claude Code 2.1.283 reads the flag only in an interactive session, so today it
   takes effect only for an interactive Oracle; see
-  [13-platform-facts.md](13-platform-facts.md). An interactive Oracle launch that
-  carries the `swarm-events` channel adds `server:swarm-events` to the same flag, once.
-  See "Wake-up delivery" below.
+  [13-platform-facts.md](13-platform-facts.md). The swarm adds no channel of its own.
 - The Oracle starts a Driver with `drive_request(focus)` instead of `brief_create` and
   `agent_spawn`: the tool performs both steps itself, under the child name
   `driver-e<ordinal>`, and returns the loop's status alongside the spawned agent. It is
@@ -68,9 +66,11 @@ ledger and knows the session id, which is the child's `agent_id`.
 - For a child already bound, on any `source` (`resume`, `compact`, `clear`), it
   returns the same results and does not bind again.
 - A refused bind returns the refusal as the context. The tools stay allowed, so the
-  child calls `brief_ack` itself. Until it succeeds, `pre_ledger` denies the child
-  every ledger tool except `brief_ack` and the five that take no identity. See
-  "What each hook does" in [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md).
+  child calls `brief_ack` itself. Until it succeeds, the ledger server refuses the
+  child every ledger tool except `brief_ack` and the five that take no identity, and
+  `pre_ledger` denies the same calls first. See "Tools" in
+  [06-ledger-server.md](06-ledger-server.md) and "What each hook does" in
+  [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md).
 - Claude Code caps a hook's `additionalContext` at 10,000 characters and saves a
   longer one to a file that the model is not told to read. The hook keeps its context
   under 9,500 characters: a result that does not fit is left out, and the context
@@ -115,8 +115,7 @@ wake-up the caller owes, and returns a `next` field with the exact call to make.
 - `next` is `SendMessage(to="<session name>", message="<one-line pointer>")` when the
   recipient's session runs, and `agent_resume(target_name=...)` when it does not. When
   `claude agents --json` fails, `next` names both: the `SendMessage` call, or
-  `agent_resume` if that session is not running. When the recipient has
-  a channel, the ledger pushes the wake-up itself instead. See "Wake-up delivery" below.
+  `agent_resume` if that session is not running. See "Wake-up delivery" below.
 - The `post_any` hook clears the debt when it sees a `SendMessage` to that session name.
   When the sender is a Driver whose exploration is closed and it owes nothing more, the
   hook then releases it, which stops its session.
@@ -134,60 +133,22 @@ wake-up the caller owes, and returns a `next` field with the exact call to make.
 
 ## Wake-up delivery
 
-`wake_transport` in the settings file picks how a wake-up reaches its target. The
-default is `channel`. `sendmessage` restores the `SendMessage` behavior above exactly,
-and the launcher then loads no channel.
+The sender's model delivers every owed wake-up: `SendMessage` to a running target, and
+`agent_resume` to a stopped one. The ledger pushes nothing into a session.
 
 - `route_wakeup` in `mcp/src/swarm_ledger/wake.py` builds every wake instruction:
   `next`, the member Stop hook's owed calls, the Oracle Stop hook's wake hints, and the
   watchdog's stall step. It decides in this order:
-  1. The setting is `sendmessage`: the `SendMessage` or `agent_resume` call above.
-  2. The target's session is not running: `agent_resume`.
-  3. The target supports channels: the ledger pushes the wake-up through the target's
-     `swarm-events` channel, and `next` reads "Nothing to send: the ledger delivered
-     this wake-up to <name> through its channel."
-  4. Otherwise: the `SendMessage` call. A target with no session name gets
-     `agent_resume`, and a target whose liveness is unknown gets both calls, as for
-     `next` above.
-- A target supports channels when its `agents.channel` is `launched` or `confirmed` and
-  its bridge holds the ledger's `/events` stream open. Only a wake-up with a `wakeups`
-  row is pushed, so the Oracle's wake hints and the watchdog's stall step name a call.
-- `agents.channel` is `none`, `launched`, or `confirmed`. Only a launch that carries the
-  channel lists `swarm-events` in its MCP config, so a bridge that connects records
-  `launched` on its session's row. `run_start` and `agent_spawn` record it too, for a
-  session whose bridge connected before its row existed. The first confirmed push
-  records `confirmed`.
-- Only an interactive Oracle started by the launcher carries the channel. Every `--bg`
-  role, and a `--bg` or headless Oracle, keeps `channel` at `none`, and its wake-ups go
-  by `SendMessage`. See "Launch" in [11-setup-and-settings.md](11-setup-and-settings.md).
-- The bridge is `swarm-events`, a standard-library stdio MCP server,
-  `python -m swarm_ledger.bridge`, run as `hook.py channel`. It declares only the
-  `claude/channel` capability and has no tools. After `notifications/initialized` it
-  reads `CLAUDE_CODE_SESSION_ID`, takes the ledger's port from `server.json`, and holds
-  `GET /events?session=<session id>` open. It reconnects 2 seconds after a drop, and
-  reads the port again each time. It writes each event, except a ping, as one
-  `notifications/claude/channel` with the event's `content` and the `meta` keys that are
-  identifiers. Its instructions tell the session to follow the pointer in each event.
-  See `/events` in [06-ledger-server.md](06-ledger-server.md).
-- A pushed wake-up records `pushed_at`. The ledger confirms it from the target's
-  transcript: a user turn, outside a sidechain, from the channel (origin kind `channel`,
-  a `turnOrigin` or `promptSource` of `channel`, or a `<channel source="swarm-events">`
-  tag) that carries the wake-up's pointer or its `wakeup_id`, stamped no earlier than 5
-  seconds before the push. Confirmation sets `sent_at` and `channel = confirmed`, and
-  costs no model turn. The watchdog checks on every pass, and the sender's Stop hook
-  checks before it decides. The transcript shape of a channel turn is not
-  verified live yet.
-- The member Stop hook waits, polling each second, until each pushed wake-up it owes is
-  confirmed or 30 seconds old. A confirmed push is settled. An unconfirmed push blocks
-  the sender with the `SendMessage` call, or `agent_resume` when the target stopped.
-  That fallback call never pushes, so a lost event never strands a target.
-- The watchdog reports a push that stays unconfirmed and unsent. See `wake_unconfirmed`
-  in [08-watchdog.md](08-watchdog.md).
-- A channel event carries a `kind`. A wake-up is kind `wakeup`, with the pointer as its
-  content and `wakeup_id` and `reason` as its meta. The stream also sends a `ping` event
-  after 15 seconds without one. A future device-queue broker adds a second kind on
-  `swarm-events`, not a separate server. **(needs implementation: the event `kind` and
-  the `ping` are built; the device-queue broker is not)**
+  1. The target has no session name, or its session is not running: `agent_resume`.
+  2. The target's liveness is unknown: both calls, as for `next` above.
+  3. Otherwise: the `SendMessage` call.
+- The member Stop hook names each owed call at once. It does not wait.
+- The sender's mod delivers each owed wake-up with `$.session.send` once a live check
+  shows it wakes an idle `--bg` session, so a wake-up costs the sender no model turn.
+  `SendMessage` stays the fallback. See `plans/messaging-and-tooling.md`.
+  **(needs implementation)**
+- A device-queue broker that tells a session when a device frees up needs a new plan on
+  the mod's delivery path. **(needs implementation)**
 - The Coder's Stop hook also blocks once, per Coder, when the Coder stops while working
   with no handoff, and names `handoff_submit` or a `message_post` to its Lead.
 
@@ -201,10 +162,9 @@ a possible injection. So only the Oracle and the Managers see the elapsed time.
   time, measured from `runs.started_at`: `elapsed <n>s`, or `elapsed <n>s / <budget>s`
   when `time_budget_minutes` is set. See "Settings file" in
   [11-setup-and-settings.md](11-setup-and-settings.md).
-- The suffix goes on the delivered text only: the pushed channel event's content, the
-  `SendMessage` message in `next` and in the Stop hook's owed calls, and the message
-  `agent_resume` sends. The `wakeups` row keeps the bare pointer, so transcript
-  confirmation still finds it.
+- The suffix goes on the delivered text only: the `SendMessage` message in `next` and
+  in the Stop hook's owed calls, and the message `agent_resume` sends. The `wakeups` row
+  keeps the bare pointer.
 - `wake.signal_for` gives the suffix only for a target whose role is `oracle` or
   `manager`. A wake-up for a Lead, a Coder, or a Driver carries none, and no tool
   result carries a countdown for them.
@@ -297,8 +257,8 @@ a possible injection. So only the Oracle and the Managers see the elapsed time.
   are automatic.
 - A Driver whose exploration is closed is released once it owes no unsent wake-up: after
   its `SendMessage` to the Oracle, after its own `agent_resume` of the Oracle, or at its
-  Stop hook when a channel push was confirmed. `drive_request` and `run_finish` release
-  one that is still live.
+  Stop hook when it owes nothing. `drive_request` and `run_finish` release one that is
+  still live.
 
 ## What stops when
 

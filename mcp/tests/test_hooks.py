@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-from swarm_ledger import wake
 from swarm_ledger.clock import stamp, utcnow
 from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import HANDLERS as _HANDLERS
@@ -568,7 +567,7 @@ def test_run_event_prints_what_the_hook_subprocess_prints(
         env=_subprocess_env(host, repo_root),
         timeout=30,
     )
-    stdout, stderr = run_event("pre_write", payload, host, hub=wake.EventHub())
+    stdout, stderr = run_event("pre_write", payload, host)
     assert (stdout, stderr) == (result.stdout, result.stderr)
     assert json.loads(stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
 
@@ -578,13 +577,6 @@ def test_run_event_reports_an_unknown_event_and_a_failure_on_stderr(host: Path) 
     stdout, stderr = run_event("pre_write", "not valid json{", host)
     assert stdout == ""
     assert stderr.startswith("swarm_ledger.hooks pre_write: ")
-
-
-def test_a_ledger_given_a_hub_uses_it_and_otherwise_uses_the_server_hub(host: Path) -> None:
-    own = wake.EventHub()
-    path = host / ".sentinel-swarm" / "ledger.db"
-    assert Ledger(host, db_path=path, hub=own).hub is own
-    assert Ledger(host, db_path=path).hub is wake.HUB
 
 
 def test_main_malformed_json_exits_zero_with_empty_stdout(host: Path, repo_root: Path) -> None:

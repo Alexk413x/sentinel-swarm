@@ -99,8 +99,7 @@ CREATE TABLE IF NOT EXISTS agents (
     duration_ms INTEGER,
     transcript_path TEXT,
     session_name TEXT,
-    bg_id TEXT,
-    channel TEXT NOT NULL DEFAULT 'none'
+    bg_id TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_name_live
@@ -406,7 +405,6 @@ CREATE TABLE IF NOT EXISTS wakeups (
     reason TEXT NOT NULL,
     pointer TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    pushed_at TEXT,
     sent_at TEXT
 );
 

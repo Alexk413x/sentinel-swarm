@@ -44,10 +44,7 @@ SLOW_EVENT_TIMEOUT_SECONDS = {"stop": 40.0, "session_end": 40.0}
 STAMPED_EVENTS = frozenset({"post_activity"})
 FIRED_AT_KEY = "sentinel_swarm_fired_at"
 SCOPES = ("local", "project", "user")
-USAGE = (
-    "usage: hook.py hook <event> | hook.py mcp <plugin_id> <server> | hook.py watch "
-    "| hook.py channel\n"
-)
+USAGE = "usage: hook.py hook <event> | hook.py mcp <plugin_id> <server> | hook.py watch\n"
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{32,128}")
 _VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
@@ -375,16 +372,6 @@ def watch_main() -> int:
     return process.wait()
 
 
-def channel_main() -> int:
-    repo = repo_root()
-    try:
-        command, env = ledger_command(repo, "swarm_ledger.bridge", "--repo", str(repo))
-        return subprocess.call(command, env=env, cwd=str(repo))
-    except (ShimError, OSError) as exc:
-        sys.stderr.write(f"sentinel-swarm cannot start the swarm-events channel: {exc}\n")
-        return 1
-
-
 def main(argv: list[str]) -> int:
     if len(argv) == 2 and argv[0] == "hook":
         return hook_main(argv[1])
@@ -392,8 +379,6 @@ def main(argv: list[str]) -> int:
         return mcp_main(argv[1], argv[2])
     if argv == ["watch"]:
         return watch_main()
-    if argv == ["channel"]:
-        return channel_main()
     sys.stderr.write(USAGE)
     return 1
 

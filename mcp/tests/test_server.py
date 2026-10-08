@@ -189,6 +189,43 @@ def test_a_role_calls_only_its_own_ledger_tools(host: Path):
     ]
 
 
+async def _registered_manager_calls() -> list[str]:
+    calls = [
+        ("guidelines_get", {"caller": "mgr-1", "agent_id": "mgr-1"}),
+        ("ledger_info", {"agent_id": "mgr-1"}),
+        ("who_owns", {"path": "src/a.py", "agent_id": "mgr-1"}),
+        (
+            "brief_get",
+            {"caller_name": "mgr-1", "child_name": "mgr-p1-phase-1", "agent_id": "mgr-1"},
+        ),
+        ("brief_ack", {"caller": "mgr-p1-phase-1", "agent_id": "mgr-1"}),
+        ("guidelines_get", {"caller": "mgr-p1-phase-1", "agent_id": "mgr-1"}),
+    ]
+    results: list[str] = []
+    async with Client(mcp) as client:
+        await _brief_manager(client)
+        server_module._ledger().agent_register_start("mgr-1", "manager", parent_agent_id="sess-1")
+        for tool, arguments in calls:
+            try:
+                await client.call_tool(tool, arguments)
+                results.append("allowed")
+            except ToolError as exc:
+                results.append(str(exc))
+    return results
+
+
+def test_a_registered_session_reaches_only_brief_ack_and_the_identity_free_tools(host: Path):
+    assert asyncio.run(_registered_manager_calls()) == [
+        "you are not bound to the ledger yet: call brief_ack(caller='mgr-1'). "
+        "No other ledger tool works until it succeeds",
+        "allowed",
+        "allowed",
+        "allowed",
+        "allowed",
+        "allowed",
+    ]
+
+
 async def _events_for(targets: list[str]) -> list[list[dict[str, Any]]]:
     async with Client(mcp) as client:
         await client.call_tool("run_start", {"prd": "Build X", "session_id": "sess-1"})

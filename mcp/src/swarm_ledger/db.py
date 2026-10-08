@@ -48,8 +48,6 @@ _ADDED_COLUMNS = (
     ("reviews", "details_json", "TEXT"),
     ("directives", "question", "TEXT"),
     ("handoffs", "floor_pass_json", "TEXT"),
-    ("agents", "channel", "TEXT NOT NULL DEFAULT 'none'"),
-    ("wakeups", "pushed_at", "TEXT"),
     ("briefs", "finding_ids_json", "TEXT"),
     ("briefs", "contract", "TEXT"),
     ("briefs", "last_read_by_child_at", "TEXT"),

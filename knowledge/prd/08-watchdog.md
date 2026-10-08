@@ -9,8 +9,7 @@ agent's failure, it reports to the Oracle, and the Oracle acts.
 
 A thread in the ledger server (`watchdog.py`) runs every `interval_seconds`. It reads
 `claude agents --json` and scans the active run. It skips a paused run, and a failed
-listing skips one pass. Before each scan it confirms every pushed wake-up whose target's
-transcript shows it. See "Wake-up delivery" in [05-sessions.md](05-sessions.md).
+listing skips one pass.
 
 | Kind | Condition | Next step the report names |
 |---|---|---|
@@ -21,7 +20,6 @@ transcript shows it. See "Wake-up delivery" in [05-sessions.md](05-sessions.md).
 | `waiting_permission` | A Manager's, Lead's, or Coder's session waits on a permission prompt. Not also reported as crashed or stuck | Tell the user to open that session and answer |
 | `spinning` | The agent's last `spin_failures` test runs for one scope and target all failed. Does not apply to a Driver, which runs no `tests_run` | Ask its parent to `return_work` or `issue_escalate` |
 | `context_high` | The latest request of the agent, the Oracle included, fills `context_pct` of its window | Have its parent replace it. For the Oracle: `run_pause`, then resume in a fresh session |
-| `wake_unconfirmed` | A wake-up the ledger pushed through a channel is neither confirmed nor sent 2 minutes after the push, and its target is live. Reported on the target. | For an Oracle target: act on the pointer. For any other target: the `SendMessage` call with the pointer |
 | `stalled` | No session of the run runs; or sessions run, but no member session is busy, no member is `working`, and nothing changed for 2 minutes. Not reported while a directive waits on the user | Wake the agent whose work is pending: the reviewer of a submitted handoff, an agent with unread messages, or the Lead of a file with an open issue. With no such agent: resume or spawn the owner of the pending work, or, with nothing pending, continue the plan or call `run_finish` |
 
 - The context size is the input, cache read, and cache creation tokens of the last
@@ -71,9 +69,7 @@ transcript shows it. See "Wake-up delivery" in [05-sessions.md](05-sessions.md).
   listener owns the run, and an older one exits.
 - Each line the listener prints ends with the run's elapsed time, `elapsed <n>s` or
   `elapsed <n>s / <budget>s`, since every line goes to the Oracle. So does the resume
-  message below. A `wake_unconfirmed` step that tells the Oracle to deliver a Manager's
-  wake-up carries the suffix in its `SendMessage` message; one for a Lead or a Coder
-  carries none. See "Time signal" in [05-sessions.md](05-sessions.md).
+  message below. See "Time signal" in [05-sessions.md](05-sessions.md).
 - The Oracle arms it right after `run_start`, and again whenever it expires, with
   exactly this call:
   `Monitor(command="python3 .sentinel-swarm/hook.py watch || python .sentinel-swarm/hook.py watch", description="sentinel-swarm watchdog", timeout_ms=1800000)`.

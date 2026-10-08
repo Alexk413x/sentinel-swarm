@@ -62,9 +62,6 @@ Every hook command is
   [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
 - `watch` runs `python -m swarm_ledger.watch` and passes each line through with no
   timeout.
-- `channel` runs `python -m swarm_ledger.bridge`, the `swarm-events` channel server,
-  with stdin and stdout passed through. When the registry, the install, or `uv` fails,
-  it writes the reason to stderr and exits 1, and the session gets no channel.
 
 When the server does not answer and then the registry, the install, `uv`, or the
 ledger hook fails, or the two paths together run longer than 50 seconds, a gating event (`pre_agent`, `pre_write`, `pre_shell`, `pre_monitor`,
@@ -131,7 +128,9 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
   No override rule covers it.
 - `pre_ledger`: stamps `agent_id`, and denies `override_grant` to anyone but the
   Oracle. It denies a swarm session still in state `registered` every ledger tool but
-  `brief_ack` and the five tools that take no identity, and names `brief_ack`. On a `brief_get` whose `child_name` is the calling session's own agent name,
+  `brief_ack` and the five tools that take no identity, and names `brief_ack`. This is
+  the fast path: the ledger server refuses the same calls from any client; see "Tools"
+  in [06-ledger-server.md](06-ledger-server.md). On a `brief_get` whose `child_name` is the calling session's own agent name,
   it records `briefs.last_read_by_child_at`, which `handoff_submit` reads. The identity stamp itself takes no override: faking `agent_id` is what the
   stamp exists to prevent. The stamp is the hook input's `agent_id`, or
   else its `session_id`. For the five tools that take no identity (`ledger_info`,
@@ -165,9 +164,8 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
   [05-sessions.md](05-sessions.md). For a Manager, Lead, Coder, or Driver it blocks
   while the caller owes a wake-up or has unread messages in its run. The block names
   each owed call first and `message_inbox` last. It does not block a stop that follows
-  its own block (`stop_hook_active`). For a wake-up the ledger pushed through a channel, it first waits until
-  30 seconds after the push for the target's transcript to confirm it; see "Wake-up
-  delivery" in [05-sessions.md](05-sessions.md). A Driver whose exploration is closed
+  its own block (`stop_hook_active`). It names the owed calls at once, with no wait; see
+  "Wake-up delivery" in [05-sessions.md](05-sessions.md). A Driver whose exploration is closed
   and that owes nothing more is released instead of set idle. After a run finishes, the
   Oracle's stop refreshes the report, then blocks while the Oracle still owes a
   `PushNotification` call.
@@ -197,9 +195,9 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 | Every dimension is scored on every review | `score_record` refuses a set that leaves a dimension out |
 | A model comes from the approved list | `brief_create` |
 | No agent starts without a brief | `agent_spawn` and `brief_ack`, which `session_start` calls |
-| A child does no ledger work before it binds | `pre_ledger` denies a `registered` session every tool but `brief_ack` and the tools that take no identity |
+| A child does no ledger work before it binds | `server._call` refuses a `registered` session every tool but `brief_ack` and the tools that take no identity, for any client; `pre_ledger` denies the same calls first |
 | No agent fakes its identity | `pre_ledger` stamps `agent_id`; the server's middleware takes it out of the arguments; every tool matches `caller` to it |
-| Only the run's own sessions reach the ledger | `serve.Guard` answers 403 to a remote caller, a wrong `Host`, a foreign `Origin`, and a missing or wrong token on `/mcp`, `/hook`, and `/events`; `session_options` sends the token only to a checked `http://127.0.0.1:<port>/mcp` URL |
+| Only the run's own sessions reach the ledger | `serve.Guard` answers 403 to a remote caller, a wrong `Host`, a foreign `Origin`, and a missing or wrong token on every path but `/health`; `session_options` sends the token only to a checked `http://127.0.0.1:<port>/mcp` URL |
 | A role calls only its own ledger tools | The role file's `tools` allowlist, which names each `mcp__swarm-ledger__<tool>` in `identity.ROLE_TOOLS`; `server._call` refuses a live agent's call outside its set |
 | A handoff needs passing tests and a current graph | `handoff_submit` |
 | No approval without a handoff and two sets of scores | `approve` |
@@ -236,6 +234,6 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 | A phase hands up only after every module review | `phase_update(handed_up)` |
 | A phase is approved only after the Oracle reviews it | `phase_update(approved)` |
 | Code the graph maps has a test file by the end | `phase_review(accepted)` |
-| A child wakes its parent after each step | The Stop hook, from the owed wake-ups; a pushed wake-up counts only once the target's transcript confirms it |
+| A child wakes its parent after each step | The Stop hook, from the owed wake-ups |
 | The Oracle keeps working while the run has work, unless a directive waits on the user | The Oracle's Stop hook |
 | The Oracle's watchdog listener stays armed | The Oracle's Stop hook and `pre_monitor` |

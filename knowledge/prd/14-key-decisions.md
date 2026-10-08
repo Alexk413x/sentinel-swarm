@@ -137,3 +137,4 @@
 - 2026-10-08: The sender's mod delivers each owed wake-up with `$.session.send`, which replaces `SendMessage` once a live check shows it wakes an idle `--bg` session. See `plans/messaging-and-tooling.md`.
 - 2026-10-08: Enforcement may live in the plugin's mod, which loads in every session in the host repo, once the live check passes.
 - 2026-10-08: The device-queue broker needs a new plan on the mod's delivery path; it stays (needs implementation) until then.
+- 2026-10-08: The ledger server refuses a `registered` session every tool but `brief_ack` and the five identity-free tools, for any client. The `pre_ledger` rule stays as the fast path.

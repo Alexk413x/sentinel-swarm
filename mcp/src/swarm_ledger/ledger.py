@@ -121,21 +121,14 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
     # AgreementsMixin implements (for pyright, since review.py's methods are typed
     # against ReviewMixin alone), and MRO resolves the first base's attribute, so
     # ReviewMixin's empty stub would otherwise shadow the real implementation.
-    def __init__(
-        self, repo_root: Path, *, db_path: Path | None = None, hub: wake.EventHub | None = None
-    ) -> None:
+    def __init__(self, repo_root: Path, *, db_path: Path | None = None) -> None:
         self.repo_root = repo_root
-        self._hub = hub
         self.settings = load_settings(repo_root)
         path = db_path if db_path is not None else ledger_path(repo_root)
         self.conn = connect(path)
         self._pending_stops: list[tuple[str, str]] = []
         if (repo_root / ".git").exists():
             ensure_git_exclude(repo_root)
-
-    @property
-    def hub(self) -> wake.EventHub:
-        return self._hub if self._hub is not None else wake.HUB
 
     @contextmanager
     def _release_tx(self) -> Iterator[sqlite3.Connection]:
@@ -208,7 +201,6 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
             else:
                 run_id = self._open_run(conn, prd, session_id, oracle_name, session_name)
 
-        self._mark_channel(session_id)
         if resumed is not None:
             return resumed | {"oracle": self._agent_dict(session_id)}
         run = self.conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
@@ -246,10 +238,6 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
         )
         self._log_event(conn, session_id, None, "working", "run_start")
         return run_id
-
-    def _mark_channel(self, session_id: str) -> None:
-        if self.hub.connected(session_id):
-            wake.mark_launched(self.conn, session_id)
 
     def _refuse_live_oracle(
         self,
@@ -1407,7 +1395,6 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                 conn, session_id, None, "registered", f"agent_spawn: {session_name} ({bg_id})"
             )
 
-        self._mark_channel(session_id)
         spawned = self._agent_dict(session_id)
         return {
             key: value
@@ -1544,26 +1531,10 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
         return None if wakeup is None else self.wake_step(wakeup)
 
     def wake_step(self, wakeup: dict) -> str:
-        target = self.conn.execute(
-            "SELECT channel FROM agents WHERE agent_id = ?", (wakeup["to_agent_id"],)
-        ).fetchone()
-        delivery = wake.route_wakeup(
+        return wake.route_wakeup(
             wakeup,
-            transport=self.settings.wake_transport,
             live=self._is_live(wakeup["to_agent_id"]),
-            channel=target["channel"] if target is not None else "none",
-            hub=self.hub,
             signal=wake.signal_for(self.conn, wakeup["to_agent_id"]),
-        )
-        if delivery.pushed:
-            self._record_push(wakeup["wakeup_id"])
-        return delivery.next
-
-    def fallback_step(self, wakeup: dict) -> str:
-        return wake.fallback(
-            wakeup,
-            self._is_live(wakeup["to_agent_id"]),
-            wake.signal_for(self.conn, wakeup["to_agent_id"]),
         ).next
 
     def _is_live(self, session_id: str) -> bool | None:
@@ -1571,18 +1542,6 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
             return sessions.is_live(session_id)
         except LedgerError:
             return None
-
-    def _record_push(self, wakeup_id: int) -> None:
-        sql = f"UPDATE wakeups SET pushed_at = {_NOW} WHERE wakeup_id = ?"
-        # Some callers owe the wake-up inside their own write transaction.
-        if self.conn.in_transaction:
-            self.conn.execute(sql, (wakeup_id,))
-            return
-        with write_tx(self.conn) as conn:
-            conn.execute(sql, (wakeup_id,))
-
-    def channel_registered(self, session_id: str) -> None:
-        wake.mark_launched(self.conn, session_id)
 
     def owed_wakeups(self, agent_id: str) -> list[dict]:
         return _rows(

@@ -2,13 +2,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from .. import env
 from . import events
-
-if TYPE_CHECKING:
-    from ..wake import EventHub
 
 HANDLERS = {
     "session_start": events.handle_session_start,
@@ -28,9 +24,7 @@ HANDLERS = {
 }
 
 
-def run_event(
-    event_name: str, raw: str, root: Path | None = None, hub: EventHub | None = None
-) -> tuple[str, str]:
+def run_event(event_name: str, raw: str, root: Path | None = None) -> tuple[str, str]:
     handler = HANDLERS.get(event_name)
     if handler is None:
         return "", f"swarm_ledger.hooks: unknown event {event_name!r}\n"
@@ -39,7 +33,7 @@ def run_event(
     # allows silently, with only a stderr line for a developer to find.
     try:
         data = json.loads(raw) if raw.strip() else {}
-        ledger = env.open_ledger(root, hub=hub)
+        ledger = env.open_ledger(root)
         try:
             result = handler(ledger, data)
         finally:

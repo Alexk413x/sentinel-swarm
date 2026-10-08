@@ -222,16 +222,24 @@ def test_a_missing_claude_binary_is_reported(env, monkeypatch, capsys):
     assert "SENTINEL_SWARM_CLAUDE" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize(
-    "flags,channel",
-    [([], ["server:swarm-events"]), (["--bg"], []), (["--headless"], [])],
-)
-def test_dev_channels_go_last_in_every_mode(env, monkeypatch: pytest.MonkeyPatch, flags, channel):
+@pytest.mark.parametrize("flags", [[], ["--bg"], ["--headless"]])
+def test_dev_channels_go_last_in_every_mode(env, monkeypatch: pytest.MonkeyPatch, flags):
     _trust(env["config"], env["repo"])
     monkeypatch.setenv("CLAUDE_DEV_CHANNELS", "plugin:q@m,server:x")
 
     assert launch.main(["--repo", str(env["repo"]), *flags, "Build hello.py"]) == 0
     command = env["run"].calls[-1]["command"]
-    expected = ["--dangerously-load-development-channels", "plugin:q@m", "server:x", *channel]
+    expected = ["--dangerously-load-development-channels", "plugin:q@m", "server:x"]
     assert command[-len(expected) :] == expected
     assert command.count("--dangerously-load-development-channels") == 1
+
+
+@pytest.mark.parametrize("flags", [[], ["--bg"], ["--headless"]])
+def test_no_launch_loads_a_channel_of_its_own(env, capsys: pytest.CaptureFixture[str], flags):
+    _trust(env["config"], env["repo"])
+
+    assert launch.main(["--repo", str(env["repo"]), *flags, "Build hello.py"]) == 0
+    command = env["run"].calls[-1]["command"]
+    assert "--dangerously-load-development-channels" not in command
+    assert "swarm-events" not in " ".join(command)
+    assert "development channel" not in capsys.readouterr().out

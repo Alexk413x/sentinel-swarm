@@ -30,33 +30,6 @@
   XML, and created the notifier, but no toast has been seen on screen. The macOS and
   Linux commands have never run. A live Driver run should confirm the toast, and that
   the Oracle's `PushNotification` call clears its Stop hook block.
-- **Channels.** Wake-up delivery through the `swarm-events` channel is built and
-  unit-tested, and has never run live. Only an interactive Oracle started by the launcher
-  carries the channel: Claude Code reads the development flag only in interactive
-  sessions, and sentinel-swarm is not on the allowlist, so every `--bg` role keeps
-  `SendMessage`. Still open:
-  - A live run with `wake_transport: channel` and an interactive Oracle: a Lead's or
-    Manager's wake-up must arrive as a channel event, and the ledger must confirm it
-    from the Oracle's transcript. The transcript shape of a channel turn is not verified
-    yet; `wake.transcript_confirms` accepts origin kind `channel`, a `turnOrigin` or
-    `promptSource` of `channel`, or the `swarm-events` tag.
-  - The plugin manifest's `channels` entry. The manifest shape is
-    `"channels": [{"server": "swarm-events"}]`, and `server` must name a server in the
-    plugin's own `mcpServers`. That server would then start in every session that has
-    the plugin enabled, not only in swarm sessions, so it waits for Alex's decision. It
-    matters only for an allowlist listing or a `plugin:` development channel.
-  - The device-queue broker, as a second event kind on `swarm-events`. Roles stay `--bg`
-    sessions, so it still needs another path to a waiting role.
-  - An event pushed while the Oracle is busy. The channels docs say such events queue and
-    arrive together on the next turn. No probe has checked it.
-  - An interactive Oracle sent to the background with `/bg` or `←`. Per the agent-view
-    docs, it resumes in a fresh process, and the supervisor stops a background process
-    after about an hour idle unless it is pinned with `Ctrl+T`. Either would restart or
-    end the channel bridge. Not probed.
-  - Retest the `--bg` case when the development flag works in `--bg` sessions or a user
-    setting can allowlist a plugin. The retest repeats the 2026-09-25 probe and checks
-    the debug log for `Channel notifications skipped`. See the channel facts in
-    [13-platform-facts.md](13-platform-facts.md).
 - **`pre_skill`, live.** Built and unit-tested from the hooks reference and the `Skill`
   tool's input schema. No live Driver session has shown a `PreToolUse` hook firing on
   `Skill` with the skill name in `tool_input.skill`.
@@ -74,5 +47,8 @@
 
 Each item below is marked **(needs implementation)** in its document.
 
-- **The device-queue broker** ([05-sessions.md](05-sessions.md)). The event `kind` and
-  the `ping` on `swarm-events` are built; the broker is not.
+- **Mod wake-up delivery** ([05-sessions.md](05-sessions.md), "Wake-up delivery"). The
+  sender's mod calling `$.session.send`. Waits on step 0 of
+  `plans/messaging-and-tooling.md`.
+- **The device-queue broker** ([05-sessions.md](05-sessions.md)). Needs a new plan on
+  the mod's delivery path.

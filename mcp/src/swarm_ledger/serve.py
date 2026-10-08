@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from . import auth, lock, sessions, wake
+from . import auth, lock, sessions
 from .db import ledger_path
 from .identity import LedgerError
 
@@ -177,10 +177,7 @@ def ensure_server(repo_root: Path, timeout: float = START_TIMEOUT_S) -> str:
 def run_hook(root: Path, event: str, payload: bytes) -> str:
     from .hooks import run_event
 
-    # An empty hub, as in the hook subprocess: a hook never pushes a wake-up itself.
-    stdout, stderr = run_event(
-        event, payload.decode("utf-8", errors="replace"), root, hub=wake.EventHub()
-    )
+    stdout, stderr = run_event(event, payload.decode("utf-8", errors="replace"), root)
     if stderr:
         sys.stderr.write(stderr)
         sys.stderr.flush()
@@ -349,9 +346,8 @@ def finish_later(
 
 
 def serve(repo_root: Path) -> None:
-    from starlette.concurrency import run_in_threadpool
     from starlette.middleware import Middleware
-    from starlette.responses import JSONResponse, StreamingResponse
+    from starlette.responses import JSONResponse
 
     # Imported here, not at the top: server imports ledger, which imports this module.
     from . import server
@@ -373,16 +369,6 @@ def serve(repo_root: Path) -> None:
     async def health(request: Request) -> JSONResponse:
         del request
         return JSONResponse({"name": "swarm-ledger", "repo_root": str(root), "pid": os.getpid()})
-
-    @server.mcp.custom_route(wake.EVENTS_PATH, methods=["GET"])
-    async def events(request: Request) -> Response:
-        session_id = request.query_params.get("session") or ""
-        if not session_id:
-            return JSONResponse({"error": "events needs ?session=<session id>"}, status_code=400)
-        await run_in_threadpool(server.channel_registered, session_id)
-        return StreamingResponse(
-            wake.event_stream(wake.HUB, session_id), media_type="application/x-ndjson"
-        )
 
     @server.mcp.custom_route(HOOK_PATH + "/{event}", methods=["POST"])
     async def hook(request: Request) -> Response:
@@ -417,7 +403,6 @@ def _start_watchdog(root: Path, path: Path) -> None:
         settings.watchdog,
         exit_server=lambda: _exit_now(path, root),
         activity=lambda: server.last_call_at,
-        transport=settings.wake_transport,
         notify_channels=settings.notify,
     )
 

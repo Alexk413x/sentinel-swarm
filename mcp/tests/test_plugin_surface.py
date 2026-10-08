@@ -429,6 +429,22 @@ def test_hook_shim_template_exists(repo_root: Path):
     assert imported <= set(sys.stdlib_module_names) | {"__future__"}
 
 
+def test_nothing_shipped_names_the_removed_channel(repo_root: Path):
+    shipped = [
+        *(repo_root / "templates").rglob("*.md"),
+        *(repo_root / "templates").rglob("*.example"),
+        repo_root / "templates" / "hook_shim.py",
+        *(repo_root / "skills").rglob("*.md"),
+        *(repo_root / "hooks").iterdir(),
+        *(repo_root / ".claude-plugin").glob("*.json"),
+    ]
+    for path in shipped:
+        text = path.read_text(encoding="utf-8")
+        for word in ("swarm-events", "wake_transport", "development channel"):
+            assert word not in text, f"{path} names {word}"
+    assert not (repo_root / "mcp" / "src" / "swarm_ledger" / "bridge.py").exists()
+
+
 @pytest.mark.parametrize("name", SKILLS)
 def test_skill_file_exists_with_name_and_description(repo_root: Path, name: str):
     fields, _ = _split(repo_root / "skills" / name / "SKILL.md")

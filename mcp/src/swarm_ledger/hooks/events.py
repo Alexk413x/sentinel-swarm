@@ -12,7 +12,14 @@ from pathlib import Path
 from .. import __version__, pricing, sessions
 from ..agentfiles import plugin_installed
 from ..db import ensure_git_exclude, write_tx
-from ..identity import ROLES, LedgerError, caller_of
+from ..identity import (
+    IDENTITY_FREE_TOOLS,
+    PRE_BIND_TOOLS,
+    ROLES,
+    LedgerError,
+    caller_of,
+    unbound_reason,
+)
 from ..ledger import Ledger
 from ..watchdog import MONITOR_CALL, REGISTER_GRACE, WATCH_COMMAND, parse_stamp, utcnow
 
@@ -26,8 +33,6 @@ SYNC_POST_TOOLS = ("SendMessage", "PushNotification", "Monitor", *_WRITE_TOOLS)
 FIRED_AT_KEY = "sentinel_swarm_fired_at"
 _READONLY_GIT = frozenset({"status", "diff", "log", "show", "ls-files", "branch"})
 _POSIX = os.name != "nt"
-_UNSTAMPED_TOOLS = frozenset({"ledger_info", "brief_get", "who_owns", "directive_submit", "events"})
-_PRE_BIND_TOOLS = _UNSTAMPED_TOOLS | {"brief_ack"}
 _RUN_STATUS_ROLES = frozenset({"manager", "lead"})
 # Claude Code saves additionalContext over 10,000 characters to a file and shows the model
 # only a 2,000-character preview, so the start calls must fit under the cap.
@@ -466,16 +471,13 @@ def handle_pre_ledger(ledger: Ledger, data: dict) -> dict:
     caller = _swarm_caller(ledger, caller_id)
     if method == "override_grant" and (caller is None or caller["role"] != "oracle"):
         return _deny("override_grant is for the Oracle only")
-    if caller is not None and caller["state"] == "registered" and method not in _PRE_BIND_TOOLS:
-        return _deny(
-            f"you are not bound to the ledger yet: call brief_ack(caller={caller['name']!r}). "
-            "No other ledger tool works until it succeeds"
-        )
+    if caller is not None and caller["state"] == "registered" and method not in PRE_BIND_TOOLS:
+        return _deny(unbound_reason(caller["name"]))
 
     tool_input = dict(data.get("tool_input") or {})
     if method == "brief_get" and caller_id:
         ledger.brief_read(caller_id, str(tool_input.get("child_name") or ""))
-    if method in _UNSTAMPED_TOOLS:
+    if method in IDENTITY_FREE_TOOLS:
         tool_input.pop("agent_id", None)
     else:
         tool_input["agent_id"] = caller_id
@@ -811,10 +813,7 @@ def _wake_hint(ledger: Ledger, agent: dict, live_ids: set[str] | None) -> str:
             "to_name": agent["name"],
             "to_session_name": agent["session_name"],
         },
-        transport=ledger.settings.wake_transport,
         live=None if live_ids is None else agent["agent_id"] in live_ids,
-        channel=agent.get("channel") or "none",
-        hub=ledger.hub,
     )
     if delivery.send is None:
         return f"resume it with {delivery.resume}"
@@ -1085,16 +1084,7 @@ def _oracle_work_block(ledger: Ledger, run: dict, oracle: dict) -> dict | None:
 
 
 def _owed_steps(ledger: Ledger, agent_id: str) -> list[str]:
-    from .. import wake
-
-    owed = ledger.owed_wakeups(agent_id)
-    pushed = [w for w in owed if w["pushed_at"] is not None]
-    unconfirmed = {w["wakeup_id"] for w in wake.await_confirmation(ledger.conn, pushed)}
-    return [
-        ledger.fallback_step(w) if w["pushed_at"] is not None else ledger.wake_step(w)
-        for w in owed
-        if w["pushed_at"] is None or w["wakeup_id"] in unconfirmed
-    ]
+    return [ledger.wake_step(w) for w in ledger.owed_wakeups(agent_id)]
 
 
 def _unread_count(ledger: Ledger, caller: dict) -> int:

@@ -26,14 +26,7 @@ _DEFAULT_MODELS = {
 }
 DEFAULT_EFFORT = {role: "medium" for role in _DEFAULT_MODELS}
 _SETTINGS_PATH = Path(".claude") / "sentinel-swarm.local.md"
-WAKE_TRANSPORTS = ("channel", "sendmessage")
-DEFAULT_WAKE_TRANSPORT = "channel"
 NOTIFY_CHANNELS = ("os", "push")
-
-
-def normalize_transport(raw: object) -> str:
-    value = str(raw or "").strip().lower().replace("_", "").replace("-", "")
-    return value if value in WAKE_TRANSPORTS else DEFAULT_WAKE_TRANSPORT
 
 
 def normalize_budget(raw: object) -> int | None:
@@ -105,7 +98,6 @@ class Settings:
     prompt_cache_ttl: dict[str, str] = field(default_factory=dict)
     # Per-role cap on that role's own live sessions in the run, on top of parallelism_cap.
     role_parallelism_cap: dict[str, int] = field(default_factory=dict)
-    wake_transport: str = DEFAULT_WAKE_TRANSPORT
     notify: list[str] = field(default_factory=lambda: list(NOTIFY_CHANNELS))
 
     def snapshot(self) -> str:
@@ -200,6 +192,5 @@ def load_settings(repo_root: Path) -> Settings:
         effort=effort,
         prompt_cache_ttl=prompt_cache_ttl,
         role_parallelism_cap=role_parallelism_cap,
-        wake_transport=normalize_transport(data.get("wake_transport")),
         notify=normalize_notify(data.get("notify")),
     )

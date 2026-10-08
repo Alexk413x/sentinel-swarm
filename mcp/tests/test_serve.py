@@ -21,7 +21,7 @@ from fastmcp.client.transports import StreamableHttpTransport
 from starlette.requests import Request
 from starlette.types import Message
 
-from swarm_ledger import auth, serve, wake
+from swarm_ledger import auth, serve
 from swarm_ledger import hooks as hooks_package
 from swarm_ledger.hooks import run_event
 from swarm_ledger.identity import LedgerError
@@ -300,23 +300,18 @@ def test_the_hook_route_does_not_wait_for_the_tool_call_lock(host: Path) -> None
     assert response.status_code == 200
 
 
-def test_the_hook_route_runs_each_hook_on_its_own_ledger_and_an_empty_hub(
+def test_the_hook_route_runs_each_hook_on_the_repo_root(
     host: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls: list[tuple[Path | None, Any]] = []
+    calls: list[Path | None] = []
 
-    def fake_run_event(
-        event: str, raw: str, root: Path | None = None, hub: Any = None
-    ) -> tuple[str, str]:
-        calls.append((root, hub))
+    def fake_run_event(event: str, raw: str, root: Path | None = None) -> tuple[str, str]:
+        calls.append(root)
         return '{"x": 1}', "a stderr line\n"
 
     monkeypatch.setattr(hooks_package, "run_event", fake_run_event)
     assert serve.run_hook(host, "stop", b"{}") == '{"x": 1}'
-    assert serve.run_hook(host, "stop", b"{}") == '{"x": 1}'
-    (root, hub), (_, second_hub) = calls
-    assert root == host
-    assert isinstance(hub, wake.EventHub) and hub is not wake.HUB and hub is not second_hub
+    assert calls == [host]
 
 
 def _load_shim(repo_root: Path) -> Any:
@@ -392,7 +387,7 @@ def _guard_call(
     return sent[0]["status"], body, bool(reached)
 
 
-_GUARDED = ["/mcp", "/hook/pre_ledger", "/events"]
+_GUARDED = ["/mcp", "/hook/pre_ledger", "/unrouted"]
 _ALL_PATHS = [*_GUARDED, "/health"]
 
 
@@ -490,7 +485,7 @@ def test_the_live_ledger_refuses_callers_without_the_token_and_keeps_it_across_a
     assert _status(f"{base}/health") == 200
     assert _status(f"{base}/mcp") == 403
     assert _status(f"{base}/mcp", {"Authorization": "Bearer wrong"}) == 403
-    assert _status(f"{base}/events?session=s") == 403
+    assert _status(f"{base}/unrouted") == 403
     assert _status(f"{base}/hook/pre_ledger", repo_header, b"{}") == 403
     assert _status(f"{base}/health", {"Host": "evil.example"}) == 403
     assert _status(f"{base}/health", {"Origin": "http://evil.example"}) == 403

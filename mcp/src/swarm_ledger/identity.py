@@ -14,6 +14,10 @@ _CHILD_ROLES: dict[str, tuple[str, ...]] = {
 }
 
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+IDENTITY_FREE_TOOLS = frozenset(
+    {"ledger_info", "brief_get", "who_owns", "directive_submit", "events"}
+)
+PRE_BIND_TOOLS = IDENTITY_FREE_TOOLS | {"brief_ack"}
 _CHANGE_REQUEST_TOOLS = frozenset({"cr_open", "cr_accept", "cr_complete", "cr_verify", "cr_list"})
 
 ROLE_TOOLS: dict[str, frozenset[str]] = {
@@ -232,6 +236,24 @@ def resolve(conn: sqlite3.Connection, caller: str, agent_id: str | None) -> Call
 def require_role(c: Caller, *roles: str) -> None:
     if c.role not in roles:
         raise LedgerError(f"role {c.role!r} may not call this; requires one of {roles}")
+
+
+def unbound_reason(name: str) -> str:
+    return (
+        f"you are not bound to the ledger yet: call brief_ack(caller={name!r}). "
+        "No other ledger tool works until it succeeds"
+    )
+
+
+def require_bound(conn: sqlite3.Connection, tool: str, agent_id: str | None) -> None:
+    if not agent_id or tool in PRE_BIND_TOOLS:
+        return
+    row = conn.execute(
+        "SELECT name, role, state FROM agents WHERE agent_id = ? AND ended_at IS NULL",
+        (agent_id,),
+    ).fetchone()
+    if row is not None and row["role"] in ROLES and row["state"] == "registered":
+        raise LedgerError(unbound_reason(row["name"]))
 
 
 def require_role_tool(conn: sqlite3.Connection, tool: str, agent_id: str | None) -> None:

@@ -454,8 +454,6 @@ from the source `watchdog`. The watchdog only reports. You decide what to do.
     the same as for a closed, crashed Driver.
   - `driver_overdue`: the Driver missed its 30-minute check-in. Message it, or
     `agent_release` it and start a fix for whatever blocked it.
-  - `wake_unconfirmed`: a channel push was not confirmed. If you are the target, act on
-    the pointer. Otherwise make the `SendMessage` call the directive names.
   - `stuck`: message the agent when it is a Manager, or its Manager otherwise, or have
     its parent replace it. `agent_resume` refuses a running session.
   - `waiting_permission`: tell the user which session to open in agent view to answer

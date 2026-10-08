@@ -103,13 +103,9 @@ or the `/sentinel-swarm:run` skill.
 - Interactive by default. `--bg` starts a background session. `--headless` runs
   `claude -p` with a stream-json transcript and the prompt on stdin. Nobody answers
   questions in a headless run, so the Oracle records each assumption in the guidelines.
-- An interactive launch with `wake_transport: channel` carries the `swarm-events`
-  channel. It adds `swarm-events` to the Oracle's `--mcp-config`, ends the command with
-  `--dangerously-load-development-channels server:swarm-events` (merged with any
-  `CLAUDE_DEV_CHANNELS` entries), and prints a line that tells the user to choose
-  "I am using this for local development" at Claude Code's prompt. A `--bg` or
-  `--headless` launch never carries it, because Claude Code discards the flag outside
-  an interactive session.
+- No launch loads a channel of its own. The development-channel flag appears only when
+  `CLAUDE_DEV_CHANNELS` names the user's own channels; see "Starting a child" in
+  [05-sessions.md](05-sessions.md).
 
 ## Skills
 
@@ -148,7 +144,6 @@ descriptions stay out of every session's context.
 | `effort.<role>` | `medium` for every role | `--effort <level>` for that role's sessions. A settings file with no `effort` key gets `medium` for every role; a role left empty runs at its model's default. A brief's own `effort` overrides it |
 | `prompt_cache_ttl.<role>` | `5m` for the Coder, empty for the others | `promptCacheTtl` (`"5m"` or `"1h"`) for that role's sessions |
 | `role_parallelism_cap.<role>` | empty | Cap on that role's own live sessions in the run |
-| `wake_transport` | `channel` | `channel` pushes a wake-up through the target's channel when it has one, with `SendMessage` as the fallback; `sendmessage` sends every wake-up by `SendMessage`. Case, `_`, and `-` are ignored, and any other value reads as `channel`. See "Wake-up delivery" in [05-sessions.md](05-sessions.md) |
 | `notify` | `[os, push]` | How the user hears that the Driver finished or hit an error, or that an issue ended round 3 below the floor. `os`: the ledger server shows a desktop notification. `push`: the Oracle owes a `PushNotification` call. `[]` or `""` turns both off; a single value reads as a one-item list; unknown values are dropped; an unset key, or `notify:` with no value, keeps both. See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md) |
 
 `-p no:cacheprovider` keeps parallel pytest runs from contending on `.pytest_cache`.

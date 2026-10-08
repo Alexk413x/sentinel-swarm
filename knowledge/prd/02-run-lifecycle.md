@@ -329,7 +329,7 @@ when" in [05-sessions.md](05-sessions.md).
     releases a Driver whose exploration is closed (`done` or `abandoned`) once it owes
     no unsent wake-up to a live agent: when `post_any` marks its `SendMessage` sent,
     when its own `agent_resume` of the Oracle marks it sent, or when its Stop hook finds
-    nothing owed, which covers a channel push the transcript confirmed. Release goes
+    nothing owed. Release goes
     through the normal release path, so its session stops. The Stop hook blocks the
     Driver while it still owes the wake-up, as for every member.
   - When no wake-up can be owed, because the run has no live Oracle with a session

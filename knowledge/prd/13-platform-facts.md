@@ -117,15 +117,9 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
 - A session run with `--agent` loads the user's global `CLAUDE.md`, so a persona from
   it can appear in messages to the user. (2026-09-22)
 - On Windows, Python 3.12's `shutil.which` returns an extensionless file before its `.cmd` twin. A plugin that ships a POSIX launcher beside a `.cmd`, such as codebase-kg 0.8.0's `bin/kg-shim`, then fails with WinError 193. The shim prefers the PATHEXT variants. Verified 2026-09-25.
-- A channel reaches a `--bg` session only through `--channels` with a plugin on the allowlist: Anthropic's list, or an organization's `allowedChannelPlugins` in managed settings. `--dangerously-load-development-channels` does not carry into a `--bg` session, and the debug log reads `server <name> not in --channels list for this session`. An event pushed to an unregistered channel is dropped, not queued. Verified 2026-09-25.
-- Claude Code 2.1.283 reads `--dangerously-load-development-channels` only in an interactive session, and applies it after the user accepts the development-channels dialog. A non-interactive session, `--bg` or `-p`, discards it. Claude Code has no settings key or environment variable for development channels. Read from the binary on 2026-09-26; the `--bg` and `-p` cases also confirmed live. In an interactive session, after the prompt is confirmed, the channel registers, an event wakes the idle session within seconds, and a burst of events arrives in order. Verified live 2026-09-26.
+- A channel cannot wake a `--bg` session. A channel reaches a `--bg` session only through `--channels` with a plugin on the allowlist: Anthropic's list, or an organization's `allowedChannelPlugins` in managed settings. A Pro or Max user has no setting that adds a plugin to the allowlist. Verified 2026-09-25.
+- Claude Code 2.1.283 reads `--dangerously-load-development-channels` only in an interactive session, after the user accepts a dialog. A `--bg` or `-p` session discards it. Claude Code has no settings key or environment variable for development channels. Verified 2026-09-26.
 - `claude agents --json` lists interactive sessions too, with `kind: "interactive"`, `pid`, `sessionId`, `name`, and `status`, and no `id` or `state`. A `claude` started with a parent session's `CLAUDE_CODE_CHILD_SESSION` in its environment is left out of the list and saves no transcript. `claude --resume <id> "<message>"` continues the same session id interactively, but under a generated name unless `--name` is passed again. Verified live 2026-09-26.
-- `--channels server:<name>` for a server not on the allowlist logs `server <name> is not
-  on the approved channels allowlist (use --dangerously-load-development-channels for
-  local dev)`. A Pro or Max user has no setting that adds a plugin to the allowlist.
-  (2026-09-25)
-- A plugin installed at project scope connects as a normal MCP server. It registers as a
-  channel only when it is on the allowlist. (2026-09-25)
 - In a `claude` command line, the prompt must come before `--channels` or
   `--dangerously-load-development-channels`. The flag reads a prompt placed after it as
   another channel entry. (2026-09-25)
@@ -136,10 +130,6 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   starts. (2026-09-25)
 - A `--bg` session in the default permission mode stalls for good on a file write.
   `--permission-mode acceptEdits` clears it. (2026-09-25)
-- The development-channels dialog reads `WARNING: Loading development channels`, with
-  the choices `I am using this for local development` and `Exit`. After the first, the
-  debug log reads `Channel notifications registered`, and the screen shows each event as
-  `← <server>: <text>`. (2026-09-26)
 - Before the plugin relays, one swarm session ran 4 MCP server processes for codebase-kg
   0.7.0, or 14 with both a11y servers in their `uvx` form, and 15 to 20 MCP-related
   processes in all. (2026-09-25)

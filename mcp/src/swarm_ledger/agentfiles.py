@@ -13,8 +13,6 @@ from .auth import ledger_entry
 from .identity import ROLES, LedgerError
 
 LEDGER_SERVER = "swarm-ledger"
-CHANNEL_SERVER = "swarm-events"
-CHANNEL_CONFIG = {"command": "python", "args": [".sentinel-swarm/hook.py", "channel"]}
 SESSION_SETTINGS = '{"worktree":{"bgIsolation":"none"}}'
 _SETUP_HINT = "run /sentinel-swarm:setup"
 OPTIONAL_SERVERS: dict[str, tuple[str, ...]] = {
@@ -279,7 +277,6 @@ def session_options(
     *,
     effort: str | None = None,
     prompt_cache_ttl: str | None = None,
-    channel: bool = False,
 ) -> list[str]:
     agent_file = read_agent_file(repo_root, role)
     extra = optional_servers(repo_root, role)
@@ -290,8 +287,6 @@ def session_options(
             for name, entry in {**mcp_servers(agent_file), **extra}.items()
         },
     }
-    if channel:
-        servers[CHANNEL_SERVER] = dict(CHANNEL_CONFIG)
     config = {"mcpServers": servers}
     options = ["--agent", f"swarm-{role}"]
     if model:

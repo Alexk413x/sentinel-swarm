@@ -30,10 +30,10 @@ def claude_binary() -> str:
     return shutil.which(raw) or raw
 
 
-def dev_channel_args(extra: Sequence[str] = ()) -> list[str]:
+def dev_channel_args() -> list[str]:
     # Last on the command line: the flag takes several values and swallows anything after it.
     raw = [e for e in re.split(r"[\s,]+", os.environ.get(DEV_CHANNELS_VAR, "")) if e]
-    entries = list(dict.fromkeys([*raw, *extra]))
+    entries = list(dict.fromkeys(raw))
     return ["--dangerously-load-development-channels", *entries] if entries else []
 
 
