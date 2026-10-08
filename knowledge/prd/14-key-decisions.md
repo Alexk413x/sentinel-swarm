@@ -133,3 +133,7 @@
 - 2026-10-08: The Lead holds `graph_upsert` for nodes whose anchors lie on its module's files; a Coder's stay on its own file.
 - 2026-10-08: A Manager's, Lead's, Coder's, and Driver's `session_start` hook makes its start calls (`brief_ack`, `ledger_info`, `brief_get`, `guidelines_get`, and `run_status` for a Manager or Lead) and returns them as context; the brief it hands over counts as a read for `handoff_submit`. The Oracle keeps its own start calls.
 - 2026-10-08: The Coder loads `score_record` and `handoff_submit`, and the Driver `drive_done`, with a second `ToolSearch` just before the first call, not in the up-front `select:`.
+- 2026-10-08: Remove the `swarm-events` channel. Owed wake-ups go out through one delivery path.
+- 2026-10-08: The sender's mod delivers each owed wake-up with `$.session.send`, which replaces `SendMessage` once a live check shows it wakes an idle `--bg` session. See `plans/messaging-and-tooling.md`.
+- 2026-10-08: Enforcement may live in the plugin's mod, which loads in every session in the host repo, once the live check passes.
+- 2026-10-08: The device-queue broker needs a new plan on the mod's delivery path; it stays (needs implementation) until then.

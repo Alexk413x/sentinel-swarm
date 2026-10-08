@@ -60,8 +60,9 @@ report, setup, and testing. The code graph maps every document, so codebase-kg's
   cartographer and a driver plugin installed.
 - No role template sets `maxTurns`. The watchdog and the escalation budget are the only
   controls on a runaway agent.
-- Every enforcement rule lives in a role template's hooks or in a swarm-ledger tool,
-  not in agent prompt text. An agent's system prompt describes what it must not do; a
+- Every enforcement rule lives in a role template's hooks, the plugin's mod (once
+  `plans/messaging-and-tooling.md` step 0 verifies mods in role sessions), or a
+  swarm-ledger tool, not in agent prompt text. An agent's system prompt describes what it must not do; a
   hook or a ledger gate is what actually stops it. `hooks/hooks.json` carries no hooks,
   so no hook runs twice.
 - The PRD is the maintained specification, and the code must match it. No item waits
