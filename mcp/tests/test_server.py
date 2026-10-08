@@ -9,8 +9,7 @@ import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
-from swarm_ledger import __version__, rubric, sessions
-from swarm_ledger import server as server_module
+from swarm_ledger import __version__, front, rubric, sessions
 from swarm_ledger.server import _TOOL_NAMES, configure, mcp
 
 
@@ -204,7 +203,7 @@ async def _registered_manager_calls() -> list[str]:
     results: list[str] = []
     async with Client(mcp) as client:
         await _brief_manager(client)
-        server_module._ledger().agent_register_start("mgr-1", "manager", parent_agent_id="sess-1")
+        front._ledger().agent_register_start("mgr-1", "manager", parent_agent_id="sess-1")
         for tool, arguments in calls:
             try:
                 await client.call_tool(tool, arguments)
@@ -368,7 +367,7 @@ def test_run_finish_calls_the_on_run_finish_hook(
     host: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     finished: list[str | None] = []
-    monkeypatch.setattr(server_module, "on_run_finish", finished.append)
+    monkeypatch.setattr(front, "on_run_finish", finished.append)
     assert asyncio.run(_start_and_finish())["state"] == "finished"
     assert len(finished) == 1
     assert finished[0] is not None

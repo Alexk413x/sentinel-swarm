@@ -24,7 +24,7 @@ from .identity import (
 from .oversight import OversightMixin
 from .repo import RepoMixin
 from .review import ReviewMixin, agent_names, live_agents, run_summary
-from .settings import load_settings
+from .settings import Settings, load_settings
 
 _NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 _RESUME_POINTER = "Re-read your brief and your inbox in the ledger."
@@ -121,14 +121,31 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
     # AgreementsMixin implements (for pyright, since review.py's methods are typed
     # against ReviewMixin alone), and MRO resolves the first base's attribute, so
     # ReviewMixin's empty stub would otherwise shadow the real implementation.
-    def __init__(self, repo_root: Path, *, db_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        repo_root: Path,
+        *,
+        db_path: Path | None = None,
+        server_pid: int | None = None,
+        settings: Settings | None = None,
+    ) -> None:
         self.repo_root = repo_root
-        self.settings = load_settings(repo_root)
+        self.server_pid = server_pid if server_pid is not None else os.getpid()
+        self.settings = settings if settings is not None else load_settings(repo_root)
         path = db_path if db_path is not None else ledger_path(repo_root)
         self.conn = connect(path)
         self._pending_stops: list[tuple[str, str]] = []
         if (repo_root / ".git").exists():
             ensure_git_exclude(repo_root)
+
+    def adopt_run_profile(self, run_id: int | None) -> None:
+        # profile_set may have run in another worker process, so the run's snapshot, not this
+        # process's settings, holds the current commands.
+        row = self.conn.execute(
+            "SELECT settings_json FROM runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if row is not None:
+            self.settings.adopt_profile(row["settings_json"])
 
     @contextmanager
     def _release_tx(self) -> Iterator[sqlite3.Connection]:
@@ -221,7 +238,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
         )
         run_id = cur.lastrowid
         assert run_id is not None
-        lock.acquire(self.repo_root, run_id, os.getpid())
+        lock.acquire(self.repo_root, run_id, self.server_pid)
 
         conn.execute(
             "INSERT INTO agents (agent_id, name, role, runtime, model, effort, run_id, state, "
@@ -554,6 +571,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
             if c.run_id is None:
                 raise LedgerError(f"{caller!r} has no run")
 
+            self.adopt_run_profile(c.run_id)
             if test_command is not None:
                 self.settings.test_command = test_command
             if build_command is not None:
