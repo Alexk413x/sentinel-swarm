@@ -5,6 +5,7 @@ import os
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -37,6 +38,7 @@ DRIVER_OPTIONAL_SERVERS: dict[str, tuple[str, ...]] = {
 RELAY_ARGS = [".sentinel-swarm/hook.py", "mcp"]
 SCOPES = ("local", "project", "user")
 _PLACEHOLDER = re.compile(r"\$\{([^}]*)\}")
+_OPTION_VALUE = re.compile(r"[0-9A-Za-z._-]{1,64}")
 
 
 def _config_dir() -> Path:
@@ -92,29 +94,34 @@ def _install_path(repo_root: Path, plugin_id: str) -> Path | None:
     return None
 
 
-def _plugin_option(repo_root: Path, plugin_id: str, install: Path, key: str) -> str | None:
-    value: Any = None
-    for settings in (
-        _config_dir() / "settings.json",
-        repo_root / ".claude" / "settings.json",
-        repo_root / ".claude" / "settings.local.json",
-    ):
-        data = _read_json(settings)
-        configs = data.get("pluginConfigs") if isinstance(data, dict) else None
-        config = configs.get(plugin_id) if isinstance(configs, dict) else None
-        options = config.get("options") if isinstance(config, dict) else None
-        if isinstance(options, dict) and options.get(key) is not None:
-            value = options[key]
-    if value is None:
-        manifest = _read_json(install / ".claude-plugin" / "plugin.json")
-        user_config = manifest.get("userConfig") if isinstance(manifest, dict) else None
-        option = user_config.get(key) if isinstance(user_config, dict) else None
-        value = option.get("default") if isinstance(option, dict) else None
-    if value is None or isinstance(value, (dict, list)):
+def _plugin_option(plugin_id: str, install: Path, key: str) -> str | None:
+    """The user's setting for a plugin option, else its default; None unless it is a plain token.
+
+    Only the user's own settings count: a host repo's `.claude/settings.json` could
+    otherwise point the URL at another host or put shell text into `headersHelper`.
+    """
+    manifest = _read_json(install / ".claude-plugin" / "plugin.json")
+    user_config = manifest.get("userConfig") if isinstance(manifest, dict) else None
+    option = user_config.get(key) if isinstance(user_config, dict) else None
+    if not isinstance(option, dict):
         return None
-    if isinstance(value, float) and value.is_integer():
+    data = _read_json(_config_dir() / "settings.json")
+    configs = data.get("pluginConfigs") if isinstance(data, dict) else None
+    config = configs.get(plugin_id) if isinstance(configs, dict) else None
+    options = config.get("options") if isinstance(config, dict) else None
+    value = options.get(key) if isinstance(options, dict) else None
+    if value is None:
+        value = option.get("default")
+    if option.get("type") == "number":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        if value != int(value):
+            return None
         value = int(value)
-    return str(value)
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return None
+    text = str(value)
+    return text if _OPTION_VALUE.fullmatch(text) else None
 
 
 def http_entry(repo_root: Path, plugin_id: str, server: str) -> dict[str, Any] | None:
@@ -130,7 +137,7 @@ def http_entry(repo_root: Path, plugin_id: str, server: str) -> dict[str, Any] |
     if not isinstance(entry, dict) or entry.get("type") != "http":
         return None
 
-    def expand(text: str) -> str | None:
+    def expand(text: str, options: bool) -> str | None:
         missing = False
 
         def substitute(match: re.Match[str]) -> str:
@@ -138,8 +145,8 @@ def http_entry(repo_root: Path, plugin_id: str, server: str) -> dict[str, Any] |
             name = match.group(1)
             if name == "CLAUDE_PLUGIN_ROOT":
                 return str(install)
-            if name.startswith("user_config."):
-                value = _plugin_option(repo_root, plugin_id, install, name[len("user_config.") :])
+            if options and name.startswith("user_config."):
+                value = _plugin_option(plugin_id, install, name[len("user_config.") :])
                 if value is not None:
                     return value
             missing = True
@@ -148,15 +155,25 @@ def http_entry(repo_root: Path, plugin_id: str, server: str) -> dict[str, Any] |
         out = _PLACEHOLDER.sub(substitute, text)
         return None if missing else out
 
-    resolved: dict[str, Any] = {"type": "http"}
-    for key in ("url", "headersHelper"):
-        raw = entry.get(key)
-        if raw is None:
-            continue
-        if not isinstance(raw, str) or (value := expand(raw)) is None:
+    url = entry.get("url")
+    if not isinstance(url, str) or (resolved_url := expand(url, options=True)) is None:
+        return None
+    try:
+        same_host = urlsplit(resolved_url).hostname == urlsplit(_PLACEHOLDER.sub("0", url)).hostname
+    except ValueError:
+        return None
+    if not same_host:
+        return None
+    resolved: dict[str, Any] = {"type": "http", "url": resolved_url}
+    helper = entry.get("headersHelper")
+    if helper is not None:
+        if (
+            not isinstance(helper, str)
+            or (resolved_helper := expand(helper, options=False)) is None
+        ):
             return None
-        resolved[key] = value
-    return resolved if "url" in resolved else None
+        resolved["headersHelper"] = resolved_helper
+    return resolved
 
 
 def _direct(repo_root: Path, entry: Any) -> Any:

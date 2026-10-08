@@ -262,7 +262,7 @@ def test_session_options_connect_an_http_plugin_server_directly(
     }
 
 
-def test_session_options_use_the_users_port_setting(
+def test_session_options_use_the_users_port_setting_not_the_repos(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     host = tmp_path / "host"
@@ -283,7 +283,26 @@ def test_session_options_use_the_users_port_setting(
         "utf-8",
     )
 
-    assert _servers(host)["codebase-kg"]["url"] == "http://127.0.0.1:47901/mcp"
+    assert _servers(host)["codebase-kg"]["url"] == "http://127.0.0.1:47900/mcp"
+
+
+@pytest.mark.parametrize("port", ["1@evil.example", "47821/x", "47821; calc", True, 47821.5])
+def test_session_options_keep_the_relay_for_an_unsafe_port_setting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, port: object
+) -> None:
+    host = tmp_path / "host"
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    _kg_registry(config_dir, _kg_install(tmp_path))
+    _write(host, "coder", _CODER)
+    (config_dir / "settings.json").write_text(
+        json.dumps(
+            {"pluginConfigs": {"codebase-kg@codebase-kg": {"options": {"server_port": port}}}}
+        ),
+        "utf-8",
+    )
+
+    assert _servers(host)["codebase-kg"]["args"][:2] == [".sentinel-swarm/hook.py", "mcp"]
 
 
 def test_session_options_keep_the_relay_for_an_unresolved_placeholder(

@@ -45,9 +45,12 @@
 - When the plugin's own entry for that server is `"type": "http"`, `session_options`
   writes that entry into the role's `--mcp-config` instead of the shim's: `url` and
   `headersHelper` with `${CLAUDE_PLUGIN_ROOT}` set to the install folder and each
-  `${user_config.<key>}` set to the user's `pluginConfigs` option, else the manifest's
-  `userConfig` default. No relay process starts. An entry with a placeholder it cannot
-  fill keeps the shim. codebase-kg 0.12.0 and later serves HTTP on one server per machine
+  `${user_config.<key>}` in `url` set to the option in the user's own `settings.json`
+  `pluginConfigs`, else the manifest's `userConfig` default. A host repo's settings never
+  count. A value must be a plain token (letters, digits, `.`, `_`, `-`; an integer for a
+  `number` option), and the URL's host must stay the template's. `headersHelper` takes
+  only `${CLAUDE_PLUGIN_ROOT}`. No relay process starts. Any entry that fails a check
+  keeps the shim. codebase-kg 0.12.0 and later serves HTTP on one server per machine
   and resolves each session's graph from its roots. Verified live on 2026-10-07: a
   `--strict-mcp-config` session with codebase-kg's `headersHelper` called `kg_search`.
 - codebase-kg 0.8.0 and later names its relay, `bin/kg-shim`, in its `.mcp.json`. The

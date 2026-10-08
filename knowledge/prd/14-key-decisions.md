@@ -111,3 +111,4 @@
 - 2026-09-28: The smoke harness tears down its plugin records when a run ends: it uninstalls the project-scope install from the host folder and removes the `sentinel-swarm` marketplace, at the end of the interactive and headless modes and in `--results` mode, never in `--bg` mode. Each run first removes an earlier run's stale records. The project-scope install stays, and teardown never deletes a session. The harness does not stop processes.
 - 2026-09-28: `tests_run` reuses a passing run of the same command when `HEAD`, the tracked changes, and every claimed file are unchanged, and records the reuse as a new row; `force=true` always runs.
 - 2026-09-28: PRD 09 names the accessibility-tools relay release as "their AP-21 release", not version numbers.
+- 2026-10-07: A role session connects to a plugin's HTTP MCP server directly, with the plugin's own entry in its `--mcp-config`, not through the stdio relay. The relay stays for stdio entries.
