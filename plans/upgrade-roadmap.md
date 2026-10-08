@@ -896,3 +896,10 @@ of 2026-10-08 before part 1.
 
 The Manager chose Opus for the Lead in the second run and Sonnet in the first; both are on
 the approved list. With the Lead on Sonnet the run costs about $1.44.
+
+## Results: modules smoke run after part 1 (2026-10-08)
+
+`smoke.sh --bg --prd modules` on commit 164ec7b passed all 10 checks: 4 phases, 7 files and 16
+agents approved and released, 19 tests passed. p1 and p2 ran in parallel, p3 unlocked after p1
+and p2 were approved, and p4 after p3. Duration 20m 9s, 147 tool calls, $4.47, against PRD 12's
+estimate of about 23 minutes and $6.
