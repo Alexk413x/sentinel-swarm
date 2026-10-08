@@ -83,7 +83,7 @@ tools: Read, SendMessage, mcp__swarm-ledger
 mcpServers:
   - codebase-kg:
       command: python
-      args: [".sentinel-swarm/hook.py", "mcp", "codebase-kg@codebase-kg", "codebase-kg"]
+      args: [".sentinel-swarm/hook.py", "mcp", "codebase-kg@alexk413x", "codebase-kg"]
 ---
 
 You are a {role}.

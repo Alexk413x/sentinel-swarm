@@ -16,7 +16,8 @@ CLAUDE_VAR = "SENTINEL_SWARM_CLAUDE"
 DEV_CHANNELS_VAR = "CLAUDE_DEV_CHANNELS"
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _BG_LINE = re.compile(r"backgrounded\s+\S+\s+([0-9A-Za-z-]+)")
-_VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+_PLUGIN_LINE = re.compile(r"^\s*❯\s+(\S+)")
+_STATUS_LINE = re.compile(r"^\s*Status:\s*(.+?)\s*$")
 # A parent Claude Code session sets these for its own child processes. A session started
 # with them, CLAUDE_CODE_CHILD_SESSION above all, never registers: `claude agents` does not
 # list it and a send to its session id finds no live session.
@@ -38,7 +39,7 @@ PARENT_SESSION_VARS = frozenset(
         "CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT",
     }
 )
-_LABELS = ("agents", "stop", "--resume", "--bg")
+_LABELS = ("agents", "plugin", "stop", "--resume", "--bg")
 # Not "done": a background session reports state "done" once its turn ends, while its process
 # still runs and takes messages. Resuming it with --resume starts a second session.
 _DEAD = frozenset({"stopped", "exited", "crashed", "failed", "killed", "dead", "completed"})
@@ -96,16 +97,26 @@ def _run(args: list[str], cwd: Path | None = None) -> str:
     return stdout
 
 
-def claude_version() -> tuple[int, int, int] | None:
+def plugin_load_problem(repo: Path, name: str = "sentinel-swarm") -> str | None:
     try:
-        output = _run(["--version"])
-    except LedgerError:
+        output = _strip_ansi(_run(["plugin", "list"], cwd=repo))
+    except LedgerError as exc:
+        return str(exc)
+    statuses: list[str] = []
+    current: str | None = None
+    for line in output.splitlines():
+        plugin = _PLUGIN_LINE.match(line)
+        if plugin is not None:
+            current = plugin.group(1)
+            continue
+        status = _STATUS_LINE.match(line)
+        if status is not None and current is not None and current.split("@")[0] == name:
+            statuses.append(status.group(1))
+    if any(status.endswith(" enabled") and "✔" in status for status in statuses):
         return None
-    match = _VERSION.search(_strip_ansi(output))
-    if match is None:
-        return None
-    major, minor, patch = (int(part) for part in match.groups())
-    return major, minor, patch
+    if not statuses:
+        return f"claude plugin list shows no {name} plugin for this repo"
+    return f"claude plugin list shows {name}: {'; '.join(statuses)}"
 
 
 def _describe(args: list[str]) -> str:

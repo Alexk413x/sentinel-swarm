@@ -29,7 +29,6 @@ _SETTINGS_PATH = Path(".claude") / "sentinel-swarm.local.md"
 NOTIFY_CHANNELS = ("os", "push")
 DEFAULT_MAX_WORKERS = 8
 PROFILE_KEYS = ("test_command", "build_command", "lint_command")
-HOOK_TRANSPORTS = ("mod", "command")
 
 
 def normalize_budget(raw: object) -> int | None:
@@ -50,11 +49,6 @@ def normalize_max_workers(raw: object) -> int:
     except ValueError:
         return DEFAULT_MAX_WORKERS
     return max(0, workers)
-
-
-def normalize_transport(raw: object) -> str | None:
-    value = str(raw).strip().lower() if isinstance(raw, str) else ""
-    return value if value in HOOK_TRANSPORTS else None
 
 
 def normalize_notify(raw: object) -> list[str]:
@@ -119,7 +113,6 @@ class Settings:
     notify: list[str] = field(default_factory=lambda: list(NOTIFY_CHANNELS))
     max_workers: int = DEFAULT_MAX_WORKERS
     # Empty means setup picks mod on a Claude Code build that runs the mod, command otherwise.
-    hook_transport: str | None = None
 
     def snapshot(self) -> str:
         return json.dumps(asdict(self), sort_keys=True)
@@ -237,5 +230,4 @@ def load_settings(repo_root: Path) -> Settings:
         role_parallelism_cap=role_parallelism_cap,
         notify=normalize_notify(data.get("notify")),
         max_workers=normalize_max_workers(data.get("max_workers")),
-        hook_transport=normalize_transport(data.get("hook_transport")),
     )

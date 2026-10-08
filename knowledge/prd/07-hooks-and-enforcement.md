@@ -2,26 +2,21 @@
 
 ## Where the hooks live
 
-- Each role's ledger hooks run through one of two transports, and never both for one
-  session:
-  - **mod** (the default): the plugin's mod, `hooks/register.ts`, which
-    `hooks/hooks.json` names under `modules`. Setup writes the role files without
-    their ledger command hooks. See "The mod" below.
-  - **command**: the frontmatter of the role's project agent file,
-    `.claude/agents/swarm-<role>.md`, runs each hook through the shim.
-- Setup picks `mod` when `claude --version` is 2.1.294 or later, the first build where
-  a live check ran the mod in `--bg --agent` role sessions, and `command` for an older
-  or unreadable version. The settings file's `hook_transport` overrides the check. See
-  "Setup" in [11-setup-and-settings.md](11-setup-and-settings.md).
-- `hooks/hooks.json` carries no command hooks. The mod stays out of a session whose
-  role file still carries ledger command hooks, and out of every session that is not
-  a swarm role, so no hook runs twice. A Claude Code build without function hooks
-  ignores the `modules` key, and its role files keep the command hooks.
-- Claude Code runs an agent file's frontmatter hooks only in a trusted folder.
-- The command hooks are the user's to edit, and a user can weaken a hook gate in their
-  own project. The mod is plugin code; the user can only disable the plugin, which
-  also stops its setup. The ledger tools' gates apply whatever the files say. A rerun of setup
-  restores every ledger hook the template has.
+- The plugin's mod, `hooks/register.ts`, is the only transport for the ledger hooks.
+  `hooks/hooks.json` names it under `modules`. The role files
+  (`.claude/agents/swarm-<role>.md`) carry no `hooks` frontmatter. See "The mod" below.
+- `hooks/hooks.json` carries no command hooks. The mod acts only in a swarm role
+  session, so no hook runs twice. Setup removes any ledger command hook (`hook.py hook
+  <event>`) it finds in a role file. See "Setup" in
+  [11-setup-and-settings.md](11-setup-and-settings.md).
+- The mod is plugin code. A user cannot edit it from the project; the user can only
+  disable the plugin, which also stops its setup. The ledger tools' gates apply
+  whatever the files say.
+- A session in which the plugin does not load has no mod, so no hook gates it. Two
+  guards stop that case. The launcher refuses to start the Oracle unless `claude plugin
+  list` shows sentinel-swarm enabled. The ledger refuses `run_start` and `brief_ack`
+  from a session the mod never checked in for. See "Launch" in
+  [11-setup-and-settings.md](11-setup-and-settings.md) and "The mod check-in" below.
 
 | Event | Matcher | Ledger hook event | Roles |
 |---|---|---|---|
@@ -42,10 +37,11 @@
 
 ## The shim
 
-Every hook command is
-`python3 .sentinel-swarm/hook.py hook <event> || python .sentinel-swarm/hook.py hook <event>`.
 `.sentinel-swarm/hook.py` is a standard-library shim that setup copies from
-`templates/hook_shim.py`. It has these commands:
+`templates/hook_shim.py`. The mod runs it as its fallback, as
+`python3 .sentinel-swarm/hook.py hook <event>` and then `python …`. The MCP launcher
+runs `hook.py mcp`, and the watchdog listener runs `hook.py watch`. No role file runs
+it as a command hook. It has these commands:
 
 - `hook <event>` posts the hook input to the running ledger server at
   `POST /hook/<event>`, on the port in `.sentinel-swarm/server.json`, with the repo
@@ -59,8 +55,7 @@ Every hook command is
   `~/.claude/plugins/installed_plugins.json` (scope `local`, then `project`, each with a
   matching `projectPath`, then `user`), and runs
   `uv run --project <installPath>/mcp --frozen --no-dev python -m swarm_ledger.hooks <event>`
-  with stdin and stdout passed through. A plugin upgrade changes the registry, not the
-  agent files. Both paths print the same bytes.
+  with stdin and stdout passed through. Both paths print the same bytes.
 - Every `uv run` of the shim sets `UV_PROJECT_ENVIRONMENT` to the ledger's venv in the
   plugin data folder, keyed by `mcp/uv.lock`. See "The ledger's venv" in
   [11-setup-and-settings.md](11-setup-and-settings.md).
@@ -83,17 +78,17 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 
 ## The mod
 
-`hooks/register.ts` runs the same ledger hooks as the shim, inside the session's own
-Claude Code process. It posts the same JSON to the same `POST /hook/<event>` route,
-with the token and the repo header, and maps the answer onto the function-hook
-result. A post costs the server's own time plus a few milliseconds; the shim costs
-about 380 to 770 ms more for its process (see [13-platform-facts.md](13-platform-facts.md)).
+`hooks/register.ts` runs the ledger hooks inside the session's own Claude Code
+process. It posts the hook input as JSON to the `POST /hook/<event>` route, with the
+token and the repo header, and maps the answer onto the function-hook result. A post
+costs the server's own time plus a few milliseconds; the shim's process costs about
+380 to 770 ms more (see [13-platform-facts.md](13-platform-facts.md)).
 
-- **Which sessions.** At `classic.SessionStart` the mod takes a session whose
-  `agent_type` is `swarm-<role>` on the main thread, and only when the role file's
-  frontmatter holds no `hook.py hook` command. It keeps the session id, the
-  transcript path, the folder, and the role in `$.state`, so a reload of the module
-  keeps them. Every hook returns `next(e)` at once in any other session.
+- **Which sessions.** At `classic.SessionStart` the mod takes every session whose
+  `agent_type` is `swarm-<role>` on the main thread (no `agent_id`, so not a subagent).
+  It keeps the session id, the transcript path, the folder, and the role in `$.state`,
+  so a reload of the module keeps them. Every hook returns `next(e)` at once in any
+  other session. The mod does not read the role file.
 - **Gates.** A `tool.call` hook per gating event (`pre_agent`, `pre_write`,
   `pre_shell`, `pre_monitor`, `pre_send_message`, `pre_skill` for the Driver,
   `pre_ledger`) posts the classic `PreToolUse` input, with `agent_id` set to the
@@ -121,6 +116,11 @@ about 380 to 770 ms more for its process (see [13-platform-facts.md](13-platform
   session's wake-ups, and `inbox_take`, `inbox_ack`, and `inbox_release` to read the
   inbox inside a wake-up. See "Mod wake-up delivery" and "Messages" in
   [05-sessions.md](05-sessions.md).
+- **The mod check-in.** The mod's `SessionStart` post carries
+  `sentinel_swarm_transport: "mod"`, and the ledger records a `mod_sessions` row for the
+  session. A session with no row has no mod, so no hook gates it. The ledger refuses
+  `run_start` and `brief_ack` from such a session; see "What each hook does" below
+  and `identity.require_mod_session`.
 - **Tests.** `hooks/register.test.ts` runs under `claude plugin test .`.
 
 ## Rules every ledger hook follows
@@ -135,7 +135,10 @@ about 380 to 770 ms more for its process (see [13-platform-facts.md](13-platform
 ## What each hook does
 
 - `session_start`: records a `mod_sessions` row for the session when the input
-  carries `sentinel_swarm_transport: "mod"`. For a swarm session, it records the transcript path and sets an idle
+  carries `sentinel_swarm_transport: "mod"`, before it makes any other call. The ledger
+  refuses `run_start` and `brief_ack` from a session with no row; see "The mod
+  check-in" above. This hook's own `brief_ack` for a child passes, because the row
+  exists by then. For a swarm session, it records the transcript path and sets an idle
   agent to working. For a Manager, Lead, Coder, or Driver, it also makes the start
   calls: `brief_ack` when the agent is still `registered`, then `ledger_info`,
   `brief_get`, `guidelines_get`, and, for a Manager or Lead, `run_status`, returned as
@@ -226,7 +229,7 @@ about 380 to 770 ms more for its process (see [13-platform-facts.md](13-platform
   Oracle's stop refreshes the report, then blocks while the Oracle still owes a
   `PushNotification` call.
 - `owed`, `wake_sent`, `inbox_take`, `inbox_ack`, `inbox_release`: posted by the mod
-  only, never by a command hook. See "Mod wake-up delivery" and "Messages" in
+  only. See "Mod wake-up delivery" and "Messages" in
   [05-sessions.md](05-sessions.md). Each ignores a caller the registry does not know.
 - `session_end`: records tokens and cost and the end reason. After a run finishes, the
   Oracle's `session_end` refreshes the report.
@@ -254,6 +257,7 @@ about 380 to 770 ms more for its process (see [13-platform-facts.md](13-platform
 | Every dimension is scored on every review | `score_record` refuses a set that leaves a dimension out |
 | A model comes from the approved list | `brief_create` |
 | No agent starts without a brief | `agent_spawn` and `brief_ack`, which `session_start` calls |
+| No session runs without the mod's hooks | The launcher runs `claude plugin list` and refuses to start the Oracle unless sentinel-swarm shows enabled (`sessions.plugin_load_problem`); `pool.run_tool` calls `identity.require_mod_session`, which refuses `run_start` and `brief_ack` from a session with no `mod_sessions` row |
 | A child does no ledger work before it binds | `server._call` refuses a `registered` session every tool but `brief_ack` and the tools that take no identity, for any client; `pre_ledger` denies the same calls first |
 | No agent fakes its identity | `pre_ledger` stamps `agent_id`; the server's middleware takes it out of the arguments; every tool matches `caller` to it |
 | Only the run's own sessions reach the ledger | `serve.Guard` answers 403 to a remote caller, a wrong `Host`, a foreign `Origin`, and a missing or wrong token on every path but `/health`; `session_options` sends the token only to a checked `http://127.0.0.1:<port>/mcp` URL |

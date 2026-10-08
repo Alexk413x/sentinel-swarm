@@ -11,10 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import sessions
 from .agentfiles import driver_available
 from .db import _main_git_dir
-from .settings import load_settings
 
 CORE_ROLES = ("oracle", "manager", "lead", "coder")
 ROLES = (*CORE_ROLES, "driver")
@@ -28,8 +26,6 @@ SETTINGS_LOCAL_PATH = Path(".claude") / "settings.local.json"
 KG_SETTINGS_PATH = Path(".claude") / "codebase-kg.local.md"
 EXCLUDE_LINES = (".sentinel-swarm/", ".claude/agents/swarm-*.md", KG_SETTINGS_PATH.as_posix())
 WORKTREE_SETTINGS: dict[str, Any] = {"worktree": {"bgIsolation": "none"}}
-# The first build where a live check ran the mod in --bg --agent role sessions.
-MOD_MIN_VERSION = (2, 1, 294)
 # Exact names: an Agent(<name>) deny blocks the Agent tool but not a `claude --agent` launch.
 ROLE_AGENT_DENY = tuple(f"Agent(swarm-{role})" for role in ROLES)
 
@@ -39,16 +35,6 @@ _HOOK_ITEM_LINE = re.compile(r"^    - ")
 _LEDGER_HOOK = re.compile(r"hook\.py hook (\w+)")
 _TOOLS_LINE = re.compile(r"^tools\s*:\s*\S")
 WHOLE_LEDGER = "mcp__swarm-ledger"
-# Entries an earlier template shipped: setup swaps one it finds unedited for the template's.
-_SUPERSEDED_HOOKS = {
-    "post_any": (
-        "    - hooks:\n"
-        "        - type: command\n"
-        '          command: "python3 .sentinel-swarm/hook.py hook post_any'
-        ' || python .sentinel-swarm/hook.py hook post_any"\n'
-        "          timeout: 60"
-    ),
-}
 
 
 class SetupError(Exception):
@@ -108,53 +94,6 @@ def _join_document(frontmatter: str, body: str) -> str:
     return f"---\n{_with_newline(frontmatter)}---\n{body}"
 
 
-def _hook_entries(frontmatter: str) -> list[tuple[str, str, str]]:
-    entries: list[tuple[str, str, str]] = []
-    parent: str | None = None
-    current: list[str] = []
-
-    def flush() -> None:
-        if parent is not None and current:
-            text = "".join(current)
-            match = _LEDGER_HOOK.search(text)
-            if match:
-                entries.append((parent, match.group(1), text))
-
-    for line in key_blocks(frontmatter).get("hooks", "").splitlines(keepends=True)[1:]:
-        event = _HOOK_EVENT_LINE.match(line)
-        if event:
-            flush()
-            parent, current = event.group(1), []
-        elif _HOOK_ITEM_LINE.match(line):
-            flush()
-            current = [line]
-        elif current:
-            current.append(line)
-    flush()
-    return entries
-
-
-def add_missing_hooks(user_frontmatter: str, template_frontmatter: str) -> tuple[str, list[str]]:
-    have = {event for _, event, _ in _hook_entries(user_frontmatter)}
-    lines = _with_newline(user_frontmatter).splitlines(keepends=True)
-    added: list[str] = []
-    for parent, event, text in _hook_entries(template_frontmatter):
-        if event in have:
-            continue
-        header = f"  {parent}:"
-        at = next((i for i, line in enumerate(lines) if line.rstrip() == header), None)
-        if at is None:
-            hooks_at = next((i for i, line in enumerate(lines) if line.rstrip() == "hooks:"), None)
-            if hooks_at is None:
-                continue
-            lines.insert(hooks_at + 1, header + "\n")
-            at = hooks_at + 1
-        lines.insert(at + 1, text)
-        have.add(event)
-        added.append(event)
-    return "".join(lines), added
-
-
 def _tool_items(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
@@ -174,22 +113,6 @@ def narrow_ledger_tools(user_frontmatter: str, template_frontmatter: str) -> tup
         lines[index] = "tools: " + ", ".join(items) + ("\n" if line.endswith("\n") else "")
         return "".join(lines), True
     return user_frontmatter, False
-
-
-def replace_superseded_hooks(
-    user_frontmatter: str, template_frontmatter: str
-) -> tuple[str, list[str]]:
-    template = {event: text for _, event, text in _hook_entries(template_frontmatter)}
-    replaced: list[str] = []
-    for _, event, text in _hook_entries(user_frontmatter):
-        old = text.rstrip()
-        if event not in template or old != _SUPERSEDED_HOOKS.get(event):
-            continue
-        if old not in user_frontmatter:
-            continue
-        user_frontmatter = user_frontmatter.replace(old, template[event].rstrip(), 1)
-        replaced.append(event)
-    return user_frontmatter, replaced
 
 
 def strip_ledger_hooks(frontmatter: str) -> tuple[str, list[str]]:
@@ -228,26 +151,8 @@ def strip_ledger_hooks(frontmatter: str) -> tuple[str, list[str]]:
     return frontmatter.replace(block, lines[0] + rest if rest.strip() else "", 1), removed
 
 
-def hook_transport(repo: Path) -> tuple[str, str]:
-    chosen = load_settings(repo).hook_transport
-    if chosen is not None:
-        return chosen, f"hook_transport: {chosen} in the settings file"
-    version = sessions.claude_version()
-    if version is None:
-        return "command", "the Claude Code version could not be read"
-    shown = ".".join(str(part) for part in version)
-    if version >= MOD_MIN_VERSION:
-        return "mod", f"Claude Code {shown} runs the plugin's mod"
-    floor = ".".join(str(part) for part in MOD_MIN_VERSION)
-    return "command", f"Claude Code {shown} is older than {floor}"
-
-
-def role_template(role: str, transport: str) -> str:
-    template = template_file(role).read_text(encoding="utf-8")
-    if transport != "mod":
-        return template
-    frontmatter, body = split_document(template)
-    return _join_document(strip_ledger_hooks(frontmatter)[0], body)
+def role_template(role: str) -> str:
+    return template_file(role).read_text(encoding="utf-8")
 
 
 def merge_role_file(existing: str, template: str) -> tuple[str, list[str], bool]:
@@ -258,11 +163,6 @@ def merge_role_file(existing: str, template: str) -> tuple[str, list[str], bool]
     template_keys = key_blocks(template_frontmatter)
     added = [key for key in template_keys if key not in user_keys]
     frontmatter = _with_newline(user_frontmatter) + "".join(template_keys[key] for key in added)
-    if "hooks" in user_keys:
-        frontmatter, replaced = replace_superseded_hooks(frontmatter, template_frontmatter)
-        added += [f"updated hook {event}" for event in replaced]
-        frontmatter, hooks = add_missing_hooks(frontmatter, template_frontmatter)
-        added += [f"hook {event}" for event in hooks]
     if narrowed:
         added.append(f"the role's swarm-ledger tools in place of {WHOLE_LEDGER}")
     return _join_document(frontmatter, template_body), added, user_body != template_body
@@ -284,7 +184,7 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
-def write_role_files(repo: Path, report: SetupReport, transport: str = "command") -> None:
+def write_role_files(repo: Path, report: SetupReport) -> None:
     for role in ROLES:
         target = role_file(repo, role)
         shown = target.relative_to(repo).as_posix()
@@ -295,20 +195,16 @@ def write_role_files(repo: Path, report: SetupReport, transport: str = "command"
                 "ios-driver, or web-driver) are not installed"
             )
             continue
-        template = role_template(role, transport)
+        template = role_template(role)
         if not target.is_file():
             _write_text(target, render_default(template))
             report.add(f"wrote {shown}")
             continue
         existing = target.read_text(encoding="utf-8")
-        removed: list[str] = []
         try:
-            start = existing
-            if transport == "mod":
-                frontmatter, body = split_document(existing)
-                frontmatter, removed = strip_ledger_hooks(frontmatter)
-                if removed:
-                    start = _join_document(frontmatter, body)
+            frontmatter, body = split_document(existing)
+            frontmatter, removed = strip_ledger_hooks(frontmatter)
+            start = _join_document(frontmatter, body) if removed else existing
             merged, added, body_changed = merge_role_file(start, template)
         except SetupError as exc:
             report.add(f"left {shown} unchanged: {exc}")
@@ -460,9 +356,7 @@ def trust_instructions(repo: Path) -> str:
 def run_setup(repo: Path) -> SetupReport:
     repo = repo.resolve()
     report = SetupReport()
-    transport, why = hook_transport(repo)
-    report.add(f"hook transport: {transport} ({why})")
-    write_role_files(repo, report, transport)
+    write_role_files(repo, report)
     write_shim(repo, report)
     merge_settings_local(repo, report)
     quiet_codebase_kg_nudge(repo, report)

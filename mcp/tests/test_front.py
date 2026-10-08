@@ -19,8 +19,9 @@ from swarm_ledger.server import mcp
 
 
 @pytest.fixture
-def lean(host: Path, claude_sessions: list[dict]) -> Iterator[int]:
+def lean(host: Path, claude_sessions: list[dict], check_in) -> Iterator[int]:
     del claude_sessions
+    check_in(host, "sess-1")
     token = auth.ensure_token(host)
     sock = serve.bind_socket(host)
     port = sock.getsockname()[1]
@@ -96,7 +97,7 @@ async def _run(client: Client) -> list[dict[str, Any]]:
 
 
 def test_the_lean_front_returns_what_fastmcp_returns(
-    host: Path, tmp_path: Path, lean: int, monkeypatch: pytest.MonkeyPatch
+    host: Path, tmp_path: Path, lean: int, monkeypatch: pytest.MonkeyPatch, check_in
 ) -> None:
     finished: list[str | None] = []
     monkeypatch.setattr(front, "on_run_finish", finished.append)
@@ -113,6 +114,7 @@ def test_the_lean_front_returns_what_fastmcp_returns(
         (host / ".claude" / "sentinel-swarm.local.md").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
+    check_in(other, "sess-1")
     front.configure(other)
     in_process = asyncio.run(_run(Client(mcp)))
     assert over_http == in_process

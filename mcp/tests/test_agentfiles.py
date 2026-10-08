@@ -26,7 +26,7 @@ tools: Read, Write, SendMessage, mcp__swarm-ledger
 mcpServers:
   - codebase-kg:
       command: python
-      args: [".sentinel-swarm/hook.py", "mcp", "codebase-kg@codebase-kg", "codebase-kg"]
+      args: [".sentinel-swarm/hook.py", "mcp", "codebase-kg@alexk413x", "codebase-kg"]
 hooks:
   Stop:
     - hooks:
@@ -117,7 +117,7 @@ def test_session_options_builds_the_flags_from_the_role_file(tmp_path: Path) -> 
                 "args": [
                     ".sentinel-swarm/hook.py",
                     "mcp",
-                    "codebase-kg@codebase-kg",
+                    "codebase-kg@alexk413x",
                     "codebase-kg",
                 ],
             },
@@ -196,7 +196,7 @@ def test_session_options_run_every_plugin_server_through_the_stdio_shim(
     assert servers["codebase-kg"]["args"] == [
         ".sentinel-swarm/hook.py",
         "mcp",
-        "codebase-kg@codebase-kg",
+        "codebase-kg@alexk413x",
         "codebase-kg",
     ]
     for name in ("a11y-tools", "a11y-kg"):
@@ -240,11 +240,7 @@ def _kg_registry(config_dir: Path, install: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
-            {
-                "plugins": {
-                    "codebase-kg@codebase-kg": [{"scope": "user", "installPath": str(install)}]
-                }
-            }
+            {"plugins": {"codebase-kg@alexk413x": [{"scope": "user", "installPath": str(install)}]}}
         ),
         "utf-8",
     )
@@ -282,13 +278,13 @@ def test_session_options_use_the_users_port_setting_not_the_repos(
     _write(host, "coder", _CODER)
     (config_dir / "settings.json").write_text(
         json.dumps(
-            {"pluginConfigs": {"codebase-kg@codebase-kg": {"options": {"server_port": 47900}}}}
+            {"pluginConfigs": {"codebase-kg@alexk413x": {"options": {"server_port": 47900}}}}
         ),
         "utf-8",
     )
     (host / ".claude" / "settings.local.json").write_text(
         json.dumps(
-            {"pluginConfigs": {"codebase-kg@codebase-kg": {"options": {"server_port": 47901}}}}
+            {"pluginConfigs": {"codebase-kg@alexk413x": {"options": {"server_port": 47901}}}}
         ),
         "utf-8",
     )
@@ -307,7 +303,7 @@ def test_session_options_keep_the_relay_for_an_unsafe_port_setting(
     _write(host, "coder", _CODER)
     (config_dir / "settings.json").write_text(
         json.dumps(
-            {"pluginConfigs": {"codebase-kg@codebase-kg": {"options": {"server_port": port}}}}
+            {"pluginConfigs": {"codebase-kg@alexk413x": {"options": {"server_port": port}}}}
         ),
         "utf-8",
     )

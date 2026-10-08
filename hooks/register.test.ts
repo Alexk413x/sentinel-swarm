@@ -3,15 +3,10 @@ import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 
 const CWD = 'C:/host'
 const TOKEN = 'a'.repeat(40)
-const ROLE_FILE = '---\nname: swarm-lead\ntools: Read\n---\n\n# Lead\n'
-const COMMAND_ROLE_FILE =
-  '---\nname: swarm-lead\nhooks:\n  Stop:\n    - hooks:\n        - type: command\n' +
-  '          command: "python3 .sentinel-swarm/hook.py hook stop || python .sentinel-swarm/hook.py hook stop"\n---\n'
 const RAN_OK = { stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
 
 type Options = {
   answers?: Record<string, unknown>
-  roleFile?: string
   serverDown?: boolean
   shim?: { exitCode: number; stdout: string }
   send?: (to: string) => SessionSendResult
@@ -30,7 +25,6 @@ function world(on: On, options: Options = {}) {
     const path = e.path.replace(/\\/g, '/')
     if (path === `${CWD}/.sentinel-swarm/server.json`) return { value: JSON.stringify({ port: 47999 }) }
     if (path === `${CWD}/.sentinel-swarm/http-token`) return { value: `${TOKEN}\n` }
-    if (path.startsWith(`${CWD}/.claude/agents/`)) return { value: options.roleFile ?? ROLE_FILE }
     throw new Error(`ENOENT: ${e.path}`)
   })
   on('http.fetch', (_$, e) => {
@@ -82,14 +76,6 @@ describe('which sessions the mod acts in', () => {
     await start($, 'general-purpose', 'sess-user')
     await $.tool.call({ tool: 'Write', file_path: 'a.txt', content: 'x' })
     await $.classic.Stop({ stop_hook_active: false } as never)
-    expect(w.posts).toEqual([])
-    expect(w.writes.length).toBe(1)
-  })
-
-  test('a role file that still carries the ledger command hooks keeps the mod out', async ($, on) => {
-    const w = world(on, { roleFile: COMMAND_ROLE_FILE, answers: { pre_write: DENY('no') } })
-    await start($)
-    await $.tool.call({ tool: 'Write', file_path: 'a.txt', content: 'x' })
     expect(w.posts).toEqual([])
     expect(w.writes.length).toBe(1)
   })

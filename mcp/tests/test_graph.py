@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -62,14 +64,43 @@ def test_the_base_command_runs_isolated_with_codebase_kgs_source_on_the_path(
     assert fallback[-1] == str(target)
 
 
+def _register_kg(tmp_path: Path, host: Path, install: Path) -> None:
+    registry = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "plugins" / "installed_plugins.json"
+    registry.parent.mkdir(parents=True, exist_ok=True)
+    entry = {"scope": "project", "projectPath": str(host), "installPath": str(install)}
+    registry.write_text(json.dumps({"plugins": {"codebase-kg@alexk413x": [entry]}}), "utf-8")
+
+
+def test_codebase_kg_root_reads_the_repos_install_from_the_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("SENTINEL_SWARM_KG_ROOT", raising=False)
+    host = tmp_path / "host"
+    host.mkdir()
+    install = _kg(tmp_path).parent
+    _register_kg(tmp_path, host, install)
+
+    assert graph.codebase_kg_root(host) == install / "mcp"
+    other = tmp_path / "other"
+    other.mkdir()
+    with pytest.raises(LedgerError, match="codebase-kg@alexk413x is not installed for"):
+        graph.codebase_kg_root(other)
+
+
+def test_the_override_wins_over_the_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    override = tmp_path / "override"
+    override.mkdir()
+    monkeypatch.setenv("SENTINEL_SWARM_KG_ROOT", str(override))
+    assert graph.codebase_kg_root(tmp_path) == override
+
+
 @pytest.mark.integration
 def test_graph_upsert_returns_the_same_result_on_both_paths(
-    tmp_path: Path, repo_root: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, repo_root: Path, kg_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    try:
-        kg = graph.codebase_kg_root()
-    except LedgerError:
-        pytest.skip("codebase-kg is not installed in this environment")
+    kg = kg_root
     if not graph.runs_on_base(kg):
         pytest.skip("the base Python is below codebase-kg's floor")
 

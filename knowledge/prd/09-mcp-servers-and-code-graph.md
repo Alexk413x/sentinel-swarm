@@ -67,8 +67,8 @@
   release. Each names a relay in its `.mcp.json`. The relay connects to one server per machine
   and server build, and falls back to a private stdio server when it cannot reach the
   shared one.
-- An older plugin version that names a plain `uv run` or `uvx` command runs one server
-  per session.
+- A plugin version that names a plain `uv run` or `uvx` command runs one server per
+  session.
 - Graph writes go through `graph_upsert`, which calls codebase-kg's
   `edits.upsert_node` with the host graph's explicit path under the ledger's lock, so
   the shared codebase-kg server only ever serves reads.
@@ -83,9 +83,12 @@
 
 ## The code graph
 
-codebase-kg is a required dependency (`>=0.8.2`). 0.8.2 is the floor because it is the
-first release whose relay shares one server per machine and runs on Windows (the
-`.cmd` fix); 0.7.x starts its own `uv run` servers in every session. An up-to-date graph lets each agent
+codebase-kg is a required dependency (`>=0.8.2`). It is the plugin
+`codebase-kg@alexk413x`, from the `alexk413x` marketplace (`Alexk413x/marketplace`),
+installed per project. sentinel-swarm's `plugin.json` depends on it, and Claude Code
+refuses to load sentinel-swarm in a project where it is not installed. 0.8.2 is the
+floor because it is the first release whose relay shares one server per machine and
+runs on Windows (the `.cmd` fix). An up-to-date graph lets each agent
 find what exists while many agents change the code at once. The graph file,
 `knowledge/code_graph.db`, belongs to the host repo and is committed with its code.
 
@@ -107,9 +110,12 @@ find what exists while many agents change the code at once. The graph file,
   `kind`, `section`, `description`, `anchors`, `edges`). The ledger refuses a Coder's
   anchor outside its file and test file, a Lead's anchor outside the files and test
   files its module claimed (released and superseded claims excluded), and an edge to a
-  node that does not exist. It applies the upsert under a lock, with the
-  highest numbered version under `~/.claude/plugins/cache/codebase-kg/codebase-kg/`, or
-  `SENTINEL_SWARM_KG_ROOT`, run as described above.
+  node that does not exist. It applies the upsert under a lock, with the codebase-kg
+  copy that `graph.codebase_kg_root(repo_root)` resolves, run as described above.
+  That function reads the install of `codebase-kg@alexk413x` for the repo from
+  `~/.claude/plugins/installed_plugins.json` (scope `local`, then `project` with a
+  matching `projectPath`, then `user`, the lookup that `agentfiles` uses for other
+  plugins) and returns its `mcp` folder. `SENTINEL_SWARM_KG_ROOT` overrides it.
 - Setup sets `post_edit_nudge: false` in the host's `.claude/codebase-kg.local.md`, so
   codebase-kg's edit hook does not send a Coder to `/codebase-kg:refresh`.
 - A node that anchors on several files is updated through the Lead, once the Coders

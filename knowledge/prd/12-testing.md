@@ -24,7 +24,7 @@ live in `.claude/CLAUDE.md`, not at the plugin root, because the validator warns
 root `CLAUDE.md`, which a plugin install does not load.
 
 `mcp/tests/test_plugin_surface.py` guards the surface contract: the role templates'
-frontmatter and hooks, the empty `hooks.json`, the manifest fields, the skills'
+frontmatter (which carries no hooks), the empty `hooks.json`, the manifest fields, the skills'
 frontmatter, and one version across `plugin.json`, `mcp/pyproject.toml`, and the
 package.
 
@@ -41,8 +41,15 @@ run `/reload-plugins`.
 
 - It empties `runs/hello/` (git-ignored), builds a host repo in `runs/hello/host/` with
   a README, a `pyproject.toml`, a settings file with the pytest test command, a
-  one-node code graph, and `git init -b main`. It copies the plugin to a fresh temp
-  folder, rewrites that copy's version to a dev version such as
+  one-node code graph, and `git init -b main`. It builds the graph from the host's
+  project-scope install of `codebase-kg@alexk413x`. Before it installs sentinel-swarm, it
+  runs `claude plugin marketplace add --scope project Alexk413x/marketplace` and
+  `claude plugin install codebase-kg@alexk413x --scope project -y` in the host, because
+  Claude Code refuses to load sentinel-swarm in a project where that dependency is not
+  installed. It reads the install path from `installed_plugins.json` and runs
+  `uv run --no-project --quiet <install>/mcp/launch/kg_cli.py build <graph.json> -o
+  knowledge/code_graph.db`. It copies the plugin (`.claude-plugin`, `assets`, `skills`,
+  `hooks`, `templates`, `types`, `mcp`) to a fresh temp folder, rewrites that copy's version to a dev version such as
   `<plugin version>-dev.<epoch seconds>`, for example `0.1.0-dev.1790650000`, installs it at project scope under that
   version, runs setup, commits, and starts the Oracle through the installed copy's launcher. Each run
   also removes any older `*-dev.*` copy from the plugin cache, skipping one a live
@@ -54,8 +61,7 @@ run `/reload-plugins`.
 - The default prompt asks for `hello.py`, which writes `Hello, world!` to
   `hello_world.txt`. After the run, `smoke.sh` runs `hello.py` or `hello_world.py` and
   prints the file, because the shell gate lets the swarm run only test commands.
-- `KG_PLUGIN_DIR` picks a codebase-kg version other than the newest in the cache.
-  `CLAUDE_BIN` picks the claude binary for the plugin install, and for the launcher and
+- `CLAUDE_BIN` picks the claude binary for the plugin install, and for the launcher and
   the role sessions unless `SENTINEL_SWARM_CLAUDE` is set.
 - Two variables let `scripts/bench.sh` reuse the smoke test. `SMOKE_PRD_FILE` names a
   prompt file, used when the command line gives no prompt and no `--prd`.
@@ -66,7 +72,9 @@ run `/reload-plugins`.
   starts the Oracle on that file's model before the approved list.
 - The run tears down its plugin records when it ends. It runs `claude plugin uninstall
   sentinel-swarm@sentinel-swarm --scope project --keep-data` from the host folder, then
-  `claude plugin marketplace remove sentinel-swarm`. Teardown runs at the end of the
+  `claude plugin uninstall codebase-kg@alexk413x --scope project --keep-data` from the
+  host folder, then `claude plugin marketplace remove sentinel-swarm`. Teardown never
+  removes the `alexk413x` marketplace. Teardown runs at the end of the
   interactive and `--headless` modes and in `--results` mode, never in `--bg` mode,
   which returns while the run goes on. Each run also tears down an earlier run's records
   before it installs, since Windows empties the temp folder the marketplace record
@@ -244,12 +252,12 @@ Then confirm that nothing is left running:
 - `.sentinel-swarm/server.json` is gone.
 - The run's sessions are stopped in `claude agents`. Do not `claude rm` them: Alex
   reviews them in agent view.
-- Teardown ran: `claude plugin list` shows no project-scope `sentinel-swarm` install
-  for the host, and `~/.claude/plugins/known_marketplaces.json` has no `sentinel-swarm`
+- Teardown ran: `claude plugin list` shows no project-scope `sentinel-swarm` or
+  `codebase-kg@alexk413x` install for the host, and `~/.claude/plugins/known_marketplaces.json` has no `sentinel-swarm`
   entry that points at the temp folder. A `teardown:` line on stderr names what stayed.
 - No codebase-kg `--serve` process from the run is left. One keeps running from
-  `~/.claude/plugins/cache/codebase-kg/codebase-kg/<version>` after the run, and on
+  the `codebase-kg@alexk413x` install folder in `~/.claude/plugins/cache/` after the run, and on
   Windows it makes the next run's install fail with `EPERM` when that install replaces
   the same version. The harness does not stop processes. Find it in PowerShell with
-  `Get-CimInstance Win32_Process | ? CommandLine -match 'plugins\\cache\\codebase-kg.*--serve'`,
+  `Get-CimInstance Win32_Process | ? CommandLine -match 'plugins\\cache\\.*codebase-kg.*--serve'`,
   and stop it yourself once no other session uses that shared server.

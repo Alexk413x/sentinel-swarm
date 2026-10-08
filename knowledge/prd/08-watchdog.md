@@ -83,6 +83,11 @@ listing skips one pass.
   with the Oracle's session name and launch options,
   at most once every 5 minutes. After 3 attempts with no Oracle heartbeat since the
   first, it pauses the run with the reason "the watchdog could not wake the Oracle".
+- When the Oracle's `agents` row has no `session_name`, the watchdog skips `claude
+  --resume`, because a resume without `--name` comes back as a session named after the
+  message. It records the agent event "the watchdog cannot wake the Oracle: no session
+  is recorded for '<agent_id>'". That event counts as a wake attempt, so the run pauses
+  after the usual 3 attempts.
 
 ## Settings
 

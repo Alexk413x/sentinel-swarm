@@ -53,6 +53,14 @@ claude "You are <name>. Read your brief from the swarm ledger and follow it." --
 - `brief_ack` binds a name to a session. After that, every call resolves `agent_id` to
   its row and refuses a `caller` that does not match, or an agent that has ended.
 - The Oracle is bound at `run_start`.
+- `run_start` and `brief_ack` need a session the mod checked in for. `pool.run_tool`
+  calls `identity.require_mod_session`, which refuses either tool when no `mod_sessions`
+  row exists for the stamped `agent_id` (for `run_start`, the call's `session_id`): "<tool>
+  refuses session '<id>': the sentinel-swarm mod never checked in for it, so no hook
+  gates this session. Run claude plugin list in the repo: sentinel-swarm must show
+  enabled, not failed to load. Fix that, then start the session again". The mod's
+  `session_start` post records the row. See "The mod" in
+  [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md).
 
 ## Start calls
 
@@ -61,7 +69,8 @@ hook makes them before the model's first turn, because the hook already posts to
 ledger and knows the session id, which is the child's `agent_id`.
 
 - For a `registered` child, the hook calls `brief_ack` under the agent's spawned name.
-  It then returns, as `additionalContext`, the results of `ledger_info`, `brief_get`,
+  The hook records the child's `mod_sessions` row first, so this call passes the mod
+  check-in. It then returns, as `additionalContext`, the results of `ledger_info`, `brief_get`,
   `guidelines_get`, and, for a Manager or Lead, `run_status` without the PRD text.
 - For a child already bound, on any `source` (`resume`, `compact`, `clear`), it
   returns the same results and does not bind again.
@@ -116,10 +125,9 @@ wake-up the caller owes, and returns a `next` field with the exact call to make.
   recipient's session runs, and `agent_resume(target_name=...)` when it does not. When
   `claude agents --json` fails, `next` names both: the `SendMessage` call, or
   `agent_resume` if that session is not running. See "Wake-up delivery" below.
-- When the caller's hooks run through the mod, `next` is instead "Nothing to call: the
+- When the caller has a `mod_sessions` row, `next` is instead "Nothing to call: the
   sentinel-swarm mod wakes <name> for you. Your Stop hook names a call only if that
-  wake-up is not delivered." The ledger knows such a caller from the `mod_sessions`
-  row its `session_start` hook writes.
+  wake-up is not delivered." The mod's `session_start` post writes the row.
 - The mod marks a wake-up paid through `wake_sent` once its send is delivered. The
   `post_any` hook clears the debt when it sees a `SendMessage` to that session name.
   When the sender is a Driver whose exploration is closed and it owes nothing more, the
@@ -138,9 +146,9 @@ wake-up the caller owes, and returns a `next` field with the exact call to make.
 
 ## Wake-up delivery
 
-The sender's mod delivers every owed wake-up in a session whose hooks run through the
-mod. The sender's model delivers the rest: `SendMessage` to a running target, and
-`agent_resume` to a stopped one. The ledger pushes nothing into a session.
+The sender's mod delivers every owed wake-up. The sender's model delivers a wake-up the
+mod did not deliver: `SendMessage` to a running target, and `agent_resume` to a stopped
+one. The ledger pushes nothing into a session.
 
 ### Mod wake-up delivery
 
@@ -234,8 +242,7 @@ a possible injection. So only the Oracle and the Managers see the elapsed time.
   comes back, even one the ledger wrote over the cap. Every role reads it at the start
   of each turn after a wake-up, and calls it again while `remaining` is above 0. It
   skips a row the mod holds under a claim less than 2 minutes old.
-- The inbox inside a wake-up: when a peer delivery reaches a role session whose hooks
-  run through the mod, the mod's `session.receive` hook posts `inbox_take`. The ledger
+- The inbox inside a wake-up: when a peer delivery reaches a role session, the mod's `session.receive` hook posts `inbox_take`. The ledger
   claims the caller's unread messages of its own run, up to the same 40,000-character
   cap, under a new claim id, and returns them with `remaining`. The mod appends them
   to the delivered text after `message_inbox() returned:`, then posts `inbox_ack`,
@@ -285,8 +292,11 @@ a possible injection. So only the Oracle and the Managers see the elapsed time.
   the name or the launch flags. The pointer is the text
   of every wake-up the caller owes the target, or "Re-read your brief and your inbox in
   the ledger." The resume marks those wake-ups sent. It refuses a running session,
-  because a resume of a running session starts a second copy. Any live agent of the run
-  may call it, except on itself.
+  because a resume of a running session starts a second copy. It refuses a target with
+  no recorded `session_name`: "'<name>' has no recorded session, so agent_resume cannot
+  wake it: a resume without one starts a fresh session". `claude --resume <id> --bg
+  <message>` without `--name` comes back as a session named after the message. Any live
+  agent of the run may call it, except on itself.
 - Release sets the row `released` and stops the session with `claude stop <bg_id>`,
   which frees its memory. The Oracle's session is never stopped this way.
 - `agent_release(target_agent_id)` releases a child of the caller. The other releases

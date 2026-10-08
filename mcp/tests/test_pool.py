@@ -14,7 +14,7 @@ import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
-from swarm_ledger import env, front, lock, serve, sessions
+from swarm_ledger import env, front, lock, serve, sessions, wake
 from swarm_ledger.db import connect
 from swarm_ledger.pool import Pool, WorkerError, worker_command
 from swarm_ledger.server import configure, mcp
@@ -37,10 +37,15 @@ def _fake_claude(folder: Path) -> Path:
 
 @pytest.fixture
 def workers(
-    host: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, claude_sessions: list[dict]
+    host: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    claude_sessions: list[dict],
+    check_in,
 ) -> Iterator[Pool]:
     del claude_sessions
     monkeypatch.setenv(sessions.CLAUDE_VAR, str(_fake_claude(tmp_path)))
+    check_in(host, "sess-1", MANAGER["agent_id"])
     pool = _pool(host)
     configure(host)
     try:
@@ -177,7 +182,7 @@ def test_a_pooled_message_owes_one_wake_up(host: Path, workers: Pool) -> None:
     conn.close()
     assert len(rows) == 1
     assert rows[0]["to_session_name"] == "mgr-session"
-    assert posted["next"] == 'agent_resume(target_name="mgr-p1-phase-1")'
+    assert posted["next"] == wake.mod_step(dict(rows[0]))
 
 
 def test_the_front_shows_each_pooled_notification_once(

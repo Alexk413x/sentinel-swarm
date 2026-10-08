@@ -178,6 +178,11 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
   ledger yet: call brief_ack(caller=...)". `pre_ledger` denies the same calls first;
   see [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md).
 - A live agent may call only its role's tools (`identity.ROLE_TOOLS`).
+- `run_start` and `brief_ack` fail unless a `mod_sessions` row exists for the stamped
+  `agent_id` (for `run_start`, the call's `session_id`): the sentinel-swarm mod never
+  checked in for a session without one, so no hook gates it
+  (`identity.require_mod_session`, called from `pool.run_tool`). See "The mod" in
+  [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md).
 
 | Group | Tools |
 |---|---|

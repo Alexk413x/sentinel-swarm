@@ -369,28 +369,12 @@ def test_template_mcp_servers_go_through_the_shim(repo_root: Path, role: str):
                 "args": [
                     ".sentinel-swarm/hook.py",
                     "mcp",
-                    "codebase-kg@codebase-kg",
+                    "codebase-kg@alexk413x",
                     "codebase-kg",
                 ],
             }
         }
     ]
-
-
-@pytest.mark.parametrize("role", ROLES)
-def test_template_hooks_match_the_spec_table(repo_root: Path, role: str):
-    hooks = _split(_template(repo_root, role))[0]["hooks"]
-    expected: dict[str, list[dict]] = {}
-    for event, matcher, ledger_event, roles in HOOK_TABLE:
-        if role not in roles:
-            continue
-        group: dict = {} if matcher is None else {"matcher": matcher}
-        hook: dict = {"type": "command", "command": _hook_command(ledger_event), "timeout": 60}
-        if ledger_event in ASYNC_EVENTS:
-            hook["async"] = True
-        group["hooks"] = [hook]
-        expected.setdefault(event, []).append(group)
-    assert hooks == expected
 
 
 def test_the_sync_post_matcher_names_the_tools_post_activity_skips():
@@ -517,10 +501,10 @@ def test_the_mod_posts_only_events_the_server_handles(repo_root: Path):
 
 
 @pytest.mark.parametrize("role", ROLES)
-def test_a_template_written_for_the_mod_has_no_hooks(role: str):
+def test_a_role_template_has_no_hooks(role: str):
     from swarm_ledger import setup
 
-    head, _ = setup.split_document(setup.role_template(role, "mod"))
+    head, _ = setup.split_document(setup.role_template(role))
     fields = yaml.safe_load(head)
     assert "hooks" not in fields
     assert fields["name"] == f"swarm-{role}"

@@ -90,7 +90,7 @@ def test_a_record_for_a_dead_server_is_not_answering(tmp_path: Path) -> None:
 
 @pytest.mark.integration
 def test_ensure_server_starts_one_server_per_repo_and_it_exits_after_run_finish(
-    host: Path,
+    host: Path, check_in
 ) -> None:
     url = serve.ensure_server(host, timeout=60)
     info = serve.read_server_info(host)
@@ -110,6 +110,7 @@ def test_ensure_server_starts_one_server_per_repo_and_it_exits_after_run_finish(
     assert second.returncode == 0
     assert second.stdout.strip() == url
 
+    check_in(host, "sess-1")
     finished = asyncio.run(_start_and_finish(url, host))
     assert finished["state"] == "finished"
     assert _wait_for(lambda: not serve.server_info_path(host).exists())

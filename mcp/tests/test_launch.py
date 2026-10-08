@@ -41,9 +41,17 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         return URL
 
     monkeypatch.setattr(launch, "_ensure_server", ensure_server)
+    problems: list[str | None] = [None]
+    monkeypatch.setattr(launch, "_plugin_load_problem", lambda root: problems[0])
     recorder = Recorder()
     monkeypatch.setattr(launch.subprocess, "run", recorder)
-    return {"repo": repo, "config": config, "servers": servers, "run": recorder}
+    return {
+        "repo": repo,
+        "config": config,
+        "servers": servers,
+        "run": recorder,
+        "problems": problems,
+    }
 
 
 def _trust(config: Path, repo: Path) -> None:
@@ -90,7 +98,7 @@ def test_interactive_puts_the_prompt_first_and_builds_the_flags(env):
     }
     assert config["mcpServers"]["codebase-kg"] == {
         "command": "python",
-        "args": [".sentinel-swarm/hook.py", "mcp", "codebase-kg@codebase-kg", "codebase-kg"],
+        "args": [".sentinel-swarm/hook.py", "mcp", "codebase-kg@alexk413x", "codebase-kg"],
     }
     tools = _option(command, "--allowedTools").split(",")
     assert "mcp__swarm-ledger__run_start" in tools
@@ -256,3 +264,15 @@ def test_no_launch_loads_a_channel_of_its_own(env, capsys: pytest.CaptureFixture
     assert "--dangerously-load-development-channels" not in command
     assert "swarm-events" not in " ".join(command)
     assert "development channel" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("flags", [[], ["--bg"], ["--headless"]])
+def test_a_plugin_that_does_not_load_stops_the_launch(
+    env, capsys: pytest.CaptureFixture[str], flags: list[str]
+):
+    _trust(env["config"], env["repo"])
+    env["problems"][0] = "claude plugin list shows sentinel-swarm: ✘ failed to load"
+    assert launch.main(["--repo", str(env["repo"]), *flags, "build it"]) == 1
+    assert env["run"].calls == []
+    assert env["servers"] == []
+    assert "failed to load" in capsys.readouterr().err

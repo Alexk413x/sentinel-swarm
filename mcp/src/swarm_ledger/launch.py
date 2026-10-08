@@ -47,6 +47,12 @@ def _claude_binary() -> str:
     return claude_binary()
 
 
+def _plugin_load_problem(repo: Path) -> str | None:
+    from .sessions import plugin_load_problem
+
+    return plugin_load_problem(repo)
+
+
 def _child_env() -> dict[str, str]:
     from .sessions import child_env
 
@@ -114,6 +120,13 @@ def launch(repo: Path, prompt: str, mode: Mode, transcript: Path | None = None) 
         print(report.text(with_trust=mode == "interactive" or report.trusted))
     if mode != "interactive" and not setup.is_trusted(repo):
         sys.stderr.write(setup.trust_instructions(repo) + "\n")
+        return 1
+    problem = _plugin_load_problem(repo)
+    if problem is not None:
+        sys.stderr.write(
+            f"cannot start the Oracle: the sentinel-swarm plugin does not load in {repo}, so "
+            f"its mod would not gate the roles: {problem}\n"
+        )
         return 1
     name = oracle_session_name(repo)
     try:

@@ -81,7 +81,10 @@ def now() -> datetime:
 
 
 def _run_id(ledger: Ledger) -> int:
-    return ledger.run_start(prd="Build X", session_id=ORACLE)["run"]["run_id"]
+    run_id = ledger.run_start(prd="Build X", session_id=ORACLE)["run"]["run_id"]
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE agents SET session_name = 'host-oracle' WHERE agent_id = ?", (ORACLE,))
+    return run_id
 
 
 def _signal(ledger: Ledger, now: datetime) -> str | None:
@@ -609,6 +612,24 @@ def test_a_failed_wake_counts_as_an_attempt(
     dog.tick(now + timedelta(minutes=1))
 
     assert _wakes(ledger) == ["the watchdog could not resume the Oracle: claude --resume failed"]
+
+
+def test_an_oracle_with_no_recorded_session_is_not_resumed(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _agent(ledger, "sess-coder-1", "coder", "working", started=now)
+    claude.run(ORACLE, status="stopped")
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE agents SET session_name = NULL WHERE agent_id = ?", (ORACLE,))
+    dog = _dog(ledger, Exits())
+    dog.tick(now)
+    dog.tick(now + timedelta(minutes=1))
+
+    assert claude.resumed == []
+    assert _wakes(ledger) == [
+        f"the watchdog cannot wake the Oracle: no session is recorded for {ORACLE!r}"
+    ]
 
 
 def test_no_wake_while_the_oracle_runs_or_after_the_listener_notified_it(

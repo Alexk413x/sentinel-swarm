@@ -24,7 +24,7 @@ def no_claude_sessions(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def host(tmp_path: Path, repo_root: Path) -> Path:
+def host(tmp_path: Path, repo_root: Path, check_in) -> Path:
     root = tmp_path / "host"
     (root / ".git").mkdir(parents=True)
     claude_dir = root / ".claude"
@@ -34,6 +34,7 @@ def host(tmp_path: Path, repo_root: Path) -> Path:
     )
     (claude_dir / "sentinel-swarm.local.md").write_text(template, encoding="utf-8")
     configure(root)
+    check_in(root, "sess-1", "stamped-1", "mgr-1")
     return root
 
 
@@ -249,6 +250,22 @@ def test_ledger_info_reports_ready_status_and_tool_count(host: Path):
         "tools": len(_TOOL_NAMES),
         "repo_root": str(host),
     }
+
+
+async def _run_start_as(session_id: str) -> str:
+    async with Client(mcp) as client:
+        try:
+            await client.call_tool("run_start", {"prd": "Build X", "session_id": session_id})
+        except ToolError as exc:
+            return str(exc)
+    raise AssertionError("expected run_start to raise a ToolError")
+
+
+def test_run_start_refuses_a_session_the_mod_never_checked_in_for(host: Path):
+    message = asyncio.run(_run_start_as("main"))
+    assert message.startswith(
+        "run_start refuses session 'main': the sentinel-swarm mod never checked in for it"
+    )
 
 
 async def _run_start_then_status() -> tuple[dict, dict]:

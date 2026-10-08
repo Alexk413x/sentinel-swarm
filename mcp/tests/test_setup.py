@@ -86,31 +86,16 @@ def test_setup_is_idempotent(repo: Path):
 
     after = {p: p.read_bytes() for p in repo.rglob("*") if p.is_file()}
     assert after == before
-    assert report.lines[0].startswith("hook transport: command")
     assert all(
-        line.startswith("unchanged") or line.startswith("skipped") for line in report.lines[1:9]
+        line.startswith("unchanged") or line.startswith("skipped") for line in report.lines[:8]
     )
     exclude = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8").splitlines()
     assert exclude.count(".sentinel-swarm/") == 1
 
 
-def _ledger_hook_events(path: Path) -> list[str]:
-    hooks = _frontmatter(path).get("hooks") or {}
-    return [
-        group["hooks"][0]["command"].split()[3]
-        for groups in hooks.values()
-        for group in groups
-        if "hook.py hook" in group["hooks"][0]["command"]
-    ]
+def test_role_files_carry_no_ledger_command_hooks(repo: Path):
+    setup.run_setup(repo)
 
-
-def test_a_build_that_runs_the_mod_gets_role_files_without_ledger_hooks(
-    repo: Path, claude_version: list
-):
-    claude_version[0] = (2, 1, 294)
-    report = setup.run_setup(repo)
-
-    assert report.lines[0] == "hook transport: mod (Claude Code 2.1.294 runs the plugin's mod)"
     for role in setup.CORE_ROLES:
         fields = _frontmatter(setup.role_file(repo, role))
         assert "hooks" not in fields
@@ -118,54 +103,26 @@ def test_a_build_that_runs_the_mod_gets_role_files_without_ledger_hooks(
         assert _body(setup.role_file(repo, role)) == _body(setup.template_file(role))
 
 
-def test_an_older_build_or_an_unknown_version_keeps_the_command_hooks(
-    repo: Path, claude_version: list
-):
-    claude_version[0] = (2, 1, 293)
-    report = setup.run_setup(repo)
-
-    assert report.lines[0] == "hook transport: command (Claude Code 2.1.293 is older than 2.1.294)"
-    assert "stop" in _ledger_hook_events(setup.role_file(repo, "coder"))
-
-
-def test_switching_to_the_mod_strips_only_the_ledger_hooks(repo: Path, claude_version: list):
-    setup.run_setup(repo)
+def test_setup_strips_only_the_ledger_command_hooks_from_a_role_file(repo: Path):
     path = setup.role_file(repo, "lead")
-    text = path.read_text(encoding="utf-8").replace(
-        "hooks:\n",
-        "hooks:\n  Notification:\n    - hooks:\n        - type: command\n"
-        '          command: "notify-me"\n',
-        1,
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "---\nname: swarm-lead\nhooks:\n  Notification:\n    - hooks:\n"
+        '        - type: command\n          command: "notify-me"\n'
+        "  Stop:\n    - hooks:\n        - type: command\n"
+        '          command: "python3 .sentinel-swarm/hook.py hook stop || '
+        'python .sentinel-swarm/hook.py hook stop"\n'
+        "---\n\nOld body.\n",
+        encoding="utf-8",
     )
-    path.write_text(text, encoding="utf-8")
-    claude_version[0] = (2, 2, 0)
 
     report = setup.run_setup(repo)
 
-    fields = _frontmatter(path)
-    assert fields["hooks"] == {
+    assert _frontmatter(path)["hooks"] == {
         "Notification": [{"hooks": [{"type": "command", "command": "notify-me"}]}]
     }
-    assert any("removed the ledger command hooks the mod runs" in line for line in report.lines)
-
-    claude_version[0] = None
-    setup.run_setup(repo)
-    assert "session_start" in _ledger_hook_events(path)
-    assert _frontmatter(path)["hooks"]["Notification"]
-
-
-def test_the_settings_file_overrides_the_version_check(repo: Path, claude_version: list):
-    claude_version[0] = (2, 1, 294)
-    settings = repo / ".claude" / "sentinel-swarm.local.md"
-    settings.parent.mkdir(parents=True)
-    settings.write_text("---\nhook_transport: command\n---\n", encoding="utf-8")
-
-    report = setup.run_setup(repo)
-
-    assert (
-        report.lines[0] == "hook transport: command (hook_transport: command in the settings file)"
-    )
-    assert _ledger_hook_events(setup.role_file(repo, "oracle"))
+    line = next(line for line in report.lines if "swarm-lead.md" in line)
+    assert "removed the ledger command hooks the mod runs: stop" in line
 
 
 def test_existing_role_file_keeps_frontmatter_and_gets_new_body(repo: Path):
@@ -182,46 +139,14 @@ def test_existing_role_file_keeps_frontmatter_and_gets_new_body(repo: Path):
     assert fields["model"] == "opus"
     assert fields["color"] == "red"
     assert fields["tools"] == "Read, Grep"
-    assert "hooks" in fields
+    assert "hooks" not in fields
     assert "mcpServers" in fields
     assert fields["permissionMode"] == "default"
     assert _body(path) == _body(setup.template_file("lead"))
     line = next(line for line in report.lines if "swarm-lead.md" in line)
     assert line.startswith("updated")
     assert "replaced the prompt body" in line
-    assert "permissionMode" in line and "hooks" in line
-
-
-def test_a_hook_new_in_the_template_joins_an_existing_role_file(repo: Path):
-    template = setup.template_file("oracle").read_text(encoding="utf-8")
-    monitor_entry = (
-        '    - matcher: "Monitor"\n'
-        "      hooks:\n"
-        "        - type: command\n"
-        '          command: "python3 .sentinel-swarm/hook.py hook pre_monitor || '
-        'python .sentinel-swarm/hook.py hook pre_monitor"\n'
-        "          timeout: 60\n"
-    )
-    assert monitor_entry in template
-    old = template.replace(monitor_entry, "").replace("color: cyan", "color: pink")
-    path = setup.role_file(repo, "oracle")
-    path.parent.mkdir(parents=True)
-    path.write_bytes(old.encode("utf-8"))
-
-    report = setup.run_setup(repo)
-
-    merged = path.read_text(encoding="utf-8")
-    frontmatter, _ = setup.split_document(merged)
-    pre_tool_use = frontmatter.index("  PreToolUse:")
-    assert frontmatter.index(monitor_entry) > pre_tool_use
-    assert frontmatter.index(monitor_entry) < frontmatter.index("  PostToolUse:")
-    assert "color: pink" in frontmatter
-    assert frontmatter.count("pre_monitor ||") == 1
-    line = next(line for line in report.lines if "swarm-oracle.md" in line)
-    assert "hook pre_monitor" in line
-
-    setup.run_setup(repo)
-    assert path.read_text(encoding="utf-8") == merged
+    assert "permissionMode" in line
 
 
 def test_setup_narrows_a_whole_server_ledger_grant_and_keeps_other_tools(repo: Path):
@@ -247,44 +172,6 @@ def test_setup_narrows_a_whole_server_ledger_grant_and_keeps_other_tools(repo: P
     assert "the role's swarm-ledger tools in place of mcp__swarm-ledger" in line
 
 
-def _old_post_any(timeout: int = 60) -> str:
-    return (
-        "  PostToolUse:\n"
-        "    - hooks:\n"
-        "        - type: command\n"
-        '          command: "python3 .sentinel-swarm/hook.py hook post_any || '
-        'python .sentinel-swarm/hook.py hook post_any"\n'
-        f"          timeout: {timeout}\n"
-    )
-
-
-def _with_old_post_any(template: str, timeout: int = 60) -> str:
-    start = template.index("  PostToolUse:\n")
-    end = template.index("    - matcher:", template.index("hook post_activity"))
-    return template[:start] + _old_post_any(timeout) + template[end:]
-
-
-def _post_tool_use(path: Path) -> list[dict]:
-    return sorted(_frontmatter(path)["hooks"]["PostToolUse"], key=json.dumps)
-
-
-def test_setup_splits_an_unedited_old_post_any_into_the_sync_and_async_entries(repo: Path):
-    template_path = setup.template_file("coder")
-    template = template_path.read_text(encoding="utf-8")
-    path = setup.role_file(repo, "coder")
-    path.parent.mkdir(parents=True)
-    path.write_bytes(_with_old_post_any(template).encode("utf-8"))
-
-    report = setup.run_setup(repo)
-
-    assert _post_tool_use(path) == _post_tool_use(template_path)
-    line = next(line for line in report.lines if "swarm-coder.md" in line)
-    assert "updated hook post_any" in line and "hook post_activity" in line
-    merged = path.read_text(encoding="utf-8")
-    setup.run_setup(repo)
-    assert path.read_text(encoding="utf-8") == merged
-
-
 def test_setup_keeps_an_explicit_ledger_tool_list(repo: Path):
     path = setup.role_file(repo, "lead")
     path.parent.mkdir(parents=True)
@@ -296,21 +183,6 @@ def test_setup_keeps_an_explicit_ledger_tool_list(repo: Path):
     setup.run_setup(repo)
 
     assert _frontmatter(path)["tools"] == "Read, mcp__swarm-ledger__brief_get"
-
-
-def test_setup_keeps_an_edited_post_any_and_adds_post_activity(repo: Path):
-    template = setup.template_file("coder").read_text(encoding="utf-8")
-    path = setup.role_file(repo, "coder")
-    path.parent.mkdir(parents=True)
-    path.write_bytes(_with_old_post_any(template, timeout=30).encode("utf-8"))
-
-    setup.run_setup(repo)
-
-    groups = _frontmatter(path)["hooks"]["PostToolUse"]
-    post_any = [g for g in groups if "hook post_any" in g["hooks"][0]["command"]]
-    assert post_any == [{"hooks": [{**post_any[0]["hooks"][0], "timeout": 30}]}]
-    assert "matcher" not in post_any[0]
-    assert sum("hook post_activity" in g["hooks"][0]["command"] for g in groups) == 1
 
 
 def test_role_file_without_frontmatter_is_left_alone(repo: Path):

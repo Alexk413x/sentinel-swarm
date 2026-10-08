@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from swarm_ledger import sessions
+from swarm_ledger import graph, sessions
+from swarm_ledger.identity import LedgerError
 
 
 @pytest.fixture(scope="session")
@@ -33,12 +36,37 @@ def os_notifications(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     return shown
 
 
-@pytest.fixture(autouse=True)
-def claude_version(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int, int] | None]:
-    # Setup reads `claude --version` to pick the hook transport; no test runs the real CLI.
-    version: list[tuple[int, int, int] | None] = [None]
-    monkeypatch.setattr(sessions, "claude_version", lambda: version[0])
-    return version
+def _check_in(root: Path, *session_ids: str) -> None:
+    from swarm_ledger import env
+
+    ledger = env.open_ledger(root)
+    try:
+        for session_id in session_ids:
+            ledger.mod_session(session_id)
+    finally:
+        ledger.conn.close()
+
+
+@pytest.fixture
+def check_in() -> Callable[..., None]:
+    # Records sessions as ones the mod checked in for, as its SessionStart post does.
+    return _check_in
+
+
+@pytest.fixture
+def kg_root(repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    # This repo's own codebase-kg install, from the real registry; then the override, so the
+    # test's host repo finds it while every other lookup keeps the isolated config.
+    isolated = os.environ["CLAUDE_CONFIG_DIR"]
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))
+    try:
+        root = graph.codebase_kg_root(repo_root)
+    except LedgerError:
+        pytest.skip("codebase-kg is not installed for this repo")
+    finally:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", isolated)
+    monkeypatch.setenv("SENTINEL_SWARM_KG_ROOT", str(root))
+    return root
 
 
 @pytest.fixture

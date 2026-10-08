@@ -82,13 +82,15 @@ def _jsonable(value: Any) -> Any:
 
 
 def run_tool(ledger: Ledger, request: dict[str, Any]) -> Any:
-    from .identity import LedgerError, require_bound, require_role_tool
+    from .identity import LedgerError, require_bound, require_mod_session, require_role_tool
 
     tool = request.get("tool")
     agent_id = request.get("agent_id")
     if tool is not None:
         require_bound(ledger.conn, tool, agent_id)
         require_role_tool(ledger.conn, tool, agent_id)
+        session_id = agent_id or (request.get("args") or {}).get("session_id")
+        require_mod_session(ledger.conn, tool, session_id)
     method = request.get("method")
     if method == REPO_ROOT_METHOD:
         return str(ledger.repo_root)

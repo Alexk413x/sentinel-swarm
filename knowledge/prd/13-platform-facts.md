@@ -195,3 +195,6 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
 - `claude --bg` ignores `--session-id`: it prints "--bg manages the session id;
   ignoring --session-id". `claude --resume <id> --bg "<prompt>"` on a stopped
   background session started a session under a new session id on 2.1.294. (2026-10-08)
+- Claude Code 2.1.295 refuses to load a plugin whose `dependencies` entry is not
+  installed for the project. `claude plugin list` shows "✘ failed to load — Dependency
+  <id> is not installed", and the plugin's mod and skills do not run. (2026-10-08)

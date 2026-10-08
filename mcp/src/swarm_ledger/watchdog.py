@@ -729,17 +729,24 @@ class Watchdog:
             f"The watchdog reported {waiting} finding(s). Read directive_inbox.",
             wake.time_signal(self.conn, run["run_id"], now),
         )
-        try:
-            sessions.resume(
-                oracle["agent_id"],
-                message,
-                cwd=self.repo_root,
-                name=oracle["session_name"],
-                options=self._oracle_options(oracle["model"]),
+        if not oracle["session_name"]:
+            # A resume without a recorded session starts a fresh session named after the message.
+            reason = (
+                f"the watchdog cannot wake the Oracle: no session is recorded for "
+                f"{oracle['agent_id']!r}"
             )
-            reason = f"the watchdog woke the Oracle: {message}"
-        except LedgerError as exc:
-            reason = f"the watchdog could not resume the Oracle: {exc}"
+        else:
+            try:
+                sessions.resume(
+                    oracle["agent_id"],
+                    message,
+                    cwd=self.repo_root,
+                    name=oracle["session_name"],
+                    options=self._oracle_options(oracle["model"]),
+                )
+                reason = f"the watchdog woke the Oracle: {message}"
+            except LedgerError as exc:
+                reason = f"the watchdog could not resume the Oracle: {exc}"
         with write_tx(self.conn) as conn:
             conn.execute(
                 "INSERT INTO agent_events (agent_id, from_state, to_state, reason, at) "

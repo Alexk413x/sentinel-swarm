@@ -36,6 +36,7 @@ DRIVER_OPTIONAL_SERVERS: dict[str, tuple[str, ...]] = {
 
 RELAY_ARGS = [".sentinel-swarm/hook.py", "mcp"]
 SCOPES = ("local", "project", "user")
+CODEBASE_KG_PLUGIN = "codebase-kg@alexk413x"
 _PLACEHOLDER = re.compile(r"\$\{([^}]*)\}")
 _OPTION_VALUE = re.compile(r"[0-9A-Za-z._-]{1,64}")
 
@@ -83,7 +84,7 @@ def plugin_installed(repo_root: Path, plugin_id: str) -> bool:
     return bool(_installs(repo_root, plugin_id))
 
 
-def _install_path(repo_root: Path, plugin_id: str) -> Path | None:
+def install_path(repo_root: Path, plugin_id: str) -> Path | None:
     entries = _installs(repo_root, plugin_id)
     for scope in SCOPES:
         for entry in entries:
@@ -125,7 +126,7 @@ def _plugin_option(plugin_id: str, install: Path, key: str) -> str | None:
 
 def http_entry(repo_root: Path, plugin_id: str, server: str) -> dict[str, Any] | None:
     """The plugin's HTTP entry for `server`, expanded for `--mcp-config`; None if it has none."""
-    install = _install_path(repo_root, plugin_id)
+    install = install_path(repo_root, plugin_id)
     if install is None:
         return None
     data = _read_json(install / ".mcp.json")

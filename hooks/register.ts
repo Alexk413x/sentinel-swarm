@@ -10,7 +10,6 @@ type Owed = {
 }
 
 const ROLE_TYPE = /^swarm-(oracle|manager|lead|coder|driver)$/
-const LEDGER_COMMAND_HOOK = /hook\.py hook \w/
 const LEDGER_TOOL = /^mcp__swarm-ledger__/
 const TOKEN = /^[A-Za-z0-9_-]{32,128}$/
 const REPO_HEADER = 'X-Sentinel-Swarm-Repo'
@@ -168,13 +167,10 @@ async function adopt(
   e: { session_id: string; transcript_path: string; cwd: string; agent_type?: string; agent_id?: string },
 ): Promise<SentinelSwarmSession | null> {
   const role = ROLE_TYPE.exec(e.agent_type ?? '')?.[1]
-  let found: SentinelSwarmSession | null = null
-  if (role !== undefined && e.agent_id === undefined) {
-    const file = await $.fs.read(`${e.cwd}/.claude/agents/${e.agent_type}.md`).catch(() => '')
-    if (!LEDGER_COMMAND_HOOK.test(frontmatter(file))) {
-      found = { sessionId: e.session_id, agentType: e.agent_type ?? '', role, cwd: e.cwd, transcriptPath: e.transcript_path }
-    }
-  }
+  const found: SentinelSwarmSession | null =
+    role !== undefined && e.agent_id === undefined
+      ? { sessionId: e.session_id, agentType: e.agent_type ?? '', role, cwd: e.cwd, transcriptPath: e.transcript_path }
+      : null
   session = found
   await $.state.set(sessionRef, found).catch(() => undefined)
   return found
@@ -186,13 +182,6 @@ async function active($: EngineInterface): Promise<SentinelSwarmSession | null> 
     session = held?.value ?? null
   }
   return session
-}
-
-function frontmatter(text: string): string {
-  const lines = text.split(/\r?\n/)
-  if (lines[0]?.trim() !== '---') return ''
-  const end = lines.indexOf('---', 1)
-  return end === -1 ? '' : lines.slice(1, end).join('\n')
 }
 
 function base(s: SentinelSwarmSession): Record<string, unknown> {

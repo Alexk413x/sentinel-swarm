@@ -1466,6 +1466,11 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
             raise LedgerError(f"no live agent named {target_name!r} in this run")
         if target["agent_id"] == c.agent_id:
             raise LedgerError("an agent cannot resume its own session")
+        if not target["session_name"]:
+            raise LedgerError(
+                f"{target_name!r} has no recorded session, so agent_resume cannot wake it: "
+                "a resume without one starts a fresh session"
+            )
         if sessions.is_live(target["agent_id"]):
             label = target["session_name"] or target["agent_id"]
             raise LedgerError(

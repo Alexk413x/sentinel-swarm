@@ -245,6 +245,11 @@ def unbound_reason(name: str) -> str:
     )
 
 
+# The calls that bind a session to the ledger: a session the mod never checked in for would run
+# its role ungated.
+MOD_CHECKED_TOOLS = frozenset({"run_start", "brief_ack"})
+
+
 def require_bound(conn: sqlite3.Connection, tool: str, agent_id: str | None) -> None:
     if not agent_id or tool in PRE_BIND_TOOLS:
         return
@@ -254,6 +259,23 @@ def require_bound(conn: sqlite3.Connection, tool: str, agent_id: str | None) -> 
     ).fetchone()
     if row is not None and row["role"] in ROLES and row["state"] == "registered":
         raise LedgerError(unbound_reason(row["name"]))
+
+
+def require_mod_session(conn: sqlite3.Connection, tool: str, session_id: str | None) -> None:
+    if tool not in MOD_CHECKED_TOOLS:
+        return
+    if (
+        session_id
+        and conn.execute(
+            "SELECT 1 FROM mod_sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+    ):
+        return
+    raise LedgerError(
+        f"{tool} refuses session {session_id!r}: the sentinel-swarm mod never checked in for "
+        "it, so no hook gates this session. Run claude plugin list in the repo: sentinel-swarm "
+        "must show enabled, not failed to load. Fix that, then start the session again"
+    )
 
 
 def require_role_tool(conn: sqlite3.Connection, tool: str, agent_id: str | None) -> None:

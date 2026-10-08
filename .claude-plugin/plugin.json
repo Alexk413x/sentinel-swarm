@@ -23,7 +23,7 @@
   "dependencies": [
     {
       "name": "codebase-kg",
-      "marketplace": "codebase-kg",
+      "marketplace": "alexk413x",
       "version": ">=0.8.2"
     }
   ],

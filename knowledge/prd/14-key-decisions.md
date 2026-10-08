@@ -143,3 +143,6 @@
 - 2026-10-08: The plugin's mod is the default hook transport; the role files' command hooks stay as the fallback for a Claude Code build older than 2.1.294, and `hook_transport` chooses. The two never run for one session.
 - 2026-10-08: The mod sends every owed wake-up by session id, the interactive Oracle included, retries a send that finds no live session, and only then leaves `SendMessage` to the model.
 - 2026-10-08: Launches and `agent_spawn` remove the variables a parent Claude Code session sets for its children, such as `CLAUDE_CODE_CHILD_SESSION`.
+- 2026-10-08: The plugin's mod is the only hook transport. The command transport, the `hook_transport` setting, and the Claude Code version check are removed. The plugin supports no older Claude Code build, retired marketplace, plugin id, or cache path.
+- 2026-10-08: The launcher refuses to start unless `claude plugin list` shows sentinel-swarm enabled, and the ledger refuses `run_start` and `brief_ack` from a session the mod never checked in for.
+- 2026-10-08: A wake-up to a target with no recorded session fails visibly instead of resuming: the watchdog records the failed Oracle wake, and `agent_resume` refuses the target.

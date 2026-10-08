@@ -926,12 +926,8 @@ def test_graph_upsert_passes_through_for_the_owned_file(
 
 
 @pytest.mark.integration
-def test_graph_upsert_integration_calls_the_real_codebase_kg(ledger: Ledger) -> None:
-    try:
-        graph_module.codebase_kg_root()
-    except LedgerError:
-        pytest.skip("codebase-kg is not installed in this environment")
-
+def test_graph_upsert_integration_calls_the_real_codebase_kg(ledger: Ledger, kg_root: Path) -> None:
+    del kg_root
     ctx = _bootstrap(ledger)
     coder = _spawn_coder(
         ledger, ctx, "coder-p1-module-1-graph3", "pkg/good.py", "tests/test_good.py"

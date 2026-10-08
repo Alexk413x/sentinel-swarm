@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from .. import __version__, pricing, sessions
-from ..agentfiles import plugin_installed
+from ..agentfiles import CODEBASE_KG_PLUGIN, plugin_installed
 from ..db import ensure_git_exclude, write_tx
 from ..identity import (
     IDENTITY_FREE_TOOLS,
@@ -22,8 +22,6 @@ from ..identity import (
 )
 from ..ledger import Ledger
 from ..watchdog import MONITOR_CALL, REGISTER_GRACE, WATCH_COMMAND, parse_stamp, utcnow
-
-_CODEBASE_KG_PLUGIN = "codebase-kg@codebase-kg"
 
 _RECORDS_DIR = ".sentinel-swarm"
 _WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
@@ -228,7 +226,7 @@ def handle_session_start(ledger: Ledger, data: dict) -> dict | None:
                 "The resume skill continues it."
             )
 
-    if not plugin_installed(ledger.repo_root, _CODEBASE_KG_PLUGIN):
+    if not plugin_installed(ledger.repo_root, CODEBASE_KG_PLUGIN):
         parts.append(
             "codebase-kg is not installed for this repo; install it, then run "
             "/sentinel-swarm:setup."

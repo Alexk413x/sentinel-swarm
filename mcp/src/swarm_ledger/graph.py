@@ -9,6 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .agentfiles import CODEBASE_KG_PLUGIN, install_path
 from .db import ledger_path
 from .identity import LedgerError
 from .lock import file_lock
@@ -16,7 +17,6 @@ from .lock import file_lock
 KG_LOCK_FILE = "kg.lock"
 
 _ENV_VAR = "SENTINEL_SWARM_KG_ROOT"
-_CACHE_ROOT = Path.home() / ".claude" / "plugins" / "cache" / "codebase-kg" / "codebase-kg"
 _UPSERT_SCRIPT = (
     "import json,sys; from codebase_kg import edits; "
     "print(json.dumps(edits.upsert_node(sys.argv[1], json.loads(sys.stdin.read()))))"
@@ -31,13 +31,7 @@ _NO_DEPENDENCIES = re.compile(r"^dependencies\s*=\s*\[\s*\]", re.MULTILINE)
 _WORD_RE = re.compile(r"\w+")
 
 
-def _version_tuple(name: str) -> tuple[int, ...] | None:
-    if not re.fullmatch(r"\d+(\.\d+)*", name):
-        return None
-    return tuple(int(part) for part in name.split("."))
-
-
-def codebase_kg_root() -> Path:
+def codebase_kg_root(repo_root: Path) -> Path:
     env = os.environ.get(_ENV_VAR)
     if env:
         root = Path(env)
@@ -45,28 +39,15 @@ def codebase_kg_root() -> Path:
             raise LedgerError(f"{_ENV_VAR}={env!r} does not point at a directory")
         return root
 
-    if not _CACHE_ROOT.is_dir():
+    install = install_path(repo_root, CODEBASE_KG_PLUGIN)
+    if install is None:
         raise LedgerError(
-            f"no codebase-kg plugin cache at {_CACHE_ROOT}; set {_ENV_VAR} to override"
+            f"{CODEBASE_KG_PLUGIN} is not installed for {repo_root}; "
+            f"install it or set {_ENV_VAR} to override"
         )
-
-    candidates = [p for p in _CACHE_ROOT.iterdir() if p.is_dir()]
-    if not candidates:
-        raise LedgerError(f"no version folders under {_CACHE_ROOT}")
-
-    numbered = [(_version_tuple(p.name), p) for p in candidates]
-    numbered = [(key, p) for key, p in numbered if key is not None]
-    if numbered:
-        numbered.sort(key=lambda pair: pair[0])
-        best = numbered[-1][1]
-    else:
-        # No numeric version folder. Fall back to the lexicographically last one
-        # rather than failing outright.
-        best = sorted(candidates, key=lambda p: p.name)[-1]
-
-    mcp_dir = best / "mcp"
+    mcp_dir = install / "mcp"
     if not mcp_dir.is_dir():
-        raise LedgerError(f"no mcp folder under {best}")
+        raise LedgerError(f"no mcp folder under {install}")
     return mcp_dir
 
 
@@ -140,9 +121,9 @@ def _tail(text: str, lines: int = 20) -> str:
 
 
 def graph_upsert(repo_root: Path, nodes: list[dict]) -> dict:
-    kg_root = codebase_kg_root()
     graph_path = repo_root / "knowledge" / "code_graph.db"
     _check_edges(graph_path, nodes)
+    kg_root = codebase_kg_root(repo_root)
     # The ledger's own venv leaks through VIRTUAL_ENV and makes uv refuse the kg project.
     env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
 

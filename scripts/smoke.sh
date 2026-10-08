@@ -25,8 +25,6 @@ claude_bin="${CLAUDE_BIN:-claude}"
 config_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 export SENTINEL_SWARM_CLAUDE="${SENTINEL_SWARM_CLAUDE:-$claude_bin}"
 
-kg_dir="${KG_PLUGIN_DIR:-$(ls -d "$HOME"/.claude/plugins/cache/codebase-kg/codebase-kg/[0-9]* | sort -V | tail -1)}"
-
 win() { if command -v cygpath >/dev/null; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
 
 # The venv the hooks use: in the plugin data folder, keyed by mcp/uv.lock. The installed
@@ -152,7 +150,7 @@ done
 plugin_dir="${TMPDIR:-/tmp}/sentinel-swarm-plugin-$(date +%s)"
 mkdir -p "$plugin_dir"
 (cd "$root" && tar cf - --exclude=.venv --exclude=__pycache__ --exclude=.pytest_cache \
-  --exclude=.ruff_cache .claude-plugin assets skills hooks templates mcp) |
+  --exclude=.ruff_cache .claude-plugin assets skills hooks templates types mcp) |
   (cd "$plugin_dir" && tar xf -)
 
 # Installs under its own dev version instead of the repo's pinned version, so this run's
@@ -203,13 +201,30 @@ cat > "$run_dir/graph.json" <<EOF
   ]
 }
 EOF
-uvx --quiet --from "$(win "$kg_dir/mcp")" codebase-kg-build "$(win "$run_dir/graph.json")" \
-  -o "$(win "$host/knowledge/code_graph.db")"
 
 # -b main: some machines default init.defaultBranch to something else, and repo_check's
 # obvious_start needs a base branch it can resolve without a base_branch override.
 git init -q -b main
 git config core.autocrlf false
+
+# sentinel-swarm depends on codebase-kg@alexk413x, and Claude Code refuses to load a plugin whose
+# dependency is not installed for the project.
+"$claude_bin" plugin marketplace add --scope project Alexk413x/marketplace >/dev/null
+"$claude_bin" plugin install codebase-kg@alexk413x --scope project -y >/dev/null
+kg_dir="$(python -c '
+import json, os, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    records = json.load(f)["plugins"].get("codebase-kg@alexk413x") or []
+host = os.path.normcase(os.path.realpath(sys.argv[2]))
+for r in records:
+    if r.get("scope") == "project" and os.path.normcase(os.path.realpath(r.get("projectPath") or "")) == host:
+        print(r["installPath"])
+        break
+else:
+    sys.exit("codebase-kg@alexk413x has no project install for " + sys.argv[2])
+' "$(win "$config_dir/plugins/installed_plugins.json")" "$(win "$host")")"
+uv run --no-project --quiet "$kg_dir/mcp/launch/kg_cli.py" build "$(win "$run_dir/graph.json")" \
+  -o "$(win "$host/knowledge/code_graph.db")"
 
 # A project-scope install, not --plugin-dir: the launcher does not resolve --plugin-dir. The
 # installed copy lives in the plugin cache, outside host/, so Claude Code does not ask before a

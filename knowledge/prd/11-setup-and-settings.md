@@ -3,25 +3,27 @@
 ## Install
 
 sentinel-swarm runs in Claude Code only: the CLI, the desktop app, or an IDE extension.
-Every workflow starts `claude --bg` sessions from a local shell, the role gates are
-frontmatter hooks in project agent files, and each host repo runs its own ledger server.
+Every workflow starts `claude --bg` sessions from a local shell, the plugin's mod gates
+each role session, and each host repo runs its own ledger server.
 claude.ai chat ignores agents, hooks, and local servers, and Cowork runs shell commands
 in a VM without the `claude` CLI, so neither surface can run a swarm. The plugin is not
 uploaded to claude.ai or added to organization sync. A future launcher stays out of a
 top-level `bin/` folder.
 
 1. Install sentinel-swarm at project scope in the host repo. `--plugin-dir` is not
-   enough, because the launcher does not resolve its agents. codebase-kg must be
-   installed too. Install cartographer and a driver plugin (android-driver, ios-driver,
+   enough, because the launcher does not resolve its agents. Install
+   `codebase-kg@alexk413x` at project scope too: add the marketplace with `claude
+   plugin marketplace add --scope project Alexk413x/marketplace`, then run `claude
+   plugin install codebase-kg@alexk413x --scope project`. Install cartographer and a driver plugin (android-driver, ios-driver,
    or web-driver, from the accessibility-tools marketplace) as well for a Driver;
    without them the run finishes on unit tests alone.
 2. Trust the host folder once: run `claude` in it and accept the trust prompt.
    The project-scope install is what loads the plugin's mod in each role session; no
    other step installs it. `claude --bg` refuses an untrusted folder, so the mod never
-   runs in a role session there. The plugin, mod included, stays unloaded while a
-   `dependencies` entry is not installed: the session's debug log says
-   `dependency-unsatisfied`, and the role sessions then run no ledger hook at all
-   under the `mod` transport.
+   runs in a role session there. Claude Code refuses to load the plugin, mod included,
+   while a `dependencies` entry (codebase-kg) is not installed for the project:
+   `claude plugin list` shows "failed to load", and the role sessions run no ledger hook
+   at all. The launcher and the ledger refuse that case; see "Launch" below.
 3. Run setup, then the launcher.
 
 ## The ledger's venv
@@ -38,7 +40,7 @@ SHA-256 of `mcp/uv.lock`. `uv` gets it as `UV_PROJECT_ENVIRONMENT`.
 - `mcp/ledger_venv.py`, standard library only, computes the path. The skills run it
   and pass its output as `UV_PROJECT_ENVIRONMENT`. The hook shim computes the same path
   itself, because it cannot import the file, and a test checks that the two agree.
-  Neither reads `CLAUDE_PLUGIN_DATA`, which is not reliable inside an agent-file hook.
+  Neither reads `CLAUDE_PLUGIN_DATA`, which is not reliable inside a hook command.
 - The `swarm_ledger` package removes `UV_PROJECT_ENVIRONMENT` from its own environment
   at import when it names the package's own venv, so no child process inherits it. A
   child `uv run`, such as `graph_upsert`'s fallback or the host's test command, would
@@ -51,24 +53,18 @@ SHA-256 of `mcp/uv.lock`. `uv` gets it as `UV_PROJECT_ENVIRONMENT`.
 `/sentinel-swarm:setup` skill, which also creates the settings file, fills in the
 commands from the detected stack, confirms codebase-kg, and builds the graph. Setup:
 
-- Picks the hook transport and reports it first: `hook_transport` from the settings
-  file, or else `mod` when `claude --version` is 2.1.294 or later and `command`
-  otherwise, including when the version cannot be read. See "Where the hooks live" in
-  [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md).
-- Under `mod`, writes each role file without the template's ledger command hooks,
-  and removes them from an existing file, keeping any hook of the user's own. Under
-  `command`, the rules below add them back.
 - Writes `.claude/agents/swarm-oracle.md`, `swarm-manager.md`, `swarm-lead.md`, and
-  `swarm-coder.md` from `templates/agents/<role>.md`. For an existing file it keeps the
-  user's frontmatter, adds any key the template has that the file lacks, adds every
-  ledger hook the template has that the file lacks, and replaces the prompt body.
+  `swarm-coder.md` from `templates/agents/<role>.md`. The templates carry no `hooks`
+  frontmatter, because the plugin's mod runs the ledger hooks; see "Where the hooks
+  live" in [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md). For an existing
+  file setup keeps the user's frontmatter, adds any key the template has that the file
+  lacks, and replaces the prompt body. It also strips any ledger command hook
+  (`hook.py hook <event>`) from the file's frontmatter, keeps any hook of the user's own,
+  and reports "removed the ledger command hooks the mod runs: <events>".
   When the file's one-line `tools` value still lists the whole server,
   `mcp__swarm-ledger`, setup puts the template's `mcp__swarm-ledger__<tool>` names in
   its place and keeps every other tool the file lists. A `tools` value that already
   names ledger tools one by one, or a block-form list, stays as it is.
-  A hook entry that is exactly what an earlier template shipped, such as the
-  unmatched synchronous `post_any` entry, is replaced with the template's entry; an
-  edited entry is kept.
   A new file's MCP server `command` is `python` on Windows, and `python3` elsewhere
   when `python3` is on `PATH`.
 - Writes `swarm-driver.md` the same way, but only when the host has
@@ -77,7 +73,8 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
   reports the file skipped and leaves it alone.
 - Adds no MCP server beyond the template's. See "MCP servers per role" in
   [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
-- Writes the shim to `.sentinel-swarm/hook.py`, overwriting local edits.
+- Writes the shim to `.sentinel-swarm/hook.py`, overwriting local edits. The mod's
+  fallback, `hook.py mcp`, and `hook.py watch` use it.
 - Merges `{"worktree": {"bgIsolation": "none"}}` into `.claude/settings.local.json`,
   and adds `Agent(swarm-oracle)`, `Agent(swarm-manager)`, `Agent(swarm-lead)`,
   `Agent(swarm-coder)`, and `Agent(swarm-driver)` to its `permissions.deny` list, so
@@ -107,7 +104,15 @@ or the `/sentinel-swarm:run` skill.
   `swarm-driver.md` alone does not run setup.
 - `--bg` and `--headless` refuse an untrusted repo and print the trust command. A
   `claude -p` session does not count as accepting the trust prompt, so a headless
-  Oracle in an untrusted folder would run without its role file's hooks.
+  Oracle in an untrusted folder would run without the mod's hooks.
+- In every mode, it runs `claude plugin list` in the repo before it starts the ledger
+  server or the Oracle. It refuses to launch (exit 1) with "cannot start the Oracle: the
+  sentinel-swarm plugin does not load in <repo>, so its mod would not gate the roles:
+  <problem>" unless a `sentinel-swarm@<marketplace>` entry shows `Status: ✔ enabled`.
+  A "failed to load" status, such as a missing dependency, or no entry is the problem
+  it names (`sessions.plugin_load_problem`). The ledger adds a second guard: it refuses
+  `run_start` and `brief_ack` from a session the mod never checked in for; see "The
+  mod" in [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md).
 - It starts the ledger server, or reuses one that answers, then the Oracle with its
   agent file's model and the same flags as `agent_spawn`, including the ledger token
   header. It stops with the reason when the URL in `server.json` or the token fails
@@ -162,7 +167,6 @@ descriptions stay out of every session's context.
 | `effort.<role>` | `medium` for every role | `--effort <level>` for that role's sessions. A settings file with no `effort` key gets `medium` for every role; a role left empty runs at its model's default. A brief's own `effort` overrides it |
 | `prompt_cache_ttl.<role>` | `5m` for the Coder, empty for the others | `promptCacheTtl` (`"5m"` or `"1h"`) for that role's sessions |
 | `role_parallelism_cap.<role>` | empty | Cap on that role's own live sessions in the run |
-| `hook_transport` | empty | `mod` or `command`. Empty lets setup pick `mod` on Claude Code 2.1.294 or later and `command` otherwise. Any other value reads as empty. See "Setup" above |
 | `notify` | `[os, push]` | How the user hears that the Driver finished or hit an error, or that an issue ended round 3 below the floor. `os`: the ledger server shows a desktop notification. `push`: the Oracle owes a `PushNotification` call. `[]` or `""` turns both off; a single value reads as a one-item list; unknown values are dropped; an unset key, or `notify:` with no value, keeps both. See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md) |
 | `max_workers` | 8 | Worker processes for the ledger server's tool calls, and as many again for its hooks. `0` runs every call in the server process, one at a time. A negative value reads as `0`; a value that is not a whole number reads as 8. The server reads it at start. See [06-ledger-server.md](06-ledger-server.md) |
 

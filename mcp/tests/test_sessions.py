@@ -85,7 +85,7 @@ tools: Read, SendMessage, mcp__swarm-ledger
 mcpServers:
   - codebase-kg:
       command: python
-      args: [".sentinel-swarm/hook.py", "mcp", "codebase-kg@codebase-kg", "codebase-kg"]
+      args: [".sentinel-swarm/hook.py", "mcp", "codebase-kg@alexk413x", "codebase-kg"]
 ---
 
 You are a {role}.
@@ -268,12 +268,51 @@ def test_child_env_drops_only_the_parent_session_variables() -> None:
     assert sessions.child_env(base) == {"PATH": "p", "CLAUDE_X": "y"}
 
 
-def test_claude_version_reads_the_cli_output(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.undo()
-    monkeypatch.setattr(sessions, "_run", lambda args, cwd=None: "2.1.294 (Claude Code)\n")
-    assert sessions.claude_version() == (2, 1, 294)
-    monkeypatch.setattr(sessions, "_run", lambda args, cwd=None: "unknown")
-    assert sessions.claude_version() is None
+_PLUGIN_LIST = """Installed plugins:
+
+  ❯ codebase-kg@alexk413x
+    Version: 0.14.1
+    Scope: project
+    Status: ✔ enabled
+
+  ❯ sentinel-swarm@sentinel-swarm
+    Version: 0.1.0
+    Scope: project
+    Status: {status}
+"""
+
+
+@pytest.mark.parametrize(
+    ("status", "problem"),
+    [
+        ("✔ enabled", None),
+        (
+            "✘ failed to load — Dependency codebase-kg@alexk413x is not installed",
+            "claude plugin list shows sentinel-swarm: ✘ failed to load — Dependency "
+            "codebase-kg@alexk413x is not installed",
+        ),
+        ("✘ disabled", "claude plugin list shows sentinel-swarm: ✘ disabled"),
+    ],
+)
+def test_plugin_load_problem_reads_the_plugin_list(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, status: str, problem: str | None
+) -> None:
+    seen: list[tuple[list[str], Path | None]] = []
+
+    def fake_run(args: list[str], cwd: Path | None = None) -> str:
+        seen.append((args, cwd))
+        return _PLUGIN_LIST.format(status=status)
+
+    monkeypatch.setattr(sessions, "_run", fake_run)
+    assert sessions.plugin_load_problem(tmp_path) == problem
+    assert seen == [(["plugin", "list"], tmp_path)]
+
+
+def test_plugin_load_problem_names_a_missing_plugin(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sessions, "_run", lambda args, cwd=None: "Installed plugins:\n")
+    assert sessions.plugin_load_problem(Path(".")) == (
+        "claude plugin list shows no sentinel-swarm plugin for this repo"
+    )
 
 
 def test_run_raises_when_the_binary_is_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -543,6 +582,18 @@ def test_agent_resume_without_a_debt_sends_the_generic_pointer(
     claude.stop_session(ctx.lead[1])
     resumed = ledger.agent_resume(*ctx.oracle, "lead-p1-module-1")
     assert resumed["message"] == "Re-read your brief and your inbox in the ledger."
+
+
+def test_agent_resume_refuses_a_target_with_no_recorded_session(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    claude.stop_session(ctx.lead[1])
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE agents SET session_name = NULL WHERE agent_id = ?", (ctx.lead[1],))
+    with pytest.raises(LedgerError, match="'lead-p1-module-1' has no recorded session"):
+        ledger.agent_resume(*ctx.oracle, "lead-p1-module-1")
+    assert claude.commands("--resume") == []
 
 
 def test_agent_resume_refuses_an_unknown_name(ledger: Ledger, claude: FakeClaude) -> None:
