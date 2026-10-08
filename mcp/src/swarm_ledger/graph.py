@@ -7,12 +7,13 @@ import re
 import sqlite3
 import subprocess
 import sys
-import threading
 from pathlib import Path
 
+from .db import ledger_path
 from .identity import LedgerError
+from .lock import file_lock
 
-KG_LOCK = threading.Lock()
+KG_LOCK_FILE = "kg.lock"
 
 _ENV_VAR = "SENTINEL_SWARM_KG_ROOT"
 _CACHE_ROOT = Path.home() / ".claude" / "plugins" / "cache" / "codebase-kg" / "codebase-kg"
@@ -146,7 +147,7 @@ def graph_upsert(repo_root: Path, nodes: list[dict]) -> dict:
     env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
 
     base = runs_on_base(kg_root)
-    with KG_LOCK:
+    with file_lock(ledger_path(repo_root).parent / KG_LOCK_FILE):
         try:
             completed = subprocess.run(
                 upsert_command(kg_root, graph_path, base),

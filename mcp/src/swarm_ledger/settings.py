@@ -27,6 +27,8 @@ _DEFAULT_MODELS = {
 DEFAULT_EFFORT = {role: "medium" for role in _DEFAULT_MODELS}
 _SETTINGS_PATH = Path(".claude") / "sentinel-swarm.local.md"
 NOTIFY_CHANNELS = ("os", "push")
+DEFAULT_MAX_WORKERS = 8
+PROFILE_KEYS = ("test_command", "build_command", "lint_command")
 
 
 def normalize_budget(raw: object) -> int | None:
@@ -37,6 +39,16 @@ def normalize_budget(raw: object) -> int | None:
     except ValueError:
         return None
     return minutes if minutes > 0 else None
+
+
+def normalize_max_workers(raw: object) -> int:
+    if raw is None or isinstance(raw, bool):
+        return DEFAULT_MAX_WORKERS
+    try:
+        workers = int(str(raw).strip())
+    except ValueError:
+        return DEFAULT_MAX_WORKERS
+    return max(0, workers)
 
 
 def normalize_notify(raw: object) -> list[str]:
@@ -99,9 +111,32 @@ class Settings:
     # Per-role cap on that role's own live sessions in the run, on top of parallelism_cap.
     role_parallelism_cap: dict[str, int] = field(default_factory=dict)
     notify: list[str] = field(default_factory=lambda: list(NOTIFY_CHANNELS))
+    max_workers: int = DEFAULT_MAX_WORKERS
 
     def snapshot(self) -> str:
         return json.dumps(asdict(self), sort_keys=True)
+
+    @classmethod
+    def from_snapshot(cls, text: str) -> Settings:
+        data = json.loads(text)
+        return cls(
+            **{
+                **data,
+                "rubric": RubricSettings(**data["rubric"]),
+                "escalation": EscalationSettings(**data["escalation"]),
+                "watchdog": WatchdogSettings(**data["watchdog"]),
+            }
+        )
+
+    def adopt_profile(self, snapshot: str | None) -> None:
+        try:
+            data = json.loads(snapshot or "{}")
+        except ValueError:
+            return
+        if isinstance(data, dict):
+            for key in PROFILE_KEYS:
+                if key in data:
+                    setattr(self, key, data[key])
 
 
 def _frontmatter(text: str) -> dict[str, Any]:
@@ -193,4 +228,5 @@ def load_settings(repo_root: Path) -> Settings:
         prompt_cache_ttl=prompt_cache_ttl,
         role_parallelism_cap=role_parallelism_cap,
         notify=normalize_notify(data.get("notify")),
+        max_workers=normalize_max_workers(data.get("max_workers")),
     )

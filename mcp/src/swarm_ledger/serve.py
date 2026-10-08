@@ -12,6 +12,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -19,11 +20,10 @@ from typing import TYPE_CHECKING, Any
 from . import auth, lock, sessions
 from .db import ledger_path
 from .identity import LedgerError
+from .pool import Pool, worker_command
 
 if TYPE_CHECKING:
-    from starlette.requests import Request
-    from starlette.responses import Response
-    from starlette.types import ASGIApp, Receive, Scope, Send
+    from .settings import Settings
 
 HOST = "127.0.0.1"
 MCP_PATH = "/mcp"
@@ -103,7 +103,7 @@ def server_url(repo_root: Path) -> str:
     return str(info["url"])
 
 
-def _same_path(a: str, b: Path) -> bool:
+def same_path(a: str, b: Path) -> bool:
     return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(b.resolve()))
 
 
@@ -117,7 +117,7 @@ def is_answering(info: dict[str, Any], repo_root: Path) -> bool:
     return (
         isinstance(data, dict)
         and data.get("name") == "swarm-ledger"
-        and _same_path(str(data.get("repo_root") or ""), repo_root)
+        and same_path(str(data.get("repo_root") or ""), repo_root)
     )
 
 
@@ -174,44 +174,6 @@ def ensure_server(repo_root: Path, timeout: float = START_TIMEOUT_S) -> str:
     raise LedgerError(f"the ledger server did not answer within {timeout:.0f}s; see {log_path}")
 
 
-def run_hook(root: Path, event: str, payload: bytes) -> str:
-    from .hooks import run_event
-
-    stdout, stderr = run_event(event, payload.decode("utf-8", errors="replace"), root)
-    if stderr:
-        sys.stderr.write(stderr)
-        sys.stderr.flush()
-    return stdout
-
-
-async def answer_hook(request: Request, root: Path) -> Response:
-    from starlette.concurrency import run_in_threadpool
-    from starlette.responses import PlainTextResponse, Response
-
-    from .hooks import HANDLERS
-
-    client = request.client
-    if (
-        client is None
-        or client.host not in _LOOPBACK_CLIENTS
-        or request.url.hostname not in _LOOPBACK_HOSTS
-    ):
-        return PlainTextResponse("the hook route answers only local callers", status_code=403)
-    event = str(request.path_params.get("event") or "")
-    if event not in HANDLERS:
-        return PlainTextResponse(f"unknown hook event {event!r}", status_code=404)
-    repo = urllib.parse.unquote(request.headers.get(REPO_HEADER, ""))
-    if not repo or not _same_path(repo, root):
-        return PlainTextResponse(f"this server serves {root}", status_code=409)
-    payload = await request.body()
-    output = await run_in_threadpool(run_hook, root, event, payload)
-    return Response(
-        output.encode("utf-8"),
-        media_type="application/json",
-        headers={REPO_HEADER: urllib.parse.quote(str(root))},
-    )
-
-
 def _is_own_address(netloc: str, port: int) -> bool:
     try:
         parsed = urllib.parse.urlsplit(f"//{netloc}")
@@ -233,44 +195,24 @@ def _is_own_origin(origin: str, port: int) -> bool:
     )
 
 
-def refusal(scope: Scope, token: str, port: int) -> str | None:
-    client = scope.get("client")
-    if not client or client[0] not in _LOOPBACK_CLIENTS:
+def refusal(
+    client: str | None, headers: Mapping[str, str], path: str, token: str, port: int
+) -> str | None:
+    if client not in _LOOPBACK_CLIENTS:
         return "the ledger answers only local callers"
-    headers = {
-        name.decode("latin-1").lower(): value.decode("latin-1")
-        for name, value in scope.get("headers") or []
-    }
     if not _is_own_address(headers.get("host", ""), port):
         return f"the ledger answers only requests addressed to {HOST}:{port}"
     origin = headers.get("origin")
     if origin is not None and not _is_own_origin(origin, port):
         return "the ledger refuses requests from a web page"
-    if scope.get("path") == HEALTH_PATH:
+    if path == HEALTH_PATH:
         return None
-    presented = headers.get(auth.AUTHORIZATION.lower(), "").encode("latin-1")
+    presented = headers.get(auth.AUTHORIZATION.lower(), "").encode("latin-1", errors="replace")
+    # 403, never 401: a 401 makes an MCP client start the OAuth flow of the MCP authorization
+    # spec against the ledger.
     if not hmac.compare_digest(presented, auth.bearer(token).encode("ascii")):
         return "the ledger needs the bearer token in .sentinel-swarm/http-token"
     return None
-
-
-class Guard:
-    # 403, never 401: a 401 makes an MCP client start the OAuth flow of the MCP authorization
-    # spec against the ledger.
-    def __init__(self, app: ASGIApp, token: str, port: int) -> None:
-        self.app = app
-        self.token = token
-        self.port = port
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http":
-            reason = refusal(scope, self.token, self.port)
-            if reason is not None:
-                from starlette.responses import PlainTextResponse
-
-                await PlainTextResponse(reason, status_code=403)(scope, receive, send)
-                return
-        await self.app(scope, receive, send)
 
 
 def _remove_if_ours(path: Path) -> None:
@@ -305,7 +247,8 @@ def _shut_down(path: Path, repo_root: Path) -> None:
 
 def _exit_now(path: Path, repo_root: Path) -> None:
     _shut_down(path, repo_root)
-    # os._exit, not sys.exit: this runs on a timer thread, and uvicorn owns the main thread.
+    # os._exit, not sys.exit: this runs on a timer thread, and the HTTP server owns the main
+    # thread.
     os._exit(0)
 
 
@@ -346,17 +289,25 @@ def finish_later(
 
 
 def serve(repo_root: Path) -> None:
-    from starlette.middleware import Middleware
-    from starlette.responses import JSONResponse
-
-    # Imported here, not at the top: server imports ledger, which imports this module.
-    from . import server
+    from . import front
+    from .http_front import LedgerHttpServer
+    from .settings import load_settings
 
     root = repo_root.resolve()
     token = auth.ensure_token(root)
     sock = bind_socket(root)
     port = sock.getsockname()[1]
     path = server_info_path(root)
+    settings = load_settings(root)
+    workers, hook_workers = start_pool(root, settings), start_pool(root, settings)
+    front.configure(root, workers, hook_workers)
+    front.on_run_finish = lambda oracle_session_id: finish_later(path, root, oracle_session_id)
+    httpd = LedgerHttpServer(
+        sock,
+        root,
+        lambda client, headers, route: refusal(client, headers, route, token, port),
+        {"name": "swarm-ledger", "repo_root": str(root), "pid": os.getpid()},
+    )
     info = {
         "url": f"http://{HOST}:{port}{MCP_PATH}",
         "port": port,
@@ -364,45 +315,37 @@ def serve(repo_root: Path) -> None:
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
     write_server_info(path, info)
-
-    @server.mcp.custom_route(HEALTH_PATH, methods=["GET"])
-    async def health(request: Request) -> JSONResponse:
-        del request
-        return JSONResponse({"name": "swarm-ledger", "repo_root": str(root), "pid": os.getpid()})
-
-    @server.mcp.custom_route(HOOK_PATH + "/{event}", methods=["POST"])
-    async def hook(request: Request) -> Response:
-        return await answer_hook(request, root)
-
-    server.configure(root)
-    server.on_run_finish = lambda oracle_session_id: finish_later(path, root, oracle_session_id)
-    _start_watchdog(root, path)
+    _start_watchdog(root, path, settings)
     try:
-        server.mcp.run(
-            transport="http",
-            host=HOST,
-            port=port,
-            path=MCP_PATH,
-            show_banner=False,
-            sockets=[sock],
-            middleware=[Middleware(Guard, token=token, port=port)],
-        )
+        httpd.serve_forever()
     finally:
+        for pool in (workers, hook_workers):
+            if pool is not None:
+                pool.close()
         _shut_down(path, root)
 
 
-def _start_watchdog(root: Path, path: Path) -> None:
-    from . import env, server, watchdog
-    from .db import connect
-    from .settings import load_settings
+def start_pool(root: Path, settings: Settings) -> Pool | None:
+    from . import env
 
-    settings = load_settings(root)
+    if settings.max_workers < 1:
+        return None
+    return Pool(
+        settings.max_workers,
+        worker_command(root, env.db_path_for(root), os.getpid(), settings.snapshot()),
+    )
+
+
+def _start_watchdog(root: Path, path: Path, settings: Settings) -> None:
+    from . import env, front, watchdog
+    from .db import connect
+
     watchdog.start(
         root,
         connect(env.db_path_for(root)),
         settings.watchdog,
         exit_server=lambda: _exit_now(path, root),
-        activity=lambda: server.last_call_at,
+        activity=lambda: front.last_call_at,
         notify_channels=settings.notify,
     )
 

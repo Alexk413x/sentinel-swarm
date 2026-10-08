@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-import threading
-import time
-from collections.abc import Callable
 from contextvars import ContextVar
-from pathlib import Path
-from typing import Annotated, Any, Literal, TypeVar
+from typing import Annotated, Any, Literal
 
 from fastmcp import FastMCP
 from fastmcp.dependencies import Depends
@@ -13,11 +9,9 @@ from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from pydantic import Field, WithJsonSchema
 
-from . import __version__, env, rubric
-from .identity import LedgerError, require_bound, require_role_tool
-from .ledger import Ledger
-
-T = TypeVar("T")
+from . import front, rubric
+from .front import configure as configure
+from .pool import REPO_ROOT_METHOD, CallError
 
 _TOOL: ContextVar[str | None] = ContextVar("swarm_ledger_tool", default=None)
 _AGENT_ID: ContextVar[str | None] = ContextVar("swarm_ledger_agent_id", default=None)
@@ -82,12 +76,6 @@ Applicable = Annotated[
         "Every dimension key: null when it applies, or a one-line reason it does not.",
     ),
 ]
-
-_instance: Ledger | None = None
-_root: Path | None = None
-_CALL_LOCK = threading.RLock()
-on_run_finish: Callable[[str | None], None] | None = None
-last_call_at = 0.0
 
 _TOOL_NAMES: tuple[str, ...] = (
     "run_start",
@@ -160,33 +148,11 @@ _TOOL_NAMES: tuple[str, ...] = (
 )
 
 
-def configure(root: Path) -> None:
-    global _instance, _root
-    _root = root
-    _instance = None
-
-
-def _ledger() -> Ledger:
-    global _instance
-    if _instance is None:
-        _instance = env.open_ledger(_root)
-    return _instance
-
-
-def _call(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
-    global last_call_at
-    last_call_at = time.monotonic()
+def _call(method: str, **kwargs: Any) -> Any:
     try:
-        with _CALL_LOCK:
-            tool = _TOOL.get()
-            if tool is not None:
-                require_bound(_ledger().conn, tool, _AGENT_ID.get())
-                require_role_tool(_ledger().conn, tool, _AGENT_ID.get())
-            return fn(*args, **kwargs)
-    except LedgerError as exc:
+        return front.call_method(_TOOL.get(), _AGENT_ID.get(), method, kwargs)
+    except CallError as exc:
         raise ToolError(str(exc)) from exc
-    except Exception as exc:
-        raise ToolError(f"{type(exc).__name__}: {exc}") from exc
 
 
 # -- Run and plan -------------------------------------------------------------
@@ -200,7 +166,7 @@ def run_start(
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Starts a run from a PRD and registers the Oracle; the Oracle calls this."""
-    return _call(_ledger().run_start, prd, agent_id or session_id, oracle_name)
+    return _call("run_start", prd=prd, session_id=agent_id or session_id, oracle_name=oracle_name)
 
 
 @mcp.tool(annotations=_READ_ONLY)
@@ -211,7 +177,7 @@ def run_status(
 
     The run's PRD text is left out unless include_prd is true.
     """
-    return _call(_ledger().run_status, caller=caller, agent_id=agent_id, include_prd=include_prd)
+    return _call("run_status", caller=caller, agent_id=agent_id, include_prd=include_prd)
 
 
 @mcp.tool
@@ -219,20 +185,7 @@ def run_finish(
     caller: CallerName, outcome: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Finishes the active run once every phase is approved; the Oracle calls this."""
-    result = _call(_ledger().run_finish, caller=caller, agent_id=agent_id, outcome=outcome)
-    if on_run_finish is not None:
-        with _CALL_LOCK:
-            oracle = (
-                _ledger()
-                .conn.execute(
-                    "SELECT agent_id FROM agents WHERE run_id = ? AND role = 'oracle' "
-                    "ORDER BY ended_at DESC LIMIT 1",
-                    (result["run_id"],),
-                )
-                .fetchone()
-            )
-        on_run_finish(oracle["agent_id"] if oracle is not None else None)
-    return result
+    return _call("run_finish", caller=caller, agent_id=agent_id, outcome=outcome)
 
 
 @mcp.tool
@@ -245,9 +198,7 @@ def run_pause(
     """Pauses the run, or just the named phases, on a blocker only the user can fix; the Oracle
     calls this. With phases, the run stays active: agent_spawn refuses those phases until
     phase_resume clears them, and the others keep going."""
-    return _call(
-        _ledger().run_pause, caller=caller, agent_id=agent_id, reason=reason, phases=phases
-    )
+    return _call("run_pause", caller=caller, agent_id=agent_id, reason=reason, phases=phases)
 
 
 @mcp.tool
@@ -256,7 +207,7 @@ def phase_resume(
 ) -> dict[str, Any]:
     """Clears a scoped pause from the named phases so agent_spawn can start work in them again;
     the Oracle calls this."""
-    return _call(_ledger().phase_resume, caller=caller, agent_id=agent_id, phase_ids=phase_ids)
+    return _call("phase_resume", caller=caller, agent_id=agent_id, phase_ids=phase_ids)
 
 
 # -- Repo -----------------------------------------------------------------------------
@@ -268,7 +219,7 @@ def repo_check(
 ) -> dict[str, Any]:
     """Checks the repo's branch and clean state against its base branch and upstream, and
     records the result on the run; the Oracle calls this before planning."""
-    return _call(_ledger().repo_check, caller=caller, agent_id=agent_id, fetch=fetch)
+    return _call("repo_check", caller=caller, agent_id=agent_id, fetch=fetch)
 
 
 @mcp.tool
@@ -277,7 +228,7 @@ def repo_branch_create(
 ) -> dict[str, Any]:
     """Creates a run branch from the base branch once repo_check reports obvious_start; the
     Oracle calls this."""
-    return _call(_ledger().repo_branch_create, caller=caller, agent_id=agent_id, name=name)
+    return _call("repo_branch_create", caller=caller, agent_id=agent_id, name=name)
 
 
 @mcp.tool
@@ -291,7 +242,7 @@ def profile_set(
     """Sets the run's test, build, and lint commands; the Oracle calls this. Refuses a build
     command that serves or watches (--watch, serve, dev-server, npm run dev, npm start)."""
     return _call(
-        _ledger().profile_set,
+        "profile_set",
         caller=caller,
         agent_id=agent_id,
         test_command=test_command,
@@ -305,13 +256,13 @@ def guidelines_set(
     caller: CallerName, body: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Records the run's latest guidelines body; the Oracle calls this."""
-    return _call(_ledger().guidelines_set, caller=caller, agent_id=agent_id, body=body)
+    return _call("guidelines_set", caller=caller, agent_id=agent_id, body=body)
 
 
 @mcp.tool(annotations=_READ_ONLY)
 def guidelines_get(caller: CallerName, agent_id: str | None = _STAMPED_AGENT_ID) -> dict[str, Any]:
     """Returns the run's latest guidelines body; any registered agent calls this."""
-    return _call(_ledger().guidelines_get, caller=caller, agent_id=agent_id)
+    return _call("guidelines_get", caller=caller, agent_id=agent_id)
 
 
 @mcp.tool
@@ -323,9 +274,7 @@ def phase_add(
 ) -> dict[str, Any]:
     """Adds a phase to the plan with optional phase dependencies; the Oracle calls this. The
     stored name is p<ordinal>-<name>, and its Manager is named mgr-<that name>."""
-    return _call(
-        _ledger().phase_add, caller=caller, agent_id=agent_id, name=name, depends_on=depends_on
-    )
+    return _call("phase_add", caller=caller, agent_id=agent_id, name=name, depends_on=depends_on)
 
 
 @mcp.tool
@@ -333,9 +282,7 @@ def phase_update(
     caller: CallerName, phase_id: int, state: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Updates a phase's state; handed_up returns the wake-up call to make as `next`."""
-    return _call(
-        _ledger().phase_update, caller=caller, agent_id=agent_id, phase_id=phase_id, state=state
-    )
+    return _call("phase_update", caller=caller, agent_id=agent_id, phase_id=phase_id, state=state)
 
 
 @mcp.tool(annotations=_READ_ONLY)
@@ -343,7 +290,7 @@ def plan_unlocked(
     caller: CallerName, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> list[dict[str, Any]]:
     """Lists phases whose dependencies are all approved; any registered agent calls this."""
-    return _call(_ledger().plan_unlocked, caller=caller, agent_id=agent_id)
+    return _call("plan_unlocked", caller=caller, agent_id=agent_id)
 
 
 @mcp.tool
@@ -360,7 +307,7 @@ def module_add(
     """Adds a module to the caller's own phase; a Manager calls this. The name is a slug, and
     its Lead is named lead-p<phase ordinal>-<name>."""
     return _call(
-        _ledger().module_add,
+        "module_add",
         caller=caller,
         agent_id=agent_id,
         phase_id=phase_id,
@@ -406,7 +353,7 @@ def brief_create(
     stop rule, or one whose area has an open pattern stop directive. Refuses a Driver: only
     drive_request starts one."""
     return _call(
-        _ledger().brief_create,
+        "brief_create",
         caller=caller,
         agent_id=agent_id,
         child_name=child_name,
@@ -428,7 +375,7 @@ def brief_get(caller_name: CallerName, child_name: str) -> dict[str, Any]:
     `findings` lists the id, fingerprint, title, severity, area, steps, expected and actual
     result, and evidence paths of each finding it fixes; `depends_on_contracts` the contract
     of each file or module it depends on."""
-    return _call(_ledger().brief_get, caller_name=caller_name, child_name=child_name)
+    return _call("brief_get", caller_name=caller_name, child_name=child_name)
 
 
 @mcp.tool
@@ -436,7 +383,7 @@ def brief_ack(
     caller: CallerName, agent_type: str | None = None, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Binds the caller's name to its agent_id via an unacked brief; a new child agent calls it."""
-    return _call(_ledger().brief_ack, caller=caller, agent_id=agent_id, agent_type=agent_type)
+    return _call("brief_ack", caller=caller, agent_id=agent_id, agent_type=agent_type)
 
 
 # -- Agent lifecycle --------------------------------------------------------------
@@ -448,7 +395,7 @@ def agent_release(
 ) -> dict[str, Any]:
     """Releases an agent it directly parented; any parent role calls this for its own child."""
     return _call(
-        _ledger().agent_release,
+        "agent_release",
         caller=caller,
         agent_id=agent_id,
         target_agent_id=target_agent_id,
@@ -460,7 +407,7 @@ def agent_spawn(
     caller: CallerName, child_name: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Starts the session for a briefed child and registers it; the brief's parent calls this."""
-    return _call(_ledger().agent_spawn, caller=caller, agent_id=agent_id, child_name=child_name)
+    return _call("agent_spawn", caller=caller, agent_id=agent_id, child_name=child_name)
 
 
 @mcp.tool
@@ -468,7 +415,7 @@ def agent_resume(
     caller: CallerName, target_name: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Resumes a stopped session of the run with the wake-ups owed to it; any agent calls it."""
-    return _call(_ledger().agent_resume, caller=caller, agent_id=agent_id, target_name=target_name)
+    return _call("agent_resume", caller=caller, agent_id=agent_id, target_name=target_name)
 
 
 # -- File ownership -----------------------------------------------------------------
@@ -489,7 +436,7 @@ def claim_file(
     """Claims a file path for a coder under the caller's module; a Lead calls this. for_name is
     coder-p<phase ordinal>-<module>-<file slug>."""
     return _call(
-        _ledger().claim_file,
+        "claim_file",
         caller=caller,
         agent_id=agent_id,
         path=path,
@@ -504,13 +451,13 @@ def release_file(
     caller: CallerName, path: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Releases a live claim on a file path; a Lead calls this."""
-    return _call(_ledger().release_file, caller=caller, agent_id=agent_id, path=path)
+    return _call("release_file", caller=caller, agent_id=agent_id, path=path)
 
 
 @mcp.tool(annotations=_READ_ONLY)
 def who_owns(path: str) -> dict[str, Any]:
     """Looks up the live owner of a file path; any caller may call this."""
-    return _call(_ledger().who_owns, path=path)
+    return _call("who_owns", path=path)
 
 
 # -- Messages -----------------------------------------------------------------------
@@ -522,16 +469,14 @@ def message_post(
 ) -> dict[str, Any]:
     """Posts a message of at most 32,000 characters to the caller's parent, child, or sibling
     by name; returns the wake-up call as `next`."""
-    return _call(
-        _ledger().message_post, caller=caller, agent_id=agent_id, to_name=to_name, body=body
-    )
+    return _call("message_post", caller=caller, agent_id=agent_id, to_name=to_name, body=body)
 
 
 @mcp.tool
 def message_inbox(caller: CallerName, agent_id: str | None = _STAMPED_AGENT_ID) -> dict[str, Any]:
     """Returns and marks read the caller's unread messages in its run, oldest first, up to
     40,000 characters of bodies; `remaining` counts the unread ones left for the next call."""
-    return _call(_ledger().message_inbox, caller=caller, agent_id=agent_id)
+    return _call("message_inbox", caller=caller, agent_id=agent_id)
 
 
 # -- Directives ---------------------------------------------------------------------
@@ -548,7 +493,7 @@ def directive_submit(
     names any open directive of the run resolves it, whatever its outcome.
     """
     return _call(
-        _ledger().directive_submit,
+        "directive_submit",
         source=source,
         sender_name=sender_name,
         body=body,
@@ -561,7 +506,7 @@ def directive_inbox(
     caller: CallerName, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> list[dict[str, Any]]:
     """Returns the run's open directives; the Oracle calls this."""
-    return _call(_ledger().directive_inbox, caller=caller, agent_id=agent_id)
+    return _call("directive_inbox", caller=caller, agent_id=agent_id)
 
 
 @mcp.tool
@@ -578,7 +523,7 @@ def directive_resolve(
     until a directive_submit with reply_to answers it, or the Oracle resolves it again.
     """
     return _call(
-        _ledger().directive_resolve,
+        "directive_resolve",
         caller=caller,
         agent_id=agent_id,
         directive_id=directive_id,
@@ -605,7 +550,7 @@ def override_grant(
     grant itself a write or shell override.
     """
     return _call(
-        _ledger().override_grant,
+        "override_grant",
         caller=caller,
         agent_id=agent_id,
         rule=rule,
@@ -629,7 +574,7 @@ def issue_open(
     """Opens an issue against a file; any registered agent calls this. An issue a Manager
     opens starts at round 2, and one the Oracle opens starts at round 3."""
     return _call(
-        _ledger().issue_open,
+        "issue_open",
         caller=caller,
         agent_id=agent_id,
         file_id=file_id,
@@ -645,7 +590,7 @@ def issue_list(
     """Lists the run's issues, optionally filtered to one file; any registered agent calls this.
     For a Lead, hides issues its own module's self-review opened until the Lead records its
     own score for the file's current handoff."""
-    return _call(_ledger().issue_list, caller=caller, agent_id=agent_id, file_id=file_id)
+    return _call("issue_list", caller=caller, agent_id=agent_id, file_id=file_id)
 
 
 @mcp.tool
@@ -654,7 +599,7 @@ def issue_close(
 ) -> dict[str, Any]:
     """Closes an open issue with a resolution; the file's Lead, its Manager, or the Oracle."""
     return _call(
-        _ledger().issue_close,
+        "issue_close",
         caller=caller,
         agent_id=agent_id,
         issue_id=issue_id,
@@ -672,7 +617,7 @@ def idea_record(
 ) -> dict[str, Any]:
     """Records an idea tried against an issue and its outcome; any registered agent calls this."""
     return _call(
-        _ledger().idea_record,
+        "idea_record",
         caller=caller,
         agent_id=agent_id,
         issue_id=issue_id,
@@ -688,7 +633,7 @@ def issue_escalate(
     """Escalates an issue to its next round, names the receiver in escalated_to, and messages
     it; only the issue's owner and the owner's parent chain call it. Returns the wake-up call
     to make as `next`."""
-    return _call(_ledger().issue_escalate, caller=caller, agent_id=agent_id, issue_id=issue_id)
+    return _call("issue_escalate", caller=caller, agent_id=agent_id, issue_id=issue_id)
 
 
 # -- Events -----------------------------------------------------------------------------
@@ -697,7 +642,7 @@ def issue_escalate(
 @mcp.tool(annotations=_READ_ONLY)
 def events(target_agent_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
     """Lists recent agent lifecycle events, optionally filtered to one agent; any caller may."""
-    return _call(_ledger().events, agent_id=target_agent_id, limit=limit)
+    return _call("events", agent_id=target_agent_id, limit=limit)
 
 
 # -- Tests --------------------------------------------------------------------------------
@@ -722,7 +667,7 @@ def tests_run(
     a copy of it instead of running again and returns reused: true with reused_from.
     """
     return _call(
-        _ledger().tests_run,
+        "tests_run",
         caller=caller,
         agent_id=agent_id,
         scope=scope,
@@ -736,7 +681,7 @@ def test_run_get(
     caller: CallerName, test_run_id: int, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Returns one recorded test run of this run, with its full output."""
-    return _call(_ledger().test_run_get, caller=caller, agent_id=agent_id, test_run_id=test_run_id)
+    return _call("test_run_get", caller=caller, agent_id=agent_id, test_run_id=test_run_id)
 
 
 # -- Code graph -----------------------------------------------------------------------------
@@ -748,7 +693,7 @@ def graph_upsert(
 ) -> dict[str, Any]:
     """Upserts code graph nodes. A Coder's nodes anchor only on its own claimed file; a Lead's
     may span the files of its module."""
-    return _call(_ledger().graph_upsert, caller=caller, agent_id=agent_id, nodes=nodes)
+    return _call("graph_upsert", caller=caller, agent_id=agent_id, nodes=nodes)
 
 
 # -- Scoring ----------------------------------------------------------------------------------
@@ -768,7 +713,7 @@ def score_record(
     dimension is scored: rate each criterion of an applicable dimension, and give a reason and
     a ref for any rating below 9."""
     return _call(
-        _ledger().score_record,
+        "score_record",
         caller=caller,
         agent_id=agent_id,
         file_id=file_id,
@@ -792,7 +737,7 @@ def handoff_submit(
 ) -> dict[str, Any]:
     """Submits a Coder's file once its tests pass and its graph is current; returns `next`."""
     return _call(
-        _ledger().handoff_submit,
+        "handoff_submit",
         caller=caller,
         agent_id=agent_id,
         file_id=file_id,
@@ -809,7 +754,7 @@ def review_compare(
     caller: CallerName, handoff_id: int, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Compares a handoff's self and lead review scores and flags disagreements; a Lead calls it."""
-    return _call(_ledger().review_compare, caller=caller, agent_id=agent_id, handoff_id=handoff_id)
+    return _call("review_compare", caller=caller, agent_id=agent_id, handoff_id=handoff_id)
 
 
 @mcp.tool
@@ -825,9 +770,7 @@ def approve(
     (rounds times attempts_per_round), once the review itself misses the target. A floor
     pass records a shortfall for each dimension still below target and lists them in
     `floor_pass_dimensions`."""
-    return _call(
-        _ledger().approve, caller=caller, agent_id=agent_id, handoff_id=handoff_id, notes=notes
-    )
+    return _call("approve", caller=caller, agent_id=agent_id, handoff_id=handoff_id, notes=notes)
 
 
 @mcp.tool
@@ -840,7 +783,7 @@ def return_work(
 ) -> dict[str, Any]:
     """Returns a handoff to its Coder with issues to fix; a Lead calls this; returns `next`."""
     return _call(
-        _ledger().return_work,
+        "return_work",
         caller=caller,
         agent_id=agent_id,
         handoff_id=handoff_id,
@@ -856,7 +799,7 @@ def attempt_record(
     """Classifies a file's latest attempt as improved, plateau, or regression; a Lead calls it.
     When a plateau or regression moves an issue to round 2 or 3, `escalated` lists each
     escalation with its `escalated_to` agent and the wake-up call to make as its `next`."""
-    return _call(_ledger().attempt_record, caller=caller, agent_id=agent_id, file_id=file_id)
+    return _call("attempt_record", caller=caller, agent_id=agent_id, file_id=file_id)
 
 
 @mcp.tool
@@ -866,7 +809,7 @@ def accept_incomplete(
     """Accepts a handoff as incomplete and opens a file deferral for the Manager; a Lead calls
     this after review_compare, for work the Coder or an open issue reports as incomplete."""
     return _call(
-        _ledger().accept_incomplete,
+        "accept_incomplete",
         caller=caller,
         agent_id=agent_id,
         handoff_id=handoff_id,
@@ -893,7 +836,7 @@ def module_review(
     `scores`: one rating 1..10 for each of completeness, integration, and open items, with a
     reason below 9."""
     return _call(
-        _ledger().module_review,
+        "module_review",
         caller=caller,
         agent_id=agent_id,
         module_id=module_id,
@@ -920,7 +863,7 @@ def phase_review(
     `scores`: one rating 1..10 for each of completeness, integration, and open items, with a
     reason below 9."""
     return _call(
-        _ledger().phase_review,
+        "phase_review",
         caller=caller,
         agent_id=agent_id,
         phase_id=phase_id,
@@ -953,7 +896,7 @@ def deferral_propose(
     calls this. kind sets who decides: file or module, the Lead; cross_module or phase, the
     Manager; plan or prd, the Oracle (prd with the user)."""
     return _call(
-        _ledger().deferral_propose,
+        "deferral_propose",
         caller=caller,
         agent_id=agent_id,
         body=body,
@@ -978,7 +921,7 @@ def agreement_decide(
     """Decides an open deferral as agreed or denied: a dispute by its arbiter, any other by a
     caller at or above both the proposer's parent and the kind's level."""
     return _call(
-        _ledger().agreement_decide,
+        "agreement_decide",
         caller=caller,
         agent_id=agent_id,
         deferral_id=deferral_id,
@@ -994,7 +937,7 @@ def cr_open(
 ) -> dict[str, Any]:
     """Opens a change request on a path the caller does not own; any role calls this. The
     ledger routes it to the file's owner, or up the chain when the owner has ended."""
-    return _call(_ledger().cr_open, caller=caller, agent_id=agent_id, path=path, body=body)
+    return _call("cr_open", caller=caller, agent_id=agent_id, path=path, body=body)
 
 
 @mcp.tool
@@ -1008,7 +951,7 @@ def cr_accept(
     """Accepts or declines an open change request; only its recipient calls this. A decline
     needs a non-empty reason."""
     return _call(
-        _ledger().cr_accept,
+        "cr_accept",
         caller=caller,
         agent_id=agent_id,
         cr_id=cr_id,
@@ -1023,7 +966,7 @@ def cr_complete(
 ) -> dict[str, Any]:
     """Completes an accepted change request with evidence; only its recipient calls this. It
     refuses without a passing test run or an approved handoff for the path since acceptance."""
-    return _call(_ledger().cr_complete, caller=caller, agent_id=agent_id, cr_id=cr_id, notes=notes)
+    return _call("cr_complete", caller=caller, agent_id=agent_id, cr_id=cr_id, notes=notes)
 
 
 @mcp.tool
@@ -1032,9 +975,7 @@ def cr_verify(
 ) -> dict[str, Any]:
     """Verifies a completed change request; only the requester or its nearest live ancestor
     calls this. A failed verification goes back to accepted and owes the recipient a wake-up."""
-    return _call(
-        _ledger().cr_verify, caller=caller, agent_id=agent_id, cr_id=cr_id, ok=ok, notes=notes
-    )
+    return _call("cr_verify", caller=caller, agent_id=agent_id, cr_id=cr_id, ok=ok, notes=notes)
 
 
 @mcp.tool(annotations=_READ_ONLY)
@@ -1042,7 +983,7 @@ def cr_list(
     caller: CallerName, state: str | None = None, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> list[dict[str, Any]]:
     """Lists the change requests the caller sent or received; the Oracle sees every one."""
-    return _call(_ledger().cr_list, caller=caller, agent_id=agent_id, state=state)
+    return _call("cr_list", caller=caller, agent_id=agent_id, state=state)
 
 
 @mcp.tool
@@ -1056,7 +997,7 @@ def departure_record(
     """Records a departure from the guidelines; a Coder for its own file, or a Lead, Manager,
     or Oracle for work in its scope."""
     return _call(
-        _ledger().departure_record,
+        "departure_record",
         caller=caller,
         agent_id=agent_id,
         body=body,
@@ -1080,7 +1021,7 @@ def departure_decide(
     for the same Coder, resumes the agents below the decider, and returns the first wake-up
     as `next`."""
     return _call(
-        _ledger().departure_decide,
+        "departure_decide",
         caller=caller,
         agent_id=agent_id,
         departure_id=departure_id,
@@ -1099,9 +1040,7 @@ def shortfall_record(
 ) -> dict[str, Any]:
     """Records a shortfall: a solution that works but that nobody found better; any role
     calls this, and it needs no decision."""
-    return _call(
-        _ledger().shortfall_record, caller=caller, agent_id=agent_id, body=body, file_id=file_id
-    )
+    return _call("shortfall_record", caller=caller, agent_id=agent_id, body=body, file_id=file_id)
 
 
 # -- Versions -------------------------------------------------------------------------------------
@@ -1112,7 +1051,7 @@ def version_restore(
     caller: CallerName, version_id: int, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Restores a saved version onto the coder's own owned file; a Coder calls this."""
-    return _call(_ledger().version_restore, caller=caller, agent_id=agent_id, version_id=version_id)
+    return _call("version_restore", caller=caller, agent_id=agent_id, version_id=version_id)
 
 
 # -- Reporting ------------------------------------------------------------------------------------
@@ -1126,13 +1065,13 @@ def status_tree(
     `open_findings` lists the Driver findings not yet fixed or stopped, and `fixes` lists each
     brief that names findings, with their ids and titles. The run's PRD text is left out
     unless include_prd is true."""
-    return _call(_ledger().status_tree, caller=caller, agent_id=agent_id, include_prd=include_prd)
+    return _call("status_tree", caller=caller, agent_id=agent_id, include_prd=include_prd)
 
 
 @mcp.tool
 def report_build(caller: CallerName, agent_id: str | None = _STAMPED_AGENT_ID) -> dict[str, Any]:
     """Builds and writes the run's report.md from its current state; the Oracle calls this."""
-    return _call(_ledger().report_build, caller=caller, agent_id=agent_id)
+    return _call("report_build", caller=caller, agent_id=agent_id)
 
 
 @mcp.tool(annotations=_READ_ONLY)
@@ -1140,7 +1079,7 @@ def analytics_query(
     caller: CallerName, sql: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Runs a single read-only SELECT against the ledger database; the Oracle calls it."""
-    return _call(_ledger().analytics_query, caller=caller, agent_id=agent_id, sql=sql)
+    return _call("analytics_query", caller=caller, agent_id=agent_id, sql=sql)
 
 
 @mcp.tool
@@ -1153,7 +1092,7 @@ def drive_request(
     or while a Manager, Lead, or Coder is still live. It releases an earlier Driver whose
     exploration ended but whose session is still live. The result's `loop_status` reports the
     stop-rule state computed from every exploration and finding so far."""
-    return _call(_ledger().drive_request, caller=caller, agent_id=agent_id, focus=focus)
+    return _call("drive_request", caller=caller, agent_id=agent_id, focus=focus)
 
 
 @mcp.tool
@@ -1169,7 +1108,7 @@ def drive_issue(
     `evidence` (paths into cartographer's run folder). The result's `next_checkin_due_at` and
     `next_checkin_in_s` give when the exploration's next check-in is due."""
     return _call(
-        _ledger().drive_issue,
+        "drive_issue",
         caller=caller,
         agent_id=agent_id,
         request_id=request_id,
@@ -1191,7 +1130,7 @@ def drive_checkin(
     on time. The result's `next_checkin_due_at` and `next_checkin_in_s` give when the next
     check-in is due."""
     return _call(
-        _ledger().drive_checkin,
+        "drive_checkin",
         caller=caller,
         agent_id=agent_id,
         request_id=request_id,
@@ -1216,7 +1155,7 @@ def drive_done(
     finding already recorded with drive_issue. A clean exploration, a new stop rule, or
     `blocked` records a notification for the user."""
     return _call(
-        _ledger().drive_done,
+        "drive_done",
         caller=caller,
         agent_id=agent_id,
         request_id=request_id,
@@ -1235,17 +1174,10 @@ def drive_unavailable(
     ledger releases and stops the Driver's session once that wake-up is sent. drive_request
     and run_finish refuse while the directive is open. Resolved applied or scheduled,
     explorations resume; resolved declined, the run skips them and run_finish needs none."""
-    return _call(_ledger().drive_unavailable, caller=caller, agent_id=agent_id, reason=reason)
+    return _call("drive_unavailable", caller=caller, agent_id=agent_id, reason=reason)
 
 
 @mcp.tool(annotations=_READ_ONLY)
 def ledger_info() -> dict[str, Any]:
     """Returns the server's name, version, status, tool count, and repo root."""
-    ledger = _call(_ledger)
-    return {
-        "name": "swarm-ledger",
-        "version": __version__,
-        "status": "ready",
-        "tools": len(_TOOL_NAMES),
-        "repo_root": str(ledger.repo_root),
-    }
+    return front.ledger_info(_call(REPO_ROOT_METHOD), len(_TOOL_NAMES))

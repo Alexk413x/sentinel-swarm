@@ -1,7 +1,6 @@
 # Upgrade roadmap: efficiency, messaging, other platforms
 
-Status: part 1 is a build plan; steps 0 to 6 are done (step 5's live 403 check is still owed),
-and step 7 is not started. Part 2 is an exploration
+Status: part 1 is a build plan; steps 0 to 7 are done (step 5's live 403 check is still owed). Part 2 is an exploration
 **(proposed)**, not a build plan. Written 2026-10-07 on branch `feat/kg-start-end-cli`. It replaces
 the root `cli-plan.md`.
 
@@ -678,6 +677,64 @@ Build these only when the 16-agent median tool call or hook round trip misses 15
 Tests: every route that calls `wake.route_wakeup` publishes from the front; a pooled and an
 in-process ledger return equal results.
 
+#### Results, 2026-10-08
+
+Built both: step 1's 16-agent median missed 150 ms, and the pool alone kept FastMCP's 80 MB idle
+front. The pool is `mcp/src/swarm_ledger/pool.py`, the front's call path `front.py`, the lean
+HTTP front `http_front.py`, and the catalog `catalog.py` with `catalog.json`. Since step 2 removed
+the `swarm-events` channel, the front has no `EventHub` or `/events` to keep: a worker records a
+wake-up's `wakeups` row and returns its `next`, and the front runs each OS notifier command a
+worker's reply lists, once. `run_finish` returns to the front, which calls `on_run_finish`.
+`KG_LOCK` is the file lock `.sentinel-swarm/kg.lock`. Each worker gets the front's settings
+snapshot instead of reading the file, and `profile_set` and `tests_run` read the commands from the
+run's snapshot, so no `Ledger` field splits across workers.
+
+Run: `scripts/bench/ledger_load.py`, 5 rounds per agent, token on every request. The machine was
+far busier than in step 1: whole-machine CPU load was 77% to 99% during every run, against about
+70% in step 1, so the absolute numbers are slower than step 1's. The FastMCP rows ran through a
+temporary FastMCP path in `serve.py`, removed before commit. FastMCP with `max_workers: 0` is the
+code before this step: tool calls serialized under one lock.
+
+Server:
+
+| Front, `max_workers` | Spawn to `server.json` | Spawn to `/health` | Idle | After load | Workers after load |
+|---|---|---|---|---|---|
+| FastMCP, 0 (before) | 818 ms | 8,280 ms | 79.7 MB | 95.6 MB | 0 |
+| FastMCP, 8 (pool alone) | 1,417 ms | 8,879 ms | 79.7 MB | 92.5 MB | 13, 262.5 MB |
+| Lean, 8 (shipped) | 1,402 ms | 1,470 ms | 24.7 MB | 26.6 MB | 12, 242.3 MB |
+| Lean, 0 | 1,516 ms | 1,609 ms | 24.5 MB | 27.6 MB | 0 |
+
+The FastMCP rows write `server.json` before importing FastMCP, so `/health` is their start time.
+At this load a bare `python -I -S -c pass` took 0.4 to 1.1 s, and the front's imports added
+about 0.3 s to it; the 0.3 s start target cannot be judged on this machine until it is idle.
+
+Load (ms, median / p90 / max), every tool call and the `pre_write` hook:
+
+| Agents | FastMCP, 0 (before) | FastMCP, 8 | Lean, 8 (shipped) | Lean, 0 |
+|---|---|---|---|---|
+| 1, tool | 26 / 533 / 1,043 | 24 / 276 / 1,255 | 8 / 588 / 1,134 | 8 / 708 / 1,043 |
+| 1, hook | 56 / 64 / 64 | 52 / 466 / 466 | 56 / 753 / 753 | 79 / 103 / 103 |
+| 4, tool | 93 / 441 / 1,164 | 56 / 604 / 851 | 7 / 747 / 1,235 | 113 / 1,761 / 2,818 |
+| 4, hook | 66 / 243 / 260 | 78 / 758 / 772 | 61 / 878 / 928 | 83 / 133 / 214 |
+| 8, tool | 305 / 1,424 / 2,469 | 127 / 422 / 799 | 27 / 904 / 2,367 | 286 / 1,621 / 4,059 |
+| 8, hook | 68 / 191 / 547 | 87 / 133 / 477 | 63 / 122 / 831 | 74 / 95 / 184 |
+| 16, tool | 611 / 3,021 / 5,077 | 353 / 943 / 2,086 | 217 / 1,073 / 2,617 | 353 / 4,533 / 10,110 |
+| 16, hook | 71 / 261 / 492 | 151 / 258 / 297 | 75 / 137 / 228 | 70 / 150 / 385 |
+| 16, `message_post` to `message_inbox` | 2,248 / 4,812 / 6,163 | 712 / 1,291 / 1,563 | 492 / 765 / 949 | 1,983 / 8,256 / 10,801 |
+| 16, wall | 30.2 s | 12.9 s | 11.6 s | 38.7 s |
+
+No run had an error. At 16 agents the lean front with the pool cut the median tool call from
+611 to 217 ms and the wall time from 30.2 to 11.6 s on the same machine and load, and the pool
+alone reached 353 ms. Neither met 150 ms at this CPU load; the 1-agent p90 and max come from a
+worker's first start and from `tests_run`. The pool alone missed 150 ms and kept the 80 MB idle
+front, so the lean front stays: it meets the 35 MB idle target and starts answering 6 s sooner.
+
+The front imports no fastmcp, uvicorn, Starlette, or pydantic; its only third-party import is
+PyYAML, for the settings file, and the workers import the same. fastmcp now serves only the
+tests and `python -m swarm_ledger.catalog`. The launch still uses `uv run`: making the server
+launch on the base interpreter, per the Plugins launch rule, needs the settings frontmatter
+parsed without PyYAML and fastmcp moved to the dev dependencies.
+
 ## Context savings
 
 Measured 2026-10-08 with `scripts/bench/ledger_load.py --agents 1 --rounds 1 --shim-reps 1`,
@@ -718,11 +775,11 @@ saves about 3,800 tokens of schemas across a 10-agent run, re-sent as cached inp
 | Members stopped with unread mail, `modules` smoke run | Not measured | 0 |
 | Coder up-front `select:` (ledger tools) | 3,031 B, 0 start calls (steps 3 and 4; was 8,788 B, 3 calls) | 4,500 B, 0 start calls |
 | Manager / Lead up-front `select:` (ledger tools) | 6,876 / 10,699 B (step 3; was 8,869 / 12,692 B) | 7,533 / 11,109 B |
-| Tool call median, 1 agent | 15 ms (step 1) | No slower than step 1 |
-| Tool call and hook median, 16 agents | 273 ms and 52 ms (step 1) | Below 150 ms; build step 7 if missed |
+| Tool call median, 1 agent | 8 ms (step 7; 15 ms in step 1) | No slower than step 1 |
+| Tool call and hook median, 16 agents | 217 ms and 75 ms at 99% CPU (step 7; 611 ms and 71 ms before it at the same load; 273 ms and 52 ms in step 1 at 70%) | Below 150 ms |
 | Calls that fail at 16 agents | 0 (step 1) | 0 |
 | Unauthenticated `/mcp`, `/hook`, `/events` calls accepted | 0 by test (step 5) | 0 |
-| Ledger idle memory and start (step 7 only) | 79.3 MB; 3.1 s to `server.json` (step 1) | Below 35 MB; below 0.3 s |
+| Ledger idle memory and start (step 7 only) | 24.7 MB; 1.4 s to `server.json` at 96% CPU (step 7; was 79.3 MB and 3.1 s) | Below 35 MB; below 0.3 s |
 
 Every step runs the repo's checks before commit: `uv run pytest`, `uv run pyright`,
 `uv run ruff check` and `uv run ruff format --check` in `mcp/`, then
@@ -735,7 +792,10 @@ Every step runs the repo's checks before commit: `uv run pytest`, `uv run pyrigh
 - A Coder that skips the handoff `ToolSearch` gets an error on an unloaded tool, then loads it.
 - A stale token in a live session after someone deletes `http-token` gives a 403, which can mark
   `swarm-ledger` as needing auth. Step 5 records the recovery.
-- The pool splits state across processes. A wake-up published from a worker is lost silently.
+- The pool splits state across processes. Step 7 keeps notifications and `on_run_finish` in the
+  front, and reads the profile commands from the run's snapshot.
+- With `max_workers: 8` the tool and hook pools can run 16 workers of about 20 MB each under load;
+  they exit after 60 s idle.
 
 ## Part 2: other platforms through ide-agent-tabs (proposed)
 

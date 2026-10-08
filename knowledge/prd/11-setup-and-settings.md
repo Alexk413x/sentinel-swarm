@@ -145,6 +145,7 @@ descriptions stay out of every session's context.
 | `prompt_cache_ttl.<role>` | `5m` for the Coder, empty for the others | `promptCacheTtl` (`"5m"` or `"1h"`) for that role's sessions |
 | `role_parallelism_cap.<role>` | empty | Cap on that role's own live sessions in the run |
 | `notify` | `[os, push]` | How the user hears that the Driver finished or hit an error, or that an issue ended round 3 below the floor. `os`: the ledger server shows a desktop notification. `push`: the Oracle owes a `PushNotification` call. `[]` or `""` turns both off; a single value reads as a one-item list; unknown values are dropped; an unset key, or `notify:` with no value, keeps both. See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md) |
+| `max_workers` | 8 | Worker processes for the ledger server's tool calls, and as many again for its hooks. `0` runs every call in the server process, one at a time. A negative value reads as `0`; a value that is not a whole number reads as 8. The server reads it at start. See [06-ledger-server.md](06-ledger-server.md) |
 
 `-p no:cacheprovider` keeps parallel pytest runs from contending on `.pytest_cache`.
 

@@ -8,9 +8,12 @@ under load, per-call latency, the message_post to message_inbox latency, one hoo
 through the hook shim as a role session runs it, each role's up-front `select:` bytes, and the
 whole machine's CPU load.
 
-    uv run --project mcp python scripts/bench/ledger_load.py [--agents 1,4,8,16] [--out FILE]
+    uv run --project mcp python scripts/bench/ledger_load.py [--agents 1,4,8,16]
+        [--max-workers N] [--out FILE]
 
-Memory figures are working sets on Windows and resident sets elsewhere.
+`--max-workers` sets the host's `max_workers` setting (default 8; 0 runs every call in the
+server process). Memory figures are working sets on Windows and resident sets elsewhere; the
+workers' figure sums the server's child processes after the load.
 """
 
 from __future__ import annotations
@@ -147,7 +150,21 @@ def _git(root: Path, *args: str) -> None:
     )
 
 
-def make_host(root: Path) -> None:
+def child_pids(pid: int) -> list[int]:
+    if sys.platform == "win32":
+        command = [
+            "powershell.exe",
+            "-NoProfile",
+            "-Command",
+            f"(Get-CimInstance Win32_Process -Filter 'ParentProcessId={pid}').ProcessId",
+        ]
+    else:
+        command = ["ps", "-o", "pid=", "--ppid", str(pid)]
+    out = subprocess.run(command, capture_output=True, text=True, creationflags=NO_WINDOW)
+    return [int(line) for line in out.stdout.split() if line.strip().isdigit()]
+
+
+def make_host(root: Path, max_workers: int) -> None:
     (root / ".claude").mkdir(parents=True)
     template = (PLUGIN / "templates" / "sentinel-swarm.local.md.example").read_text(
         encoding="utf-8"
@@ -155,6 +172,7 @@ def make_host(root: Path) -> None:
     text = template.replace("test_command:\n", "test_command: echo 1 passed {target}\n")
     text = text.replace("interval_seconds: 30", "interval_seconds: 3600")
     text = text.replace("notify: [os, push]", "notify: []")
+    text = text.replace("max_workers: 8", f"max_workers: {max_workers}")
     (root / ".claude" / "sentinel-swarm.local.md").write_text(text, encoding="utf-8")
     for i in range(1, MAX_AGENTS + 1):
         (root / "src").mkdir(exist_ok=True)
@@ -249,7 +267,13 @@ def ledger_server(root: Path) -> Iterator[dict[str, Any]]:
                 raise RuntimeError(f"no server.json; see {log.name}")
             time.sleep(0.005)
         to_server_json = (time.perf_counter() - started) * 1000
-        port = json.loads(info_path.read_text(encoding="utf-8"))["port"]
+        port = None
+        while port is None:
+            try:
+                port = json.loads(info_path.read_text(encoding="utf-8"))["port"]
+            except (OSError, ValueError):
+                # Windows refuses the read while the server's os.replace of the file runs.
+                time.sleep(0.005)
         while True:
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
             try:
@@ -488,6 +512,7 @@ def main() -> int:
     parser.add_argument("--agents", default="1,4,8,16")
     parser.add_argument("--rounds", type=int, default=5)
     parser.add_argument("--shim-reps", type=int, default=10)
+    parser.add_argument("--max-workers", type=int, default=8)
     parser.add_argument("--out")
     args = parser.parse_args()
     agents = [int(n) for n in args.agents.split(",")]
@@ -500,12 +525,13 @@ def main() -> int:
         "machine": f"{platform.system()} {platform.release()} {platform.machine()}",
         "python": platform.python_version(),
         "cpus": os.cpu_count(),
+        "max_workers": args.max_workers,
         "cpu_pct_before": cpu_load(),
     }
     with tempfile.TemporaryDirectory(prefix="ledger-load-", ignore_cleanup_errors=True) as tmp:
         root = Path(tmp).resolve() / "host"
         root.mkdir()
-        make_host(root)
+        make_host(root, args.max_workers)
         coders = register_run(root)
         with ledger_server(root) as server:
             time.sleep(1.0)
@@ -519,6 +545,11 @@ def main() -> int:
             for n in agents:
                 report["load"][n] = asyncio.run(load(root, server, coders[:n], args.rounds))
             report["server"]["after_load_mb"] = process_mb(server["pid"])
+            workers = child_pids(server["pid"])
+            report["server"]["workers_after_load"] = len(workers)
+            report["server"]["workers_after_load_mb"] = round(
+                sum(process_mb(pid) or 0.0 for pid in workers), 1
+            )
             report["shim_hook_pre_write"] = shim_hook(root, coders[0], args.shim_reps)
     report["cpu_pct_after"] = cpu_load()
     report["bench_s"] = round(time.perf_counter() - began, 1)

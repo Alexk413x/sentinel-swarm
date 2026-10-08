@@ -200,6 +200,8 @@ class ReviewMixin:
 
     def _active_run(self, conn: sqlite3.Connection) -> sqlite3.Row: ...
 
+    def adopt_run_profile(self, run_id: int | None) -> None: ...
+
     def pause_reason(self, run_id: int) -> str | None: ...
 
     def _release_tx(self) -> AbstractContextManager[sqlite3.Connection]: ...
@@ -309,6 +311,7 @@ class ReviewMixin:
             if file_row is None or target not in (file_row["path"], file_row["test_path"]):
                 raise LedgerError(f"{caller!r} may only run tests for its own file or test file")
 
+        self.adopt_run_profile(c.run_id)
         if not self.settings.test_command:
             raise LedgerError("no test command in the profile")
 

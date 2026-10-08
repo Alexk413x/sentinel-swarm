@@ -1,8 +1,48 @@
 # The ledger server
 
 - One server runs per host repo, over HTTP on `127.0.0.1`, with MCP at `/mcp` and a
-  health check at `/health`. Every session of the run connects to it. One process is
-  required: `graph_upsert` protects the code graph with a lock inside it.
+  health check at `/health`. Every session of the run connects to it. One server per
+  repo is required: its front holds the watchdog, `on_run_finish`, and the activity
+  clock, and the run lock names its process.
+- The server is a front process and a pool of worker processes. The front is the lean
+  stdlib HTTP server in `http_front.py`; it imports no fastmcp, uvicorn, or Starlette,
+  and its only third-party import is PyYAML, for the settings file. It checks access,
+  takes the stamped `agent_id` out of each call, validates the arguments against the
+  tool catalog, and sends the call to a worker. Each worker is a Python process that
+  holds its own `Ledger` and SQLite connection and runs one call at a time.
+- `max_workers` in `.claude/sentinel-swarm.local.md` caps the tool-call pool, default
+  8. Hooks run on a second pool with the same cap, so a long tool call such as
+  `tests_run` never holds up a hook. A pool starts a worker when a call finds none free,
+  up to the cap, and stops one after 60 seconds idle; past the cap a call waits for the
+  next free worker. `max_workers: 0` starts no workers: tool calls run in the front one
+  at a time under one lock on one connection, and each hook runs in the front on its own
+  connection.
+- A worker runs on the base interpreter (`sys._base_executable`) with `-I -S`, with the
+  package source and the venv's `site-packages` on its path, so a Windows venv's
+  launcher process is not started twice. It writes replies on a private copy of stdout
+  and points its own stdin and stdout elsewhere, so a print or a child process cannot
+  corrupt the protocol. A worker that exits or hangs during a call is killed; that one
+  call fails with a tool error, and the next call starts a fresh worker. A call has 30
+  minutes.
+- What happens once per server stays in the front. A worker never shows an OS
+  notification: its reply lists the notifier commands, and the front runs each one
+  once. `run_finish` in a worker returns to the front, which then calls
+  `on_run_finish`. Wake-ups need nothing from the front: a worker records the
+  `wakeups` row and returns the `next` call in its result. The run lock
+  (`lock.acquire` at `run_start`) records the front's pid, which every worker gets at
+  start, so the lock lives as long as the server, not as long as one worker.
+- SQLite across processes: every connection uses WAL, `synchronous=NORMAL`,
+  `busy_timeout` 5000, and `BEGIN IMMEDIATE` for writes (`write_tx`), so writers from
+  several workers queue on the database lock instead of failing. The front migrates
+  the database before any worker starts.
+- No worker keeps state another worker needs. Each worker gets the settings the front
+  read at start, not the file, so an edit to the file after the start reaches no
+  worker. The test, build, and lint commands come from the run's settings snapshot,
+  which `profile_set` writes: `profile_set` and `tests_run` read the snapshot first, so
+  a command set in one worker reaches a test run in another.
+- `graph_upsert` holds `.sentinel-swarm/kg.lock`, an exclusive file lock
+  (`lock.file_lock`), while codebase-kg writes the code graph, so two workers never
+  write it at once.
 - `python -m swarm_ledger.serve [--repo <root>]` binds the port saved in
   `.sentinel-swarm/server.port`, or a free port when that one is taken, and writes
   `.sentinel-swarm/server.json` with `url`, `port`, `pid`, and `started_at`. A second
@@ -19,10 +59,8 @@
   Every route except `/health` also needs `Authorization: Bearer <token>`, with the
   token from `.sentinel-swarm/http-token`. A request that fails a check gets 403 and a
   one-line reason, never 401: a 401 makes an MCP client start the OAuth flow of the MCP
-  authorization spec. The checks run in `serve.Guard`, an ASGI middleware in front of
-  every route. FastMCP 4.0.5 validates `Host` only when its `host_origin_protection`
-  setting is on, which it is not by default, and then answers 421, so the ledger does
-  not use it.
+  authorization spec. `serve.refusal` makes the checks, and the front runs it before
+  any route.
 - The token: the server creates `.sentinel-swarm/http-token` on its first start, mode
   0600, from 32 random bytes in URL-safe base64, and reuses it on every later start.
   Claude Code keeps the headers a session got at connect and sends them to a restarted
@@ -50,22 +88,37 @@
 - The ledger server runs no other MCP server. Each plugin shares its own servers
   through its own relay. See "Plugin servers" in
   [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
-- Tool calls run one at a time under one lock, on one SQLite connection. A hook
-  request on `/hook/<event>` runs outside that lock, on its own connection.
-- The server loads the settings file once: the watchdog at start, and the ledger at the
-  first tool call. `profile_set` changes the commands for the server process and the
-  run's settings snapshot, not the file. The hooks read the file on every call, so the
-  Coder's shell gate follows the file's commands.
-- The watchdog runs on a thread inside the server.
+- The front reads the settings file once at start, for the watchdog, `max_workers`, and
+  the workers. `profile_set` changes the run's settings snapshot, not the file. The
+  hooks read the file on every call, so the Coder's shell gate follows the file's
+  commands.
+- The watchdog runs on a thread in the front.
+- MCP on `/mcp`: each request is one POST with a JSON reply; the server keeps no MCP
+  session and opens no stream, so GET and DELETE get 405. A request carrying
+  `MCP-Protocol-Version: 2026-07-28` gets the stateless protocol (`server/discover`,
+  no `initialize`), with the header checks codebase-kg's front makes. Any other request
+  gets the handshake protocol (`initialize`, `notifications/initialized`, then calls).
+  Both answer `tools/list` and `tools/call` from the same catalog.
+- The tool catalog: `catalog.json` holds the `tools/list` result exactly as the fastmcp
+  registrations in `server.py` list it, plus the argument schema pydantic checks where
+  a tool shows a richer one (`ratings`, `applicable`, `targeted`), and the tools that
+  take the stamped `agent_id`. `python -m swarm_ledger.catalog` writes it, and a test
+  fails when it differs from `server.py`. Arguments are checked the way pydantic's lax
+  mode does: a numeric string or an integral float is an integer, an unknown argument
+  is refused, a missing one takes its default. A tool result has the shape fastmcp
+  gives it: the JSON as text content and as `structuredContent`, a list wrapped as
+  `{"result": [...]}`, and an empty list with no content. A refusal is a tool error with
+  the ledger's reason as its text.
+- `server.py` keeps the fastmcp registrations. The server does not run them; they are
+  the catalog's source and the in-process client the tests use, and they call the same
+  front code as the lean front.
 - The hook route: `POST /hook/<event>` runs the handler `python -m swarm_ledger.hooks
-  <event>` runs, on the request body, and returns exactly the bytes that command would
-  print. Each request opens its own `Ledger`, so it reads the settings file again, and
-  closes it after the handler. It runs on a worker thread, off the event loop, and
-  never takes the tool-call lock. The handler's stderr goes to the server log. Besides the access checks above, the route answers 403 unless the caller
-  is `127.0.0.1` or `::1` and the `Host` header names `127.0.0.1` or `localhost`, 404
-  for an unknown event, and 409
-  unless the `X-Sentinel-Swarm-Repo` header names this server's repo root. A 200
-  answer carries the header back. See "The shim" in
+  <event>` runs, on the request body, on a worker of the hook pool, and returns exactly
+  the bytes that command would print. Each request opens its own `Ledger`, so it reads
+  the settings file again, and closes it after the handler. The handler's stderr goes
+  to the server log. Besides the access checks above, the route answers 404 for an
+  unknown event and 409 unless the `X-Sentinel-Swarm-Repo` header names this server's
+  repo root. A 200 answer carries the header back. See "The shim" in
   [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md).
 - Lifetime: the launcher starts the server before the Oracle. It exits after
   `run_finish`, and after `idle_exit_minutes` with no active run, or a paused run, and
@@ -82,7 +135,7 @@
 
 `.sentinel-swarm/` at the root of the main checkout holds `ledger.db`, `versions/`,
 `report.md` (the latest run's report), `report-<run_id>.md` for each run, `server.json`,
-`server.port`, `http-token`, `server.log`, and the hook shim `hook.py`.
+`server.port`, `http-token`, `server.log`, `kg.lock`, and the hook shim `hook.py`.
 A worktree's `.git` file resolves to the main checkout, so every worktree shares one
 ledger. The folder is excluded through `.git/info/exclude`, never the host's
 `.gitignore`. One ledger holds every run in the repo. The swarm writes
@@ -164,7 +217,7 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
   ledger's own role checks. A role's set holds every tool that the ledger's role checks
   grant the role, and every tool that its template calls.
 - The ledger also refuses a live agent's call to a tool outside its role's set, in
-  `server._call`, with "the <role> role may not call <tool>". An `agent_id` that no live
+  `pool.run_tool`, with "the <role> role may not call <tool>". An `agent_id` that no live
   agent holds passes this check.
 - `events` filters on `target_agent_id`, so the filter no longer shares the stamped
   identity's name.

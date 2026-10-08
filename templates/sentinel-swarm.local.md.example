@@ -118,6 +118,11 @@ role_parallelism_cap:
   lead:
   coder:
   driver:
+
+# Worker processes that run the ledger's tool calls and hooks. The server starts one when a
+# call finds none free, up to this many, and stops one after 60 seconds idle. 0 runs every
+# call in the server process, one at a time.
+max_workers: 8
 ---
 
 # sentinel-swarm local settings
