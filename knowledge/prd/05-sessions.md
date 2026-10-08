@@ -4,7 +4,7 @@
 
 `agent_spawn(caller, child_name)` refuses unless the caller is the parent named in the
 child's unacknowledged brief. It also refuses a Manager before a `repo_check`, a child
-whose phase is paused **(proposed)**, a child that is already registered, a session name
+whose phase is paused, a child that is already registered, a session name
 a running session holds, and a start past `parallelism_cap` when the user set one. It
 then runs, in the repo root:
 
@@ -42,7 +42,7 @@ claude "You are <name>. Read your brief from the swarm ledger and follow it." --
 - The Oracle starts a Driver with `drive_request(focus)` instead of `brief_create` and
   `agent_spawn`: the tool performs both steps itself, under the child name
   `driver-e<ordinal>`, and returns the loop's status alongside the spawned agent. See
-  "Explorations" in [02-run-lifecycle.md](02-run-lifecycle.md). **(proposed)**
+  "Explorations" in [02-run-lifecycle.md](02-run-lifecycle.md).
 
 ## Identity
 
@@ -73,25 +73,25 @@ wake-up the caller owes, and returns a `next` field with the exact call to make.
   `phase_update(handed_up)`, a returned `module_review` or `phase_review`, `cr_open`,
   `cr_accept`, `cr_complete`, a failed `cr_verify`, each level of a departure pushback
   chain, `issue_escalate`, an `attempt_record` that advances an issue's round, and, for
-  the Driver, `drive_issue` and `drive_checkin` (both owe the Oracle). **(proposed)**
+  the Driver, `drive_issue` and `drive_checkin` (both owe the Oracle).
   `drive_done`, and `drive_unavailable` when the Driver calls it, owe the Oracle too, so
   the Oracle is woken directly when an exploration ends or the Driver cannot load. See
-  "Explorations" in [02-run-lifecycle.md](02-run-lifecycle.md). **(proposed)**
+  "Explorations" in [02-run-lifecycle.md](02-run-lifecycle.md).
 - A wake-up is owed only to a live agent with a session name, never to the caller
-  itself. **(proposed)**
+  itself.
 - `next` is `SendMessage(to="<session name>", message="<one-line pointer>")` when the
   recipient's session runs, and `agent_resume(target_name=...)` when it does not. When
   `claude agents --json` fails, `next` names both: the `SendMessage` call, or
-  `agent_resume` if that session is not running. **(proposed)** When the recipient has
+  `agent_resume` if that session is not running. When the recipient has
   a channel, the ledger pushes the wake-up itself instead. See "Wake-up delivery" below.
 - The `post_any` hook clears the debt when it sees a `SendMessage` to that session name.
   When the sender is a Driver whose exploration is closed and it owes nothing more, the
-  hook then releases it, which stops its session. **(proposed)**
+  hook then releases it, which stops its session.
 - The Stop hook blocks a Manager, Lead, Coder, or Driver that still owes a wake-up and
-  names each call. **(proposed)** It does not block a stop that follows its own block
+  names each call. It does not block a stop that follows its own block
   (`stop_hook_active`), so a Driver that ignores the block twice goes idle, live, with
   its wake-up unsent. The watchdog reports that as `driver_unsent`. See "Detection" in
-  [08-watchdog.md](08-watchdog.md). **(proposed)**
+  [08-watchdog.md](08-watchdog.md).
 - A role session wakes the agent its step leaves work for, the Oracle included. The
   Oracle's watchdog `Monitor` stays for the events no role session sends: watchdog
   findings, and the `PushNotification` calls the Oracle owes the user. See "How a report
@@ -105,7 +105,7 @@ and the launcher then loads no channel.
 
 - `route_wakeup` in `mcp/src/swarm_ledger/wake.py` builds every wake instruction:
   `next`, the member Stop hook's owed calls, the Oracle Stop hook's wake hints, and the
-  watchdog's stall step. It decides in this order: **(proposed)**
+  watchdog's stall step. It decides in this order:
   1. The setting is `sendmessage`: the `SendMessage` or `agent_resume` call above.
   2. The target's session is not running: `agent_resume`.
   3. The target supports channels: the ledger pushes the wake-up through the target's
@@ -117,12 +117,11 @@ and the launcher then loads no channel.
 - A target supports channels when its `agents.channel` is `launched` or `confirmed` and
   its bridge holds the ledger's `/events` stream open. Only a wake-up with a `wakeups`
   row is pushed, so the Oracle's wake hints and the watchdog's stall step name a call.
-  **(proposed)**
 - `agents.channel` is `none`, `launched`, or `confirmed`. Only a launch that carries the
   channel lists `swarm-events` in its MCP config, so a bridge that connects records
   `launched` on its session's row. `run_start` and `agent_spawn` record it too, for a
   session whose bridge connected before its row existed. The first confirmed push
-  records `confirmed`. **(proposed)**
+  records `confirmed`.
 - Only an interactive Oracle started by the launcher carries the channel. Every `--bg`
   role, and a `--bg` or headless Oracle, keeps `channel` at `none`, and its wake-ups go
   by `SendMessage`. See "Launch" in [11-setup-and-settings.md](11-setup-and-settings.md).
@@ -134,26 +133,26 @@ and the launcher then loads no channel.
   reads the port again each time. It writes each event, except a ping, as one
   `notifications/claude/channel` with the event's `content` and the `meta` keys that are
   identifiers. Its instructions tell the session to follow the pointer in each event.
-  See `/events` in [06-ledger-server.md](06-ledger-server.md). **(proposed)**
+  See `/events` in [06-ledger-server.md](06-ledger-server.md).
 - A pushed wake-up records `pushed_at`. The ledger confirms it from the target's
   transcript: a user turn, outside a sidechain, from the channel (origin kind `channel`,
   a `turnOrigin` or `promptSource` of `channel`, or a `<channel source="swarm-events">`
   tag) that carries the wake-up's pointer or its `wakeup_id`, stamped no earlier than 5
   seconds before the push. Confirmation sets `sent_at` and `channel = confirmed`, and
   costs no model turn. The watchdog checks on every pass, and the sender's Stop hook
-  checks before it decides. **(proposed)** The transcript shape of a channel turn is not
+  checks before it decides. The transcript shape of a channel turn is not
   verified live yet.
 - The member Stop hook waits, polling each second, until each pushed wake-up it owes is
   confirmed or 30 seconds old. A confirmed push is settled. An unconfirmed push blocks
   the sender with the `SendMessage` call, or `agent_resume` when the target stopped.
   That fallback call never pushes, so a lost event never strands a target.
-  **(proposed)**
 - The watchdog reports a push that stays unconfirmed and unsent. See `wake_unconfirmed`
   in [08-watchdog.md](08-watchdog.md).
 - A channel event carries a `kind`. A wake-up is kind `wakeup`, with the pointer as its
   content and `wakeup_id` and `reason` as its meta. The stream also sends a `ping` event
   after 15 seconds without one. A future device-queue broker adds a second kind on
-  `swarm-events`, not a separate server. **(proposed)**
+  `swarm-events`, not a separate server. **(needs implementation: the event `kind` and
+  the `ping` are built; the device-queue broker is not)**
 - The Coder's Stop hook also blocks once, per Coder, when the Coder stops while working
   with no handoff, and names `handoff_submit` or a `message_post` to its Lead.
 
@@ -187,7 +186,7 @@ a possible injection. So only the Oracle and the Managers see the elapsed time.
   [02-run-lifecycle.md](02-run-lifecycle.md).
 - The budget comes from the run's settings snapshot, `runs.settings_json`, taken at
   `run_start`, so a change to the settings file applies to the next run. An old run
-  whose snapshot has no budget shows the elapsed time alone. **(proposed)**
+  whose snapshot has no budget shows the elapsed time alone.
 
 ## Messages
 
@@ -204,19 +203,19 @@ a possible injection. So only the Oracle and the Managers see the elapsed time.
   event, and names each call. This debt blocks even while the run is paused, while
   children work, while a directive waits on the user, and after `run_finish`, because
   the call ends at once. See "Driver notifications" in
-  [02-run-lifecycle.md](02-run-lifecycle.md). **(proposed)**
+  [02-run-lifecycle.md](02-run-lifecycle.md).
 - Otherwise it never blocks while the run is paused.
 - It does not block for pending work while any Manager, Lead, or Coder is working:
-  waiting on running children is a valid stop. **(proposed)**
+  waiting on running children is a valid stop.
 - A child that is still `registered`, was spawned no more than 2 minutes ago
   (`REGISTER_GRACE`), and whose session is running counts as working, because it has
   not yet acknowledged its brief. The Oracle then stops instead of waking a child that
   is starting. A child that never starts is reported by the watchdog.
 - It does not block for pending work while a directive waits on the user, with outcome
-  `needs_user`. **(proposed)**
+  `needs_user`.
 - Otherwise it blocks while the run has unlocked phases, submitted handoffs, live file
   claims, handed-up phases without an accepted review, or live agents none of which is
-  working. Phases under a scoped pause do not count. **(proposed)** The reason names
+  working. Phases under a scoped pause do not count. The reason names
   each idle agent to wake and the call to wake it, and suggests `run_pause` when only
   the user can unblock the run.
 - It also blocks while the run is active and the watchdog listener is not armed, even
@@ -244,7 +243,7 @@ a possible injection. So only the Oracle and the Managers see the elapsed time.
 - A Driver whose exploration is closed is released once it owes no unsent wake-up: after
   its `SendMessage` to the Oracle, after its own `agent_resume` of the Oracle, or at its
   Stop hook when a channel push was confirmed. `drive_request` and `run_finish` release
-  one that is still live. **(proposed)**
+  one that is still live.
 
 ## What stops when
 
@@ -253,10 +252,10 @@ a possible injection. So only the Oracle and the Managers see the elapsed time.
 | `approve` or `accept_incomplete` | The Coder's session |
 | `agent_release` by a Manager after `module_review` accepts | The Lead's session |
 | `phase_update(approved)` | The phase's Manager and every live agent under it |
-| The Driver's wake-up to the Oracle after `drive_done`, or after its own `drive_unavailable`, is marked sent | The Driver's own session **(proposed)** |
+| The Driver's wake-up to the Oracle after `drive_done`, or after its own `drive_unavailable`, is marked sent | The Driver's own session |
 | `drive_done` or the Driver's own `drive_unavailable` with no live Oracle to wake | The Driver's own session, at once |
-| `agent_release` of a Driver by the Oracle, or the Oracle's `drive_unavailable` | The Driver's session; its open exploration becomes `abandoned` **(proposed)** |
-| `drive_request` | An earlier Driver still live after its exploration ended **(proposed)** |
+| `agent_release` of a Driver by the Oracle, or the Oracle's `drive_unavailable` | The Driver's session; its open exploration becomes `abandoned` |
+| `drive_request` | An earlier Driver still live after its exploration ended |
 | `run_finish` | Every agent still live except the Oracle |
 | About 3 seconds after `run_finish` | The server waits up to 5 minutes for the Oracle's last turn to end, stops the Oracle's background session, and exits. An interactive Oracle is the user's terminal and keeps running |
 | `idle_exit_minutes` with no active run, or a paused run, no session of the run running, and no ledger tool call | The ledger server |
@@ -270,13 +269,12 @@ a possible injection. So only the Oracle and the Managers see the elapsed time.
   machine: entries from `claude agents --json` that are running, whose name matches the
   swarm session-name shape (`<slug>-r<run_id>-<name>`, from `looks_like_swarm_session`),
   and that are not one of this run's own session names. The parent tries again after a
-  release. **(proposed)**
+  release.
 - `role_parallelism_cap.<role>` caps that role's own live agents in the run, on top of
-  `parallelism_cap`. **(proposed)**
+  `parallelism_cap`.
 - `drive_request` starts the Driver through the same `agent_spawn` path, so both caps
   apply to it exactly as to any other role; in practice a run has at most one live
   Driver, since `drive_request` refuses while an exploration is already open.
-  **(proposed)**
 - A swarm session starts only its role's MCP servers, about 300 MB of memory each.
 
 ## The multi-repo lock
@@ -295,7 +293,7 @@ a possible injection. So only the Oracle and the Managers see the elapsed time.
 - The lock clears at `run_finish`, when the ledger server that holds it shuts down for
   any reason (`serve._shut_down` releases a lock its own pid owns), and, self-healing,
   the next `run_start` that finds a lock whose pid is no longer alive treats it as
-  stale and takes it. **(proposed)**
+  stale and takes it.
 
 ## Per-role settings
 
@@ -310,4 +308,4 @@ a possible injection. So only the Oracle and the Managers see the elapsed time.
   Claude Code mechanism.
 - No CLI flag or setting controls per-session concurrency beyond what `parallelism_cap`
   and `role_parallelism_cap` already give the ledger, so no other per-role setting was
-  added. **(proposed)**
+  added.

@@ -21,7 +21,7 @@ _DEFAULT_MODELS = {
     "manager": ["opus"],
     "lead": ["opus", "sonnet"],
     "coder": ["sonnet", "haiku"],
-    # (proposed) The Driver runs on Sonnet by default, as cartographer's map-driver does.
+    # The Driver runs on Sonnet by default, as cartographer's map-driver does.
     "driver": ["sonnet", "opus"],
 }
 DEFAULT_EFFORT = {role: "medium" for role in _DEFAULT_MODELS}

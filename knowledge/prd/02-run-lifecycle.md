@@ -36,14 +36,14 @@ message. The Oracle then calls, in order:
   phases. **Scale down:** integration phases bring the parts together with fewer
   agents.
 - A join point is where parallel phases feed a later phase. The Oracle runs the full
-  suite there, once every Manager that feeds it has reported. **(proposed wording)**
+  suite there, once every Manager that feeds it has reported.
 - The plan changes during the run. Higher layers add work from validated findings, or
   schedule it for a later phase.
 - The same ordering applies inside a phase and a module: helpers come before the files
-  that use them. **(proposed)**
+  that use them.
 - Contracts come before implementations. When a brief fixes a helper's contract, the
   dependent Coders test against it with test doubles instead of waiting. "Blocked"
-  means the contract is missing or wrong. **(proposed)**
+  means the contract is missing or wrong.
 
 ## Modules
 
@@ -120,7 +120,7 @@ The ledger enforces this order:
      applicable dimension is at or above the rubric floor, no criterion is below the
      criterion floor, and the file is at its last escalation round: its recorded
      attempts have reached the full escalation budget, the `escalation` settings'
-     `rounds` times `attempts_per_round`. **(proposed)** A floor pass records a
+     `rounds` times `attempts_per_round`. A floor pass records a
      shortfall for each dimension still below target and names them in the result's
      `floor_pass_dimensions`; the report shows them.
    - `return_work(handoff_id, issues, targeted)` refuses while a departure on the
@@ -131,21 +131,20 @@ The ledger enforces this order:
      `open` or `pushed_back`. It marks the file `incomplete` and releases it, marks
      pushed-back departures of the file `reworked`, releases the Coder, and opens a
      deferral. It uses no fix attempt. The Lead validates the Coder's reason first.
-     **(proposed)**
 5. After a return, the Coder hands off again. The Lead scores again with `targeted`,
    compares, and calls `attempt_record(file_id)`. See "Scoring and review" in [03-scoring-and-review.md](03-scoring-and-review.md).
 
 ## Module review
 
 `module_review(module_id, outcome, notes, disagreement_notes, scores)` belongs to the
-Manager of the module's phase. **(proposed)**
+Manager of the module's phase.
 
 - `accepted` refuses unless every file of the module is `approved`, `incomplete`, or
   `superseded`; a passing test run of scope `module` for the module, or of scope
   `phase` in the phase, exists after the module's last file decision; `disagreement_notes`
   holds a non-empty note, keyed by `file_id`, for each approved file whose self and
   Lead scores disagreed; and `scores` rates completeness, integration, and open items
-  from 1 to 10, with a reason below 9. **(proposed)**
+  from 1 to 10, with a reason below 9.
 - `accepted` also refuses while a departure in the module waits on the Lead or the
   Manager, or is pushed back and not reworked.
 - `returned` sets the module to `returned` and owes the live Lead a wake-up. When the
@@ -156,27 +155,27 @@ Manager of the module's phase. **(proposed)**
 
 `phase_update(phase_id, "handed_up")` refuses while a Lead of the phase is live, and
 unless every module of the phase has an accepted `module_review` newer than its last
-file decision. **(proposed)** It records `handed_up_at` and owes the Oracle a wake-up.
+file decision. It records `handed_up_at` and owes the Oracle a wake-up.
 The Manager then posts its phase report to the Oracle.
 
 ## Phase review and approval
 
 `phase_review(phase_id, outcome, notes, low_score_notes, scores)` belongs to the Oracle,
-for a phase in `handed_up`. **(proposed)**
+for a phase in `handed_up`.
 
 - `accepted` refuses unless the Oracle recorded a passing `tests_run(scope="full")`
   after the hand-up; no approved or incomplete file of the phase lacks a test file while
   the code graph anchors a function or class in it; `low_score_notes` holds a
   non-empty note, keyed by `file_id`, for each file whose latest Lead review has a
   dimension below the target; and `scores` rates completeness, integration, and open
-  items from 1 to 10, with a reason below 9. **(proposed)**
+  items from 1 to 10, with a reason below 9.
 - `accepted` also refuses while a departure of the phase is neither signed off nor
   reworked.
 - `returned` sets the phase back to `working` and owes the live Manager a wake-up.
 
 `phase_update(phase_id, "approved")` refuses while a deferral on a file of the phase is
 open, while a change request on a file of the phase is not verified or declined, and
-without an accepted `phase_review` since the hand-up. **(proposed)** It approves the
+without an accepted `phase_review` since the hand-up. It approves the
 phase, then releases the Manager and every live agent under it and stops their
 sessions.
 
@@ -184,7 +183,7 @@ sessions.
 
 `run_finish(outcome)` refuses while any phase is not approved, any file claim is live,
 any directive is open, any deferral is open, any change request is not verified or
-declined, or any departure is neither signed off nor reworked. **(proposed)** It also
+declined, or any departure is neither signed off nor reworked. It also
 refuses, when the host has a Driver available, while no exploration has ended clean
 since the last fix wave, unless the loop stopped on a stop rule whose directive is
 resolved, or the user decided to go without the Driver: see "Explorations" below. It then
@@ -204,15 +203,15 @@ when" in [05-sessions.md](05-sessions.md).
   for that bug. When the exploration ends and every fix agent has finished, the Driver
   builds and retests. Fix agents run unit tests only.
   - The Oracle asks a running module for a new Coder through its Manager, which asks
-    the Lead, so the spawn order holds. **(proposed)**
+    the Lead, so the spawn order holds.
   - The Driver tests the app it built at the start of the exploration, never a dev
-    server that reloads on edits. **(proposed)**
+    server that reloads on edits.
   - A failed build is recorded at once as a finding with the build log, which ends that
-    exploration, and the retest starts with a build. **(proposed)**
+    exploration, and the retest starts with a build.
 - Every wave starts from a new plan and new agents, including a fix wave planned from a
   Driver exploration. A review fix inside a wave, such as a return or a pushback,
   resumes the existing agents. The Oracle groups the issues by module, one fix phase per
-  module. **(proposed)**
+  module.
 - Fixes always name their finding ids, so every role works from the same ids and can
   follow the plan. While the run has an open finding, every brief the Oracle creates
   passes `finding_ids` explicitly: the ids it fixes, or an empty list for a brief that
@@ -223,20 +222,19 @@ when" in [05-sessions.md](05-sessions.md).
   - An open finding is the latest finding of a fingerprint that no later `done`
     exploration left out, and whose fingerprint has not hit a per-finding stop rule. An
     empty list is stored as no list. The Driver's own brief from `drive_request` passes
-    an empty list. **(proposed)**
-  - The ids are visible to every role **(proposed)**: `brief_get` returns `findings`,
+    an empty list.
+  - The ids are visible to every role: `brief_get` returns `findings`,
     the id, fingerprint, title, severity, and area of each finding the brief names;
     `status_tree` returns `open_findings` and `fixes`, each brief that names findings
     with their ids and titles; and the report's Explorations section shows each
     finding's id and a "Fixes" list.
-  - The finding's evidence in the Coder's brief body and the re-claim of the file are
-    **(proposed, not built)**.
+  - The Coder's brief body carries the finding's evidence, and the fix re-claims the
+    file. **(needs implementation)**
 - Each request carries a focus list the Oracle writes. The first exploration covers
   every PRD feature; each later one covers the features the last wave touched, every
   open issue to recheck, and a quick smoke pass over everything else; the final clean
   exploration is a full pass. The Driver first replays recorded routes with `map-test`
   to recheck earlier findings, then runs `map-explore` with the focus list as its goal.
-  **(proposed)**
 - `drive_request(focus)` is the Oracle's call. It refuses an empty focus list, a host
   with no Driver available, a run with an open `[driver-unavailable]` directive or one
   resolved `declined`, an earlier exploration that is still open
@@ -251,7 +249,7 @@ when" in [05-sessions.md](05-sessions.md).
   `drive_issue(request_id, finding)` records one finding as a row in `drive_findings`,
   with the evidence as paths into cartographer's run folder, and owes the Oracle a
   wake-up at once. It refuses a finding with no `fingerprint` or `title`, or with
-  another severity. **(proposed)**
+  another severity.
 - No time limit on an exploration. Every 30 minutes the Driver reports its progress to
   the Oracle and keeps working. The Oracle reviews the testing and the steps so far,
   looking for problems that are not obvious bugs, and starts fixes for them. It also
@@ -259,18 +257,17 @@ when" in [05-sessions.md](05-sessions.md).
   whatever blocked it. `drive_checkin(request_id, covered, steps, notes)` records a
   check-in and owes the Oracle a wake-up. The watchdog does not report the Driver as
   stuck while its check-ins arrive within 30 minutes plus a 5-minute grace; see
-  [08-watchdog.md](08-watchdog.md). **(proposed)**
+  [08-watchdog.md](08-watchdog.md).
 - The Driver cannot see wall time, so `drive_issue` and `drive_checkin` return when the
   next check-in is due, as data: `next_checkin_due_at`, the last check-in (or the
   exploration's start, with none yet) plus 30 minutes, and `next_checkin_in_s`, the
   seconds left until then. No sentence is appended to the result. See "Time signal" in
   [05-sessions.md](05-sessions.md). `next_checkin_in_s` stops at 0 once the check-in is
   due, and `drive_done` and `drive_unavailable`, which close the exploration, return
-  neither field. **(proposed)**
+  neither field.
 - `drive_done(request_id, blocked=None)` ends the exploration, and the Oracle is woken
   directly: the Driver's own wake-up tells it how the exploration ended. The Driver's
-  session is released and stopped once that wake-up goes out. The mechanism is
-  **(proposed)**:
+  session is released and stopped once that wake-up goes out. The mechanism:
   - `drive_done` owes the Oracle a wake-up, reason `drive_done`, and returns its call
     as `next`, built by `route_wakeup` like every other wake-up. The pointer names the
     exploration and how it ended, for example `Driver exploration 3 (request 3) ended:
@@ -298,11 +295,11 @@ when" in [05-sessions.md](05-sessions.md).
   The Driver passes `blocked`, a short statement
   of what failed, when it cannot continue: a failed build or a device that will not
   boot. `drive_done` refuses `blocked` until the exploration has a finding, so a blocked
-  exploration never counts as clean. **(proposed)**
+  exploration never counts as clean.
 - Releasing a Driver, with `agent_release` or `run_finish`, closes its open exploration
   as `abandoned`. The Oracle stops a stuck or crashed Driver this way, then requests the
   next exploration. An abandoned exploration never counts as clean, and it is not a wave
-  in the stall count; its findings still count as seen. **(proposed)**
+  in the stall count; its findings still count as seen.
 - A Driver that fails to load is a normal blocking issue. `drive_unavailable(reason)`
   records that the Driver's plugin servers failed to load. The Driver calls it for its
   own exploration, or the Oracle calls it. It files a `driver` directive for the
@@ -312,7 +309,7 @@ when" in [05-sessions.md](05-sessions.md).
   `drive_unavailable`, with the pointer `Driver unavailable: <reason>. Directive <id>
   waits in the ledger, and the exploration is abandoned.`, returns its call as `next`,
   and releases the Driver once that wake-up goes out, as for `drive_done` above.
-  **(proposed)** It never turns explorations
+  It never turns explorations
   off by itself. While the directive is open, `drive_request` refuses and says why, and
   `run_finish` refuses, as it does for every open directive. The Oracle tries to
   resolve the cause, then resolves the directive:
@@ -322,7 +319,7 @@ when" in [05-sessions.md](05-sessions.md).
     as every `needs_user` directive does.
   - `declined`: the user decided to go without the Driver. The run skips every
     exploration from then on, and `run_finish` no longer demands one.
-  - The mechanism is **(proposed)**: the ledger reads the run's latest
+  - The mechanism: the ledger reads the run's latest
     `[driver-unavailable]` directive. `scheduled` counts as `applied`. A user reply
     through `reply_to` closes the directive but leaves its outcome `needs_user`, which
     counts as `applied` until the Oracle resolves it `declined`. A second call while
@@ -339,16 +336,15 @@ when" in [05-sessions.md](05-sessions.md).
     turns across the last 4 explorations). `drive_done` files each condition as an open
     directive from source `driver`, computed by the pure function `compute_loop_status`
     in `mcp/src/swarm_ledger/drive.py` over every request and finding of the run, and
-    deduplicated by its exact reason text. **(proposed)**
+    deduplicated by its exact reason text.
   - Each directive body starts with `[driver-stop] <reason>` and lists the evidence.
     For a stopped finding or a regression: the title, fingerprint, and area, the fix
     attempts in a row and in all, the explorations it recurred in, and the evidence
     paths. For a stall: every finding of the latest exploration, which is what is left.
-    **(proposed)**
   - `drive_done` records each directive's targets in `drive_stops`: the fingerprint for
     a per-finding stop, and each fingerprint the pattern names, with its area, for a
     pattern. `brief_create` and `agent_spawn` enforce the rules on a brief's
-    `finding_ids` **(proposed)**:
+    `finding_ids`:
     - A finding whose fingerprint hit a per-finding stop gets no more fixes for the rest
       of the run, even after its directive resolves. A finding that reaches the stop in
       the open exploration is refused too, before `drive_done` files the directive.
@@ -356,13 +352,12 @@ when" in [05-sessions.md](05-sessions.md).
       names is refused while the pattern's directive is open. Resolving the directive
       lifts the pause.
 - The loop ends on a clean exploration (no finding) or on a stop rule, whichever comes
-  first. **(proposed)**
+  first.
 
 ### Driver notifications
 
 The user is notified when the Driver finishes or hits an error. See "What the Oracle
-tells the user" in [04-agreements.md](04-agreements.md). The mechanics below are
-**(proposed)**.
+tells the user" in [04-agreements.md](04-agreements.md).
 
 - **Events.** `drive_done` records at most one notification per exploration, in this
   order: `blocked` (error), a stop rule it filed a new directive for (warning), or a
@@ -427,7 +422,7 @@ tells the user" in [04-agreements.md](04-agreements.md). The mechanics below are
   `plan_unlocked`, the Oracle's Stop hook, and the watchdog's stall check all treat a
   paused phase's handoffs, claims, and unlocked state as waiting, not as pending work,
   so they neither nag the Oracle nor report a stall over it. `phase_resume(phase_ids)`
-  clears the pause on named phases once the blocker is gone. **(proposed)**
+  clears the pause on named phases once the blocker is gone.
 - The user's next message, or `/sentinel-swarm:resume`, leads the Oracle to call
   `run_start`, which sets the run back to `active`. A scoped pause does not touch the
   run's own state, so it never needs `run_start` to clear it; only `phase_resume` does.
@@ -436,7 +431,7 @@ tells the user" in [04-agreements.md](04-agreements.md). The mechanics below are
   `resumed: true`.
 - One swarm runs per repo. `run_start` refuses while the run's Oracle still runs in
   another session, and refuses when it cannot list sessions to check.
-- A run resumes only on the same machine: the records are local. **(proposed)**
+- A run resumes only on the same machine: the records are local.
 
 ## Git in the host repo
 
@@ -445,16 +440,16 @@ tells the user" in [04-agreements.md](04-agreements.md). The mechanics below are
 - `repo_check(fetch)` reports the branch, a clean tree, the dirty paths, the base
   branch (the `base_branch` setting, else `main`, else `master`), ahead and behind
   counts against the base and the upstream, `obvious_start`, and one line of `advice`.
-  It records the result on the run. **(proposed)**
+  It records the result on the run.
 - `obvious_start` is true when the tree is clean, the checkout is on the base branch,
   and it is not behind its upstream. The Oracle then calls `repo_branch_create(name)`,
   which refuses unless the last check reported `obvious_start`, the tree is still clean,
-  and no Manager, Lead, or Coder of the run is live. **(proposed)**
+  and no Manager, Lead, or Coder of the run is live.
 - Otherwise the Oracle asks the user, naming the reason: uncommitted changes, another
-  branch, behind the remote, no base branch, or no git repo. **(examples proposed)** A
+  branch, behind the remote, no base branch, or no git repo. A
   headless Oracle records its assumption in the guidelines and proceeds.
 - `agent_spawn` refuses a Manager until the run has a recorded `repo_check`. It does not
-  require `obvious_start`. **(proposed)**
+  require `obvious_start`.
 - No agent works in a git worktree, so nothing needs a merge and the repo has one copy
   of the code graph. Each hand-up saves a version in the records folder, since commits
-  are not available. **(proposed)**
+  are not available.

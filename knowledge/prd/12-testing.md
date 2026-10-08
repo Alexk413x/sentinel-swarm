@@ -43,7 +43,7 @@ run `/reload-plugins`.
   a README, a `pyproject.toml`, a settings file with the pytest test command, a
   one-node code graph, and `git init -b main`. It copies the plugin to a fresh temp
   folder, rewrites that copy's version to a dev version such as
-  `<plugin version>-dev.<epoch seconds>`, for example `0.1.0-dev.1790650000` **(proposed)**, installs it at project scope under that
+  `<plugin version>-dev.<epoch seconds>`, for example `0.1.0-dev.1790650000`, installs it at project scope under that
   version, runs setup, commits, and starts the Oracle through the installed copy's launcher. Each run
   also removes any older `*-dev.*` copy from the plugin cache, skipping one a live
   session still has open, so a run never replaces a cached copy another session holds.
@@ -75,16 +75,15 @@ run `/reload-plugins`.
   session.
   - `--keep-data`, on teardown's uninstall and on the uninstall before each install,
     keeps the plugin data folder, which holds the ledger venv that every smoke host
-    and live session shares. **(proposed)**
+    and live session shares.
   - Teardown removes the marketplace only when its record is a smoke copy (a
     `directory` source named `sentinel-swarm-plugin-*`) and no install uses it any
     more. `claude plugin marketplace remove` uninstalls every plugin from the
     marketplace in every project and deletes their data, so while another host still
     has the plugin installed, teardown leaves the marketplace and prints that host.
-    **(proposed)**
   - Teardown is skipped while the ledger's latest run has no `ended_at`, and the
     script prints the `--results` command instead: the hook shim finds the plugin through its install
-    record, so an uninstall would break the run's live sessions. **(proposed)**
+    record, so an uninstall would break the run's live sessions.
 - From PowerShell, call Git Bash explicitly:
   `& "C:\Program Files\Git\bin\bash.exe" scripts/smoke.sh`. Plain `bash` can resolve
   to WSL.
@@ -114,7 +113,7 @@ run `/reload-plugins`.
   - Dev PRDs, `scripts/prds/modules.md` and `scripts/prds/textstats.md`, are the ones
     to use while tuning prompts.
   - The regression suite is the default hello prompt and `modules`. Their acceptance
-    tests, with a set for `textstats` too **(proposed)**, live in
+    tests, with a set for `textstats` too, live in
     `scripts/bench/acceptance/<name>/`.
   - The held-out set lives in `scripts/bench/heldout/<name>/`, each with `prd.md` and
     `acceptance/test_*.py`: `shapes`, `units`, and `tally`. Never read or run a
@@ -129,7 +128,7 @@ run `/reload-plugins`.
   module from the host in a fresh temporary folder, so the tests also check what the
   program writes when it runs.
 - A trial whose ledger run started before the trial fails with "no run started in this
-  trial", so a smoke run that stops early never grades the last run's host. **(proposed)**
+  trial", so a smoke run that stops early never grades the last run's host.
 - `--model-pin` and `--effort` pin a variant, because an alias such as `sonnet` moves to
   a new model and baselines must stay comparable. `--model-pin coder=<model id>` makes
   that model the only approved Coder model, `all=` sets every role, and a pinned Oracle
@@ -171,7 +170,7 @@ Results go to `evals/results/` (git-ignored).
 
 `bash scripts/smoke.sh --results` runs `python -m swarm_ledger.checklist` against the
 latest run in the ledger and prints `PASS`, `WARN`, or `FAIL` for each check below, then
-exits non-zero if any check fails. **(proposed)** It expects the run to have ended in a
+exits non-zero if any check fails. It expects the run to have ended in a
 clean, success-like outcome, the shape a default hello-world run should reach; a
 `--prd` run that legitimately defers or leaves a file incomplete does not fit this
 checklist, and needs the manual judgment below instead. A missing ledger, or a ledger
@@ -200,7 +199,7 @@ the text above. The document has `schema` (1), `repo`, `passed` (no check failed
 metrics.py` builds `metrics` from the ledger and from each agent's transcript, read from
 `agents.transcript_path` or else `<config>/projects/<munged host path>/<agent_id>.jsonl`,
 where every character of the absolute host path that is not a letter or digit becomes
-`-`. **(proposed)** The field shapes:
+`-`. The field shapes:
 
 - `run`: `run_id`, `state`, `outcome`, `started_at`, `ended_at`, and `wall_seconds`
   from start to end.

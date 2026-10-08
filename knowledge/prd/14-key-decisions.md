@@ -112,3 +112,5 @@
 - 2026-09-28: `tests_run` reuses a passing run of the same command when `HEAD`, the tracked changes, and every claimed file are unchanged, and records the reuse as a new row; `force=true` always runs.
 - 2026-09-28: PRD 09 names the accessibility-tools relay release as "their AP-21 release", not version numbers.
 - 2026-10-07: A role session connects to a plugin's HTTP MCP server directly, with the plugin's own entry in its `--mcp-config`, not through the stdio relay. The relay stays for stdio entries.
+- 2026-10-07: The PRD is the maintained specification, and the code must match it. No item waits for review: the (proposed) mark and `15-proposed.md` are retired. An item the code does not implement yet is marked (needs implementation) and listed in `16-open-items.md`.
+- 2026-10-07: Other platforms start as a non-Claude Coder only, with the Oracle, Managers and Leads on Claude Code. The first gate is that such a Coder communicates and works with its Lead, Manager and Oracle as a Claude Coder does. See `plans/upgrade-roadmap.md`, part 2.

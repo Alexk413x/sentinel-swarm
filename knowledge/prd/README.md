@@ -17,15 +17,17 @@ writes unit tests only. End-to-end testing is a separate process outside the swa
 
 - This folder is the source of truth for how the system works. Read the document for
   a subject before you change it. The table below lists every document.
-- **(proposed)** marks an item Alex has not reviewed. Everything else is settled.
-- The code is the ground truth for behavior. When a document and the code disagree,
-  fix whichever one is wrong, and record the fix in the document.
+- This folder is the maintained specification, and the code must match it. No item
+  waits for review.
+- **(needs implementation)** marks an item the code does not implement yet.
+  [16-open-items.md](16-open-items.md) lists every such item.
+- When the code and a document disagree, fix the code to match the document, unless
+  the document is wrong. Keep each document current with the code.
 - For the module layout of the ledger server, read `mcp/ARCHITECTURE.md`. For the exact
   rubric criteria, read `mcp/src/swarm_ledger/rubric.py`. For the tables, read
   `mcp/src/swarm_ledger/schema.sql`.
 - When Alex makes a decision, record it as a plain rule in the document for its
-  subject, and add a dated line to [14-key-decisions.md](14-key-decisions.md). Mark
-  your own additions **(proposed)** and list them in [15-proposed.md](15-proposed.md).
+  subject, and add a dated line to [14-key-decisions.md](14-key-decisions.md).
 - Plans for work not built yet live in `plans/`, not here.
 
 ## Documents
@@ -46,5 +48,4 @@ writes unit tests only. End-to-end testing is a separate process outside the swa
 | [12-testing.md](12-testing.md) | The checks for this repo, the quick and complete smoke tests, the benchmark, the skill-trigger evals, and what to check after a run |
 | [13-platform-facts.md](13-platform-facts.md) | Verified Claude Code platform facts the design relies on |
 | [14-key-decisions.md](14-key-decisions.md) | Alex's decisions, one dated line each |
-| [15-proposed.md](15-proposed.md) | Items marked (proposed) that await review |
-| [16-open-items.md](16-open-items.md) | Work that is not done yet |
+| [16-open-items.md](16-open-items.md) | Work that is not done yet, including every item marked (needs implementation) |

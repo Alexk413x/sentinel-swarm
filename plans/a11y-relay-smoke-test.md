@@ -151,8 +151,7 @@ Each check passes only if it holds for every role session the run started.
 - Close "Plugin relays in a live run" in `knowledge/prd/16-open-items.md`, or narrow it
   to what failed.
 - If `--a11y` and `a11y.md` are built, describe them in
-  `knowledge/prd/12-testing.md`, mark them **(proposed)**, and list them in
-  `knowledge/prd/15-proposed.md`.
+  `knowledge/prd/12-testing.md`.
 - Delete this plan.
 
 ## Cost and time

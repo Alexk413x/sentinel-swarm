@@ -1,14 +1,14 @@
 {
+  "enabledPlugins": {
+    "codebase-kg@alexk413x": true
+  },
   "extraKnownMarketplaces": {
-    "codebase-kg": {
+    "alexk413x": {
       "source": {
-        "source": "git",
-        "url": "https://github.com/Alexk413x/codebase-kg.git"
+        "source": "github",
+        "repo": "Alexk413x/marketplace"
       },
       "autoUpdate": true
     }
-  },
-  "enabledPlugins": {
-    "codebase-kg@codebase-kg": true
   }
 }

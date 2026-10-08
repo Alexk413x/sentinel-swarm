@@ -16,7 +16,7 @@
   `web-driver-kg`), through the same shim mechanism as the a11y servers
   (`agentfiles.OPTIONAL_SERVERS` for a11y, `agentfiles.DRIVER_OPTIONAL_SERVERS` for the
   Driver's own, joined only when `role == "driver"`). Every other role's session never
-  gets them, even when the plugins are installed. **(proposed)**
+  gets them, even when the plugins are installed.
 - The Driver's own servers are keyed by the name a plugin install gives them,
   `plugin_<plugin>_<server>`: `plugin_cartographer_cartographer`,
   `plugin_android-driver_android-driver-kg`, and so on. Their tools then carry the
@@ -24,7 +24,7 @@
   servers keep their bare keys until a11y renames its tools to the plugin form.
 - An Oracle launch that carries the channel also lists `swarm-events`, the stdio entry
   `python .sentinel-swarm/hook.py channel`. It has no tools. No other launch lists it.
-  See "Wake-up delivery" in [05-sessions.md](05-sessions.md). **(proposed)**
+  See "Wake-up delivery" in [05-sessions.md](05-sessions.md).
 - Tool names: `mcp__swarm-ledger__<tool>` and `mcp__codebase-kg__<tool>`.
 - Each role keeps a fixed `tools` allowlist in its agent file. It names each ledger tool
   the role may call, from `identity.ROLE_TOOLS`, never the whole `mcp__swarm-ledger`
@@ -81,20 +81,22 @@ first release whose relay shares one server per machine and runs on Windows (the
 find what exists while many agents change the code at once. The graph file,
 `knowledge/code_graph.db`, belongs to the host repo and is committed with its code.
 
-- Every role searches the graph first, at its own level **(proposed)**, and uses Grep
-  or Glob only when the graph lacks the answer. codebase-kg's own search gate hook
+- Every role searches the graph first, at its own level **(needs implementation: the
+  role templates do not say which level each role searches at)**, and uses Grep or
+  Glob only when the graph lacks the answer. codebase-kg's own search gate hook
   enforces this order. An agent that falls back records what the graph was missing.
-  **(proposed)**
 - Only the Coder writes to the graph, and only through `graph_upsert(nodes)`. It takes
   codebase-kg's `kg_upsert_node` node shape (`id`, `kind`, `section`, `description`,
   `anchors`, `edges`). The ledger refuses an anchor outside the Coder's file and test
   file, and an edge to a node that does not exist. It applies the upsert under a lock
   in the ledger process, through `uv run` in the `mcp` folder of the highest numbered
   version under `~/.claude/plugins/cache/codebase-kg/codebase-kg/`, or in
-  `SENTINEL_SWARM_KG_ROOT`. **(mechanism proposed)**
+  `SENTINEL_SWARM_KG_ROOT`.
 - Setup sets `post_edit_nudge: false` in the host's `.claude/codebase-kg.local.md`, so
   codebase-kg's edit hook does not send a Coder to `/codebase-kg:refresh`.
-- A node that anchors on several files is updated through the Lead. **(proposed)**
+- A node that anchors on several files is updated through the Lead. **(needs implementation:
+  `graph_upsert` refuses any anchor outside the Coder's own file, and the Lead has no
+  graph write tool)**
 - Anchors are `"<path>#<Symbol>"` for every top-level function and class. A file with no
   functions or classes is anchored by its path alone: `"anchors": ["<path>"]`. A Coder
   never adds code only to have an anchor.
@@ -107,4 +109,4 @@ find what exists while many agents change the code at once. The graph file,
   with no test file when the graph anchors any symbol in it. Test anchors in the graph
   do not count as tests.
 - The `setup` skill builds the graph when the host has none. An empty repo starts with
-  an empty graph. **(proposed)**
+  an empty graph.

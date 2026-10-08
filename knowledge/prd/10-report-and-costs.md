@@ -5,9 +5,9 @@
 `scripts/smoke.sh`, keeps working. `run_finish` rebuilds both, and the Oracle's last
 stop or session end refreshes both with the Oracle's final tokens. `report.md` is
 overwritten by every run; each run's own `report-<run_id>.md` survives it, so earlier
-runs' reports stay on disk. The user copies either out to keep it. **(proposed)**
+runs' reports stay on disk. The user copies either out to keep it.
 
-Sections **(contents proposed)**:
+Sections:
 
 - Outcome, duration, and the pause reason for a paused run.
 - Repo: the run's branch and the last `repo_check`.
@@ -20,32 +20,32 @@ Sections **(contents proposed)**:
   outcome, and issues.
 - Explorations: each one's ordinal, request id, state, and focus, and each finding it
   recorded with its id, title, fingerprint, severity, area, and whether it recurred in
-  a later exploration or was not seen again. **(proposed)** A "Fixes" list shows each
+  a later exploration or was not seen again. A "Fixes" list shows each
   brief that names findings: the child's name and role, and each finding's id and
-  title. **(proposed)** A "Stop rules" list shows each `[driver-stop]` directive's
+  title. A "Stop rules" list shows each `[driver-stop]` directive's
   reason, its outcome, and its evidence lines, including what is left after a stall.
-  **(proposed)** A Driver that fails to load has no entry here; it shows only as its
+  A Driver that fails to load has no entry here; it shows only as its
   directive and its notification.
 - Open items: open deferrals, and every issue by round with its attempts and resolution.
 - Decided deferrals: who proposed each one, who decided it, and the decision and
-  reason. **(proposed)**
+  reason.
 - Departures, each with its full decision chain and final state.
 - Shortfalls.
 - Change requests, with decision, work done, evidence, and verification.
 - Overrides, with reasons.
 - Directives, with source and outcome. A `driver` directive shows only its first line,
-  since its evidence is under Explorations. **(proposed)**
+  since its evidence is under Explorations.
 - Notifications to the user: every directive resolved `needs_user`, with the question
   asked (kept even after a later `directive_resolve` changes the outcome) and each
   reply it received through `reply_to`; then every row of the `notifications` table,
-  with its kind, message, and time. **(proposed)**
+  with its kind, message, and time.
 - Final test run: the last `full`-scope `tests_run`, with passed, failed, skipped, and
-  exit code, or a note that none was recorded. **(proposed)**
+  exit code, or a note that none was recorded.
 - Measures: each phase's working time; each role's total agent time, summed across its
   agents; returns per file, from the `attempts` table; and cost per phase, summed from
   each agent's cost by its `phase_id`, with the Oracle's cost under a run-level total
   since the Oracle has no phase. A Driver has no phase either, so its cost shows only
-  under Agents. **(proposed)**
+  under Agents.
 - Agents: model, tokens (input, output, cache read, cache write), elapsed time, tool
   uses, context overflows, and cost, plus a run total.
 
@@ -62,4 +62,3 @@ Sections **(contents proposed)**:
 - When a transcript has a response whose model has no rate, the hook stores no cost
   from it, and the report falls back to the estimate. A cost the ledger cannot price
   shows as `unknown`, and so does any phase or run total that includes it.
-  **(proposed)**

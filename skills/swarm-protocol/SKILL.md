@@ -245,7 +245,7 @@ needs a reason. A rating of 4 or lower opens an issue.
 | `maintainability` | `clear_names`, `small_units`, `minimal_comments` |
 | `accessibility` | `ui_files_only`, `accessibility_tools_check` |
 
-A dimension score is the average of its criterion ratings times 10, from 0 to 100.
+A dimension score is the average of its criterion ratings times 10, from 10 to 100.
 The target is 90, the floor is 70, and the criterion floor is 5. A file passes when
 every applicable dimension is at or above the target and no criterion is below the
 criterion floor. Mark accessibility not applicable on a file that is not UI.

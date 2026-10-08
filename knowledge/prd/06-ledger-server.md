@@ -39,7 +39,7 @@
   15 seconds without an event. The request records `launched` on that session's agent
   row, and the stream registers the session until the connection closes. A request
   without `session` gets 400. See "Wake-up delivery" in
-  [05-sessions.md](05-sessions.md). **(proposed)**
+  [05-sessions.md](05-sessions.md).
 - Lifetime: the launcher starts the server before the Oracle. It exits after
   `run_finish`, and after `idle_exit_minutes` with no active run, or a paused run, and
   no session of the run running. A ledger tool call restarts the idle clock. A failed
@@ -58,13 +58,13 @@
 `server.port`, `server.log`, and the hook shim `hook.py`.
 A worktree's `.git` file resolves to the main checkout, so every worktree shares one
 ledger. The folder is excluded through `.git/info/exclude`, never the host's
-`.gitignore`. **(proposed)** One ledger holds every run in the repo. The swarm writes
+`.gitignore`. One ledger holds every run in the repo. The swarm writes
 the project's code in the host repo itself. Tracking is `local` only.
 
 ## Database
 
 - Every connection opens with WAL, `synchronous=NORMAL`, foreign keys on, and a 5-second
-  busy timeout. Every write runs inside `BEGIN IMMEDIATE`. **(proposed)**
+  busy timeout. Every write runs inside `BEGIN IMMEDIATE`.
 - `migrate` applies `schema.sql` at schema version 1 and adds later columns and tables
   idempotently.
 - Tables, grouped: the plan (`runs`, `phases`, `phase_deps`, `modules`, `files`,
@@ -72,12 +72,11 @@ the project's code in the host repo itself. Tracking is `local` only.
   (`handoffs`, `reviews`, `scores`, `test_runs`, `versions`, `attempts`, `issues`,
   `ideas`); agreements (`change_requests`, `departures`, `departure_decisions`,
   `deferrals`, `overrides`); communication (`messages`, `directives`,
-  `watchdog_findings`, `notifications` **(proposed)**); the Driver (`drive_requests`,
-  `drive_findings`, `drive_stops` **(proposed)**). Read `schema.sql` for the columns.
+  `watchdog_findings`, `notifications`); the Driver (`drive_requests`,
+  `drive_findings`, `drive_stops`). Read `schema.sql` for the columns.
 - Ledger enum values, such as states, outcomes, and decisions, use snake_case.
 - `agent_events` is append-only, and nothing deletes rows when a run finishes.
-  **(proposed)**
-- Each run records the plugin version and a settings snapshot. **(proposed)**
+- Each run records the plugin version and a settings snapshot.
 
 ## Tools
 
@@ -97,7 +96,7 @@ partial success.
 | Issues | `issue_open`, `issue_list`, `issue_close`, `idea_record`, `issue_escalate` |
 | Agreements | `cr_open`, `cr_accept`, `cr_complete`, `cr_verify`, `cr_list`, `departure_record`, `departure_decide`, `shortfall_record`, `deferral_propose`, `agreement_decide`, `override_grant` |
 | Reporting | `status_tree`, `report_build`, `analytics_query` (one read-only SELECT, Oracle only), `events(target_agent_id, limit)`, `ledger_info` |
-| Driver | `drive_request`, `drive_issue`, `drive_checkin`, `drive_done`, `drive_unavailable` **(proposed)** |
+| Driver | `drive_request`, `drive_issue`, `drive_checkin`, `drive_done`, `drive_unavailable` |
 
 - No tool schema lists `agent_id`. The `pre_ledger` hook stamps it through
   `updatedInput`, and Claude Code 2.1.283 and later delivers a key that the schema does
@@ -117,9 +116,9 @@ partial success.
   grant the role, and every tool that its template calls.
 - The ledger also refuses a live agent's call to a tool outside its role's set, in
   `server._call`, with "the <role> role may not call <tool>". An `agent_id` that no live
-  agent holds passes this check. **(proposed)**
+  agent holds passes this check.
 - `events` filters on `target_agent_id`, so the filter no longer shares the stamped
-  identity's name. **(proposed)**
+  identity's name.
 - A tool that writes nothing carries the MCP annotation `readOnlyHint: true`, so Claude
   Code runs several of them from one message in parallel: `ledger_info`, `brief_get`,
   `who_owns`, `issue_list`, `cr_list`, `run_status`, `status_tree`, `guidelines_get`,
@@ -158,4 +157,3 @@ partial success.
   `notify.py`, in a background thread, when the settings' `notify` list includes `os`.
   A failure goes to the server log.
   See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md).
-  **(proposed)**

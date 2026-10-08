@@ -19,7 +19,7 @@ _SETUP_HINT = "run /sentinel-swarm:setup"
 OPTIONAL_SERVERS: dict[str, tuple[str, ...]] = {
     "a11y@accessibility-tools": ("a11y-tools", "a11y-kg")
 }
-# (proposed) Joined only into the Driver's own session, never any other role's, under the
+# Joined only into the Driver's own session, never any other role's, under the
 # plugin-install key, so cartographer's agents and gates see the tool names they grant.
 CARTOGRAPHER_PLUGIN = "cartographer@cartographer"
 DRIVER_PLUGINS = (

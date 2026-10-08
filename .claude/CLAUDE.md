@@ -64,11 +64,14 @@ report, setup, and testing. The code graph maps every document, so codebase-kg's
   not in agent prompt text. An agent's system prompt describes what it must not do; a
   hook or a ledger gate is what actually stops it. `hooks/hooks.json` carries no hooks,
   so no hook runs twice.
-- Mark any design addition that Alex has not reviewed as **(proposed)** in the
-  matching `knowledge/prd/` document, and list it in `15-proposed.md`. Record each
-  decision Alex makes as a plain rule in the document for its subject, and add a dated
-  line to `14-key-decisions.md`. When you add or rename a document, update the table in
-  `knowledge/prd/README.md` and refresh the code graph.
+- The PRD is the maintained specification, and the code must match it. No item waits
+  for review. When you change behavior, update the matching `knowledge/prd/` document in
+  the same change. When the code and a document disagree, fix the code to match the
+  document, unless the document is wrong. Mark an item the code does not implement yet
+  **(needs implementation)**, and list it in `16-open-items.md`; remove the mark when
+  the code ships. Record each decision Alex makes as a plain rule in the document for
+  its subject, and add a dated line to `14-key-decisions.md`. When you add or rename a
+  document, update the table in `knowledge/prd/README.md` and refresh the code graph.
 - Before committing, run the four checks from `mcp/`: `uv run pytest`, `uv run
   pyright`, `uv run ruff check`, `uv run ruff format --check`. Then run `claude plugin
   validate --strict .` and `claude plugin validate --strict .claude-plugin/plugin.json`

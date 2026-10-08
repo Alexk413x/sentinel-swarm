@@ -54,3 +54,23 @@
 - **A Driver outside `drive_request`.** `brief_create` accepts `child_role="driver"`
   from the Oracle, and `agent_spawn` then starts that Driver. It has no request row, so
   `drive_issue` refuses its findings. Only `drive_request` should start a Driver.
+
+## Needs implementation
+
+Each item below is marked **(needs implementation)** in its document.
+
+- **Oracle arbitration between Managers** ([01-roles.md](01-roles.md)). The Oracle
+  template has no step for settling a dispute between Managers, such as which Manager
+  owns a shared file.
+- **A fix Coder's brief** ([02-run-lifecycle.md](02-run-lifecycle.md)). The brief body
+  does not carry the finding's evidence, and the fix does not re-claim the file.
+- **Narrow overrides** ([04-agreements.md](04-agreements.md)). `override_consume` does
+  not match the run. See "Overrides across runs" above.
+- **The device-queue broker** ([05-sessions.md](05-sessions.md)). The event `kind` and
+  the `ping` on `swarm-events` are built; the broker is not.
+- **Graph search at each role's level**
+  ([09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md)). The role
+  templates do not say which level each role searches at.
+- **Multi-file graph nodes through the Lead**
+  ([09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md)). `graph_upsert`
+  refuses any anchor outside the Coder's own file, and the Lead has no graph write tool.

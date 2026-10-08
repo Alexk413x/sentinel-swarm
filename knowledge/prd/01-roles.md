@@ -15,7 +15,7 @@
    records alone.
 6. **Small scope, visible work.** A Coder holds one file. Each agent's context stays
    focused, and each agent's work is easy to see.
-7. **No state lives only in an agent.** **(proposed)** Every plan, brief, review,
+7. **No state lives only in an agent.** Every plan, brief, review,
    score, and decision is a ledger record, so a replacement agent or a later run can
    continue from the records.
 8. **Only the Coder writes project files.** Every other role works through the ledger.
@@ -56,7 +56,7 @@
 
 ### Names
 
-| Role | Name pattern **(proposed)** | Example |
+| Role | Name pattern | Example |
 |---|---|---|
 | Oracle | `oracle` | `oracle` |
 | Manager | `mgr-<phase>` | `mgr-p2-api` |
@@ -64,15 +64,14 @@
 | Coder | `coder-<phase>-<module>-<file>` | `coder-p2-auth-login` |
 | Driver | `driver-e<exploration number>` | `driver-e2` |
 
-- The Driver's pattern is decided; the **(proposed)** mark covers the other rows.
-  `drive_request` sets it from the exploration's ordinal in the run.
+- `drive_request` sets the Driver's name from the exploration's ordinal in the run.
 
 - A name is unique among the live agents of a run. It is the address in the ledger, and
-  the agent passes it as `caller` on every ledger call. **(proposed)**
+  the agent passes it as `caller` on every ledger call.
 - A session name is unique on the machine and is the address for `SendMessage`. A
   child's session name is `<repo slug>-r<run_id>-<MMDDHHMM>-<name>`, with the run's UTC
   start time, because a stale session keeps its old name and a rebuilt host restarts at
-  run 1. **(proposed)** The Oracle's session name is
+  run 1. The Oracle's session name is
   `<repo slug>-oracle-<MMDD-HHMMSS>`, from its launch time.
 
 ### Models
@@ -83,7 +82,7 @@
 | Manager | opus | opus |
 | Lead | sonnet | opus, sonnet |
 | Coder | sonnet | sonnet, haiku |
-| Driver | sonnet | sonnet, opus **(proposed)** |
+| Driver | sonnet | sonnet, opus |
 
 - The settings file holds the approved models per role. `brief_create` refuses a model
   outside the child role's list.
@@ -94,7 +93,7 @@
   the task, and the brief records the choice. Ideally, work reaches a Coder broken down
   far enough to run on the cheaper model.
 - Escalation can raise the model: a fresh Coder in round 2 or 3 can run on the stronger
-  model in its list. **(proposed)** It can also raise the effort: `brief_create(effort=...)`
+  model in its list. It can also raise the effort: `brief_create(effort=...)`
   sets the child's `--effort` above the role's setting.
 - Every role runs at `medium` effort unless the settings file says otherwise: the
   documented starting point for Opus 5.5, and for well-specified agentic coding on
@@ -102,8 +101,8 @@
   `modelSettings`. The registry records each agent's effort. The Lead, Coder, and Driver
   levels are starting points for an effort sweep on the benchmark.
 - `drive_request` picks the Driver's model itself, from the first entry of its approved
-  list, since the Oracle's call carries no `model` argument. **(proposed)**
-- The registry records the model of each agent. **(proposed)** For the Oracle's row,
+  list, since the Oracle's call carries no `model` argument.
+- The registry records the model of each agent. For the Oracle's row,
   `run_start` records the model the launcher uses, by the same rule. A new Oracle
   session that resumes the run records it the same way.
 
@@ -121,9 +120,11 @@
 - **Owns:** PRD meaning, acceptance criteria, the guidelines, the phase plan, the final
   verdict, and all communication with the user.
 - **Arbitrates:** disputes between Managers, including which Manager owns a shared
-  file. **(proposed)**
+  file. **(needs implementation: the Oracle template has no step for settling a
+  dispute between Managers; it tells the two Managers to agree on an owner
+  themselves)**
 - **On a low score or a failed full run:** returns the work to its Manager, opens a new
-  phase, or accepts the result with a recorded reason. **(proposed)**
+  phase, or accepts the result with a recorded reason.
 - **Escalates to the user:** only an issue that research and rework cannot solve.
 - **Must not:** write a project file, start a subagent, score a file, direct a Lead or a
   Coder, or report a test result from its own reading.
@@ -131,7 +132,7 @@
   file, and `run_finish` accepts the run.
 - **Tools:** Read, Grep, Glob, AskUserQuestion, ToolSearch, WebSearch, WebFetch,
   SendMessage, Monitor (the watchdog call only), PushNotification (the notifications
-  the ledger records for the user) **(proposed)**, its ledger tools, and the
+  the ledger records for the user), its ledger tools, and the
   codebase-kg read tools. No write tool and no shell.
 
 ### Manager
@@ -145,10 +146,9 @@
 - **Owns:** the phase, its module breakdown, the boundaries between its Leads, and test
   health across its modules.
 - **Arbitrates:** disputes between its Leads, and the contracts between its modules.
-  **(proposed)**
 - **On a regression:** starts a new Lead to fix it.
 - **Must not:** write a project file, score a file, or direct a Coder without going
-  through the Coder's Lead. **(proposed)**
+  through the Coder's Lead.
 - **Done when:** the Oracle approves the phase.
 - **Tools:** Read, Grep, Glob, ToolSearch, SendMessage, WebSearch, WebFetch, its
   ledger tools, and the codebase-kg read tools.
@@ -163,7 +163,7 @@
 - **Owns:** the module, the file assignments inside it, the contracts between its files,
   and the approval of each Coder's work.
 - **Arbitrates:** disputes between its Coders about contracts and about where a shared
-  function belongs. **(proposed)**
+  function belongs.
 - **Must not:** write a project file, or read a Coder's scores before it records its
   own.
 - **Done when:** its Manager accepts the module with `module_review` and releases it.
@@ -179,7 +179,7 @@
   sets no review loop of its own: the self score, the `tests_run` gate, and the Lead's
   blind review are the checks. Hands off. Works with its Lead and other Coders on contracts, through the ledger.
 - **Owns:** one file and its unit test file. "File" means any project file the run
-  touches: new or existing, code or configuration. **(proposed)**
+  touches: new or existing, code or configuration.
 - **Tests cover:** the happy path, the known possible edge cases such as API errors,
   and error handling that catches the specific error types plus a catch-all.
 - **Must not:** edit a file it does not own. It files a change request instead.
@@ -211,9 +211,9 @@
   subagents. Records each finding with `drive_issue` as it is found, checks in with
   `drive_checkin` every 30 minutes, shuts the device down, and ends the exploration
   with `drive_done`, which owes the Oracle a wake-up. The ledger releases and stops the
-  Driver's session once that wake-up is sent. **(proposed)** When a failed build or a
+  Driver's session once that wake-up is sent. When a failed build or a
   device that will not boot stops it, it records a finding and passes `blocked` to
-  `drive_done`, which notifies the user. **(proposed)**
+  `drive_done`, which notifies the user.
 - **Tests the app:** the Driver explores, tests, and records findings. Every other role
   does unit testing only, because the app cannot build while other edits are in
   progress.
@@ -236,7 +236,7 @@
 - **Done when:** it calls `drive_done` and sends the wake-up its `next` names.
 - **Tools:** Read, Grep, Glob, ToolSearch, SendMessage, Bash and PowerShell (gated to
   `build_command`), Agent (gated to cartographer's `map-driver` and `map-reviewer`
-  subagents only), Skill **(proposed)**, its ledger tools, and the codebase-kg read tools. No
+  subagents only), Skill, its ledger tools, and the codebase-kg read tools. No
   Write or Edit. cartographer's MCP server and the installed driver plugins' servers
   join its session only, the same way the a11y servers join every role's: see
   [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).

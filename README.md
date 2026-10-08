@@ -90,6 +90,6 @@ uv run ruff format --check
 
 ## Design documents
 
-Read `knowledge/prd/README.md`, which lists one document per subject. Anything marked
-**(proposed)** has not been reviewed and is not final. `plans/` holds plans for work not
-built yet.
+Read `knowledge/prd/README.md`, which lists one document per subject. The PRD is the
+specification the code must match. Anything marked **(needs implementation)** is
+specified but not built yet. `plans/` holds plans for work not built yet.

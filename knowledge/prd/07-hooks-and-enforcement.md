@@ -62,7 +62,6 @@ Every hook command is
 - `channel` runs `python -m swarm_ledger.bridge`, the `swarm-events` channel server,
   with stdin and stdout passed through. When the registry, the install, or `uv` fails,
   it writes the reason to stderr and exits 1, and the session gets no channel.
-  **(proposed)**
 
 When the server does not answer and then the registry, the install, `uv`, or the
 ledger hook fails, or the two paths together run longer than 50 seconds, a gating event (`pre_agent`, `pre_write`, `pre_shell`, `pre_monitor`,
@@ -72,13 +71,11 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 ## Rules every ledger hook follows
 
 - A hook blocks by printing a JSON decision and exiting 0. It never uses exit code 2.
-  **(proposed)**
 - A broken ledger hook allows: `swarm_ledger.hooks` catches every exception, writes one
   line to stderr, and prints nothing.
 - Apart from `pre_write`'s records-folder rule, `pre_ledger`, and `pre_monitor`'s
   `agent_type` check, a hook ignores a caller the registry does not know, so a non-swarm
   session in the same repo passes. An agent that has ended counts as unknown.
-  **(proposed)**
 
 ## What each hook does
 
@@ -93,13 +90,12 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
   `cartographer:map-reviewer`). Another plugin's agent of the same name is denied.
   No override rule covers it: the rule that no role runs an arbitrary subagent
   has no legitimate exception, so `pre_agent` never calls `override_consume`.
-  **(proposed)**
 - `pre_send_message`: denies a `SendMessage` whose `to` does not name a registered
   agent's `session_name` in the caller's own run, and lists the valid names in the
   reason. A caller the registry does not know, or one with no run yet, passes.
 - `pre_write`: while a run is active or paused, denies anyone a write into the records
   folder, unconditionally; the records folder is the ledger's own state, so no
-  override rule covers it either. **(proposed)** Denies a write by any role but the
+  override rule covers it either. Denies a write by any role but the
   Coder, and a Coder's write outside its claimed path and test path, naming the owner;
   an override of rule `write` lets one of these two writes through.
 - `pre_shell`: while a run is active or paused, denies the shell to every role but the
@@ -107,18 +103,18 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
   build, or lint command, or read-only git (`status`, `diff`, `log`, `show`,
   `ls-files`, `branch`). A Driver may run only a command that starts with the profile's
   `build_command`. A command with `;`, `&`, `|`, `<`, `>`, a backtick, a newline, or
-  `$(` is denied. An override of rule `shell` lets one command through. **(proposed)**
+  `$(` is denied. An override of rule `shell` lets one command through.
 - `pre_monitor`: allows exactly one `Monitor` call from a swarm session, the Oracle's
   watchdog call. It denies every other one and names the allowed call. A session not
   yet in the ledger counts as a swarm session when its `agent_type` is `swarm-<role>`.
   No override rule covers it.
 - `pre_ledger`: stamps `agent_id`, and denies `override_grant` to anyone but the
   Oracle. The identity stamp itself takes no override: faking `agent_id` is what the
-  stamp exists to prevent. **(proposed)** The stamp is the hook input's `agent_id`, or
+  stamp exists to prevent. The stamp is the hook input's `agent_id`, or
   else its `session_id`. For the five tools that take no identity (`ledger_info`,
   `brief_get`, `who_owns`, `directive_submit`, `events`), it removes `agent_id`
   instead. It answers `allow`, so a ledger call never asks for permission.
-  **(proposed)** No tool schema lists `agent_id`: the ledger server's middleware takes
+  No tool schema lists `agent_id`: the ledger server's middleware takes
   the stamped value out of the arguments. See "Tools" in
   [06-ledger-server.md](06-ledger-server.md).
 - `post_any`: runs synchronously after `SendMessage`, `PushNotification`, `Monitor`,
@@ -129,7 +125,6 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
   nothing more, and after a Coder's write marks its file stale, so the handoff needs a
   newer self review. On the Oracle's `PushNotification` call, it marks one owed
   notification sent, whatever the call's result, even after the run finished.
-  **(proposed)**
 - `post_activity`: runs with `async: true` after every tool, so no tool call waits for
   it. It returns at once for the tools `post_any` covers, so the two never both run for
   one call. Otherwise it writes the heartbeat and current activity and records the
@@ -147,7 +142,6 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
   and that owes nothing more is released instead of set idle. After a run finishes, the
   Oracle's stop refreshes the report, then blocks while the Oracle still owes a
   `PushNotification` call.
-  **(proposed)**
 - `session_end`: records tokens and cost and the end reason. After a run finishes, the
   Oracle's `session_end` refreshes the report.
 
@@ -163,7 +157,7 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 | `run_finish` needs a clean exploration or a resolved stop rule | `drive_request`, `drive_issue`, `drive_done`, and the `run_finish` gate in `drive.py` |
 | A Driver that fails to load is a blocking issue | `drive_unavailable` files a `driver` directive; `drive_request` refuses while it is open, and `run_finish` refuses as for any open directive. Resolved `declined`, `drive_request` refuses for the rest of the run and the `run_finish` Driver gate passes |
 | A stuck Driver's exploration can be closed | `agent_release` of the Driver abandons its open exploration, which never counts as clean |
-| The Oracle is woken directly when the Driver ends an exploration or cannot load | `drive_done` and the Driver's `drive_unavailable` owe the Oracle a wake-up and do not release the Driver; the Driver's `stop` blocks until it is sent; `post_any`, `agent_resume`, or the Driver's `stop` releases the Driver once it is sent; a Driver that ignores the block twice goes idle without sending, which the watchdog reports as `driver_unsent` **(proposed)** |
+| The Oracle is woken directly when the Driver ends an exploration or cannot load | `drive_done` and the Driver's `drive_unavailable` owe the Oracle a wake-up and do not release the Driver; the Driver's `stop` blocks until it is sent; `post_any`, `agent_resume`, or the Driver's `stop` releases the Driver once it is sent; a Driver that ignores the block twice goes idle without sending, which the watchdog reports as `driver_unsent` |
 | Fixes always name their finding ids | `brief_create` refuses an Oracle brief without `finding_ids` while the run has an open finding, and an unknown finding id from any role; `brief_get`, `status_tree`, and the report show the ids and titles |
 | A stopped bug gets no more fixes, and its evidence reaches the user | `brief_create` and `agent_spawn` refuse a brief whose `finding_ids` name it; `drive_done` puts the evidence in the directive and the notification |
 | A pattern of bugs pauses fixes in that area | `brief_create` and `agent_spawn` refuse a finding in the area while the pattern's directive is open |
@@ -172,7 +166,7 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 | A model comes from the approved list | `brief_create` |
 | No agent starts without a brief | `agent_spawn` and `brief_ack` |
 | No agent fakes its identity | `pre_ledger` stamps `agent_id`; the server's middleware takes it out of the arguments; every tool matches `caller` to it |
-| A role calls only its own ledger tools | The role file's `tools` allowlist, which names each `mcp__swarm-ledger__<tool>` in `identity.ROLE_TOOLS`; `server._call` refuses a live agent's call outside its set **(proposed)** |
+| A role calls only its own ledger tools | The role file's `tools` allowlist, which names each `mcp__swarm-ledger__<tool>` in `identity.ROLE_TOOLS`; `server._call` refuses a live agent's call outside its set |
 | A handoff needs passing tests and a current graph | `handoff_submit` |
 | No approval without a handoff and two sets of scores | `approve` |
 | The Lead scores before it sees the Coder's scores | `score_record` refuses a Lead review after `review_compare` |
