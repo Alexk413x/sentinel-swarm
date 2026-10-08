@@ -56,11 +56,42 @@ claude "You are <name>. Read your brief from the swarm ledger and follow it." --
   its row and refuses a `caller` that does not match, or an agent that has ended.
 - The Oracle is bound at `run_start`.
 
+## Start calls
+
+A Manager, Lead, Coder, or Driver makes no start calls of its own. Its `session_start`
+hook makes them before the model's first turn, because the hook already posts to the
+ledger and knows the session id, which is the child's `agent_id`.
+
+- For a `registered` child, the hook calls `brief_ack` under the agent's spawned name.
+  It then returns, as `additionalContext`, the results of `ledger_info`, `brief_get`,
+  `guidelines_get`, and, for a Manager or Lead, `run_status` without the PRD text.
+- For a child already bound, on any `source` (`resume`, `compact`, `clear`), it
+  returns the same results and does not bind again.
+- A refused bind returns the refusal as the context. The tools stay allowed, so the
+  child calls `brief_ack` itself. Until it succeeds, `pre_ledger` denies the child
+  every ledger tool except `brief_ack` and the five that take no identity. See
+  "What each hook does" in [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md).
+- Claude Code caps a hook's `additionalContext` at 10,000 characters and saves a
+  longer one to a file that the model is not told to read. The hook keeps its context
+  under 9,500 characters: a result that does not fit is left out, and the context
+  names the call for the child to make itself.
+- When the brief is in the context, the hook records `briefs.last_read_by_child_at`,
+  as `pre_ledger` does for a `brief_get`. A child whose session restarts after a
+  return therefore has its brief re-read for `handoff_submit`: the brief text is in
+  its fresh context.
+- The Oracle makes its own start calls. It is one session, and its start tools need
+  the user's answers.
+
+Each role's first tool call is then one `ToolSearch` `select:` of its working set,
+without the start-call tools. A tool a role calls only at the end of its work stays
+out of that set: the Coder loads `score_record` and `handoff_submit`, and the Driver
+loads `drive_done`, with a second `select:` just before the first call.
+
 ## Agent states
 
 `registered` → `working` ↔ `idle` → `handed_up` → `released`.
 
-- `brief_ack` sets `working`. The Stop hook sets `working` to `idle` when a turn ends.
+- `brief_ack`, which the `session_start` hook calls, sets `working`. The Stop hook sets `working` to `idle` when a turn ends.
   The next tool use or session start sets it back to `working`.
 - `handoff_submit` sets the Coder to `handed_up`. `return_work` sets it to `idle`.
 - Release sets `released` and `ended_at`.

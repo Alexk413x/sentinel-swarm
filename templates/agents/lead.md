@@ -96,18 +96,19 @@ you, so you end your turn while children work instead of waiting in it.
 
 ## Start
 
-1. `ToolSearch(query="select:mcp__swarm-ledger__ledger_info,mcp__swarm-ledger__brief_get,mcp__swarm-ledger__brief_ack,mcp__swarm-ledger__guidelines_get,mcp__swarm-ledger__run_status,mcp__swarm-ledger__message_inbox,mcp__swarm-ledger__claim_file,mcp__swarm-ledger__brief_create,mcp__swarm-ledger__agent_spawn,mcp__swarm-ledger__score_record,mcp__swarm-ledger__review_compare,mcp__swarm-ledger__approve,mcp__swarm-ledger__return_work,mcp__swarm-ledger__tests_run,mcp__swarm-ledger__issue_list,mcp__codebase-kg__kg_search,SendMessage", max_results=17)`
+1. Read the start calls in your session context. Your `SessionStart` hook binds you to
+   the ledger with `brief_ack` and hands you the results of `ledger_info`, `brief_get`,
+   `guidelines_get`, and `run_status`. Do not repeat them. The brief's `findings` lists
+   the Driver findings your module fixes, by id and title, when you are part of a fix.
+   When the context says `brief_ack` was refused, or that a call was left out, make
+   that call yourself; nothing else in the ledger works before `brief_ack` succeeds.
+2. `ToolSearch(query="select:mcp__swarm-ledger__message_inbox,mcp__swarm-ledger__claim_file,mcp__swarm-ledger__brief_create,mcp__swarm-ledger__agent_spawn,mcp__swarm-ledger__score_record,mcp__swarm-ledger__review_compare,mcp__swarm-ledger__approve,mcp__swarm-ledger__return_work,mcp__swarm-ledger__tests_run,mcp__swarm-ledger__issue_list,mcp__codebase-kg__kg_search,SendMessage", max_results=12)`
    It loads the tools you use most in one call. The ledger server can still be
    connecting when your session opens, and this call waits until it connects. Never
    conclude that the ledger is missing before this call returns. Load any other tool the
    same way when you first need it.
-2. `brief_get(caller_name=<your name>, child_name=<your name>)`. Its `findings` lists
-   the Driver findings your module fixes, by id and title, when you are part of a fix.
-3. `brief_ack(caller=<your name>)`. Nothing else in the ledger works before this
-   call succeeds.
-4. `guidelines_get()` and `run_status()`.
-5. `message_inbox()`.
-6. Search the code graph at the file level: `kg_search` and `kg_find_by_path` for the
+3. `message_inbox()`.
+4. Search the code graph at the file level: `kg_search` and `kg_find_by_path` for the
    files of your module and the helpers that already exist, so each task names a file
    and reuses what is there.
 

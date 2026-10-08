@@ -6,6 +6,10 @@
   smoke test there.
 - **Watchdog rescue of a dropped API call.** The idle-stall check is built to catch a
   run whose Oracle API call dropped mid-response. It has not caught one in a live run.
+- **Start calls in the hook, live.** Built and unit-tested; no live run yet. A
+  `textstats` smoke run should show each child's first turn reading its start calls
+  from the `session_start` context, no child calling `brief_ack` itself, and each
+  Coder loading `score_record` and `handoff_submit` once, before its first handoff.
 - **PreCompact.** Whether `PreCompact` fires in a long session. It needs a session that
   fills its context.
 - **Ledger server early exit.** Once, the server exited about a minute after it started,

@@ -5,10 +5,11 @@ import os
 import re
 import shlex
 import subprocess
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .. import pricing, sessions
+from .. import __version__, pricing, sessions
 from ..agentfiles import plugin_installed
 from ..db import ensure_git_exclude, write_tx
 from ..identity import ROLES, LedgerError, caller_of
@@ -26,6 +27,11 @@ FIRED_AT_KEY = "sentinel_swarm_fired_at"
 _READONLY_GIT = frozenset({"status", "diff", "log", "show", "ls-files", "branch"})
 _POSIX = os.name != "nt"
 _UNSTAMPED_TOOLS = frozenset({"ledger_info", "brief_get", "who_owns", "directive_submit", "events"})
+_PRE_BIND_TOOLS = _UNSTAMPED_TOOLS | {"brief_ack"}
+_RUN_STATUS_ROLES = frozenset({"manager", "lead"})
+# Claude Code saves additionalContext over 10,000 characters to a file and shows the model
+# only a 2,000-character preview, so the start calls must fit under the cap.
+_START_CONTEXT_CAP = 9_500
 # The Driver is the one role with an Agent tool, and only for cartographer's own
 # subagents: it never runs a subagent of its own or any other plugin's.
 _DRIVER_SUBAGENTS = frozenset(
@@ -103,6 +109,84 @@ def _deny(reason: str) -> dict:
 # -- 1. SessionStart ------------------------------------------------------------
 
 
+def _session_context(text: str) -> dict:
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": text,
+        }
+    }
+
+
+def _compact_json(value: object) -> str:
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False, default=str)
+
+
+def _start_calls(ledger: Ledger, caller: dict) -> list[tuple[str, Callable[[], object]]]:
+    name, agent_id = caller["name"], caller["agent_id"]
+    info = {
+        "name": "swarm-ledger",
+        "version": __version__,
+        "status": "ready",
+        "repo_root": str(ledger.repo_root),
+    }
+    calls: list[tuple[str, Callable[[], object]]] = [
+        ("ledger_info()", lambda: info),
+        (
+            f"brief_get(caller_name={name!r}, child_name={name!r})",
+            lambda: ledger.brief_get(name, name),
+        ),
+        ("guidelines_get()", lambda: ledger.guidelines_get(name, agent_id)),
+    ]
+    if caller["role"] in _RUN_STATUS_ROLES:
+        calls.append(("run_status()", lambda: ledger.run_status(name, agent_id)))
+    return calls
+
+
+def _start_context(ledger: Ledger, caller: dict) -> str:
+    name, agent_id = caller["name"], caller["agent_id"]
+    names = ", ".join(label.split("(")[0] for label, _ in _start_calls(ledger, caller))
+    if caller["state"] == "registered":
+        try:
+            ledger.brief_ack(name, agent_id)
+        except LedgerError as exc:
+            return (
+                f"The SessionStart hook called brief_ack(caller={name!r}) for you, and the "
+                f"ledger refused it: {exc}. No other ledger tool works until brief_ack "
+                f"succeeds. Call brief_ack(caller={name!r}) yourself once the cause is fixed, "
+                f"then {names}."
+            )
+        head = f"The SessionStart hook bound you to the ledger with brief_ack(caller={name!r})."
+    else:
+        head = f"You are {name}, already bound to the ledger. Do not call brief_ack again."
+    parts = [
+        f"{head} It also made your start calls ({names}); their results follow. Do not "
+        "repeat them now. Call brief_get again whenever your template says to re-read "
+        "your brief."
+    ]
+    size = len(parts[0])
+    brief_in = False
+    for label, call in _start_calls(ledger, caller):
+        try:
+            line = f"{label} returned: {_compact_json(call())}"
+            answered = True
+        except LedgerError as exc:
+            line = f"{label} was refused: {exc}"
+            answered = False
+        if size + len(line) + 1 > _START_CONTEXT_CAP:
+            line = (
+                f"{label} is left out: its result is {len(line)} characters, over the room "
+                "left in this hook's context. Call it yourself."
+            )
+        elif answered and label.startswith("brief_get"):
+            brief_in = True
+        parts.append(line)
+        size += len(line) + 1
+    if brief_in:
+        ledger.brief_read(agent_id, name)
+    return "\n".join(parts)
+
+
 def handle_session_start(ledger: Ledger, data: dict) -> dict | None:
     caller = _swarm_caller(ledger, data.get("session_id"))
     if caller is not None:
@@ -110,7 +194,9 @@ def handle_session_start(ledger: Ledger, data: dict) -> dict | None:
             ledger.agent_transcript(caller["agent_id"], str(data["transcript_path"]))
         if caller["state"] == "idle":
             ledger.agent_active(caller["agent_id"], "session_start")
-        return None
+        if caller["role"] == "oracle":
+            return None
+        return _session_context(_start_context(ledger, caller))
 
     parts: list[str] = []
 
@@ -152,12 +238,7 @@ def handle_session_start(ledger: Ledger, data: dict) -> dict | None:
 
     if not parts:
         return None
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": "SessionStart",
-            "additionalContext": " ".join(parts),
-        }
-    }
+    return _session_context(" ".join(parts))
 
 
 # -- 2. PreToolUse: Agent ---------------------------------------------------------
@@ -382,10 +463,14 @@ def handle_pre_ledger(ledger: Ledger, data: dict) -> dict:
     method = tool_name.rsplit("__", 1)[-1] if "__" in tool_name else tool_name
     caller_id = _caller_id(data)
 
-    if method == "override_grant":
-        caller = _swarm_caller(ledger, caller_id)
-        if caller is None or caller["role"] != "oracle":
-            return _deny("override_grant is for the Oracle only")
+    caller = _swarm_caller(ledger, caller_id)
+    if method == "override_grant" and (caller is None or caller["role"] != "oracle"):
+        return _deny("override_grant is for the Oracle only")
+    if caller is not None and caller["state"] == "registered" and method not in _PRE_BIND_TOOLS:
+        return _deny(
+            f"you are not bound to the ledger yet: call brief_ack(caller={caller['name']!r}). "
+            "No other ledger tool works until it succeeds"
+        )
 
     tool_input = dict(data.get("tool_input") or {})
     if method == "brief_get" and caller_id:

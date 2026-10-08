@@ -9,7 +9,10 @@ message. The Oracle then calls, in order:
    server that is still connecting. Every role makes it first, with one `select:` that
    names the ledger tools, the `kg_search` tool, and the deferred built-in tools its
    template uses most, so the role spends one model turn loading tools instead of
-   one per tool. The list lives in each role template's first step.
+   one per tool. The list lives in each role template's start. Every other role's
+   start calls (`brief_ack`, `ledger_info`, `brief_get`, `guidelines_get`, and
+   `run_status`) run in its `session_start` hook, so its list leaves them out. See
+   "Start calls" in [05-sessions.md](05-sessions.md).
 2. `ledger_info()`.
 3. `run_start(prd, session_id)`. It opens the run and registers the Oracle.
 4. `repo_check(fetch)`, then `repo_branch_create(name)` or a question to the user. See
@@ -88,9 +91,12 @@ message. The Oracle then calls, in order:
   the contracts, and the guidelines that apply.
 - `brief_get(caller_name, child_name)` needs no identity, so a child reads its brief
   before it is bound. The `pre_ledger` hook sees each call: when the calling session is
-  the brief's child, it records `briefs.last_read_by_child_at`.
-- `brief_ack(caller)` binds the child's name to its session. Nothing else in the ledger
-  works for the child before it. See "Identity" in [05-sessions.md](05-sessions.md).
+  the brief's child, it records `briefs.last_read_by_child_at`. The `session_start`
+  hook records the same read when it hands the child its brief.
+- `brief_ack(caller)` binds the child's name to its session. The child's
+  `session_start` hook calls it. Nothing else in the ledger works for the child before
+  it: `pre_ledger` denies the other tools. See "Identity" and "Start calls" in
+  [05-sessions.md](05-sessions.md).
 
 ## Files and claims
 
