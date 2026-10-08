@@ -878,3 +878,21 @@ multi-agent run.
    serves every platform?
 6. How does the report count cost for a CLI that prints no usage?
 7. Is a handoff-time diff check strong enough for a Coder whose writes no hook can stop?
+
+## Results: hello smoke run after part 1 (2026-10-08)
+
+Run 2 of commit 083384b, the mod as the only hook transport, compared with the baseline run
+of 2026-10-08 before part 1.
+
+| Measure | Baseline | After part 1 |
+|---|---|---|
+| Duration | 6m 53s | 4m 24s |
+| Tool calls | 80 | 67 |
+| Oracle | 28 calls, $0.65 | 26 calls, $0.56 |
+| Manager | 23 calls, $0.47 | 18 calls, $0.47 |
+| Lead | 18 calls, $0.24 (Sonnet) | 16 calls, $0.45 (Opus) |
+| Coder | 11 calls, $0.16 | 7 calls, $0.14 |
+| Total cost | $1.52 | $1.62 |
+
+The Manager chose Opus for the Lead in the second run and Sonnet in the first; both are on
+the approved list. With the Lead on Sonnet the run costs about $1.44.

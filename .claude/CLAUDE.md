@@ -10,8 +10,10 @@ report, setup, and testing. The code graph maps every document, so codebase-kg's
 
 - `.claude-plugin/` — `plugin.json`, `marketplace.json`.
 - `skills/` — `swarm-protocol`, `run`, `status`, `resume`, `setup`.
-- `hooks/` — `hooks.json`, which carries no hooks, and a README with the per-role hook
-  table. Each role's hooks live in its project agent file.
+- `hooks/` — `hooks.json`, which carries no command hooks and names one module,
+  `register.ts`: the plugin's mod, which runs every role's ledger hooks in its swarm
+  sessions. `register.test.ts` holds its tests (`claude plugin test .`). The README
+  has the per-role hook table.
 - `assets/` — `icon.png`, the plugin icon that OS notifications show.
 - `templates/` — `agents/<role>.md`, the five role templates that setup writes to a host
   repo's `.claude/agents/swarm-<role>.md`; `hook_shim.py`, which setup writes to
@@ -24,7 +26,8 @@ report, setup, and testing. The code graph maps every document, so codebase-kg's
   swarm_ledger.launch` starts the Oracle session.
 - `knowledge/` — `code_graph.db`, the codebase-kg map of this repo, and `prd/`, the
   source-of-truth documents with their index in `prd/README.md`. Both committed.
-- `scripts/smoke.sh` — the smoke test. It rebuilds `runs/hello/` (git-ignored) on each run
+- `scripts/smoke.sh` — the smoke test. It rebuilds `runs/hello/` (git-ignored) on each run,
+  installs `codebase-kg@alexk413x` and the working tree's plugin at project scope there,
   and starts the Oracle through the installed copy's launcher: interactive by default,
   `--bg` for a background session, `--headless` for `claude -p`. `--prd <name>` uses
   `scripts/prds/<name>.md` as the prompt: `modules` (three waves: two independent phases,
@@ -53,18 +56,17 @@ report, setup, and testing. The code graph maps every document, so codebase-kg's
 ## Rules
 
 - The plugin ships no agents. The roles are templates in `templates/agents/`;
-  setup writes them into a host repo's `.claude/agents/` as `swarm-<role>.md`, where
-  their `hooks` frontmatter applies. Every role runs as its own session. No role has
+  setup writes them into a host repo's `.claude/agents/` as `swarm-<role>.md`. They
+  carry no hooks; the plugin's mod runs every role's hooks. Every role runs as its own session. No role has
   the `Agent` tool except the Driver, which `pre_agent` limits to cartographer's
   `map-driver` and `map-reviewer`; setup writes the Driver only when the host has
   cartographer and a driver plugin installed.
 - No role template sets `maxTurns`. The watchdog and the escalation budget are the only
   controls on a runaway agent.
-- Every enforcement rule lives in a role template's hooks, the plugin's mod (once
-  `plans/messaging-and-tooling.md` step 0 verifies mods in role sessions), or a
-  swarm-ledger tool, not in agent prompt text. An agent's system prompt describes what it must not do; a
-  hook or a ledger gate is what actually stops it. `hooks/hooks.json` carries no hooks,
-  so no hook runs twice.
+- Every enforcement rule lives in the plugin's mod or in a swarm-ledger tool, not in
+  agent prompt text. An agent's system prompt describes what it must not do; a mod hook
+  or a ledger gate is what actually stops it. The mod is the only hook transport, so no
+  hook runs twice.
 - The PRD is the maintained specification, and the code must match it. No item waits
   for review. When you change behavior, update the matching `knowledge/prd/` document in
   the same change. When the code and a document disagree, fix the code to match the
@@ -78,5 +80,6 @@ report, setup, and testing. The code graph maps every document, so codebase-kg's
   validate --strict .` and `claude plugin validate --strict .claude-plugin/plugin.json`
   from the repo root. Local results are the gate; CI is a backup.
 - `mcp/tests/test_plugin_surface.py` guards the surface contract described here:
-  the role templates' frontmatter and hooks, the empty `hooks.json`, and the plugin
-  manifest fields.
+  the role templates' frontmatter, `hooks.json` naming only the mod, and the plugin
+  manifest fields. Before committing a change to the mod, also run `claude plugin
+  test .`.
