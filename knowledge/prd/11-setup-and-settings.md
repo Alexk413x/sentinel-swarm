@@ -147,7 +147,7 @@ descriptions stay out of every session's context.
 | `prompt_cache_ttl.<role>` | `5m` for the Coder, empty for the others | `promptCacheTtl` (`"5m"` or `"1h"`) for that role's sessions |
 | `role_parallelism_cap.<role>` | empty | Cap on that role's own live sessions in the run |
 | `wake_transport` | `channel` | `channel` pushes a wake-up through the target's channel when it has one, with `SendMessage` as the fallback; `sendmessage` sends every wake-up by `SendMessage`. Case, `_`, and `-` are ignored, and any other value reads as `channel`. See "Wake-up delivery" in [05-sessions.md](05-sessions.md) |
-| `notify` | `[os, push]` | How the user hears that the Driver finished or hit an error, or that an issue ended round 3 below the floor. `os`: the ledger server shows a desktop notification. `push`: the Oracle owes a `PushNotification` call. `[]` turns both off; a single value reads as a one-item list; unknown values are dropped; an unset or empty key keeps both. See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md) |
+| `notify` | `[os, push]` | How the user hears that the Driver finished or hit an error, or that an issue ended round 3 below the floor. `os`: the ledger server shows a desktop notification. `push`: the Oracle owes a `PushNotification` call. `[]` or `""` turns both off; a single value reads as a one-item list; unknown values are dropped; an unset key, or `notify:` with no value, keeps both. See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md) |
 
 `-p no:cacheprovider` keeps parallel pytest runs from contending on `.pytest_cache`.
 

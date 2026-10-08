@@ -80,8 +80,9 @@ into architecture and code structure.
 - A file that fails the pass rule still passes when it ends its last escalation round
   with every applicable dimension at or above `floor` and no criterion below
   `criterion_floor`. `attempts.round` counts fix attempts per file, not per issue, so
-  it never caps at `rounds`; a file is at its last round once its recorded attempts
-  reach the full escalation budget, `rounds` times `attempts_per_round`.
+  it never caps at `rounds`; a file is at its last round once its attempts that did not improve
+  reach the full escalation budget, `rounds` times `attempts_per_round`. An improved
+  attempt does not count, as in the improvement loop.
 - `approve` accepts the handoff then. It records which dimensions passed at the floor,
   as a shortfall for each dimension still below `target`, and the report shows them.
 

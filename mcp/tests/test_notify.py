@@ -145,6 +145,7 @@ def _notifications(ledger: Ledger) -> list[dict]:
         ("", ["os", "push"]),
         ("notify:\n", ["os", "push"]),
         ("notify: []\n", []),
+        ('notify: ""\n', []),
         ("notify: [os]\n", ["os"]),
         ("notify: push\n", ["push"]),
         ("notify: [PUSH, os, pager]\n", ["os", "push"]),

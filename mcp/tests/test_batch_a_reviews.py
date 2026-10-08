@@ -280,6 +280,32 @@ def test_approve_refuses_a_failing_review_before_the_file_reaches_its_last_round
         ledger.approve("lead-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
 
 
+def test_improved_attempts_do_not_count_toward_the_last_round(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    coder = _spawn_coder(ledger, ctx, "coder-floor", "pkg/floorfile.py", "tests/test_floorfile.py")
+    file_id = _file_id_for(ledger, "pkg/floorfile.py")
+    ledger.score_record(
+        "coder-floor", coder["agent_id"], file_id, _all_ratings(10), _all_applicable(), "self"
+    )
+    handoff = ledger.handoff_submit("coder-floor", coder["agent_id"], file_id, [], [])
+    ledger.score_record(
+        "lead-1",
+        ctx["lead"]["agent_id"],
+        file_id,
+        _all_ratings(overrides={"performance": [7, 7, 7]}),
+        _all_applicable(),
+        "lead",
+    )
+    ledger.review_compare("lead-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
+    for _ in range(2):
+        ledger.conn.execute(
+            "INSERT INTO attempts (file_id, outcome, round) VALUES (?, 'improved', 1)", (file_id,)
+        )
+
+    with pytest.raises(LedgerError, match="does not pass"):
+        ledger.approve("lead-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
+
+
 def test_approve_accepts_a_floor_pass_at_the_last_round_and_records_a_shortfall(
     ledger: Ledger,
 ) -> None:

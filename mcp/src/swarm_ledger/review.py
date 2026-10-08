@@ -251,7 +251,9 @@ class ReviewMixin:
         escalation = self.settings.escalation
         budget = escalation.rounds * escalation.attempts_per_round
         row = self.conn.execute(
-            "SELECT COUNT(*) AS n FROM attempts WHERE file_id = ?", (file_id,)
+            "SELECT COUNT(*) AS n FROM attempts "
+            "WHERE file_id = ? AND (outcome IS NULL OR outcome != 'improved')",
+            (file_id,),
         ).fetchone()
         return row is not None and row["n"] >= budget
 

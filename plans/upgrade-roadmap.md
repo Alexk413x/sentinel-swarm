@@ -140,6 +140,311 @@ Tests:
 
 Success: 0 cross-run reads, and 0 members stopped with unread mail in a `modules` smoke run.
 
+### Step 2b. Enforce the prompt-only rules
+
+A PRD audit found rules that only role-template prompt text carries. No hook or ledger gate stops
+a role that breaks them. Each change below names its mechanism. A ledger gate comes first, because
+it holds for any MCP client, including the part 2 platforms. A CLI helps only the Coder, the one
+role with Bash, so no change here uses one.
+
+Cost terms: "select bytes" means the change grows a tool schema in a role's up-front
+`ToolSearch select:` line. A refusal message costs nothing until it fires. A hook round trip is one
+`POST /hook/<event>` per matched tool call.
+
+Checked against the code on 2026-10-08. None of these checks exist today.
+
+#### Rules and mechanisms
+
+1. **Ordering inside phases and modules; contracts before implementations; join points.**
+   PRD 02, "Phases, dependencies, and waves": "The same ordering applies inside a phase and a
+   module: helpers come before the files that use them." "Contracts come before implementations.
+   When a brief fixes a helper's contract, the dependent Coders test against it with test doubles
+   instead of waiting." "A join point is where parallel phases feed a later phase. The Oracle runs
+   the full suite there, once every Manager that feeds it has reported." Today `module_add` and
+   `claim_file` take no dependencies, and `brief_create` stores only a free-text `body`.
+   - Mechanism: ledger gates.
+     - `claim_file` takes `depends_on: list[int] | None`, file ids of the same module. It refuses
+       an id that is not a claimed file of the caller's module. Store it in a new
+       `file_deps (file_id, depends_on_file_id)` table.
+     - `module_add` takes `depends_on: list[int] | None`, module ids of the same phase, stored in
+       `module_deps`. It refuses an id outside the caller's phase.
+     - `brief_create` takes `contract: str | None`, the public contract of the child's file or
+       module. For a Coder or Lead brief whose file or module has dependencies, it refuses until
+       each dependency's latest brief has a non-empty `contract`. The refusal names the missing
+       ones. This is "helpers first" made checkable: a dependent is briefed only after its
+       helper's contract is on record.
+     - `brief_get` returns `depends_on_contracts`: each dependency's name and contract. The
+       dependent Coder reads the contract from the record, not from the parent's retelling.
+     - Join points need no new gate. Each dependency's `phase_review(accepted)` already needs a
+       passing full run after its own hand-up, and change 9 below makes `phase_update(unlocked)`
+       wait for every dependency's approval. So the newest dependency's full run comes after every
+       feeding hand-up. Add a test that proves it, and rewrite the PRD line to say so.
+   - Judgment that remains: whether the Lead or Manager declared every real dependency, and
+     whether a contract is right. A missing `depends_on` lets a dependent start without a
+     contract. The Lead review and `review_compare` judge the result.
+   - Cost: select bytes for `claim_file` (Lead), `module_add` (Manager) and `brief_create`
+     (Oracle, Manager, Lead), about 150 B each for the new parameter text. No hook round trip.
+   - Tests: a `claim_file` naming a file of another module is refused; a Coder brief whose
+     dependency has no contract is refused and names it; after the helper's brief records a
+     contract, the dependent's brief succeeds and its `brief_get` returns the contract; a
+     two-dependency phase's newest full run is newer than both hand-ups when it unlocks.
+
+2. **The Lead validates an `accept_incomplete` reason.** PRD 02, "Lead review":
+   "`accept_incomplete(handoff_id, reason)` ... The Lead validates the Coder's reason first." PRD 03,
+   "accepting work as incomplete uses no attempt." Today `accept_incomplete`
+   (`review.py`, `ReviewMixin.accept_incomplete`) checks the role, the module and open departures.
+   It takes an empty `reason`, needs no Lead review, and needs no report from the Coder.
+   - Mechanism: ledger gate in `accept_incomplete`. It refuses:
+     - a `reason` that is empty or whitespace;
+     - a handoff with no `review_compare` yet, as `approve` does, so the Lead has scored the
+       work blind before it accepts less;
+     - a handoff whose `open_issues_json` is empty while the file has no open `issues` row. The
+       Coder's open issues are the "Coder's reason". With neither, nobody reported the work as
+       incomplete.
+   - It records on the deferral the open issue strings and issue ids it found, and the Lead's
+     `agent_id` (already `proposed_by`). The deferral already waits on the Manager through
+     `agreement_decide`, so a second level reviews the reason.
+   - Not checkable: whether the reason is good. That stays the Lead's judgment, and the Manager's
+     `agreement_decide` is the check on it.
+   - PRD rewrite: replace "The Lead validates the Coder's reason first." with "It refuses an empty
+     reason, a handoff without `review_compare`, and a handoff that carries no open issue from
+     the Coder and whose file has no open issue. The deferral it opens records them, and the
+     Manager decides it."
+   - Cost: none. `accept_incomplete` is not in the Lead's up-front `select:`, and no parameter
+     changes.
+   - Tests: each of the three refusals; a success records the issue strings and ids on the
+     deferral.
+
+3. **The Driver runs no dev server, and runs `map-test` before `map-explore`.** PRD 02,
+   "Explorations": "The Driver tests the app it built at the start of the exploration, never a dev
+   server that reloads on edits." "The Driver first replays recorded routes with `map-test` to
+   recheck earlier findings, then runs `map-explore` with the focus list as its goal." PRD 01,
+   "Driver": "replays recorded routes with cartographer's `map-test`, then explores".
+   - Dev server. `pre_shell` already limits the Driver to commands that start with
+     `build_command`, so the Driver cannot start a server from its shell. The gap is a
+     `build_command` that is itself a server or a watcher.
+     - Mechanism: ledger gate in `profile_set`. It refuses a `build_command` that contains a
+       watch or serve token: `--watch`, ` -w `, `watch`, `serve`, `dev`, `start` as a whole word,
+       `runserver`, `bootRun`. The list lives in one constant in `ledger.py`.
+     - Not checkable: a driver plugin's own launch tool pointing a browser at a dev server URL.
+       That stays the Driver's prompt rule. See the open question below.
+   - `map-test` first. cartographer's `map-test` also spawns `map-driver` (its `SKILL.md` says so),
+     so `pre_agent` cannot tell the two skills apart from the subagent call.
+     - Mechanism: a new hook in `templates/agents/driver.md` only: `PreToolUse`, matcher `Skill`,
+       ledger event `pre_skill`, in `hooks/events.py` as `handle_pre_skill`. For a Driver with an
+       open exploration, it records `drive_requests.map_test_at` when the skill is `map-test` or
+       `cartographer:map-test`, and denies `map-explore` or `cartographer:map-explore` while
+       `map_test_at` is empty. Any other skill passes. No override rule covers it.
+     - Add `map_test_at TEXT` to `drive_requests`.
+   - Cost: one hook round trip per Driver `Skill` call, about two per exploration. No select bytes.
+   - Tests: `profile_set(build_command="npm run dev")` is refused and `npm run build` is
+     accepted; a Driver `Skill(map-explore)` before `map-test` is denied and names `map-test`;
+     after `Skill(map-test)` it passes; a non-Driver session's `Skill` call passes.
+
+4. **A new Coder for a running module goes through its Manager and Lead.** PRD 02,
+   "Explorations": "The Oracle asks a running module for a new Coder through its Manager, which
+   asks the Lead, so the spawn order holds." The spawn order already holds: `brief_create` lets
+   the Oracle brief only a Manager or the Driver. Two gaps remain. `brief_create` does not check
+   that the scope ids belong to the caller, and the request message can skip a level (change 5
+   covers that).
+   - Mechanism: ledger gate in `brief_create`.
+     - A Manager's Lead brief needs a `module_id` of the Manager's own phase.
+     - A Lead's Coder brief needs a `file_id` of the Lead's own module whose live claim names
+       `child_name` as `owner_agent_id`.
+     - An Oracle's Manager brief needs a `phase_id` of the run, and change 9's unlock rule.
+   - PRD rewrite: "The Oracle asks a running module for a new Coder with a message to its
+     Manager. The Manager asks the Lead. Only the Lead can brief the Coder, and only for a file
+     its module claimed for that name."
+   - Cost: none.
+   - Tests: a Manager brief naming another phase's module is refused; a Lead brief naming another
+     module's file, or a file claimed for another name, is refused.
+
+5. **A Manager does not direct a Coder except through its Lead.** PRD 01, "Manager": "Must not:
+   ... direct a Coder without going through the Coder's Lead." The same holds for the Oracle:
+   "Must not: ... direct a Lead or a Coder." Today `message_post` accepts any name in the run,
+   and `pre_send_message` checks only that the name is in the run.
+   - Mechanism: ledger gate in `message_post`, plus the existing `pre_send_message` hook.
+     - `message_post` allows a recipient that is the caller's parent, its child, or its sibling
+       (same parent). The Oracle may also post to the Driver. It refuses any other name and lists
+       the allowed ones. Messages the ledger writes itself (pushbacks, escalations) do not go
+       through `message_post` and are unaffected.
+     - `handle_pre_send_message` applies the same relation, and also allows a target the caller
+       owes an unsent wake-up. The ledger owes some wake-ups across levels: `cr_open` to a file's
+       Coder, `cr_verify` by the nearest live ancestor, and issue round moves.
+   - Open for Alex: `cr_open` from a Manager or the Oracle routes to the file's live Coder. Either
+     the PRD says a change request is not direction, or `_cr_recipient` routes a request from
+     above the Lead to the file's Lead. The plan assumes the first.
+   - Cost: none. `message_post` is in no up-front `select:`. `pre_send_message` already runs on
+     every `SendMessage`; the change adds one query.
+   - Tests: a Manager's `message_post` to a Coder is refused and lists its Leads; the Oracle's
+     post to a Lead is refused; a Lead's post to a sibling Lead passes; a Manager's `SendMessage`
+     to a Coder is denied unless the Manager owes that Coder a wake-up.
+
+6. **Arbitration duties.** PRD 01: the Oracle arbitrates "disputes between Managers, including
+   which Manager owns a shared file" (already marked needs implementation); the Manager arbitrates
+   "disputes between its Leads, and the contracts between its modules"; the Lead arbitrates
+   "disputes between its Coders about contracts and about where a shared function belongs". No
+   record type for a dispute exists.
+   - Mechanism: ledger gate, sharing change 8's schema. `deferral_propose` takes
+     `parties: list[str] | None`, the agent names on the other side. With parties set, the
+     proposal is a dispute: the ledger owes the arbiter a wake-up, and `agreement_decide` accepts
+     only the lowest common ancestor of the proposer and every party, found through
+     `parent_agent_id`. Two Coders of one module reach their Lead; two Leads reach their Manager;
+     two Managers reach the Oracle. An open dispute blocks like any open deferral.
+   - Not checkable: whether the arbiter decides well. The ledger fixes who decides and that the
+     decision has a recorded reason.
+   - Template: the Oracle gets a step to decide a dispute between Managers, which removes the
+     needs-implementation note in PRD 01.
+   - Cost: none in select bytes; `deferral_propose` and `agreement_decide` are loaded on demand.
+     Their schemas grow about 200 B when loaded.
+   - Tests: a dispute between two Coders is refused to the Manager and accepted from the Lead; one
+     between two Managers' Leads reaches only the Oracle; `deferral_propose` with parties owes the
+     arbiter a wake-up.
+
+7. **Name patterns for every role but the Driver.** PRD 01, "Names": `mgr-<phase>`,
+   `lead-<phase>-<module>`, `coder-<phase>-<module>-<file>`, with the examples `mgr-p2-api`,
+   `lead-p2-auth` and `coder-p2-auth-login`. `brief_create` checks only that the name is free. The
+   table is also inconsistent: `<phase>` is `p2-api` for the Manager and `p2` for the Lead.
+   - PRD rewrite: phase names are `p<ordinal>-<slug>`, and `phase_add` adds the `p<ordinal>-`
+     prefix when the name lacks it. Manager: `mgr-<phase name>`. Lead:
+     `lead-p<ordinal>-<module name>`. Coder: `coder-p<ordinal>-<module name>-<file slug>`. Module
+     names and slugs match `[a-z0-9]+(-[a-z0-9]+)*`.
+   - Mechanism: ledger gates. `phase_add` adds the prefix. `module_add` refuses a name that is
+     not a slug. `brief_create` refuses a Manager, Lead or Coder name that does not match the
+     pattern built from its phase and module rows, and names the expected form. `claim_file`
+     applies the Coder pattern to `for_name`.
+   - Cost: none. Only refusal text changes.
+   - Tests: one refusal per role; `phase_add("api")` stores `p2-api` as the second phase. Update
+     the fixtures in `mcp/tests/` and the smoke PRDs that use other names.
+
+8. **The responsible level for deferrals and scope changes.** PRD 04, "The responsible level"
+   table: a file's task or tests, the Lead; a module's scope or a contract between files, the
+   Lead, and the Manager when another module is affected; a phase's scope or a contract between
+   modules, the Manager; the phase plan or work moved to a later phase, the Oracle; what the PRD
+   asks for, the user through the Oracle. `agreement_decide` checks only rank at or above the
+   proposer's parent, and scope.
+   - Mechanism: ledger gate. `deferral_propose` takes a required
+     `kind: "file" | "module" | "cross_module" | "phase" | "plan" | "prd"`. `accept_incomplete`
+     opens kind `file`. `agreement_decide` needs a caller at or above both the proposer's parent
+     and the kind's level: `file` and `module` Lead, `cross_module` and `phase` Manager, `plan`
+     and `prd` Oracle. For `prd` it also needs a `user_chat` directive in the run created after
+     the deferral, named in a new `directive_id` argument.
+   - Not checkable: whether the proposer chose the right kind. A decider who sees the kind is too
+     low denies it with that reason, and the proposer files it again.
+   - Cost: none in select bytes; about 150 B on `deferral_propose` and 80 B on
+     `agreement_decide` when loaded.
+   - Tests: a Lead's `agreement_decide` on a `cross_module` deferral is refused; a Manager's on a
+     `plan` deferral is refused; a `prd` decision without a later `user_chat` directive is refused.
+
+9. **(Found) A phase unlocks only when its dependencies are approved.** PRD 02: "A phase unlocks
+   when every phase it depends on is approved." PRD 01: "Starts one Manager per unlocked phase."
+   `phase_update(phase_id, "unlocked")` sets the state with no dependency check, and
+   `agent_spawn` starts a Manager into any phase.
+   - Mechanism: ledger gates. `phase_update(unlocked)` refuses while a `phase_deps` row names a
+     phase that is not `approved`, and names it. `agent_spawn` refuses a Manager whose phase is
+     `planned`.
+   - Cost: none.
+   - Tests: unlocking a phase with an unapproved dependency is refused; spawning a Manager into a
+     planned phase is refused.
+
+10. **A role records what the graph was missing.** PRD 09, "The code graph": "An agent that falls
+    back records what the graph was missing." No ledger tool takes such a record.
+    - Mechanism: the existing `post_activity` hook. For a `Grep` or `Glob` call by a swarm
+      session, `handle_post_activity` writes a `graph_gaps` row: run, agent, tool, pattern, path,
+      and the first 20 result paths from `tool_response`. The report lists the gaps per run.
+      codebase-kg's own gate decides whether the search may run; this only records it.
+    - Not checkable: why the graph fell short, in words. The pattern and the paths found are the
+      structural record. A search scoped to a file the graph anchors is recorded too; the report
+      marks those rows by looking up each path in the graph.
+    - PRD rewrite: "The ledger records each Grep and Glob a role runs, with its pattern and the
+      paths it found, as a graph gap. The report lists them." This drops the agent's duty.
+    - Cost: none. `post_activity` already runs, async, after every tool.
+    - Tests: a Coder's Grep writes one row with its pattern and paths; a non-swarm session's Grep
+      writes none; the report shows the gaps section.
+
+11. **(Found) An agent re-reads its brief before each handoff and after each return.** PRD 01,
+    principle 9. `brief_get` takes no identity, so the ledger cannot tell who read a brief.
+    - Mechanism: `handle_pre_ledger` already sees every `brief_get` and its session. It records
+      `briefs.last_read_by_child_at` when the caller's session is the brief's child. `handoff_submit`
+      refuses when the Coder has not read its brief since its last return.
+    - Cost: none.
+    - Tests: a Coder's second handoff after a return without `brief_get` is refused; after
+      `brief_get` it passes.
+
+#### Cost summary
+
+| Change | Mechanism | Select bytes | Hook round trips |
+|---|---|---|---|
+| 1 Ordering and contracts | `claim_file`, `module_add`, `brief_create`, `brief_get` | about 150 B each to Lead, Manager, Oracle | 0 |
+| 2 `accept_incomplete` reason | `accept_incomplete` | 0 | 0 |
+| 3 Dev server | `profile_set` | 0 | 0 |
+| 3 `map-test` first | New `pre_skill` hook, Driver only | 0 | About 2 per exploration |
+| 4 New Coder through the chain | `brief_create` scope checks | 0 | 0 |
+| 5 No skip-level direction | `message_post`; existing `pre_send_message` | 0 | 0 new |
+| 6 Arbitration | `deferral_propose(parties)`, `agreement_decide` | 0 (about 200 B when loaded) | 0 |
+| 7 Names | `phase_add`, `module_add`, `brief_create`, `claim_file` | 0 | 0 |
+| 8 Responsible level | `deferral_propose(kind)`, `agreement_decide(directive_id)` | 0 (about 230 B when loaded) | 0 |
+| 9 Phase unlock | `phase_update`, `agent_spawn` | 0 | 0 |
+| 10 Graph gaps | Existing async `post_activity` | 0 | 0 new |
+| 11 Brief re-read | Existing `pre_ledger`; `handoff_submit` | 0 | 0 new |
+
+#### PRD edits
+
+- `01-roles.md`: the Names table (change 7); each role's Arbitrates line names the dispute
+  mechanism, and the Oracle's needs-implementation note goes (6); the Manager's and Oracle's
+  Must-not lines name the `message_post` gate (5); the Driver's "Does" names the `pre_skill` order
+  (3).
+- `02-run-lifecycle.md`: the ordering and contracts paragraphs and the join-point line (1);
+  `accept_incomplete` (2); `brief_create` scope and name refusals (4, 7); `phase_update(unlocked)`
+  and `agent_spawn` (9); the Explorations bullets on the dev server, `map-test` and the new Coder
+  (3, 4); `profile_set`'s build command check (3); `handoff_submit`'s brief re-read (11).
+- `03-scoring-and-review.md`: the incomplete line points at 02's refusals (2).
+- `04-agreements.md`: `deferral_propose(kind, parties)`, the responsible-level table with its
+  kind values, and `agreement_decide`'s checks (6, 8).
+- `05-sessions.md`, "Messages": the `message_post` relation (5).
+- `06-ledger-server.md`: the changed tool signatures and the new tables `file_deps`,
+  `module_deps`, `graph_gaps`, and the new columns.
+- `07-hooks-and-enforcement.md`: a `pre_skill` row in the hook table; the `pre_send_message`,
+  `pre_ledger` and `post_activity` paragraphs; one rule-map row per change.
+- `09-mcp-servers-and-code-graph.md`: the graph-gap record (10).
+- `10-report-and-costs.md`: the graph-gaps and disputes sections (6, 10).
+- `14-key-decisions.md`: a dated line for each rewrite Alex accepts (2, 4, 7, 10, and the
+  `cr_open` routing in 5).
+- `16-open-items.md`: drop the Oracle arbitration item once change 6 ships.
+
+#### Open questions
+
+1. Does Claude Code fire `PreToolUse` with matcher `Skill` for a skill call, with the skill name in
+   `tool_input`? Verify live before building change 3.
+2. How does web-driver serve a web build? If it opens a URL the Driver passes, a dev server URL
+   passes every check here.
+3. `cr_open` routing from a Manager or the Oracle to a Coder (change 5).
+4. Is the `build_command` token list too broad? `start` and `dev` can appear in a real build
+   script name.
+
+### Step 2c. Build the items marked (needs implementation)
+
+Each item is listed in `knowledge/prd/16-open-items.md`. Remove its mark from the PRD when it
+ships, and delete its line from `16-open-items.md`.
+
+1. **Oracle arbitration between Managers** (PRD 01). Build with step 2b, change 6: the closest
+   shared ancestor of two Managers is the Oracle.
+2. **A fix Coder's brief** (PRD 02). `brief_get` returns the evidence of each finding in the
+   brief's `finding_ids`. The fix brief re-claims the file through `claim_file`.
+3. **Overrides tied to a run** (PRD 04). `override_consume` matches `run_id` as well as the rule,
+   the agent name and the target. Also closes "Overrides across runs".
+4. **A Driver only through `drive_request`** (open item). `brief_create` refuses
+   `child_role="driver"`; `drive_request` is the only path that starts a Driver.
+5. **The device-queue broker** (PRD 05). A second event kind on `swarm-events`. Roles stay `--bg`
+   sessions, so it first needs a path to a waiting role that is not the channel.
+6. **Graph search at each role's level** (PRD 09). Each role template's start sequence names the
+   level it searches at.
+7. **Multi-file graph nodes through the Lead** (PRD 09). Give the Lead `graph_upsert` for a node
+   whose anchors span files in its module.
+
+Tests: one ledger test per gate in items 2, 3, 4 and 7; `test_plugin_surface.py` checks the
+template text for item 6. Item 5 waits on its delivery path.
+
 ### Step 3. Start-up calls in the `SessionStart` hook
 
 The role's `SessionStart` hook already posts to the ledger, runs as code, and knows the session id,
