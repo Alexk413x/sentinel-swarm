@@ -27,6 +27,7 @@ _DEFAULT_MODELS = {
 DEFAULT_EFFORT = {role: "medium" for role in _DEFAULT_MODELS}
 _SETTINGS_PATH = Path(".claude") / "sentinel-swarm.local.md"
 NOTIFY_CHANNELS = ("os", "push")
+HOOK_TRANSPORTS = ("mod", "command")
 
 
 def normalize_budget(raw: object) -> int | None:
@@ -37,6 +38,11 @@ def normalize_budget(raw: object) -> int | None:
     except ValueError:
         return None
     return minutes if minutes > 0 else None
+
+
+def normalize_transport(raw: object) -> str | None:
+    value = str(raw).strip().lower() if isinstance(raw, str) else ""
+    return value if value in HOOK_TRANSPORTS else None
 
 
 def normalize_notify(raw: object) -> list[str]:
@@ -99,6 +105,8 @@ class Settings:
     # Per-role cap on that role's own live sessions in the run, on top of parallelism_cap.
     role_parallelism_cap: dict[str, int] = field(default_factory=dict)
     notify: list[str] = field(default_factory=lambda: list(NOTIFY_CHANNELS))
+    # Empty means setup picks mod on a Claude Code build that runs the mod, command otherwise.
+    hook_transport: str | None = None
 
     def snapshot(self) -> str:
         return json.dumps(asdict(self), sort_keys=True)
@@ -193,4 +201,5 @@ def load_settings(repo_root: Path) -> Settings:
         prompt_cache_ttl=prompt_cache_ttl,
         role_parallelism_cap=role_parallelism_cap,
         notify=normalize_notify(data.get("notify")),
+        hook_transport=normalize_transport(data.get("hook_transport")),
     )

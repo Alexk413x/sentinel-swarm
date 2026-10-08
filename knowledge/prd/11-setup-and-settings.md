@@ -16,6 +16,12 @@ top-level `bin/` folder.
    or web-driver, from the accessibility-tools marketplace) as well for a Driver;
    without them the run finishes on unit tests alone.
 2. Trust the host folder once: run `claude` in it and accept the trust prompt.
+   The project-scope install is what loads the plugin's mod in each role session; no
+   other step installs it. `claude --bg` refuses an untrusted folder, so the mod never
+   runs in a role session there. The plugin, mod included, stays unloaded while a
+   `dependencies` entry is not installed: the session's debug log says
+   `dependency-unsatisfied`, and the role sessions then run no ledger hook at all
+   under the `mod` transport.
 3. Run setup, then the launcher.
 
 ## The ledger's venv
@@ -45,6 +51,13 @@ SHA-256 of `mcp/uv.lock`. `uv` gets it as `UV_PROJECT_ENVIRONMENT`.
 `/sentinel-swarm:setup` skill, which also creates the settings file, fills in the
 commands from the detected stack, confirms codebase-kg, and builds the graph. Setup:
 
+- Picks the hook transport and reports it first: `hook_transport` from the settings
+  file, or else `mod` when `claude --version` is 2.1.294 or later and `command`
+  otherwise, including when the version cannot be read. See "Where the hooks live" in
+  [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md).
+- Under `mod`, writes each role file without the template's ledger command hooks,
+  and removes them from an existing file, keeping any hook of the user's own. Under
+  `command`, the rules below add them back.
 - Writes `.claude/agents/swarm-oracle.md`, `swarm-manager.md`, `swarm-lead.md`, and
   `swarm-coder.md` from `templates/agents/<role>.md`. For an existing file it keeps the
   user's frontmatter, adds any key the template has that the file lacks, adds every
@@ -103,6 +116,11 @@ or the `/sentinel-swarm:run` skill.
 - Interactive by default. `--bg` starts a background session. `--headless` runs
   `claude -p` with a stream-json transcript and the prompt on stdin. Nobody answers
   questions in a headless run, so the Oracle records each assumption in the guidelines.
+- It removes the variables a parent Claude Code session sets for its own children,
+  such as `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_SESSION_ID`, and `CLAUDECODE`,
+  from the Oracle's environment, and `agent_spawn` and `agent_resume` do the same for
+  every child (`sessions.PARENT_SESSION_VARS`). A session started with them never
+  registers, so `claude agents` and a send by session id miss it.
 - No launch loads a channel of its own. The development-channel flag appears only when
   `CLAUDE_DEV_CHANNELS` names the user's own channels; see "Starting a child" in
   [05-sessions.md](05-sessions.md).
@@ -144,6 +162,7 @@ descriptions stay out of every session's context.
 | `effort.<role>` | `medium` for every role | `--effort <level>` for that role's sessions. A settings file with no `effort` key gets `medium` for every role; a role left empty runs at its model's default. A brief's own `effort` overrides it |
 | `prompt_cache_ttl.<role>` | `5m` for the Coder, empty for the others | `promptCacheTtl` (`"5m"` or `"1h"`) for that role's sessions |
 | `role_parallelism_cap.<role>` | empty | Cap on that role's own live sessions in the run |
+| `hook_transport` | empty | `mod` or `command`. Empty lets setup pick `mod` on Claude Code 2.1.294 or later and `command` otherwise. Any other value reads as empty. See "Setup" above |
 | `notify` | `[os, push]` | How the user hears that the Driver finished or hit an error, or that an issue ended round 3 below the floor. `os`: the ledger server shows a desktop notification. `push`: the Oracle owes a `PushNotification` call. `[]` or `""` turns both off; a single value reads as a one-item list; unknown values are dropped; an unset key, or `notify:` with no value, keeps both. See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md) |
 
 `-p no:cacheprovider` keeps parallel pytest runs from contending on `.pytest_cache`.

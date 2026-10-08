@@ -1,4 +1,5 @@
 {
-  "description": "No plugin-wide hooks. Each role's hooks live in its project agent file, .claude/agents/swarm-<role>.md, which setup writes from templates/agents/. A hook in both places would run twice.",
+  "description": "The sentinel-swarm mod runs every role's ledger hooks in its swarm sessions and leaves every other session alone. No command hooks: a role file that still carries them runs them itself, and the mod then stays out of that session, so no hook runs twice.",
+  "modules": ["./register.ts"],
   "hooks": {}
 }

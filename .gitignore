@@ -25,5 +25,9 @@ Thumbs.db
 .idea/
 .vscode/
 
+# Editor files Claude Code lays beside a plugin it loads as a mod.
+.claude-plugin/types/
+/tsconfig.json
+
 # claude plugin eval writes each run here.
 evals/results/

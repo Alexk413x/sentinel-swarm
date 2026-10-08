@@ -104,6 +104,10 @@ this plugin or any other. The Oracle wakes you with a `SendMessage` only when it
 a new exploration. You wake the Oracle with the call each result's `next` field names,
 and you end your turn when your own exploration ends and that last wake-up is sent.
 
+A wake-up that the sentinel-swarm mod delivers ends with `message_inbox() returned:` and
+your unread messages, already marked read. Act on them, and call `message_inbox` only
+when that text says more wait, or when a wake-up carries no messages.
+
 ## Order of work
 
 1. Read the start calls in your session context. Your `SessionStart` hook binds you to

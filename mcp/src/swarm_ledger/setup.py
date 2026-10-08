@@ -11,8 +11,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import sessions
 from .agentfiles import driver_available
 from .db import _main_git_dir
+from .settings import load_settings
 
 CORE_ROLES = ("oracle", "manager", "lead", "coder")
 ROLES = (*CORE_ROLES, "driver")
@@ -26,6 +28,8 @@ SETTINGS_LOCAL_PATH = Path(".claude") / "settings.local.json"
 KG_SETTINGS_PATH = Path(".claude") / "codebase-kg.local.md"
 EXCLUDE_LINES = (".sentinel-swarm/", ".claude/agents/swarm-*.md", KG_SETTINGS_PATH.as_posix())
 WORKTREE_SETTINGS: dict[str, Any] = {"worktree": {"bgIsolation": "none"}}
+# The first build where a live check ran the mod in --bg --agent role sessions.
+MOD_MIN_VERSION = (2, 1, 294)
 # Exact names: an Agent(<name>) deny blocks the Agent tool but not a `claude --agent` launch.
 ROLE_AGENT_DENY = tuple(f"Agent(swarm-{role})" for role in ROLES)
 
@@ -188,6 +192,64 @@ def replace_superseded_hooks(
     return user_frontmatter, replaced
 
 
+def strip_ledger_hooks(frontmatter: str) -> tuple[str, list[str]]:
+    frontmatter = _with_newline(frontmatter)
+    block = key_blocks(frontmatter).get("hooks")
+    if block is None:
+        return frontmatter, []
+    lines = block.splitlines(keepends=True)
+    loose: list[str] = []
+    events: list[tuple[str, list[list[str]]]] = []
+    for line in lines[1:]:
+        if _HOOK_EVENT_LINE.match(line):
+            events.append((line, []))
+        elif _HOOK_ITEM_LINE.match(line) and events:
+            events[-1][1].append([line])
+        elif events and events[-1][1]:
+            events[-1][1][-1].append(line)
+        else:
+            loose.append(line)
+    removed: list[str] = []
+    kept: list[str] = []
+    for header, entries in events:
+        texts = []
+        for entry in entries:
+            text = "".join(entry)
+            match = _LEDGER_HOOK.search(text)
+            if match:
+                removed.append(match.group(1))
+            else:
+                texts.append(text)
+        if texts:
+            kept.append(header + "".join(texts))
+    if not removed:
+        return frontmatter, []
+    rest = "".join(loose) + "".join(kept)
+    return frontmatter.replace(block, lines[0] + rest if rest.strip() else "", 1), removed
+
+
+def hook_transport(repo: Path) -> tuple[str, str]:
+    chosen = load_settings(repo).hook_transport
+    if chosen is not None:
+        return chosen, f"hook_transport: {chosen} in the settings file"
+    version = sessions.claude_version()
+    if version is None:
+        return "command", "the Claude Code version could not be read"
+    shown = ".".join(str(part) for part in version)
+    if version >= MOD_MIN_VERSION:
+        return "mod", f"Claude Code {shown} runs the plugin's mod"
+    floor = ".".join(str(part) for part in MOD_MIN_VERSION)
+    return "command", f"Claude Code {shown} is older than {floor}"
+
+
+def role_template(role: str, transport: str) -> str:
+    template = template_file(role).read_text(encoding="utf-8")
+    if transport != "mod":
+        return template
+    frontmatter, body = split_document(template)
+    return _join_document(strip_ledger_hooks(frontmatter)[0], body)
+
+
 def merge_role_file(existing: str, template: str) -> tuple[str, list[str], bool]:
     user_frontmatter, user_body = split_document(existing)
     template_frontmatter, template_body = split_document(template)
@@ -222,7 +284,7 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
-def write_role_files(repo: Path, report: SetupReport) -> None:
+def write_role_files(repo: Path, report: SetupReport, transport: str = "command") -> None:
     for role in ROLES:
         target = role_file(repo, role)
         shown = target.relative_to(repo).as_posix()
@@ -233,14 +295,21 @@ def write_role_files(repo: Path, report: SetupReport) -> None:
                 "ios-driver, or web-driver) are not installed"
             )
             continue
-        template = template_file(role).read_text(encoding="utf-8")
+        template = role_template(role, transport)
         if not target.is_file():
             _write_text(target, render_default(template))
             report.add(f"wrote {shown}")
             continue
         existing = target.read_text(encoding="utf-8")
+        removed: list[str] = []
         try:
-            merged, added, body_changed = merge_role_file(existing, template)
+            start = existing
+            if transport == "mod":
+                frontmatter, body = split_document(existing)
+                frontmatter, removed = strip_ledger_hooks(frontmatter)
+                if removed:
+                    start = _join_document(frontmatter, body)
+            merged, added, body_changed = merge_role_file(start, template)
         except SetupError as exc:
             report.add(f"left {shown} unchanged: {exc}")
             continue
@@ -253,6 +322,8 @@ def write_role_files(repo: Path, report: SetupReport) -> None:
             changes.append("replaced the prompt body")
         if added:
             changes.append(f"added keys from the template: {', '.join(added)}")
+        if removed:
+            changes.append(f"removed the ledger command hooks the mod runs: {', '.join(removed)}")
         report.add(f"updated {shown}, kept your frontmatter: {'; '.join(changes) or 'normalized'}")
 
 
@@ -389,7 +460,9 @@ def trust_instructions(repo: Path) -> str:
 def run_setup(repo: Path) -> SetupReport:
     repo = repo.resolve()
     report = SetupReport()
-    write_role_files(repo, report)
+    transport, why = hook_transport(repo)
+    report.add(f"hook transport: {transport} ({why})")
+    write_role_files(repo, report, transport)
     write_shim(repo, report)
     merge_settings_local(repo, report)
     quiet_codebase_kg_nudge(repo, report)

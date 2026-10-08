@@ -31,6 +31,7 @@ _WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 # handoff_submit read what post_any records for these tools, so it cannot run async.
 SYNC_POST_TOOLS = ("SendMessage", "PushNotification", "Monitor", *_WRITE_TOOLS)
 FIRED_AT_KEY = "sentinel_swarm_fired_at"
+TRANSPORT_KEY = "sentinel_swarm_transport"
 _READONLY_GIT = frozenset({"status", "diff", "log", "show", "ls-files", "branch"})
 _POSIX = os.name != "nt"
 _RUN_STATUS_ROLES = frozenset({"manager", "lead"})
@@ -193,6 +194,8 @@ def _start_context(ledger: Ledger, caller: dict) -> str:
 
 
 def handle_session_start(ledger: Ledger, data: dict) -> dict | None:
+    if data.get(TRANSPORT_KEY) == "mod" and data.get("session_id"):
+        ledger.mod_session(str(data["session_id"]))
     caller = _swarm_caller(ledger, data.get("session_id"))
     if caller is not None:
         if data.get("transcript_path"):
@@ -399,11 +402,7 @@ def handle_pre_monitor(ledger: Ledger, data: dict) -> dict | None:
 # -- 4b. PreToolUse: SendMessage ----------------------------------------------------
 
 
-def handle_pre_send_message(ledger: Ledger, data: dict) -> dict | None:
-    caller = _swarm_caller(ledger, _caller_id(data))
-    if caller is None or caller["run_id"] is None:
-        return None
-    to = str((data.get("tool_input") or {}).get("to") or "")
+def _send_refusal(ledger: Ledger, caller: dict, to: str) -> str | None:
     names = {
         row["session_name"]
         for row in ledger.conn.execute(
@@ -413,7 +412,7 @@ def handle_pre_send_message(ledger: Ledger, data: dict) -> dict | None:
         )
     }
     if to not in names:
-        return _deny(
+        return (
             "SendMessage may target only a session of this run; valid session names: "
             f"{sorted(names)}"
         )
@@ -441,10 +440,18 @@ def handle_pre_send_message(ledger: Ledger, data: dict) -> dict | None:
         }
     if to in allowed:
         return None
-    return _deny(
+    return (
         f"SendMessage from {caller['name']} goes to its parent, its children, its siblings, or "
         f"a session it owes a wake-up: {sorted(allowed)}. Reach anyone else through that chain"
     )
+
+
+def handle_pre_send_message(ledger: Ledger, data: dict) -> dict | None:
+    caller = _swarm_caller(ledger, _caller_id(data))
+    if caller is None or caller["run_id"] is None:
+        return None
+    reason = _send_refusal(ledger, caller, str((data.get("tool_input") or {}).get("to") or ""))
+    return _deny(reason) if reason is not None else None
 
 
 # -- 4c. PreToolUse: Skill -----------------------------------------------------------
@@ -1162,3 +1169,73 @@ def _refresh_finished_report(
             caller_id, transcript_path=transcript_path, tokens=_sum_tokens(transcript_path)
         )
     ledger.write_report(run["run_id"])
+
+
+# -- 11. The mod: owed wake-ups and the inbox --------------------------------------
+
+
+def handle_owed(ledger: Ledger, data: dict) -> dict | None:
+    from .. import wake
+
+    caller = _swarm_caller(ledger, _caller_id(data))
+    if caller is None:
+        return None
+    targets: dict[str, dict] = {}
+    for wakeup in ledger.owed_wakeups(caller["agent_id"]):
+        if caller["run_id"] is not None and _send_refusal(
+            ledger, caller, wakeup["to_session_name"]
+        ):
+            continue
+        target = targets.get(wakeup["to_agent_id"])
+        if target is None:
+            row = ledger.conn.execute(
+                "SELECT role FROM agents WHERE agent_id = ?", (wakeup["to_agent_id"],)
+            ).fetchone()
+            target = targets[wakeup["to_agent_id"]] = {
+                "session_id": wakeup["to_agent_id"],
+                "session_name": wakeup["to_session_name"],
+                "name": wakeup["to_name"],
+                "role": row["role"] if row is not None else None,
+                "pointers": [],
+                "wakeup_ids": [],
+            }
+        target["pointers"].append(wakeup["pointer"])
+        target["wakeup_ids"].append(wakeup["wakeup_id"])
+    wakeups = []
+    for target in targets.values():
+        text = " ".join(target.pop("pointers"))
+        target["text"] = wake.timed(text, wake.signal_for(ledger.conn, target["session_id"]))
+        wakeups.append(target)
+    return {"wakeups": wakeups}
+
+
+def handle_wake_sent(ledger: Ledger, data: dict) -> dict | None:
+    caller = _swarm_caller(ledger, _caller_id(data))
+    if caller is None:
+        return None
+    raw = data.get("wakeup_ids")
+    ids = [i for i in raw if isinstance(i, int)] if isinstance(raw, list) else []
+    return {"sent": ledger.wakeups_paid(caller["agent_id"], ids)}
+
+
+def handle_inbox_take(ledger: Ledger, data: dict) -> dict | None:
+    caller = _swarm_caller(ledger, _caller_id(data))
+    if caller is None or caller["run_id"] is None:
+        return None
+    return ledger.inbox_take(caller_of(caller))
+
+
+def _settle(ledger: Ledger, data: dict, *, read: bool) -> dict | None:
+    caller = _swarm_caller(ledger, _caller_id(data))
+    claim = data.get("claim")
+    if caller is None or not isinstance(claim, str) or not claim:
+        return None
+    return {"settled": ledger.inbox_settle(caller_of(caller), claim, read=read)}
+
+
+def handle_inbox_ack(ledger: Ledger, data: dict) -> dict | None:
+    return _settle(ledger, data, read=True)
+
+
+def handle_inbox_release(ledger: Ledger, data: dict) -> dict | None:
+    return _settle(ledger, data, read=False)

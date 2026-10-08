@@ -341,7 +341,9 @@ CREATE TABLE IF NOT EXISTS messages (
     to_name TEXT NOT NULL,
     body TEXT NOT NULL,
     read_at TEXT,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    claim_id TEXT,
+    claimed_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_unread
@@ -410,6 +412,11 @@ CREATE TABLE IF NOT EXISTS wakeups (
 
 CREATE INDEX IF NOT EXISTS idx_wakeups_owed
     ON wakeups (from_agent_id) WHERE sent_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS mod_sessions (
+    session_id TEXT PRIMARY KEY,
+    seen_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
 
 CREATE TABLE IF NOT EXISTS watchdog_findings (
     finding_id INTEGER PRIMARY KEY,

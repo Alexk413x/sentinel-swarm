@@ -86,11 +86,86 @@ def test_setup_is_idempotent(repo: Path):
 
     after = {p: p.read_bytes() for p in repo.rglob("*") if p.is_file()}
     assert after == before
+    assert report.lines[0].startswith("hook transport: command")
     assert all(
-        line.startswith("unchanged") or line.startswith("skipped") for line in report.lines[:8]
+        line.startswith("unchanged") or line.startswith("skipped") for line in report.lines[1:9]
     )
     exclude = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8").splitlines()
     assert exclude.count(".sentinel-swarm/") == 1
+
+
+def _ledger_hook_events(path: Path) -> list[str]:
+    hooks = _frontmatter(path).get("hooks") or {}
+    return [
+        group["hooks"][0]["command"].split()[3]
+        for groups in hooks.values()
+        for group in groups
+        if "hook.py hook" in group["hooks"][0]["command"]
+    ]
+
+
+def test_a_build_that_runs_the_mod_gets_role_files_without_ledger_hooks(
+    repo: Path, claude_version: list
+):
+    claude_version[0] = (2, 1, 294)
+    report = setup.run_setup(repo)
+
+    assert report.lines[0] == "hook transport: mod (Claude Code 2.1.294 runs the plugin's mod)"
+    for role in setup.CORE_ROLES:
+        fields = _frontmatter(setup.role_file(repo, role))
+        assert "hooks" not in fields
+        assert fields["name"] == f"swarm-{role}"
+        assert _body(setup.role_file(repo, role)) == _body(setup.template_file(role))
+
+
+def test_an_older_build_or_an_unknown_version_keeps_the_command_hooks(
+    repo: Path, claude_version: list
+):
+    claude_version[0] = (2, 1, 293)
+    report = setup.run_setup(repo)
+
+    assert report.lines[0] == "hook transport: command (Claude Code 2.1.293 is older than 2.1.294)"
+    assert "stop" in _ledger_hook_events(setup.role_file(repo, "coder"))
+
+
+def test_switching_to_the_mod_strips_only_the_ledger_hooks(repo: Path, claude_version: list):
+    setup.run_setup(repo)
+    path = setup.role_file(repo, "lead")
+    text = path.read_text(encoding="utf-8").replace(
+        "hooks:\n",
+        "hooks:\n  Notification:\n    - hooks:\n        - type: command\n"
+        '          command: "notify-me"\n',
+        1,
+    )
+    path.write_text(text, encoding="utf-8")
+    claude_version[0] = (2, 2, 0)
+
+    report = setup.run_setup(repo)
+
+    fields = _frontmatter(path)
+    assert fields["hooks"] == {
+        "Notification": [{"hooks": [{"type": "command", "command": "notify-me"}]}]
+    }
+    assert any("removed the ledger command hooks the mod runs" in line for line in report.lines)
+
+    claude_version[0] = None
+    setup.run_setup(repo)
+    assert "session_start" in _ledger_hook_events(path)
+    assert _frontmatter(path)["hooks"]["Notification"]
+
+
+def test_the_settings_file_overrides_the_version_check(repo: Path, claude_version: list):
+    claude_version[0] = (2, 1, 294)
+    settings = repo / ".claude" / "sentinel-swarm.local.md"
+    settings.parent.mkdir(parents=True)
+    settings.write_text("---\nhook_transport: command\n---\n", encoding="utf-8")
+
+    report = setup.run_setup(repo)
+
+    assert (
+        report.lines[0] == "hook transport: command (hook_transport: command in the settings file)"
+    )
+    assert _ledger_hook_events(setup.role_file(repo, "oracle"))
 
 
 def test_existing_role_file_keeps_frontmatter_and_gets_new_body(repo: Path):

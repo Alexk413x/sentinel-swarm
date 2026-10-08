@@ -116,7 +116,12 @@ wake-up the caller owes, and returns a `next` field with the exact call to make.
   recipient's session runs, and `agent_resume(target_name=...)` when it does not. When
   `claude agents --json` fails, `next` names both: the `SendMessage` call, or
   `agent_resume` if that session is not running. See "Wake-up delivery" below.
-- The `post_any` hook clears the debt when it sees a `SendMessage` to that session name.
+- When the caller's hooks run through the mod, `next` is instead "Nothing to call: the
+  sentinel-swarm mod wakes <name> for you. Your Stop hook names a call only if that
+  wake-up is not delivered." The ledger knows such a caller from the `mod_sessions`
+  row its `session_start` hook writes.
+- The mod marks a wake-up paid through `wake_sent` once its send is delivered. The
+  `post_any` hook clears the debt when it sees a `SendMessage` to that session name.
   When the sender is a Driver whose exploration is closed and it owes nothing more, the
   hook then releases it, which stops its session.
 - The Stop hook blocks a Manager, Lead, Coder, or Driver that still owes a wake-up and
@@ -133,8 +138,33 @@ wake-up the caller owes, and returns a `next` field with the exact call to make.
 
 ## Wake-up delivery
 
-The sender's model delivers every owed wake-up: `SendMessage` to a running target, and
+The sender's mod delivers every owed wake-up in a session whose hooks run through the
+mod. The sender's model delivers the rest: `SendMessage` to a running target, and
 `agent_resume` to a stopped one. The ledger pushes nothing into a session.
+
+### Mod wake-up delivery
+
+- After each ledger tool call returns, the mod posts `owed` with the session id, off
+  the hook's critical path. The ledger answers the caller's unsent wake-ups whose
+  target has not ended, one entry per target: the target's session id, the pointers
+  joined into one text, the time signal for an Oracle or Manager target, and the
+  wake-up ids. It leaves out a target that `pre_send_message`'s recipient check would
+  refuse; the mod's own sends do not raise its `session.send` hook, so the check runs
+  in the ledger before the mod sends. They do raise its `SendMessage` gate, which
+  passes a wake-up text the mod is sending (see "The mod" in
+  [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md)).
+- The mod sends each entry with `$.session.send({ to: { sessionId }, text })`, all
+  targets in parallel. Every role is addressed by session id, the interactive Oracle
+  included, never by name.
+- A send that answers "no live session" is tried again after 2, 4, and 8 more seconds:
+  a session registers 10 to 14 s after it starts. Any other refusal ends the attempt.
+- The mod posts `wake_sent` with the ids whose send reported `isDelivered`. The ledger
+  marks only the caller's own rows sent and releases a closed Driver, as `post_any`
+  does. A wake-up whose send failed stays owed.
+- The mod's `Stop` hook waits for the sends still in flight from earlier calls, pays
+  what is still owed, and only then posts `stop`. So the Stop hook names `SendMessage` or `agent_resume` only for a
+  wake-up the mod did not deliver: that is the fallback, and `agent_resume` stays the
+  call for a stopped target.
 
 - `route_wakeup` in `mcp/src/swarm_ledger/wake.py` builds every wake instruction:
   `next`, the member Stop hook's owed calls, the Oracle Stop hook's wake hints, and the
@@ -143,10 +173,6 @@ The sender's model delivers every owed wake-up: `SendMessage` to a running targe
   2. The target's liveness is unknown: both calls, as for `next` above.
   3. Otherwise: the `SendMessage` call.
 - The member Stop hook names each owed call at once. It does not wait.
-- The sender's mod delivers each owed wake-up with `$.session.send` once a live check
-  shows it wakes an idle `--bg` session, so a wake-up costs the sender no model turn.
-  `SendMessage` stays the fallback. See `plans/messaging-and-tooling.md`.
-  **(needs implementation)**
 - A device-queue broker that tells a session when a device frees up needs a new plan on
   the mod's delivery path. **(needs implementation)**
 - The Coder's Stop hook also blocks once, per Coder, when the Coder stops while working
@@ -206,7 +232,17 @@ a possible injection. So only the Oracle and the Managers see the elapsed time.
   40,000 characters of bodies, and marks those read in the same transaction. Rows past
   the cap stay unread, and `remaining` counts them. The first unread message always
   comes back, even one the ledger wrote over the cap. Every role reads it at the start
-  of each turn after a wake-up, and calls it again while `remaining` is above 0.
+  of each turn after a wake-up, and calls it again while `remaining` is above 0. It
+  skips a row the mod holds under a claim less than 2 minutes old.
+- The inbox inside a wake-up: when a peer delivery reaches a role session whose hooks
+  run through the mod, the mod's `session.receive` hook posts `inbox_take`. The ledger
+  claims the caller's unread messages of its own run, up to the same 40,000-character
+  cap, under a new claim id, and returns them with `remaining`. The mod appends them
+  to the delivered text after `message_inbox() returned:`, then posts `inbox_ack`,
+  which marks the claimed rows read, or `inbox_release` when the delivery was
+  consumed or failed. A claim nobody settles counts as unread again after 2 minutes,
+  and a late `inbox_ack` then marks nothing. The woken role calls `message_inbox`
+  only when that text says more wait.
 - An index on `messages (run_id, to_name, read_at)` serves the inbox and the unread
   counts. `connect` adds it to an older `ledger.db`.
 - A `SendMessage` body is one line that points at the ledger record, for example

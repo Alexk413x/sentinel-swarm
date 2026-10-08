@@ -76,6 +76,13 @@ def _calls(wakeup: Mapping[str, Any], signal: str | None = None) -> tuple[str | 
     return send, f"agent_resume(target_name={json.dumps(wakeup['to_name'])})"
 
 
+def mod_step(wakeup: Mapping[str, Any]) -> str:
+    return (
+        f"Nothing to call: the sentinel-swarm mod wakes {wakeup['to_name']} for you. "
+        "Your Stop hook names a call only if that wake-up is not delivered."
+    )
+
+
 def route_wakeup(
     wakeup: Mapping[str, Any], *, live: bool | None, signal: str | None = None
 ) -> Delivery:

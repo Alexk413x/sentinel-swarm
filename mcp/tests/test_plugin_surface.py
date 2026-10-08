@@ -471,6 +471,62 @@ def test_hooks_json_has_no_hooks(repo_root: Path):
     assert data["hooks"] == {}
 
 
+def test_hooks_json_names_the_one_mod_module(repo_root: Path):
+    data = json.loads((repo_root / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+    assert data["modules"] == ["./register.ts"]
+    assert (repo_root / "hooks" / "register.ts").is_file()
+    plugin = json.loads((repo_root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    assert plugin["types"] == "./types/index.d.ts"
+    assert (repo_root / "types" / "index.d.ts").is_file()
+
+
+def _mod_source(repo_root: Path) -> str:
+    return (repo_root / "hooks" / "register.ts").read_text(encoding="utf-8")
+
+
+def test_the_mod_runs_every_ledger_hook_event_of_the_table(repo_root: Path):
+    source = _mod_source(repo_root)
+    for _, _, ledger_event, _ in HOOK_TABLE:
+        assert f"'{ledger_event}'" in source, ledger_event
+
+
+def test_the_mod_sync_post_tools_match_the_server(repo_root: Path):
+    from swarm_ledger.hooks.events import SYNC_POST_TOOLS
+
+    source = _mod_source(repo_root)
+    assert "const WRITE_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']" in source
+    assert "['SendMessage', 'PushNotification', 'Monitor', ...WRITE_TOOLS]" in source
+    assert list(SYNC_POST_TOOLS) == [
+        "SendMessage",
+        "PushNotification",
+        "Monitor",
+        "Write",
+        "Edit",
+        "MultiEdit",
+        "NotebookEdit",
+    ]
+
+
+def test_the_mod_posts_only_events_the_server_handles(repo_root: Path):
+    from swarm_ledger.hooks import HANDLERS
+
+    posted = set(re.findall(r"(?:runHook|post)\(\$, s, '(\w+)'", _mod_source(repo_root)))
+    posted |= set(re.findall(r"judge\(\$, e, next, '(\w+)'", _mod_source(repo_root)))
+    assert posted
+    assert posted <= set(HANDLERS)
+
+
+@pytest.mark.parametrize("role", ROLES)
+def test_a_template_written_for_the_mod_has_no_hooks(role: str):
+    from swarm_ledger import setup
+
+    head, _ = setup.split_document(setup.role_template(role, "mod"))
+    fields = yaml.safe_load(head)
+    assert "hooks" not in fields
+    assert fields["name"] == f"swarm-{role}"
+    assert "mcpServers" in fields
+
+
 def _pyproject_version(repo_root: Path) -> str:
     text = (repo_root / "mcp" / "pyproject.toml").read_text(encoding="utf-8")
     if sys.version_info >= (3, 11):

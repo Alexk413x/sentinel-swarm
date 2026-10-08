@@ -9,6 +9,7 @@
   "homepage": "https://github.com/Alexk413x/sentinel-swarm",
   "repository": "https://github.com/Alexk413x/sentinel-swarm",
   "license": "LicenseRef-Proprietary",
+  "types": "./types/index.d.ts",
   "keywords": [
     "agent-swarm",
     "multi-agent",

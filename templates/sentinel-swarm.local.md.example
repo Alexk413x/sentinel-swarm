@@ -3,6 +3,10 @@
 # trackers (GitHub issues, Jira) may become values later.
 tracking: local
 
+# How the role hooks run: mod (the plugin's mod) or command (the role files'
+# command hooks). Leave it empty and setup picks mod on Claude Code 2.1.294 or later.
+hook_transport:
+
 runtime:
   # Every role runs as its own Claude Code session in the one working tree. A parent
   # starts a child with the ledger's agent_spawn tool. The Oracle starts a Driver with

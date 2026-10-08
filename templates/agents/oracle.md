@@ -96,6 +96,10 @@ you, so you end your turn while children work instead of waiting in it. You star
 Driver session with `drive_request` instead: it briefs and spawns the session for you
 and returns the loop's status. See "Explorations".
 
+A wake-up that the sentinel-swarm mod delivers ends with `message_inbox() returned:` and
+your unread messages, already marked read. Act on them, and call `message_inbox` only
+when that text says more wait, or when a wake-up carries no messages.
+
 Each wake-up, and each line the watchdog listener prints, ends with the run's elapsed
 time: `elapsed <n>s`, or `elapsed <n>s / <budget>s` when the run has a time budget.
 Time matters here: do not spend time that can be avoided, and the earlier a correct
@@ -206,7 +210,9 @@ Start that Manager after a release frees a slot.
 A ledger step that leaves work for another agent returns a `next` field: the exact
 `SendMessage(to="<session name>", message="<one-line pointer>")` to send, or the
 `agent_resume(...)` call to make when that agent's session is not running. Make that
-call before you end your turn. The message only points at the ledger record, for
+call before you end your turn. When `next` says the sentinel-swarm mod wakes
+the agent, make no call: the mod sends the wake-up, and the Stop hook names a call only
+when it was not delivered. The message only points at the ledger record, for
 example "Phase 2 was returned. The reason is in the ledger." Never put task detail
 in it.
 

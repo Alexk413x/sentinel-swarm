@@ -138,3 +138,6 @@
 - 2026-10-08: Enforcement may live in the plugin's mod, which loads in every session in the host repo, once the live check passes.
 - 2026-10-08: The device-queue broker needs a new plan on the mod's delivery path; it stays (needs implementation) until then.
 - 2026-10-08: The ledger server refuses a `registered` session every tool but `brief_ack` and the five identity-free tools, for any client. The `pre_ledger` rule stays as the fast path.
+- 2026-10-08: The plugin's mod is the default hook transport; the role files' command hooks stay as the fallback for a Claude Code build older than 2.1.294, and `hook_transport` chooses. The two never run for one session.
+- 2026-10-08: The mod sends every owed wake-up by session id, the interactive Oracle included, retries a send that finds no live session, and only then leaves `SendMessage` to the model.
+- 2026-10-08: Launches and `agent_spawn` remove the variables a parent Claude Code session sets for its children, such as `CLAUDE_CODE_CHILD_SESSION`.
