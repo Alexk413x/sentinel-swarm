@@ -34,6 +34,8 @@ _DIRECTIVE_SOURCE_ALIASES = {"user-chat": "user_chat", "outside-session": "outsi
 _DIRECTIVE_OUTCOMES = ("applied", "scheduled", "declined", "needs_user")
 _ISSUE_OPEN_ROUND = {"manager": 2, "oracle": 3}
 _LIVE_RUN = "state IN ('active', 'paused')"
+MESSAGE_BODY_MAX = 32_000
+INBOX_BODY_BUDGET = 40_000
 _TOKEN_COLUMNS = (
     "input_tokens",
     "output_tokens",
@@ -1392,6 +1394,11 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
     # -- Messages -------------------------------------------------------------
 
     def message_post(self, caller: str, agent_id: str, to_name: str, body: str) -> dict:
+        if len(body) > MESSAGE_BODY_MAX:
+            raise LedgerError(
+                f"the body has {len(body)} characters; a message takes at most "
+                f"{MESSAGE_BODY_MAX}. Store the detail in its ledger record and point at it"
+            )
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
             names = {
@@ -1428,22 +1435,30 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
         message["next"] = self.next_step(wakeup)
         return message
 
-    def message_inbox(self, caller: str, agent_id: str) -> list[dict]:
+    def message_inbox(self, caller: str, agent_id: str) -> dict:
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
             rows = conn.execute(
-                "SELECT message_id FROM messages WHERE to_name = ? AND read_at IS NULL "
-                "ORDER BY message_id",
-                (c.name,),
+                "SELECT message_id, LENGTH(body) AS size FROM messages "
+                "WHERE run_id = ? AND to_name = ? AND read_at IS NULL ORDER BY message_id",
+                (c.run_id, c.name),
             ).fetchall()
-            ids = [row["message_id"] for row in rows]
+            ids: list[int] = []
+            used = 0
+            for row in rows:
+                # The first message always goes out, so one that the ledger wrote over the
+                # budget cannot block the inbox.
+                if ids and used + row["size"] > INBOX_BODY_BUDGET:
+                    break
+                ids.append(row["message_id"])
+                used += row["size"]
             if ids:
                 placeholders = ",".join("?" for _ in ids)
                 conn.execute(
                     f"UPDATE messages SET read_at = {_NOW} WHERE message_id IN ({placeholders})",
                     ids,
                 )
-            result = [
+            messages = [
                 dict(
                     conn.execute(
                         "SELECT * FROM messages WHERE message_id = ?", (message_id,)
@@ -1452,7 +1467,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                 for message_id in ids
             ]
 
-        return result
+        return {"messages": messages, "remaining": len(rows) - len(ids)}
 
     # -- Directives -------------------------------------------------------------
 

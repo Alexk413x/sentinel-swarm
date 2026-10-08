@@ -58,6 +58,14 @@ _DIRECTIVE_SOURCE_RENAMES = (
     ("user-chat", "user_chat"),
     ("outside-session", "outside_session"),
 )
+# Indexes a later version added to a table an older ledger already has; schema.sql
+# runs again only when a table is missing.
+_ADDED_INDEXES = (
+    (
+        "messages",
+        "CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages (run_id, to_name, read_at)",
+    ),
+)
 _ADDED_TABLES = (
     "wakeups",
     "watchdog_findings",
@@ -162,6 +170,9 @@ def _upgrade(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError as exc:
             if "duplicate column" not in str(exc):
                 raise
+    for table, statement in _ADDED_INDEXES:
+        if table in tables:
+            conn.execute(statement)
     _upgrade_departure_states(conn)
     _upgrade_directive_sources(conn)
     _upgrade_driver_unavailable(conn)

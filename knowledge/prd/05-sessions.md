@@ -88,7 +88,9 @@ wake-up the caller owes, and returns a `next` field with the exact call to make.
   When the sender is a Driver whose exploration is closed and it owes nothing more, the
   hook then releases it, which stops its session.
 - The Stop hook blocks a Manager, Lead, Coder, or Driver that still owes a wake-up and
-  names each call. It does not block a stop that follows its own block
+  names each call. It also blocks one that has unread messages in its run, and names
+  `message_inbox`. When both apply, one block names the owed calls first and the unread
+  count last. It does not block a stop that follows its own block
   (`stop_hook_active`), so a Driver that ignores the block twice goes idle, live, with
   its wake-up unsent. The watchdog reports that as `driver_unsent`. See "Detection" in
   [08-watchdog.md](08-watchdog.md).
@@ -191,9 +193,17 @@ a possible injection. So only the Oracle and the Managers see the elapsed time.
 ## Messages
 
 - `message_post(to_name, body)` sends to any agent registered in the run and refuses
-  any other name, listing the registered ones. Any agent may message any other.
-- `message_inbox()` returns and marks read the caller's unread messages. Every role
-  reads it at the start of each turn after a wake-up.
+  any other name, listing the registered ones. Any agent may message any other. It
+  refuses a `body` over 32,000 characters.
+- `message_inbox()` returns `messages` and `remaining`. It takes the caller's unread
+  messages in its own run, matched by `run_id` and name, so an agent never reads mail
+  addressed to the same name in an earlier run. It returns them oldest first, up to
+  40,000 characters of bodies, and marks those read in the same transaction. Rows past
+  the cap stay unread, and `remaining` counts them. The first unread message always
+  comes back, even one the ledger wrote over the cap. Every role reads it at the start
+  of each turn after a wake-up, and calls it again while `remaining` is above 0.
+- An index on `messages (run_id, to_name, read_at)` serves the inbox and the unread
+  counts. `connect` adds it to an older `ledger.db`.
 - A `SendMessage` body is one line that points at the ledger record, for example
   "Handoff 1 for hello.py is waiting in the ledger." The detail lives in the ledger.
 

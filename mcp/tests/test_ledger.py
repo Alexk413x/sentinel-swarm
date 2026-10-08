@@ -623,16 +623,79 @@ def test_message_post_and_inbox_marks_messages_read(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     ledger.message_post("manager-1", ctx["manager"]["agent_id"], "lead-1", "Start on module-1.")
     inbox = ledger.message_inbox("lead-1", ctx["lead"]["agent_id"])
-    assert len(inbox) == 1
-    assert inbox[0]["body"] == "Start on module-1."
-    assert ledger.message_inbox("lead-1", ctx["lead"]["agent_id"]) == []
+    assert [m["body"] for m in inbox["messages"]] == ["Start on module-1."]
+    assert inbox["remaining"] == 0
+    assert ledger.message_inbox("lead-1", ctx["lead"]["agent_id"]) == {
+        "messages": [],
+        "remaining": 0,
+    }
 
 
 def test_message_post_refuses_a_name_not_registered_in_the_run(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     with pytest.raises(LedgerError, match="registered names"):
         ledger.message_post("manager-1", ctx["manager"]["agent_id"], "lead-l", "Typo.")
-    assert ledger.message_inbox("lead-1", ctx["lead"]["agent_id"]) == []
+    assert ledger.message_inbox("lead-1", ctx["lead"]["agent_id"])["messages"] == []
+
+
+def test_message_inbox_skips_a_same_named_agent_s_mail_from_an_earlier_run(
+    ledger: Ledger,
+) -> None:
+    with write_tx(ledger.conn) as conn:
+        conn.execute("INSERT INTO runs (run_id, prd, state) VALUES (1, 'old', 'finished')")
+        conn.execute(
+            "INSERT INTO messages (run_id, from_name, to_name, body) "
+            "VALUES (1, 'manager-1', 'lead-1', 'Run 1 mail.')"
+        )
+    ctx = _bootstrap(ledger)
+    assert ctx["run_id"] == 2
+    ledger.message_post("manager-1", ctx["manager"]["agent_id"], "lead-1", "Run 2 mail.")
+
+    inbox = ledger.message_inbox("lead-1", ctx["lead"]["agent_id"])
+    assert [m["body"] for m in inbox["messages"]] == ["Run 2 mail."]
+    assert inbox["remaining"] == 0
+    old = ledger.conn.execute("SELECT read_at FROM messages WHERE run_id = 1").fetchone()
+    assert old["read_at"] is None
+
+
+def test_message_post_refuses_a_body_over_32000_characters(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    with pytest.raises(LedgerError, match="at most 32000"):
+        ledger.message_post("manager-1", ctx["manager"]["agent_id"], "lead-1", "x" * 32_001)
+    ledger.message_post("manager-1", ctx["manager"]["agent_id"], "lead-1", "x" * 32_000)
+
+
+def test_message_inbox_stops_at_40000_characters_and_leaves_the_rest_unread(
+    ledger: Ledger,
+) -> None:
+    ctx = _bootstrap(ledger)
+    for letter in "abc":
+        ledger.message_post("manager-1", ctx["manager"]["agent_id"], "lead-1", letter * 15_000)
+
+    first = ledger.message_inbox("lead-1", ctx["lead"]["agent_id"])
+    assert [m["body"][0] for m in first["messages"]] == ["a", "b"]
+    assert first["remaining"] == 1
+    third = ledger.conn.execute("SELECT read_at FROM messages WHERE body LIKE 'c%'").fetchone()
+    assert third["read_at"] is None
+
+    second = ledger.message_inbox("lead-1", ctx["lead"]["agent_id"])
+    assert [m["body"][0] for m in second["messages"]] == ["c"]
+    assert second["remaining"] == 0
+
+
+def test_message_inbox_returns_one_ledger_written_message_over_the_budget(
+    ledger: Ledger,
+) -> None:
+    ctx = _bootstrap(ledger)
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "INSERT INTO messages (run_id, from_name, to_name, body) VALUES (?, 'ledger', "
+            "'lead-1', ?)",
+            (ctx["run_id"], "x" * 45_000),
+        )
+    inbox = ledger.message_inbox("lead-1", ctx["lead"]["agent_id"])
+    assert len(inbox["messages"]) == 1
+    assert inbox["remaining"] == 0
 
 
 # -- directives -----------------------------------------------------------------
@@ -770,9 +833,9 @@ def test_issue_lifecycle_and_escalation_stops_at_the_configured_round_limit(
     with pytest.raises(LedgerError):
         ledger.issue_escalate("lead-1", ctx["lead"]["agent_id"], issue["issue_id"])
 
-    manager_inbox = ledger.message_inbox("manager-1", "mgr-agent")
+    manager_inbox = ledger.message_inbox("manager-1", "mgr-agent")["messages"]
     assert [(m["from_name"], m["to_name"]) for m in manager_inbox] == [("lead-1", "manager-1")]
-    oracle_inbox = ledger.message_inbox("oracle", ctx["oracle_id"])
+    oracle_inbox = ledger.message_inbox("oracle", ctx["oracle_id"])["messages"]
     assert [(m["from_name"], m["to_name"]) for m in oracle_inbox] == [("manager-1", "oracle")]
 
 

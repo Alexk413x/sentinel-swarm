@@ -494,17 +494,17 @@ def who_owns(path: str) -> dict[str, Any]:
 def message_post(
     caller: CallerName, to_name: str, body: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
-    """Posts a message to an agent of the run by name; returns the wake-up call as `next`."""
+    """Posts a message of at most 32,000 characters to an agent of the run by name; returns
+    the wake-up call as `next`."""
     return _call(
         _ledger().message_post, caller=caller, agent_id=agent_id, to_name=to_name, body=body
     )
 
 
 @mcp.tool
-def message_inbox(
-    caller: CallerName, agent_id: str | None = _STAMPED_AGENT_ID
-) -> list[dict[str, Any]]:
-    """Returns and marks read the caller's unread messages; any registered agent calls this."""
+def message_inbox(caller: CallerName, agent_id: str | None = _STAMPED_AGENT_ID) -> dict[str, Any]:
+    """Returns and marks read the caller's unread messages in its run, oldest first, up to
+    40,000 characters of bodies; `remaining` counts the unread ones left for the next call."""
     return _call(_ledger().message_inbox, caller=caller, agent_id=agent_id)
 
 

@@ -102,6 +102,22 @@ def test_connect_upgrades_an_older_version_1_ledger(tmp_path: Path) -> None:
     connect(db_path).close()
 
 
+def test_connect_adds_the_unread_messages_index_to_an_older_ledger(tmp_path: Path) -> None:
+    db_path = tmp_path / "ledger.db"
+    connect(db_path).close()
+    old = sqlite3.connect(str(db_path))
+    old.execute("DROP INDEX idx_messages_unread")
+    old.commit()
+    old.close()
+
+    conn = connect(db_path)
+    try:
+        columns = [row["name"] for row in conn.execute("PRAGMA index_info(idx_messages_unread)")]
+        assert columns == ["run_id", "to_name", "read_at"]
+    finally:
+        conn.close()
+
+
 def test_connect_moves_an_older_ledger_s_departures_onto_the_sign_off_chain(
     tmp_path: Path,
 ) -> None:

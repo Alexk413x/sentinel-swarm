@@ -926,6 +926,13 @@ def _owed_steps(ledger: Ledger, agent_id: str) -> list[str]:
     ]
 
 
+def _unread_count(ledger: Ledger, caller: dict) -> int:
+    return ledger.conn.execute(
+        "SELECT COUNT(*) AS n FROM messages WHERE run_id = ? AND to_name = ? AND read_at IS NULL",
+        (caller["run_id"], caller["name"]),
+    ).fetchone()["n"]
+
+
 def _member_stop(ledger: Ledger, caller: dict, data: dict) -> dict | None:
     transcript_path = data.get("transcript_path")
     ledger.agent_stop(
@@ -934,13 +941,17 @@ def _member_stop(ledger: Ledger, caller: dict, data: dict) -> dict | None:
 
     if not data.get("stop_hook_active"):
         steps = [f"- {step}" for step in _owed_steps(ledger, caller["agent_id"])]
-        if steps:
-            return {
-                "decision": "block",
-                "reason": "\n".join(
-                    ["You still owe a wake-up. Make each call below, then stop:", *steps]
-                ),
-            }
+        unread = _unread_count(ledger, caller)
+        if steps or unread:
+            lines = []
+            if steps:
+                lines += ["You still owe a wake-up. Make each call below, then stop:", *steps]
+            if unread:
+                lines.append(
+                    f"You have {unread} unread message(s). Call message_inbox, act on them, "
+                    "then stop."
+                )
+            return {"decision": "block", "reason": "\n".join(lines)}
 
     if caller["role"] == "driver" and ledger.release_closed_driver(caller["agent_id"]):
         return None

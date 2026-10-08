@@ -908,6 +908,47 @@ def test_stop_allows_an_owing_member_when_stop_hook_active(ledger: Ledger) -> No
     assert _state(ledger, "lead-agent") == "idle"
 
 
+def test_stop_blocks_a_member_with_unread_mail_once(ledger: Ledger) -> None:
+    _bootstrap(ledger)
+    ledger.message_post("manager-1", "mgr-agent", "lead-1", "Start on module-1.")
+
+    blocked = events.handle_stop(ledger, {"session_id": "lead-agent"})
+    assert blocked == {
+        "decision": "block",
+        "reason": "You have 1 unread message(s). Call message_inbox, act on them, then stop.",
+    }
+    assert _state(ledger, "lead-agent") == "working"
+
+    data = {"session_id": "lead-agent", "stop_hook_active": True}
+    assert events.handle_stop(ledger, data) is None
+    assert _state(ledger, "lead-agent") == "idle"
+
+
+def test_stop_names_the_owed_wake_up_before_unread_mail(ledger: Ledger) -> None:
+    _bootstrap(ledger)
+    _as_session(ledger, "mgr-agent", "host-r1-manager-1")
+    ledger.message_post("manager-1", "mgr-agent", "lead-1", "Start on module-1.")
+    ledger.message_post("lead-1", "lead-agent", "manager-1", "module-1 is done")
+
+    blocked = events.handle_stop(ledger, {"session_id": "lead-agent"})
+    assert blocked is not None
+    lines = blocked["reason"].splitlines()
+    assert lines[0] == "You still owe a wake-up. Make each call below, then stop:"
+    assert lines[1] == '- agent_resume(target_name="manager-1")'
+    assert lines[-1].startswith("You have 1 unread message(s). Call message_inbox")
+
+
+def test_stop_ignores_unread_mail_from_an_earlier_run(ledger: Ledger) -> None:
+    _bootstrap(ledger)
+    with write_tx(ledger.conn) as conn:
+        conn.execute("INSERT INTO runs (run_id, prd, state) VALUES (9, 'old', 'finished')")
+        conn.execute(
+            "INSERT INTO messages (run_id, from_name, to_name, body) "
+            "VALUES (9, 'manager-1', 'lead-1', 'Old mail.')"
+        )
+    assert events.handle_stop(ledger, {"session_id": "lead-agent"}) is None
+
+
 def test_send_message_to_another_session_keeps_the_debt(ledger: Ledger) -> None:
     _bootstrap(ledger)
     _as_session(ledger, "mgr-agent", "host-r1-manager-1")

@@ -140,6 +140,7 @@ ROLE_TOOLS: dict[str, frozenset[str]] = {
             "guidelines_get",
             "who_owns",
             "agent_resume",
+            "message_post",
             "message_inbox",
             "tests_run",
             "graph_upsert",

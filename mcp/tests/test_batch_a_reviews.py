@@ -744,7 +744,7 @@ def test_attempt_record_escalates_a_plateaued_issue_and_owes_the_manager_a_wake_
     ).fetchone()
     assert (issue_row["round"], issue_row["escalated_to"]) == (2, "manager-1")
 
-    messages = ledger.message_inbox("manager-1", manager_id)
+    messages = ledger.message_inbox("manager-1", manager_id)["messages"]
     assert any(f"Issue {issue_id}" in m["body"] for m in messages)
 
 

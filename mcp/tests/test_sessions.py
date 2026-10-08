@@ -544,7 +544,7 @@ def test_return_work_owes_the_coder_a_wake_up(ledger: Ledger, claude: FakeClaude
         f'message="Handoff {handoff_id} '
         'for src/coder-1.py is returned; read its issues with message_inbox and fix them.")'
     )
-    inbox = ledger.message_inbox(*coder)
+    inbox = ledger.message_inbox(*coder)["messages"]
     assert len(inbox) == 1
     assert inbox[0]["from_name"] == "lead-1"
     assert "- slow" in inbox[0]["body"]

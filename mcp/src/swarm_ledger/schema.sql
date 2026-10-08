@@ -317,6 +317,9 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
+CREATE INDEX IF NOT EXISTS idx_messages_unread
+    ON messages (run_id, to_name, read_at);
+
 CREATE TABLE IF NOT EXISTS directives (
     directive_id INTEGER PRIMARY KEY,
     run_id INTEGER NOT NULL REFERENCES runs (run_id) ON DELETE RESTRICT,

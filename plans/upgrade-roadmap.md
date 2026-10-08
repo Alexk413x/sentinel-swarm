@@ -1,6 +1,6 @@
 # Upgrade roadmap: efficiency, messaging, other platforms
 
-Status: part 1 is a build plan; step 0 is done, the rest is not started. Part 2 is an exploration
+Status: part 1 is a build plan; steps 0, 1 and 2 are done, the rest is not started. Part 2 is an exploration
 **(proposed)**, not a build plan. Written 2026-10-07 on branch `feat/kg-start-end-cli`. It replaces
 the root `cli-plan.md`.
 
@@ -65,6 +65,8 @@ has none of the cross-process races that plan solves.
 
 ### Gaps found in the code
 
+Step 2 closed all three. They are kept here as the reason for its changes.
+
 - `message_inbox` (`ledger.py:1431`) selects by `to_name` alone, not by `run_id`. An agent whose
   name repeats a name from an earlier run in the same repo reads and marks that run's unread
   messages. The Oracle's wake lines (`hooks/events.py:683`) filter by run, so the two disagree.
@@ -105,7 +107,73 @@ Also record each role's up-front `select:` bytes from the templates as committed
 
 Done when: the numbers are in this file, and the script runs in under 5 minutes.
 
+#### Results, 2026-10-08
+
+Run: `uv run --project mcp python scripts/bench/ledger_load.py`, 5 rounds per agent, 44 s in
+all. Windows 11, 16 logical CPUs, Python 3.10.20. The machine was busy with other work: whole-machine
+CPU load was 53.9% before the run and 48.9% after. Measured before the step 2 changes.
+
+Each agent is a Coder with its own Streamable HTTP client. A round is `message_post` (from the
+Lead to that Coder, because the Coder role has no `message_post`), `message_inbox`, `issue_list`,
+`who_owns`, `tests_run(force=true)` with `echo 1 passed {target}` as the test command, and one
+`POST /hook/pre_write`. The test command still runs in a shell, and `tests_run` runs git twice for
+its fingerprint.
+
+Server:
+
+| Measure | Value |
+|---|---|
+| Spawn to `server.json` | 3,122 ms |
+| Spawn to `/health` answering | 3,641 ms |
+| Working set, idle after start | 79.3 MB |
+| Working set, peak under 16 agents | 94.9 MB |
+| Working set, after the load | 94.9 MB |
+
+Load (ms, median / p90 / max):
+
+| Agents | CPU % | Wall | Every tool call | Tool calls without `tests_run` | `pre_write` hook | `message_post` to `message_inbox` | Errors |
+|---|---|---|---|---|---|---|---|
+| 1 | 64.7 | 1,555 | 15 / 184 / 273 | 15 / 55 / 190 | 42 / 50 / 50 | 33 / 208 / 208 | 0 |
+| 4 | 69.2 | 4,047 | 56 / 354 / 513 | 47 / 219 / 417 | 51 / 168 / 207 | 224 / 475 / 500 | 0 |
+| 8 | 69.3 | 7,502 | 222 / 556 / 878 | 162 / 459 / 803 | 53 / 227 / 334 | 494 / 899 / 1,007 | 0 |
+| 16 | 70.5 | 15,729 | 273 / 1,478 / 2,282 | 250 / 1,119 / 2,217 | 52 / 190 / 483 | 991 / 1,917 / 2,396 | 0 |
+
+Per tool at 16 agents (ms, median / p90 / max): `message_post` 772 / 1,665 / 2,217;
+`tests_run` 1,134 / 1,818 / 2,282; `issue_list` 248 / 322 / 1,716; `message_inbox` 235 / 302 / 842;
+`who_owns` 182 / 305 / 769. At 1 agent each is 13 to 17 ms except `tests_run` at 154 ms.
+
+The 16-agent tool call median, 273 ms, misses step 7's 150 ms line. The hook round trip, 52 ms,
+meets it: `/hook` opens its own ledger connection on Starlette's thread pool and does not take
+`server._CALL_LOCK`, which serializes every tool call.
+
+One role session's MCP side: the launcher writes the ledger's HTTP URL into `--mcp-config`, so a
+role session starts no process for the ledger (from the code, not measured). Each hook call
+starts one hook shim process: `pre_write` through `.sentinel-swarm/hook.py` on the base Python
+took 235 / 324 / 324 ms over 10 calls, with a peak working set of 16.7 MB.
+
+Up-front `select:` bytes, from the live server's `tools/list` and the templates as committed. The
+bytes count `name`, `description` and `inputSchema` of each tool, as JSON:
+
+| Role | Allowed ledger tools (bytes) | Up-front `select:` ledger tools (bytes) |
+|---|---|---|
+| Oracle | 47 (24,350) | 15 (8,382) |
+| Manager | 33 (17,000) | 14 (7,902) |
+| Lead | 34 (20,867) | 15 (11,743) |
+| Coder | 24 (14,116) | 12 (8,539) |
+| Driver | 10 (5,476) | 8 (4,186) |
+
+The ledger exposes 67 tools: 38,542 bytes by this count, 48,293 bytes with every field of
+`tools/list` (output schemas included). The "Context savings" table below used a third count,
+41,802 bytes in all; its per-role numbers are not comparable with these.
+
 ### Step 2. Messaging: take what the mailbox design does better
+
+Done on 2026-10-08, with the tests below; the `modules` smoke run for the success line is not run
+yet. One change from the text below: when a member owes a wake-up and has unread mail, one block
+names both, the owed calls first. Two separate blocks would lose the second, because the stop
+after a block passes (`stop_hook_active`). `message_inbox` always returns the first unread
+message, even one over 40,000 characters, because the ledger's own messages (returns,
+escalations) have no body cap.
 
 The ide-agent-tabs mailbox does not replace any sentinel mechanism. Each decision:
 
@@ -547,15 +615,15 @@ share is re-sent as cached input on every turn, and the 39 fewer tool turns save
 | Measure | Today | Target |
 |---|---|---|
 | Processes for a role session's HTTP plugin servers | 0 (step 0 done) | 0 |
-| Cross-run `message_inbox` reads | Possible | 0 |
+| Cross-run `message_inbox` reads | 0 by test (step 2) | 0 |
 | Members stopped with unread mail, `modules` smoke run | Not measured | 0 |
 | Coder up-front `select:` | 10,267 B, 4 start calls | 4,500 B, 0 start calls |
 | Manager / Lead up-front `select:` | 9,765 / 13,341 B | 7,533 / 11,109 B |
-| Tool call median, 1 agent | Step 1 | No slower than step 1 |
-| Tool call and hook median, 16 agents | Step 1 | Below 150 ms; build step 7 if missed |
-| Calls that fail at 16 agents | Step 1 | 0 |
+| Tool call median, 1 agent | 15 ms (step 1) | No slower than step 1 |
+| Tool call and hook median, 16 agents | 273 ms and 52 ms (step 1) | Below 150 ms; build step 7 if missed |
+| Calls that fail at 16 agents | 0 (step 1) | 0 |
 | Unauthenticated `/mcp`, `/hook`, `/events` calls accepted | All | 0 |
-| Ledger idle memory and start (step 7 only) | Step 1; import alone 2.96 s | Below 35 MB; below 0.3 s |
+| Ledger idle memory and start (step 7 only) | 79.3 MB; 3.1 s to `server.json` (step 1) | Below 35 MB; below 0.3 s |
 
 Every step runs the repo's checks before commit: `uv run pytest`, `uv run pyright`,
 `uv run ruff check` and `uv run ruff format --check` in `mcp/`, then

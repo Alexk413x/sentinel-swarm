@@ -136,7 +136,10 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
   folder, and `knowledge/` is recorded as a `violation` event and posted to its Lead.
 - `pre_compact`: adds one to the agent's `context_overflow_count`.
 - `stop`: records tokens and cost from the transcript, then applies the stop rules in
-  "Sessions". For a wake-up the ledger pushed through a channel, it first waits until
+  [05-sessions.md](05-sessions.md). For a Manager, Lead, Coder, or Driver it blocks
+  while the caller owes a wake-up or has unread messages in its run. The block names
+  each owed call first and `message_inbox` last. It does not block a stop that follows
+  its own block (`stop_hook_active`). For a wake-up the ledger pushed through a channel, it first waits until
   30 seconds after the push for the target's transcript to confirm it; see "Wake-up
   delivery" in [05-sessions.md](05-sessions.md). A Driver whose exploration is closed
   and that owes nothing more is released instead of set idle. After a run finishes, the
@@ -174,6 +177,8 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 | The Oracle never grants itself a write or shell override | `override_grant` refuses a `target_agent_name` that names the Oracle |
 | Look in the graph before writing | codebase-kg's own search gate hook |
 | A message goes to an agent of the run | `message_post`; `pre_send_message` for `SendMessage` itself |
+| An agent reads only its own run's mail, in bounded batches | `message_inbox` filters by `run_id` and name and caps one call at 40,000 characters; `message_post` refuses a body over 32,000 |
+| A Manager, Lead, Coder, or Driver reads its mail before it stops | The member `stop` blocks once while the caller has unread messages in its run |
 | Only the owner's chain escalates an issue | `issue_escalate` |
 | A finished Lead or Manager is released | `phase_update(handed_up)` refuses a live Lead; `phase_update(approved)` releases the phase; `run_finish` releases the rest |
 | A non-owner requests, the owner changes | `cr_open` routing and the write gate |
