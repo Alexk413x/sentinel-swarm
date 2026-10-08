@@ -192,9 +192,21 @@ a possible injection. So only the Oracle and the Managers see the elapsed time.
 
 ## Messages
 
-- `message_post(to_name, body)` sends to any agent registered in the run and refuses
-  any other name, listing the registered ones. Any agent may message any other. It
-  refuses a `body` over 32,000 characters.
+- `message_post(to_name, body)` sends to an agent registered in the run and refuses any
+  other name, listing the registered ones. The recipient must be the caller's parent,
+  one of its children, or a sibling (the same parent); the refusal lists those names.
+  A Manager reaches a Coder through the Coder's Lead, and the Oracle reaches a Lead or a
+  Coder through its Manager. Messages the ledger writes itself, such as pushbacks,
+  escalations, and violations, do not go through `message_post`. It refuses a `body`
+  over 32,000 characters.
+- `pre_send_message` applies the same relation to `SendMessage`, by session name, and
+  also allows a session the caller owes an unsent wake-up: the ledger owes some
+  wake-ups across levels, such as `cr_open` to a file's Coder, `cr_verify` by the
+  nearest live ancestor, issue escalations, and disputes. The Oracle may also wake any
+  live agent of the run that is not working, because its Stop hook names such agents
+  when the run stalls. The text of a `SendMessage` is not checked.
+- A change request is not direction: `cr_open` from a Manager or the Oracle routes to
+  the file's live Coder, and owes it the wake-up.
 - `message_inbox()` returns `messages` and `remaining`. It takes the caller's unread
   messages in its own run, matched by `run_id` and name, so an agent never reads mail
   addressed to the same name in an earlier run. It returns them oldest first, up to

@@ -51,6 +51,15 @@ _ADDED_COLUMNS = (
     ("agents", "channel", "TEXT NOT NULL DEFAULT 'none'"),
     ("wakeups", "pushed_at", "TEXT"),
     ("briefs", "finding_ids_json", "TEXT"),
+    ("briefs", "contract", "TEXT"),
+    ("briefs", "last_read_by_child_at", "TEXT"),
+    ("deferrals", "kind", "TEXT"),
+    ("deferrals", "parties_json", "TEXT"),
+    ("deferrals", "arbiter_agent_id", "TEXT"),
+    ("deferrals", "open_issues_json", "TEXT"),
+    ("deferrals", "issue_ids_json", "TEXT"),
+    ("deferrals", "directive_id", "INTEGER"),
+    ("drive_requests", "map_test_at", "TEXT"),
 )
 # Renamed to snake_case; an older ledger may still hold either the code's old
 # spelling or a value directive_submit stored before this alias table existed.
@@ -74,6 +83,9 @@ _ADDED_TABLES = (
     "drive_findings",
     "notifications",
     "drive_stops",
+    "module_deps",
+    "file_deps",
+    "graph_gaps",
 )
 
 

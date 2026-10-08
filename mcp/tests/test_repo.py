@@ -256,17 +256,18 @@ def test_repo_branch_create_refuses_while_a_manager_is_live(host: Path) -> None:
     oracle_id = _bootstrap_oracle(ledger)
     ledger.repo_check("oracle", oracle_id)
     phase = ledger.phase_add("oracle", oracle_id, "phase-1")
+    ledger.phase_update("oracle", oracle_id, phase["phase_id"], "unlocked")
     ledger.brief_create(
         "oracle",
         oracle_id,
-        "manager-1",
+        "mgr-p1-phase-1",
         "manager",
         "opus",
         "Own phase-1.",
         phase_id=phase["phase_id"],
     )
     ledger.agent_register_start("mgr-agent", "manager", parent_agent_id=oracle_id)
-    ledger.brief_ack("manager-1", "mgr-agent")
+    ledger.brief_ack("mgr-p1-phase-1", "mgr-agent")
 
     with pytest.raises(LedgerError, match="still live"):
         ledger.repo_branch_create("oracle", oracle_id, "run-1")
@@ -298,17 +299,18 @@ def test_agent_spawn_refuses_a_manager_without_a_repo_check(host: Path) -> None:
     ledger = _make_ledger(host)
     oracle_id = _bootstrap_oracle(ledger)
     phase = ledger.phase_add("oracle", oracle_id, "phase-1")
+    ledger.phase_update("oracle", oracle_id, phase["phase_id"], "unlocked")
     ledger.brief_create(
         "oracle",
         oracle_id,
-        "manager-1",
+        "mgr-p1-phase-1",
         "manager",
         "opus",
         "Own phase-1.",
         phase_id=phase["phase_id"],
     )
     with pytest.raises(LedgerError, match="call repo_check first"):
-        ledger.agent_spawn("oracle", oracle_id, "manager-1")
+        ledger.agent_spawn("oracle", oracle_id, "mgr-p1-phase-1")
 
 
 def test_agent_spawn_starts_a_manager_after_a_repo_check_even_when_not_obvious(
@@ -336,14 +338,15 @@ def test_agent_spawn_starts_a_manager_after_a_repo_check_even_when_not_obvious(
     assert check["obvious_start"] is False
 
     phase = ledger.phase_add("oracle", oracle_id, "phase-1")
+    ledger.phase_update("oracle", oracle_id, phase["phase_id"], "unlocked")
     ledger.brief_create(
         "oracle",
         oracle_id,
-        "manager-1",
+        "mgr-p1-phase-1",
         "manager",
         "opus",
         "Own phase-1.",
         phase_id=phase["phase_id"],
     )
-    spawned = ledger.agent_spawn("oracle", oracle_id, "manager-1")
+    spawned = ledger.agent_spawn("oracle", oracle_id, "mgr-p1-phase-1")
     assert spawned["role"] == "manager"

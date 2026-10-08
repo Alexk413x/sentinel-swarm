@@ -20,7 +20,15 @@ from pathlib import Path
 PLUGIN_ID = "sentinel-swarm@sentinel-swarm"
 DATA_FOLDER = "sentinel-swarm-sentinel-swarm"
 GATING_EVENTS = frozenset(
-    {"pre_agent", "pre_write", "pre_shell", "pre_ledger", "pre_monitor", "pre_send_message"}
+    {
+        "pre_agent",
+        "pre_write",
+        "pre_shell",
+        "pre_ledger",
+        "pre_monitor",
+        "pre_send_message",
+        "pre_skill",
+    }
 )
 HOOK_TIMEOUT_SECONDS = 50
 SERVER_HOST = "127.0.0.1"

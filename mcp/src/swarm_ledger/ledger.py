@@ -36,6 +36,12 @@ _ISSUE_OPEN_ROUND = {"manager": 2, "oracle": 3}
 _LIVE_RUN = "state IN ('active', 'paused')"
 MESSAGE_BODY_MAX = 32_000
 INBOX_BODY_BUDGET = 40_000
+SLUG_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+# A build command that serves or watches reloads on edits, and the Driver must test the build
+# it made at the start of an exploration. profile_set refuses any of these words.
+SERVER_WORDS = frozenset({"--watch", "serve", "dev-server"})
+PACKAGE_MANAGERS = frozenset({"npm", "yarn", "pnpm"})
+SERVER_SCRIPTS = frozenset({"dev", "start"})
 _TOKEN_COLUMNS = (
     "input_tokens",
     "output_tokens",
@@ -76,6 +82,38 @@ _SWARM_SESSION_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?-r\d+-.+$")
 
 def looks_like_swarm_session(name: str) -> bool:
     return bool(_SWARM_SESSION_RE.match(name))
+
+
+def server_word(command: str) -> str | None:
+    words = command.split()
+    for index, word in enumerate(words):
+        if word in SERVER_WORDS or word.startswith("--watch="):
+            return word
+        if Path(word).stem.lower() not in PACKAGE_MANAGERS:
+            continue
+        rest = words[index + 1 :]
+        if rest[:1] in (["run"], ["run-script"]):
+            rest = rest[1:]
+        if rest[:1] and rest[0] in SERVER_SCRIPTS:
+            return " ".join(words[index : len(words) - len(rest) + 1])
+    return None
+
+
+def require_coder_name(name: str, ordinal: int, module_name: str) -> None:
+    prefix = f"coder-p{ordinal}-{module_name}-"
+    if not (name.startswith(prefix) and SLUG_RE.fullmatch(name[len(prefix) :])):
+        raise LedgerError(
+            f"a Coder of module {module_name!r} must be named {prefix}<file slug>, such as "
+            f"{prefix}login, not {name!r}"
+        )
+
+
+def require_slug(label: str, value: str) -> None:
+    if not SLUG_RE.fullmatch(value):
+        raise LedgerError(
+            f"{label} {value!r} is not a slug: use lowercase letters and digits joined by "
+            "single hyphens, such as 'auth' or 'user-store'"
+        )
 
 
 class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin):
@@ -515,6 +553,13 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
         build_command: str | None = None,
         lint_command: str | None = None,
     ) -> dict:
+        word = server_word(build_command) if build_command is not None else None
+        if word is not None:
+            raise LedgerError(
+                f"build_command {build_command!r} starts a server or a watcher ({word!r}). The "
+                "Driver tests one build made at the start of an exploration, never a server "
+                "that reloads on edits: name the one-shot build, such as 'npm run build'"
+            )
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
             require_role(c, "oracle")
@@ -572,6 +617,9 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                 "SELECT COALESCE(MAX(ordinal), 0) + 1 AS n FROM phases WHERE run_id = ?",
                 (c.run_id,),
             ).fetchone()["n"]
+            if not name.startswith(f"p{ordinal}-"):
+                name = f"p{ordinal}-{name}"
+            require_slug("phase name", name)
             cur = conn.execute(
                 "INSERT INTO phases (run_id, name, ordinal, state) VALUES (?, ?, ?, 'planned')",
                 (c.run_id, name, ordinal),
@@ -605,6 +653,23 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                 is None
             ):
                 raise LedgerError(f"unknown phase_id {phase_id!r}")
+
+            if state == "unlocked":
+                waiting = [
+                    f"{row['phase_id']} ({row['name']}, {row['state']})"
+                    for row in conn.execute(
+                        "SELECT p.phase_id, p.name, p.state FROM phase_deps d "
+                        "JOIN phases p ON p.phase_id = d.depends_on_phase_id "
+                        "WHERE d.phase_id = ? AND p.state != 'approved' ORDER BY p.ordinal",
+                        (phase_id,),
+                    )
+                ]
+                if waiting:
+                    raise LedgerError(
+                        f"phase {phase_id} waits on phase(s) that are not approved: "
+                        f"{', '.join(waiting)}. A phase unlocks once every phase it depends "
+                        "on is approved"
+                    )
 
             if state == "handed_up":
                 live_leads = [
@@ -715,21 +780,51 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                 unlocked.append(dict(row))
         return unlocked
 
-    def module_add(self, caller: str, agent_id: str, phase_id: int, name: str) -> dict:
+    def module_add(
+        self,
+        caller: str,
+        agent_id: str,
+        phase_id: int,
+        name: str,
+        depends_on: list[int] | None = None,
+    ) -> dict:
+        depends_on = depends_on or []
+        require_slug("module name", name)
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
             require_role(c, "manager")
             if c.phase_id != phase_id:
                 raise LedgerError("a manager may only add modules to its own phase")
+            outside = [
+                dep_id
+                for dep_id in depends_on
+                if conn.execute(
+                    "SELECT 1 FROM modules WHERE module_id = ? AND phase_id = ?",
+                    (dep_id, phase_id),
+                ).fetchone()
+                is None
+            ]
+            if outside:
+                raise LedgerError(
+                    f"depends_on names module id(s) {outside} outside phase {phase_id}; a "
+                    "module depends only on modules of its own phase. A dependency on another "
+                    "phase belongs in the phase plan"
+                )
             cur = conn.execute(
                 "INSERT INTO modules (phase_id, name, state) VALUES (?, ?, 'planned')",
                 (phase_id, name),
             )
             module_id = cur.lastrowid
+            conn.executemany(
+                "INSERT OR IGNORE INTO module_deps (module_id, depends_on_module_id) VALUES (?, ?)",
+                [(module_id, dep_id) for dep_id in depends_on],
+            )
 
-        return dict(
+        module = dict(
             self.conn.execute("SELECT * FROM modules WHERE module_id = ?", (module_id,)).fetchone()
         )
+        module["depends_on"] = list(depends_on)
+        return module
 
     # -- Briefs -------------------------------------------------------------
 
@@ -746,6 +841,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
         file_id: int | None = None,
         finding_ids: list[int] | None = None,
         effort: str | None = None,
+        contract: str | None = None,
     ) -> dict:
         if effort is not None and effort not in EFFORT_LEVELS:
             raise LedgerError(f"unknown effort {effort!r}; use one of {list(EFFORT_LEVELS)}")
@@ -755,6 +851,14 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                 raise LedgerError(f"a {c.role!r} may not brief a {child_role!r}")
             if model not in self.settings.models.get(child_role, []):
                 raise LedgerError(f"model {model!r} is not approved for {child_role!r}")
+            self._check_child_scope(conn, c, child_role, child_name, phase_id, module_id, file_id)
+            missing = self._missing_contracts(conn, child_role, module_id, file_id)
+            if missing:
+                raise LedgerError(
+                    f"brief each dependency first, with its contract: {'; '.join(missing)} "
+                    "has no contract on its latest brief. Helpers come before the files and "
+                    "modules that use them; pass contract= on the helper's brief_create"
+                )
             if (
                 conn.execute(
                     "SELECT 1 FROM agents WHERE name = ? AND ended_at IS NULL", (child_name,)
@@ -780,8 +884,8 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
             cur = conn.execute(
                 "INSERT INTO briefs "
                 "(run_id, parent_agent_id, child_name, child_role, model, effort, body, "
-                "phase_id, module_id, file_id, finding_ids_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "phase_id, module_id, file_id, finding_ids_json, contract) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     c.run_id,
                     c.agent_id,
@@ -794,6 +898,7 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                     module_id if module_id is not None else c.module_id,
                     file_id if file_id is not None else c.file_id,
                     json.dumps(finding_ids) if finding_ids else None,
+                    contract.strip() if contract and contract.strip() else None,
                 ),
             )
             brief_id = cur.lastrowid
@@ -801,6 +906,121 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
         return dict(
             self.conn.execute("SELECT * FROM briefs WHERE brief_id = ?", (brief_id,)).fetchone()
         )
+
+    def _check_child_scope(
+        self,
+        conn: sqlite3.Connection,
+        c: Caller,
+        child_role: str,
+        child_name: str,
+        phase_id: int | None,
+        module_id: int | None,
+        file_id: int | None,
+    ) -> None:
+        if child_role == "manager":
+            phase = conn.execute(
+                "SELECT * FROM phases WHERE phase_id = ? AND run_id = ?", (phase_id, c.run_id)
+            ).fetchone()
+            if phase is None:
+                raise LedgerError(
+                    f"a Manager brief needs the phase_id of a phase of this run, not {phase_id!r}"
+                )
+            if phase["state"] == "planned":
+                raise LedgerError(
+                    f"phase {phase_id} ({phase['name']}) is still planned; call "
+                    "phase_update(phase_id, 'unlocked') once every phase it depends on is "
+                    "approved, then brief its Manager"
+                )
+            expected = f"mgr-{phase['name']}"
+        elif child_role == "lead":
+            module = conn.execute(
+                "SELECT m.*, p.ordinal FROM modules m JOIN phases p ON p.phase_id = m.phase_id "
+                "WHERE m.module_id = ?",
+                (module_id,),
+            ).fetchone()
+            if module is None or module["phase_id"] != c.phase_id:
+                raise LedgerError(
+                    f"a Lead brief needs the module_id of a module of your own phase "
+                    f"{c.phase_id}, not {module_id!r}; add it with module_add first"
+                )
+            expected = f"lead-p{module['ordinal']}-{module['name']}"
+        elif child_role == "coder":
+            file_row = conn.execute(
+                "SELECT f.*, m.name AS module_name, p.ordinal FROM files f "
+                "JOIN modules m ON m.module_id = f.module_id "
+                "JOIN phases p ON p.phase_id = m.phase_id WHERE f.file_id = ?",
+                (file_id,),
+            ).fetchone()
+            if file_row is None or file_row["module_id"] != c.module_id:
+                raise LedgerError(
+                    f"a Coder brief needs the file_id of a file your module claimed, not "
+                    f"{file_id!r}; call claim_file first"
+                )
+            if file_row["released_at"] is not None or file_row["owner_agent_id"] != child_name:
+                raise LedgerError(
+                    f"file {file_id} ({file_row['path']}) has no live claim for "
+                    f"{child_name!r}; call claim_file(path, test_path, for_name="
+                    f"{child_name!r}) first, or release_file and claim it again for a new Coder"
+                )
+            require_coder_name(child_name, file_row["ordinal"], file_row["module_name"])
+            return
+        else:
+            return
+        if child_name != expected:
+            raise LedgerError(
+                f"this {child_role} must be named {expected!r}, not {child_name!r}. Names "
+                "are mgr-<phase name>, lead-p<ordinal>-<module>, and "
+                "coder-p<ordinal>-<module>-<file slug>"
+            )
+
+    def _missing_contracts(
+        self,
+        conn: sqlite3.Connection,
+        child_role: str,
+        module_id: int | None,
+        file_id: int | None,
+    ) -> list[str]:
+        return [
+            f"{dep['label']} (id {dep['id']})"
+            for dep in self._dependencies(conn, child_role, module_id, file_id)
+            if not dep["contract"]
+        ]
+
+    def _dependencies(
+        self,
+        conn: sqlite3.Connection,
+        child_role: str,
+        module_id: int | None,
+        file_id: int | None,
+    ) -> list[dict]:
+        if child_role == "coder" and file_id is not None:
+            rows = conn.execute(
+                "SELECT f.file_id AS id, f.path AS label FROM file_deps d "
+                "JOIN files f ON f.file_id = d.depends_on_file_id WHERE d.file_id = ? "
+                "ORDER BY f.file_id",
+                (file_id,),
+            ).fetchall()
+            column = "file_id"
+        elif child_role == "lead" and module_id is not None:
+            rows = conn.execute(
+                "SELECT m.module_id AS id, m.name AS label FROM module_deps d "
+                "JOIN modules m ON m.module_id = d.depends_on_module_id WHERE d.module_id = ? "
+                "ORDER BY m.module_id",
+                (module_id,),
+            ).fetchall()
+            column = "module_id"
+        else:
+            return []
+        deps = []
+        for row in rows:
+            latest = conn.execute(
+                f"SELECT contract FROM briefs WHERE {column} = ? AND child_role = ? "
+                "ORDER BY brief_id DESC LIMIT 1",
+                (row["id"], child_role),
+            ).fetchone()
+            contract = latest["contract"] if latest is not None else None
+            deps.append({"id": row["id"], "label": row["label"], "contract": contract})
+        return deps
 
     def _inherited_finding_ids(self, conn: sqlite3.Connection, agent_id: str) -> list[int]:
         row = conn.execute(
@@ -821,7 +1041,24 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
             raise LedgerError(f"no brief found for {child_name!r}")
         brief = dict(row)
         brief["findings"] = findings_named(self.conn, json.loads(brief["finding_ids_json"] or "[]"))
+        brief["depends_on_contracts"] = [
+            {"id": dep["id"], "name": dep["label"], "contract": dep["contract"]}
+            for dep in self._dependencies(
+                self.conn, brief["child_role"], brief["module_id"], brief["file_id"]
+            )
+        ]
         return brief
+
+    def brief_read(self, agent_id: str, child_name: str) -> bool:
+        with write_tx(self.conn) as conn:
+            cur = conn.execute(
+                f"UPDATE briefs SET last_read_by_child_at = {_NOW} WHERE brief_id = ("
+                "SELECT b.brief_id FROM briefs b JOIN agents a ON a.agent_id = ? "
+                "AND a.name = b.child_name AND a.ended_at IS NULL "
+                "WHERE b.child_name = ? ORDER BY b.created_at DESC, b.brief_id DESC LIMIT 1)",
+                (agent_id, child_name),
+            )
+        return cur.rowcount > 0
 
     def brief_ack(self, caller: str, agent_id: str, agent_type: str | None = None) -> dict:
         del agent_type
@@ -1015,6 +1252,15 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
             c.role
         ):
             raise LedgerError(f"{caller!r} is not the parent named in the brief for {child_name!r}")
+        if brief["child_role"] == "manager":
+            phase = self.conn.execute(
+                "SELECT name, state FROM phases WHERE phase_id = ?", (brief["phase_id"],)
+            ).fetchone()
+            if phase is None or phase["state"] == "planned":
+                raise LedgerError(
+                    f"phase {brief['phase_id']} is not unlocked; call phase_update(phase_id, "
+                    "'unlocked') once every phase it depends on is approved"
+                )
         self._block_fix_for_stops(
             self.conn, brief["run_id"], json.loads(brief["finding_ids_json"] or "[]")
         )
@@ -1323,13 +1569,42 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
     # -- File ownership -------------------------------------------------------
 
     def claim_file(
-        self, caller: str, agent_id: str, path: str, test_path: str | None, for_name: str
+        self,
+        caller: str,
+        agent_id: str,
+        path: str,
+        test_path: str | None,
+        for_name: str,
+        depends_on: list[int] | None = None,
     ) -> dict:
+        depends_on = depends_on or []
         if test_path is not None and test_path.strip().lower() in ("", "none", "null"):
             test_path = None
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
             require_role(c, "lead")
+            module = conn.execute(
+                "SELECT m.name, p.ordinal FROM modules m JOIN phases p ON p.phase_id = m.phase_id "
+                "WHERE m.module_id = ?",
+                (c.module_id,),
+            ).fetchone()
+            if module is not None:
+                require_coder_name(for_name, module["ordinal"], module["name"])
+            outside = [
+                dep_id
+                for dep_id in depends_on
+                if conn.execute(
+                    "SELECT 1 FROM files WHERE file_id = ? AND module_id = ? "
+                    "AND state != 'superseded'",
+                    (dep_id, c.module_id),
+                ).fetchone()
+                is None
+            ]
+            if outside:
+                raise LedgerError(
+                    f"depends_on names file id(s) {outside} that are not claimed files of your "
+                    "module; claim each helper first and pass the file_id claim_file returned"
+                )
             if (
                 conn.execute(
                     "SELECT 1 FROM files WHERE path = ? AND released_at IS NULL", (path,)
@@ -1359,10 +1634,16 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                 "JOIN phases p ON p.phase_id = m.phase_id WHERE p.run_id = ?)",
                 (path, file_id, c.run_id),
             )
+            conn.executemany(
+                "INSERT OR IGNORE INTO file_deps (file_id, depends_on_file_id) VALUES (?, ?)",
+                [(file_id, dep_id) for dep_id in depends_on],
+            )
 
-        return dict(
+        claimed = dict(
             self.conn.execute("SELECT * FROM files WHERE file_id = ?", (file_id,)).fetchone()
         )
+        claimed["depends_on"] = list(depends_on)
+        return claimed
 
     def release_file(self, caller: str, agent_id: str, path: str) -> dict:
         with write_tx(self.conn) as conn:
@@ -1409,6 +1690,13 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                 raise LedgerError(
                     f"no agent named {to_name!r} in this run; registered names: {sorted(names)}"
                 )
+            allowed = {row["name"] for row in self.message_peers(conn, c)}
+            if to_name not in allowed:
+                raise LedgerError(
+                    f"{c.name!r} posts only to its parent, its children, and its siblings: "
+                    f"{sorted(allowed)}. Reach {to_name!r} through that chain; a change to a "
+                    "file goes through cr_open"
+                )
             cur = conn.execute(
                 "INSERT INTO messages (run_id, from_name, to_name, body) VALUES (?, ?, ?, ?)",
                 (c.run_id, c.name, to_name, body),
@@ -1434,6 +1722,20 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
         )
         message["next"] = self.next_step(wakeup)
         return message
+
+    def message_peers(self, conn: sqlite3.Connection, c: Caller) -> list[sqlite3.Row]:
+        return conn.execute(
+            "SELECT * FROM agents WHERE run_id = ? AND agent_id != ? AND (agent_id = ? "
+            "OR parent_agent_id = ? OR (? IS NOT NULL AND parent_agent_id = ?))",
+            (
+                c.run_id,
+                c.agent_id,
+                c.parent_agent_id,
+                c.agent_id,
+                c.parent_agent_id,
+                c.parent_agent_id,
+            ),
+        ).fetchall()
 
     def message_inbox(self, caller: str, agent_id: str) -> dict:
         with write_tx(self.conn) as conn:
@@ -1787,6 +2089,22 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                 (agent_id, path, path),
             )
         return {"path": path, "updated": cur.rowcount > 0}
+
+    def graph_gap(
+        self,
+        agent_id: str,
+        tool: str,
+        pattern: str | None,
+        path: str | None,
+        results: list[str],
+    ) -> None:
+        with write_tx(self.conn) as conn:
+            conn.execute(
+                "INSERT INTO graph_gaps (run_id, agent_id, tool, pattern, path, results_json) "
+                "SELECT run_id, agent_id, ?, ?, ?, ? FROM agents "
+                "WHERE agent_id = ? AND run_id IS NOT NULL",
+                (tool, pattern, path, json.dumps(results[:20]), agent_id),
+            )
 
     def agent_transcript(self, agent_id: str, transcript_path: str) -> None:
         with write_tx(self.conn) as conn:

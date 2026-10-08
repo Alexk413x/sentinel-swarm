@@ -29,10 +29,16 @@ Sections:
 - Open items: open deferrals, and every issue by round with its attempts and resolution.
 - Decided deferrals: who proposed each one, who decided it, and the decision and
   reason.
+- Disputes: each deferral with parties, its kind, the proposer and the parties, the
+  arbiter, the reason, and the outcome with the decider and its reason, or `open`.
 - Departures, each with its full decision chain and final state.
 - Shortfalls.
 - Change requests, with decision, work done, evidence, and verification.
 - Overrides, with reasons.
+- Graph gaps: each `Grep` and `Glob` a role ran, with the agent, the tool, the pattern,
+  the path it searched, and how many paths it found, with the first five. A search
+  scoped to a file the code graph anchors is marked "(the graph anchors this file)",
+  from a lookup of the path in `knowledge/code_graph.db`.
 - Directives, with source and outcome. A `driver` directive shows only its first line,
   since its evidence is under Explorations.
 - Notifications to the user: every directive resolved `needs_user`, with the question

@@ -59,11 +59,18 @@
 | Role | Name pattern | Example |
 |---|---|---|
 | Oracle | `oracle` | `oracle` |
-| Manager | `mgr-<phase>` | `mgr-p2-api` |
-| Lead | `lead-<phase>-<module>` | `lead-p2-auth` |
-| Coder | `coder-<phase>-<module>-<file>` | `coder-p2-auth-login` |
+| Manager | `mgr-<phase name>` | `mgr-p2-api` |
+| Lead | `lead-p<phase ordinal>-<module name>` | `lead-p2-auth` |
+| Coder | `coder-p<phase ordinal>-<module name>-<file slug>` | `coder-p2-auth-login` |
 | Driver | `driver-e<exploration number>` | `driver-e2` |
 
+- A phase name is `p<ordinal>-<slug>`. `phase_add` adds the `p<ordinal>-` prefix when
+  the name lacks it, so `phase_add("api")` stores `p2-api` as the second phase. Module
+  names and file slugs match `[a-z0-9]+(-[a-z0-9]+)*`; `phase_add` and `module_add`
+  refuse any other name.
+- `brief_create` refuses a Manager, Lead, or Coder name that does not match the pattern
+  built from its phase and module rows, and names the expected form. `claim_file`
+  applies the Coder pattern to `for_name`.
 - `drive_request` sets the Driver's name from the exploration's ordinal in the run.
 
 - A name is unique among the live agents of a run. It is the address in the ledger, and
@@ -120,14 +127,15 @@
 - **Owns:** PRD meaning, acceptance criteria, the guidelines, the phase plan, the final
   verdict, and all communication with the user.
 - **Arbitrates:** disputes between Managers, including which Manager owns a shared
-  file. **(needs implementation: the Oracle template has no step for settling a
-  dispute between Managers; it tells the two Managers to agree on an owner
-  themselves)**
+  file, and any dispute whose parties share no ancestor below it. A dispute is a
+  `deferral_propose` with `parties`; only the closest shared ancestor of the parties
+  decides it. See "Disputes" in [04-agreements.md](04-agreements.md).
 - **On a low score or a failed full run:** returns the work to its Manager, opens a new
   phase, or accepts the result with a recorded reason.
 - **Escalates to the user:** only an issue that research and rework cannot solve.
 - **Must not:** write a project file, start a subagent, score a file, direct a Lead or a
-  Coder, or report a test result from its own reading.
+  Coder, or report a test result from its own reading. `message_post` reaches only its
+  Managers and the Driver.
 - **Done when:** every phase is approved, the full suite passes, the evidence is on
   file, and `run_finish` accepts the run.
 - **Tools:** Read, Grep, Glob, AskUserQuestion, ToolSearch, WebSearch, WebFetch,
@@ -145,10 +153,12 @@
   hands the phase up to the Oracle.
 - **Owns:** the phase, its module breakdown, the boundaries between its Leads, and test
   health across its modules.
-- **Arbitrates:** disputes between its Leads, and the contracts between its modules.
+- **Arbitrates:** disputes between its Leads, and the contracts between its modules,
+  through the dispute record in [04-agreements.md](04-agreements.md).
 - **On a regression:** starts a new Lead to fix it.
 - **Must not:** write a project file, score a file, or direct a Coder without going
-  through the Coder's Lead.
+  through the Coder's Lead. `message_post` refuses a Coder, and `pre_send_message`
+  refuses a `SendMessage` to one unless the ledger owes it a wake-up from the Manager.
 - **Done when:** the Oracle approves the phase.
 - **Tools:** Read, Grep, Glob, ToolSearch, SendMessage, WebSearch, WebFetch, its
   ledger tools, and the codebase-kg read tools.
@@ -163,7 +173,7 @@
 - **Owns:** the module, the file assignments inside it, the contracts between its files,
   and the approval of each Coder's work.
 - **Arbitrates:** disputes between its Coders about contracts and about where a shared
-  function belongs.
+  function belongs, through the dispute record in [04-agreements.md](04-agreements.md).
 - **Must not:** write a project file, or read a Coder's scores before it records its
   own.
 - **Done when:** its Manager accepts the module with `module_review` and releases it.
@@ -208,7 +218,8 @@
 - **Does:** builds the app with `build_command`, boots the device, replays recorded
   routes with cartographer's `map-test`, then explores toward the Oracle's focus list
   with `map-explore` through cartographer's own `map-driver` and `map-reviewer`
-  subagents. Records each finding with `drive_issue` as it is found, checks in with
+  subagents. The `pre_skill` hook holds that order: it denies `map-explore` until
+  `map-test` has run in the open exploration. Records each finding with `drive_issue` as it is found, checks in with
   `drive_checkin` every 30 minutes, shuts the device down, and ends the exploration
   with `drive_done`, which owes the Oracle a wake-up. The ledger releases and stops the
   Driver's session once that wake-up is sent. When a failed build or a

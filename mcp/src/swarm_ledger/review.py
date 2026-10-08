@@ -40,6 +40,15 @@ def _parse_rating(raw: object) -> Rating:
 _SCOPE_ROLE = {"file": "coder", "module": "lead", "phase": "manager", "full": "oracle"}
 _PARENT_ROLE = {"manager": "oracle", "lead": "manager", "coder": "lead"}
 _ROLE_RANK = {"coder": 0, "lead": 1, "manager": 2, "oracle": 3}
+_DEFERRAL_LEVEL = {
+    "file": "lead",
+    "module": "lead",
+    "cross_module": "manager",
+    "phase": "manager",
+    "plan": "oracle",
+    "prd": "oracle",
+}
+DEFERRAL_KINDS = tuple(_DEFERRAL_LEVEL)
 
 
 def _agent_cost(agent: dict) -> float | None:
@@ -626,6 +635,7 @@ class ReviewMixin:
         if file_row["owner_agent_id"] != c.name:
             raise LedgerError(f"{caller!r} does not own file {file_id!r}")
         self._block_handoff_for_open_cr(self.conn, file_id)
+        self._require_brief_reread(c, file_id)
 
         test_run_id = None
         if file_row["test_path"]:
@@ -742,6 +752,26 @@ class ReviewMixin:
         )
         handoff["next"] = self.next_step(wakeup)
         return handoff
+
+    def _require_brief_reread(self, c: Caller, file_id: int) -> None:
+        returned = self.conn.execute(
+            "SELECT MAX(decided_at) AS at FROM handoffs WHERE file_id = ? AND state = 'returned'",
+            (file_id,),
+        ).fetchone()["at"]
+        if returned is None:
+            return
+        brief = self.conn.execute(
+            "SELECT last_read_by_child_at FROM briefs WHERE child_name = ? "
+            "ORDER BY created_at DESC, brief_id DESC LIMIT 1",
+            (c.name,),
+        ).fetchone()
+        read_at = brief["last_read_by_child_at"] if brief is not None else None
+        if read_at is None or read_at < returned:
+            raise LedgerError(
+                f"re-read your brief before this handoff: call brief_get(caller_name={c.name!r}, "
+                f"child_name={c.name!r}). The work came back at {returned}, and the brief, not "
+                "your memory of it, is the task"
+            )
 
     # -- Review -----------------------------------------------------------------
 
@@ -1196,6 +1226,8 @@ class ReviewMixin:
         )
 
     def accept_incomplete(self, caller: str, agent_id: str, handoff_id: int, reason: str) -> dict:
+        if not reason.strip():
+            raise LedgerError("accept_incomplete needs a reason: why the work stops short")
         c = resolve(self.conn, caller, agent_id)
         require_role(c, "lead")
         handoff_row = self.conn.execute(
@@ -1208,6 +1240,25 @@ class ReviewMixin:
         ).fetchone()
         if file_row is None or c.module_id != file_row["module_id"]:
             raise LedgerError(f"{caller!r} is not the Lead of this file's module")
+        if handoff_row["compared_at"] is None:
+            raise LedgerError(
+                "review_compare has not run for this handoff; score it blind with "
+                "score_record(kind='lead') and compare before you accept less"
+            )
+        open_issues = json.loads(handoff_row["open_issues_json"] or "[]")
+        issue_ids = [
+            row["issue_id"]
+            for row in self.conn.execute(
+                "SELECT issue_id FROM issues WHERE file_id = ? AND state = 'open' "
+                "ORDER BY issue_id",
+                (file_row["file_id"],),
+            )
+        ]
+        if not open_issues and not issue_ids:
+            raise LedgerError(
+                "nobody reported this work as incomplete: the handoff lists no open issue and "
+                "the file has no open issue. Return the work, or approve it"
+            )
         self._block_approve_for_departures(self.conn, handoff_id)
 
         with self._release_tx() as conn:
@@ -1224,9 +1275,16 @@ class ReviewMixin:
             self._release_agent(conn, handoff_row["agent_id"], "accept_incomplete")
 
             cur = conn.execute(
-                "INSERT INTO deferrals (run_id, file_id, proposed_by, reason, state) "
-                "VALUES (?, ?, ?, ?, 'open')",
-                (c.run_id, file_row["file_id"], c.agent_id, reason),
+                "INSERT INTO deferrals (run_id, file_id, proposed_by, reason, kind, state, "
+                "open_issues_json, issue_ids_json) VALUES (?, ?, ?, ?, 'file', 'open', ?, ?)",
+                (
+                    c.run_id,
+                    file_row["file_id"],
+                    c.agent_id,
+                    reason,
+                    json.dumps(open_issues),
+                    json.dumps(issue_ids),
+                ),
             )
             deferral_id = cur.lastrowid
 
@@ -1239,21 +1297,106 @@ class ReviewMixin:
     # -- Agreements ---------------------------------------------------------------
 
     def deferral_propose(
-        self, caller: str, agent_id: str, body: str, file_id: int | None = None
+        self,
+        caller: str,
+        agent_id: str,
+        body: str,
+        file_id: int | None = None,
+        *,
+        kind: str,
+        parties: list[str] | None = None,
     ) -> dict:
+        if kind not in DEFERRAL_KINDS:
+            raise LedgerError(
+                f"unknown deferral kind {kind!r}; use one of {list(DEFERRAL_KINDS)}: file "
+                "(a file's task or tests), module (a module's scope or a contract between its "
+                "files), cross_module (that, when another module is affected), phase (a phase's "
+                "scope or a contract between modules), plan (the phase plan, or work moved to a "
+                "later phase), prd (what the PRD asks for)"
+            )
+        parties = parties or []
+        wakeup = None
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
+            arbiter = self._arbiter(conn, c, parties) if parties else None
             cur = conn.execute(
-                "INSERT INTO deferrals (run_id, file_id, proposed_by, reason, state) "
-                "VALUES (?, ?, ?, ?, 'open')",
-                (c.run_id, file_id, c.agent_id, body),
+                "INSERT INTO deferrals (run_id, file_id, proposed_by, reason, kind, parties_json, "
+                "arbiter_agent_id, state) VALUES (?, ?, ?, ?, ?, ?, ?, 'open')",
+                (
+                    c.run_id,
+                    file_id,
+                    c.agent_id,
+                    body,
+                    kind,
+                    json.dumps(parties) if parties else None,
+                    arbiter["agent_id"] if arbiter is not None else None,
+                ),
             )
             deferral_id = cur.lastrowid
+            if arbiter is not None:
+                wakeup = self._owe_wakeup(
+                    conn,
+                    c,
+                    arbiter["agent_id"],
+                    "deferral_propose",
+                    f"Dispute {deferral_id} between {c.name} and {', '.join(parties)} waits for "
+                    "your decision; read it with status_tree and decide it with agreement_decide.",
+                )
 
-        return dict(
+        result = dict(
             self.conn.execute(
                 "SELECT * FROM deferrals WHERE deferral_id = ?", (deferral_id,)
             ).fetchone()
+        )
+        if arbiter is not None:
+            result["arbiter"] = arbiter["name"]
+            result["next"] = self.next_step(wakeup)
+        return result
+
+    def _arbiter(self, conn: sqlite3.Connection, c: Caller, parties: list[str]) -> sqlite3.Row:
+        members = [c.agent_id]
+        for name in parties:
+            row = conn.execute(
+                "SELECT agent_id FROM agents WHERE run_id = ? AND name = ? "
+                "ORDER BY ended_at IS NOT NULL, started_at DESC LIMIT 1",
+                (c.run_id, name),
+            ).fetchone()
+            if row is None:
+                raise LedgerError(f"no agent named {name!r} in this run")
+            if row["agent_id"] == c.agent_id:
+                raise LedgerError("a dispute names the other side, not the proposer")
+            members.append(row["agent_id"])
+        chains = [self._ancestors(conn, member) for member in members]
+        shared = set.intersection(*(set(chain) for chain in chains))
+        arbiter_id = next((agent_id for agent_id in chains[0] if agent_id in shared), None)
+        if arbiter_id is None:
+            raise LedgerError("the parties share no ancestor in this run")
+        return conn.execute("SELECT * FROM agents WHERE agent_id = ?", (arbiter_id,)).fetchone()
+
+    def _ancestors(self, conn: sqlite3.Connection, agent_id: str) -> list[str]:
+        chain: list[str] = []
+        row = conn.execute(
+            "SELECT parent_agent_id FROM agents WHERE agent_id = ?", (agent_id,)
+        ).fetchone()
+        parent_id = row["parent_agent_id"] if row is not None else None
+        while parent_id is not None and parent_id not in chain:
+            chain.append(parent_id)
+            row = conn.execute(
+                "SELECT parent_agent_id FROM agents WHERE agent_id = ?", (parent_id,)
+            ).fetchone()
+            parent_id = row["parent_agent_id"] if row is not None else None
+        return chain
+
+    def _may_arbitrate(self, conn: sqlite3.Connection, c: Caller, arbiter_id: str) -> bool:
+        arbiter = conn.execute("SELECT * FROM agents WHERE agent_id = ?", (arbiter_id,)).fetchone()
+        if arbiter is None:
+            return False
+        if arbiter["agent_id"] == c.agent_id:
+            return True
+        # A resumed Oracle has a new agent_id under the same name.
+        return arbiter["ended_at"] is not None and (arbiter["name"], arbiter["role"]) == (
+            c.name,
+            c.role,
         )
 
     def agreement_decide(
@@ -1263,6 +1406,7 @@ class ReviewMixin:
         deferral_id: int,
         decision: Literal["agreed", "denied"],
         reason: str,
+        directive_id: int | None = None,
     ) -> dict:
         if decision not in ("agreed", "denied"):
             raise LedgerError(f"unknown decision {decision!r}")
@@ -1272,33 +1416,50 @@ class ReviewMixin:
         ).fetchone()
         if row is None:
             raise LedgerError(f"unknown deferral_id {deferral_id!r}")
+        kind = row["kind"] or "file"
 
-        proposer = self.conn.execute(
-            "SELECT role FROM agents WHERE agent_id = ?", (row["proposed_by"],)
-        ).fetchone()
-        proposer_role = proposer["role"] if proposer is not None else "oracle"
-        required_role = _PARENT_ROLE.get(proposer_role, "oracle")
-        if _ROLE_RANK[c.role] < _ROLE_RANK[required_role]:
-            raise LedgerError(
-                f"role {c.role!r} may not decide a deferral proposed by a {proposer_role!r}"
+        if row["arbiter_agent_id"] is not None:
+            if not self._may_arbitrate(self.conn, c, row["arbiter_agent_id"]):
+                raise LedgerError(
+                    f"deferral {deferral_id} is a dispute between "
+                    f"{_agent_name(self.conn, row['proposed_by'])} and "
+                    f"{', '.join(json.loads(row['parties_json'] or '[]'))}; only their closest "
+                    f"shared ancestor, {_agent_name(self.conn, row['arbiter_agent_id'])}, "
+                    "decides it"
+                )
+        else:
+            proposer = self.conn.execute(
+                "SELECT role FROM agents WHERE agent_id = ?", (row["proposed_by"],)
+            ).fetchone()
+            proposer_role = proposer["role"] if proposer is not None else "oracle"
+            parent_role = _PARENT_ROLE.get(proposer_role, "oracle")
+            kind_role = _DEFERRAL_LEVEL[kind]
+            required_role = max(parent_role, kind_role, key=_ROLE_RANK.__getitem__)
+            if _ROLE_RANK.get(c.role, -1) < _ROLE_RANK[required_role]:
+                raise LedgerError(
+                    f"a {kind} deferral proposed by a {proposer_role} is decided by the "
+                    f"{required_role} or above, not a {c.role}. A decider who sees the kind "
+                    "is too low denies it with that reason, and the proposer files it again"
+                )
+            module_id, phase_id = self._deferral_scope(row)
+            in_scope = c.run_id == row["run_id"] and (
+                c.role == "oracle"
+                or (c.role == "manager" and c.phase_id == phase_id)
+                or (c.role == "lead" and c.module_id == module_id)
             )
-        module_id, phase_id = self._deferral_scope(row)
-        in_scope = c.run_id == row["run_id"] and (
-            c.role == "oracle"
-            or (c.role == "manager" and c.phase_id == phase_id)
-            or (c.role == "lead" and c.module_id == module_id)
-        )
-        if not in_scope:
-            raise LedgerError(
-                f"deferral {deferral_id} is outside the {c.role} scope of {caller!r}; "
-                "the Lead of its module, the Manager of its phase, or the Oracle decides it"
-            )
+            if not in_scope:
+                raise LedgerError(
+                    f"deferral {deferral_id} is outside the {c.role} scope of {caller!r}; "
+                    "the Lead of its module, the Manager of its phase, or the Oracle decides it"
+                )
+        if kind == "prd":
+            self._require_user_directive(row, directive_id)
 
         with write_tx(self.conn) as conn:
             conn.execute(
                 f"UPDATE deferrals SET state = ?, decided_by = ?, decision_reason = ?, "
-                f"decided_at = {_NOW} WHERE deferral_id = ?",
-                (decision, c.agent_id, reason, deferral_id),
+                f"directive_id = ?, decided_at = {_NOW} WHERE deferral_id = ?",
+                (decision, c.agent_id, reason, directive_id, deferral_id),
             )
 
         return dict(
@@ -1306,6 +1467,19 @@ class ReviewMixin:
                 "SELECT * FROM deferrals WHERE deferral_id = ?", (deferral_id,)
             ).fetchone()
         )
+
+    def _require_user_directive(self, row: sqlite3.Row, directive_id: int | None) -> None:
+        directive = self.conn.execute(
+            "SELECT 1 FROM directives WHERE directive_id = ? AND run_id = ? "
+            "AND source = 'user_chat' AND created_at >= ?",
+            (directive_id, row["run_id"], row["created_at"]),
+        ).fetchone()
+        if directive is None:
+            raise LedgerError(
+                f"deferral {row['deferral_id']} changes what the PRD asks for, which the user "
+                "decides: ask the user, record the answer with directive_submit(source="
+                "'user_chat', ...), and pass that directive_id"
+            )
 
     def _deferral_scope(self, row: sqlite3.Row) -> tuple[int | None, int | None]:
         if row["file_id"] is not None:
@@ -1662,6 +1836,27 @@ class ReviewMixin:
             )
         lines.append("")
 
+        lines.append("## Disputes")
+        for d in _rows(
+            conn.execute(
+                "SELECT * FROM deferrals WHERE run_id = ? AND arbiter_agent_id IS NOT NULL "
+                "ORDER BY deferral_id",
+                (run_id,),
+            )
+        ):
+            parties = ", ".join(json.loads(d["parties_json"] or "[]"))
+            outcome = (
+                f"{d['state']} by {_agent_name(conn, d['decided_by'])}: {d['decision_reason']}"
+                if d["state"] != "open"
+                else "open"
+            )
+            lines.append(
+                f"- Dispute #{d['deferral_id']} ({d['kind']}) between "
+                f"{_agent_name(conn, d['proposed_by'])} and {parties}, arbiter "
+                f"{_agent_name(conn, d['arbiter_agent_id'])}: {d['reason']} -> {outcome}"
+            )
+        lines.append("")
+
         lines.append("## Departures")
         for dep in _rows(
             conn.execute(
@@ -1736,6 +1931,24 @@ class ReviewMixin:
         for o in _rows(conn.execute("SELECT * FROM overrides WHERE run_id = ?", (run_id,))):
             lines.append(
                 f"- {o['rule']} for {o['target_agent_name']} on {o['target']}: {o['reason']}"
+            )
+        lines.append("")
+
+        lines.append("## Graph gaps")
+        gaps = _rows(
+            conn.execute("SELECT * FROM graph_gaps WHERE run_id = ? ORDER BY gap_id", (run_id,))
+        )
+        anchored = graph.anchored_paths(
+            self.repo_root, sorted({g["path"] for g in gaps if g["path"]})
+        )
+        for gap in gaps:
+            found = json.loads(gap["results_json"] or "[]")
+            scope = f" in {gap['path']}" if gap["path"] else ""
+            mapped = " (the graph anchors this file)" if gap["path"] in anchored else ""
+            lines.append(
+                f"- {_agent_name(conn, gap['agent_id'])} ran {gap['tool']} "
+                f"{gap['pattern']!r}{scope}{mapped}: {len(found)} path(s)"
+                + (f", {', '.join(found[:5])}" if found else "")
             )
         lines.append("")
 

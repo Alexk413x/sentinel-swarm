@@ -132,10 +132,16 @@ def _bootstrap(ledger: Ledger, listing: list[dict]) -> dict:
     phase = ledger.phase_add("oracle", ORACLE, "phase-1")
     ledger.phase_update("oracle", ORACLE, phase["phase_id"], "unlocked")
     ledger.brief_create(
-        "oracle", ORACLE, "manager-1", "manager", "opus", "Own phase-1.", phase_id=phase["phase_id"]
+        "oracle",
+        ORACLE,
+        "mgr-p1-phase-1",
+        "manager",
+        "opus",
+        "Own p1-phase-1.",
+        phase_id=phase["phase_id"],
     )
     ledger.agent_register_start(MANAGER, "manager", parent_agent_id=ORACLE)
-    ledger.brief_ack("manager-1", MANAGER)
+    ledger.brief_ack("mgr-p1-phase-1", MANAGER)
     with write_tx(ledger.conn) as conn:
         conn.execute(
             "UPDATE agents SET session_name = ? WHERE agent_id = ?", (MANAGER_SESSION, MANAGER)
@@ -302,7 +308,7 @@ def test_next_step_pushes_to_a_launched_oracle_and_records_it(
     _bootstrap(ledger, listing)
     assert _agent(ledger, ORACLE)["channel"] == "launched"
 
-    posted = ledger.message_post("manager-1", MANAGER, "oracle", "phase-1 is done")
+    posted = ledger.message_post("mgr-p1-phase-1", MANAGER, "oracle", "phase-1 is done")
 
     assert posted["next"].startswith("Nothing to send")
     (wakeup,) = _wakeups(ledger)
@@ -321,7 +327,7 @@ def test_the_sendmessage_setting_keeps_todays_next_exactly(
     sub = subscribe(ORACLE)
     _bootstrap(ledger, listing)
 
-    posted = ledger.message_post("manager-1", MANAGER, "oracle", "phase-1 is done")
+    posted = ledger.message_post("mgr-p1-phase-1", MANAGER, "oracle", "phase-1 is done")
 
     (wakeup,) = _wakeups(ledger)
     message = json.loads(posted["next"].split("message=", 1)[1].removesuffix(")"))
@@ -338,7 +344,7 @@ def test_a_session_without_a_bridge_stays_on_send_message(
 ) -> None:
     _bootstrap(ledger, listing)
     assert _agent(ledger, ORACLE)["channel"] == "none"
-    posted = ledger.message_post("manager-1", MANAGER, "oracle", "phase-1 is done")
+    posted = ledger.message_post("mgr-p1-phase-1", MANAGER, "oracle", "phase-1 is done")
     assert posted["next"].startswith(f"SendMessage(to={json.dumps(ORACLE_SESSION)}")
     assert _wakeups(ledger)[0]["pushed_at"] is None
 
@@ -396,7 +402,9 @@ def test_the_watchdog_wake_call_routes_through_the_switch(ledger: Ledger, listin
     running = {MANAGER: {"pid": 1, "sessionId": MANAGER, "status": "idle"}}
     call = watchdog._wake_call(manager, running, "channel")
     assert call == f"SendMessage(to={json.dumps(MANAGER_SESSION)})"
-    assert watchdog._wake_call(manager, {}, "channel") == 'agent_resume(target_name="manager-1")'
+    assert (
+        watchdog._wake_call(manager, {}, "channel") == 'agent_resume(target_name="mgr-p1-phase-1")'
+    )
 
 
 # -- time signal -----------------------------------------------------------------------------
@@ -477,8 +485,8 @@ def test_next_carries_the_signal_for_a_manager_and_none_for_a_lead(
     _member(ledger, "lead-agent", "lead")
     _running(listing, "lead-agent", "host-lead-1")
 
-    to_manager = ledger.message_post("oracle", ORACLE, "manager-1", "phase-1 changed")
-    to_lead = ledger.message_post("manager-1", MANAGER, "lead-1", "module changed")
+    to_manager = ledger.message_post("oracle", ORACLE, "mgr-p1-phase-1", "phase-1 changed")
+    to_lead = ledger.message_post("mgr-p1-phase-1", MANAGER, "lead-1", "module changed")
 
     assert re.search(r' elapsed \d+s"\)$', to_manager["next"])
     assert "elapsed" not in to_lead["next"]
@@ -489,14 +497,14 @@ def test_agent_resume_ends_a_managers_message_with_the_signal(
     ledger: Ledger, listing: list[dict], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _bootstrap(ledger, listing)
-    ledger.message_post("oracle", ORACLE, "manager-1", "phase-1 changed")
+    ledger.message_post("oracle", ORACLE, "mgr-p1-phase-1", "phase-1 changed")
     listing[:] = [e for e in listing if e["sessionId"] != MANAGER]
     sent: list[str] = []
     monkeypatch.setattr(
         sessions, "resume", lambda agent_id, message, **_: sent.append(message) or None
     )
 
-    result = ledger.agent_resume("oracle", ORACLE, "manager-1")
+    result = ledger.agent_resume("oracle", ORACLE, "mgr-p1-phase-1")
 
     assert re.search(r"\. elapsed \d+s$", result["message"])
     assert sent == [result["message"]]
@@ -590,7 +598,7 @@ def test_a_missing_transcript_does_not_confirm(tmp_path: Path) -> None:
 def _push_to_oracle(ledger: Ledger, listing: list[dict], subscribe) -> dict:
     subscribe(ORACLE)
     _bootstrap(ledger, listing)
-    ledger.message_post("manager-1", MANAGER, "oracle", "phase-1 is done")
+    ledger.message_post("mgr-p1-phase-1", MANAGER, "oracle", "phase-1 is done")
     (wakeup,) = _wakeups(ledger)
     return wakeup
 
@@ -719,7 +727,7 @@ def test_the_watchdog_reports_a_push_that_stays_unconfirmed(ledger: Ledger, list
     ]
     assert [(f.agent_id, f.name) for f in findings] == [(ORACLE, "oracle")]
     assert findings[0].next_step == f"Act on it: {wakeup['pointer']}"
-    assert "from manager-1 (message_post)" in findings[0].detail
+    assert "from mgr-p1-phase-1 (message_post)" in findings[0].detail
 
 
 def test_a_watchdog_pass_confirms_a_push_before_it_scans(

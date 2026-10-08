@@ -39,9 +39,14 @@ an `Agent` call from any swarm session.
 | Role | Pattern | Example |
 |---|---|---|
 | Oracle | `oracle` | `oracle` |
-| Manager | `mgr-<phase>` | `mgr-p2-api` |
-| Lead | `lead-<phase>-<module>` | `lead-p2-auth` |
-| Coder | `coder-<phase>-<module>-<file>` | `coder-p2-auth-login` |
+| Manager | `mgr-<phase name>` | `mgr-p2-api` |
+| Lead | `lead-p<phase ordinal>-<module>` | `lead-p2-auth` |
+| Coder | `coder-p<phase ordinal>-<module>-<file slug>` | `coder-p2-auth-login` |
+| Driver | `driver-e<exploration number>` | `driver-e2` |
+
+A phase name is `p<ordinal>-<slug>`: `phase_add("api")` stores `p2-api` for the second
+phase. Module names and file slugs are slugs, such as `auth` or `user-store`.
+`brief_create` and `claim_file` refuse any other name.
 
 A name is unique within a run and is the address other agents use in the ledger.
 The child's prompt starts with it: `You are <name>.` The child passes that name as
@@ -122,12 +127,26 @@ keeps every gate.
 - `agent_spawn` refuses a child without an unacknowledged brief from the caller, a
   session name a live session already uses, and a start past the parallelism cap.
 - `brief_create` refuses a model that is not on the child role's approved list, and
-  refuses a name a live agent already holds.
+  refuses a name a live agent already holds. A Manager brief needs an unlocked phase of
+  the run; a Lead brief a module of the Manager's own phase; a Coder brief a file the
+  Lead's module claimed for that name.
+- `phase_update(unlocked)` refuses while a phase it depends on is not approved.
+- `claim_file(..., depends_on=...)` and `module_add(..., depends_on=...)` record what a
+  file or module uses. A dependent's brief is refused until each dependency's latest
+  brief has a `contract`; `brief_get` returns them as `depends_on_contracts`.
+- `message_post` reaches only the caller's parent, children, and siblings.
+  `SendMessage` reaches those, and any session the caller owes a wake-up.
 - While the run has an open Driver finding, `brief_create` refuses an Oracle brief
   without `finding_ids`: the ids it fixes, or `[]` for none. It refuses an unknown
   finding id from any role. A child's brief inherits its parent's list.
 - `claim_file` refuses a path that already has a live claim. The claim is the file
   lock; `who_owns(path)` names the owner.
+- `accept_incomplete` refuses an empty reason, a handoff without `review_compare`, and
+  work that neither the handoff nor an open issue reports as incomplete.
+- `deferral_propose(body, kind, ...)` names what changes, and `kind` sets who decides:
+  `file` or `module` the Lead, `cross_module` or `phase` the Manager, `plan` or `prd`
+  the Oracle, `prd` only with a `user_chat` directive. With `parties`, it is a dispute,
+  and only the closest shared ancestor of the parties decides it.
 - `score_record(kind="lead")` must come before `review_compare`. After
   `review_compare` runs for a handoff, blind scoring is closed.
 - `approve` refuses without a comparison, with a lead review that does not pass,
@@ -160,6 +179,7 @@ keeps every gate.
 - The self review is missing or older than the last edit.
 - The Coder has an `accepted` change request on the file that is not yet
   `completed`.
+- The work came back, and the Coder has not called `brief_get` for its own brief since.
 
 On success it records the test run, saves a version of the file and the test file,
 and marks the file handed up.
@@ -269,7 +289,8 @@ on a regression.
 ## Finding code
 
 Every role queries the codebase-kg code graph first. Grep and Glob are the fallback
-for when the graph does not have the answer or returns the wrong thing. Only the
+for when the graph does not have the answer or returns the wrong thing. The ledger
+records each Grep and Glob a role runs as a graph gap, and the report lists them. Only the
 Coder writes to the graph, and only through the ledger's `graph_upsert`.
 
 ## Steering a live run from an ordinary session

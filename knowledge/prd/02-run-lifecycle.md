@@ -14,10 +14,16 @@ message. The Oracle then calls, in order:
 3. `run_start(prd, session_id)`. It opens the run and registers the Oracle.
 4. `repo_check(fetch)`, then `repo_branch_create(name)` or a question to the user. See
    "Git in the host repo".
-5. `profile_set(test_command, build_command, lint_command)`.
+5. `profile_set(test_command, build_command, lint_command)`. It refuses a build command
+   that serves or watches, because the Driver tests one build made at the start of an
+   exploration: one whose words include `--watch`, `serve`, or `dev-server`, or a
+   `dev` or `start` script run through `npm`, `yarn`, or `pnpm` (`npm run dev`,
+   `npm start`, `yarn dev`, `pnpm dev`). `npm run build` and `gradlew assembleDebug`
+   pass. The word list lives in one place, `ledger.py`.
 6. `guidelines_set(body)`: the architecture, stack, conventions, commands, and every
    assumption about the PRD. Lower layers read it with `guidelines_get`.
-7. `phase_add(name, depends_on)` once per phase, in dependency order.
+7. `phase_add(name, depends_on)` once per phase, in dependency order. The stored name
+   is `p<ordinal>-<name>`; see "Names" in [01-roles.md](01-roles.md).
 8. `phase_update(phase_id, "unlocked")` for each phase with no dependency.
 9. Arm the watchdog listener. See "Watchdog" in [08-watchdog.md](08-watchdog.md).
 
@@ -35,32 +41,54 @@ message. The Oracle then calls, in order:
   other work waits on them. **Scale out:** the approved foundation unlocks parallel
   phases. **Scale down:** integration phases bring the parts together with fewer
   agents.
-- A join point is where parallel phases feed a later phase. The Oracle runs the full
-  suite there, once every Manager that feeds it has reported.
+- `phase_update(phase_id, "unlocked")` refuses while a phase it depends on is not
+  `approved`, and names it. `brief_create` and `agent_spawn` refuse a Manager whose
+  phase is still `planned`.
+- A join point is where parallel phases feed a later phase. It needs no gate of its
+  own: each feeding phase's `phase_review(accepted)` needs a passing full run after its
+  own hand-up, and the join point unlocks only once every feeding phase is approved. So
+  the newest full run comes after every feeding hand-up when the join point unlocks.
 - The plan changes during the run. Higher layers add work from validated findings, or
   schedule it for a later phase.
 - The same ordering applies inside a phase and a module: helpers come before the files
-  that use them.
-- Contracts come before implementations. When a brief fixes a helper's contract, the
-  dependent Coders test against it with test doubles instead of waiting. "Blocked"
-  means the contract is missing or wrong.
+  that use them. `module_add(phase_id, name, depends_on)` records the modules of the
+  same phase a module uses, in `module_deps`, and refuses an id outside the caller's
+  phase. `claim_file(path, test_path, for_name, depends_on)` records the files of the
+  same module a file uses, in `file_deps`, and refuses an id that is not a claimed
+  file of the caller's module.
+- Contracts come before implementations. `brief_create(..., contract)` records the
+  public contract of the child's file or module. A Coder or Lead brief whose file or
+  module has dependencies is refused until each dependency's latest brief has a
+  non-empty `contract`, and the refusal names the missing ones: a dependent is briefed
+  only after its helper's contract is on record. `brief_get` returns
+  `depends_on_contracts`, each dependency's id, name, and contract, so the dependent
+  reads the contract from the record. The dependent Coders test against it with test
+  doubles instead of waiting. "Blocked" means the contract is missing or wrong.
+- Whether the Lead or Manager declared every real dependency, and whether a contract is
+  right, stays their judgment. A missing `depends_on` lets a dependent start without a
+  contract; the Lead review and `review_compare` judge the result.
 
 ## Modules
 
-- A Manager adds modules to its own phase with `module_add`.
+- A Manager adds modules to its own phase with `module_add`. A module name is a slug.
 - Module states: `planned`, `returned` (by `module_review` or a departure pushback), and
   `approved` (set by `approve` when no file of the module is still pending).
 
 ## Briefs
 
-- `brief_create(child_name, child_role, model, body, phase_id, module_id, file_id)`
-  refuses a caller whose role is not the child role's parent, a model outside the
-  child's approved list, a name a live agent holds, and a second unacknowledged brief
-  for one name.
+- `brief_create(child_name, child_role, model, body, phase_id, module_id, file_id,
+  contract)` refuses a caller whose role is not the child role's parent, a model outside
+  the child's approved list, a name a live agent holds, a second unacknowledged brief
+  for one name, and a name off the pattern in "Names" in [01-roles.md](01-roles.md).
+- It also checks the scope ids against the caller. An Oracle's Manager brief needs a
+  `phase_id` of the run whose phase is not `planned`. A Manager's Lead brief needs a
+  `module_id` of the Manager's own phase. A Lead's Coder brief needs a `file_id` of the
+  Lead's own module whose live claim names `child_name`.
 - A brief's body holds the whole task: the goal, the scope, what the tests must prove,
   the contracts, and the guidelines that apply.
 - `brief_get(caller_name, child_name)` needs no identity, so a child reads its brief
-  before it is bound.
+  before it is bound. The `pre_ledger` hook sees each call: when the calling session is
+  the brief's child, it records `briefs.last_read_by_child_at`.
 - `brief_ack(caller)` binds the child's name to its session. Nothing else in the ledger
   works for the child before it. See "Identity" in [05-sessions.md](05-sessions.md).
 
@@ -94,6 +122,8 @@ refuses unless:
    or skipped.
 4. The code graph is current for the file. See "The code graph" in [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
 5. A self review exists and is newer than the Coder's last edit of either path.
+6. After a returned handoff of the file, the Coder has read its brief with `brief_get`
+   since the latest return. This is principle 9 in [01-roles.md](01-roles.md).
 
 On success it saves a version of the file and the test file in
 `.sentinel-swarm/versions/`, records the handoff as `submitted`, writes each string in
@@ -128,9 +158,12 @@ The ledger enforces this order:
      records a fix attempt, posts the issues and target dimensions to the Coder, and
      owes the Coder a wake-up. A return counts as one fix attempt.
    - `accept_incomplete(handoff_id, reason)` refuses while a departure on the handoff is
-     `open` or `pushed_back`. It marks the file `incomplete` and releases it, marks
+     `open` or `pushed_back`. It refuses an empty reason, a handoff without
+     `review_compare`, and a handoff that carries no open issue from the Coder and
+     whose file has no open issue. It marks the file `incomplete` and releases it, marks
      pushed-back departures of the file `reworked`, releases the Coder, and opens a
-     deferral. It uses no fix attempt. The Lead validates the Coder's reason first.
+     deferral of kind `file`, which records the open issue strings and issue ids it
+     found. The Manager decides that deferral. It uses no fix attempt.
 5. After a return, the Coder hands off again. The Lead scores again with `targeted`,
    compares, and calls `attempt_record(file_id)`. See "Scoring and review" in [03-scoring-and-review.md](03-scoring-and-review.md).
 
@@ -202,10 +235,15 @@ when" in [05-sessions.md](05-sessions.md).
   running, a Coder joins it; otherwise the Oracle starts a new Manager, Lead, and Coder
   for that bug. When the exploration ends and every fix agent has finished, the Driver
   builds and retests. Fix agents run unit tests only.
-  - The Oracle asks a running module for a new Coder through its Manager, which asks
-    the Lead, so the spawn order holds.
+  - The Oracle asks a running module for a new Coder with a message to its Manager. The
+    Manager asks the Lead. Only the Lead can brief the Coder, and only for a file its
+    module claimed for that name.
   - The Driver tests the app it built at the start of the exploration, never a dev
-    server that reloads on edits.
+    server that reloads on edits. `pre_shell` limits the Driver's shell to
+    `build_command`, and `profile_set` refuses a build command that serves or watches.
+    Not checked: the URL a driver plugin opens. web-driver navigates to any URL the
+    Driver passes, so a dev server someone left running passes every check, and a web
+    build that must be served over HTTP has no allowed server to run.
   - A failed build is recorded at once as a finding with the build log, which ends that
     exploration, and the retest starts with a build.
 - Every wave starts from a new plan and new agents, including a fix wave planned from a
@@ -235,6 +273,10 @@ when" in [05-sessions.md](05-sessions.md).
   open issue to recheck, and a quick smoke pass over everything else; the final clean
   exploration is a full pass. The Driver first replays recorded routes with `map-test`
   to recheck earlier findings, then runs `map-explore` with the focus list as its goal.
+  The Driver's `pre_skill` hook records `drive_requests.map_test_at` when the Driver
+  invokes `map-test` or `cartographer:map-test` in its open exploration, and denies
+  `map-explore` or `cartographer:map-explore` while it is empty. No override rule
+  covers it.
 - `drive_request(focus)` is the Oracle's call. It refuses an empty focus list, a host
   with no Driver available, a run with an open `[driver-unavailable]` directive or one
   resolved `declined`, an earlier exploration that is still open

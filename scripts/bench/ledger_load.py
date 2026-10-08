@@ -185,22 +185,30 @@ def register_run(root: Path) -> list[dict[str, str]]:
         phase_id = ledger.phase_add("oracle", oracle_id, "phase-1")["phase_id"]
         ledger.phase_update("oracle", oracle_id, phase_id, "unlocked")
         ledger.brief_create(
-            "oracle", oracle_id, "manager-1", "manager", "opus", "Own it.", phase_id=phase_id
+            "oracle", oracle_id, "mgr-p1-phase-1", "manager", "opus", "Own it.", phase_id=phase_id
         )
         ledger.agent_register_start("mgr-agent", "manager", parent_agent_id=oracle_id)
-        ledger.brief_ack("manager-1", "mgr-agent")
-        module_id = ledger.module_add("manager-1", "mgr-agent", phase_id, "module-1")["module_id"]
+        ledger.brief_ack("mgr-p1-phase-1", "mgr-agent")
+        module_id = ledger.module_add("mgr-p1-phase-1", "mgr-agent", phase_id, "module-1")[
+            "module_id"
+        ]
         ledger.brief_create(
-            "manager-1", "mgr-agent", "lead-1", "lead", "sonnet", "Own it.", module_id=module_id
+            "mgr-p1-phase-1",
+            "mgr-agent",
+            "lead-p1-module-1",
+            "lead",
+            "sonnet",
+            "Own it.",
+            module_id=module_id,
         )
         ledger.agent_register_start("lead-agent", "lead", parent_agent_id="mgr-agent")
-        ledger.brief_ack("lead-1", "lead-agent")
+        ledger.brief_ack("lead-p1-module-1", "lead-agent")
         coders = []
         for i in range(1, MAX_AGENTS + 1):
-            name, path = f"coder-{i}", f"src/f{i}.py"
-            claimed = ledger.claim_file("lead-1", "lead-agent", path, None, name)
+            name, path = f"coder-p1-module-1-f{i}", f"src/f{i}.py"
+            claimed = ledger.claim_file("lead-p1-module-1", "lead-agent", path, None, name)
             ledger.brief_create(
-                "lead-1",
+                "lead-p1-module-1",
                 "lead-agent",
                 name,
                 "coder",
@@ -335,7 +343,7 @@ async def load(root: Path, server: dict[str, Any], coders: list[dict[str, str]],
 
     async def agent(client: Client, coder: dict[str, str]) -> None:
         me = {"caller": coder["name"], "agent_id": coder["agent_id"]}
-        lead = {"caller": "lead-1", "agent_id": "lead-agent"}
+        lead = {"caller": "lead-p1-module-1", "agent_id": "lead-agent"}
         write = {
             "session_id": coder["agent_id"],
             "tool_name": "Write",

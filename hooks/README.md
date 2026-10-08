@@ -54,6 +54,7 @@ The per-event behavior lives in `mcp/src/swarm_ledger/hooks/events.py`, as funct
 | `PreToolUse` | `Bash\|PowerShell` | `pre_shell`, build-command only for a Driver | all |
 | `PreToolUse` | `Monitor` | `pre_monitor` | all |
 | `PreToolUse` | `SendMessage` | `pre_send_message` | all |
+| `PreToolUse` | `Skill` | `pre_skill`, which denies `map-explore` before `map-test` | driver |
 | `PreToolUse` | `mcp__swarm-ledger__.*` | `pre_ledger` | all |
 | `PostToolUse` | `SendMessage\|PushNotification\|Monitor\|Write\|Edit\|MultiEdit\|NotebookEdit` | `post_any` | all |
 | `PostToolUse` | all, `async: true` | `post_activity`, which skips the tools `post_any` covers | all |
@@ -62,14 +63,14 @@ The per-event behavior lives in `mcp/src/swarm_ledger/hooks/events.py`, as funct
 | `Stop` | all | `stop` | all |
 | `SessionEnd` | all | `session_end` | all |
 
-`pre_agent`, `pre_write`, `pre_shell`, `pre_monitor`, `pre_send_message`, and `pre_ledger`
-are the gating events.
+`pre_agent`, `pre_write`, `pre_shell`, `pre_monitor`, `pre_send_message`, `pre_skill`, and
+`pre_ledger` are the gating events.
 
 `post_any` stays synchronous after the tools whose records the Stop hook and
 `handoff_submit` read: owed wake-ups, notifications, the watchdog arm time, and stale
 files. `post_activity` runs in the background after every other tool and records only
-the heartbeat, the current activity, and the transcript path, and sets an idle agent to
-working. The shim stamps its input with the time it fired, so a `post_activity` that
+the heartbeat, the current activity, and the transcript path, sets an idle agent to
+working, and records each `Grep` and `Glob` as a graph gap. The shim stamps its input with the time it fired, so a `post_activity` that
 lands after the agent's Stop hook does not set the agent working again.
 
 The Driver is the one role whose `swarm-driver.md` carries `Agent` in its `tools` and
@@ -81,7 +82,13 @@ unconditionally, as before.
 
 `pre_send_message` denies a `SendMessage` whose `to` is not the `session_name` of a
 registered agent of the caller's own run, and names the valid session names in the
-reason. A caller the registry does not know, or one with no run yet, passes.
+reason. Within the run, it allows the caller's parent, children, and siblings, any
+session the caller owes an unsent wake-up, and, for the Oracle, any live agent that is
+not working. A caller the registry does not know, or one with no run yet, passes.
+
+`pre_skill` runs for the Driver only. While the Driver has an open exploration, it
+records a `map-test` or `cartographer:map-test` call and denies `map-explore` or
+`cartographer:map-explore` until one is recorded. Every other skill passes.
 
 `pre_monitor` allows exactly one `Monitor` call from a swarm session: the Oracle's
 watchdog listener, with no `ws` input and this command, compared after whitespace is

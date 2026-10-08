@@ -17,6 +17,7 @@ HANDLERS = {
     "pre_shell": events.handle_pre_shell,
     "pre_monitor": events.handle_pre_monitor,
     "pre_send_message": events.handle_pre_send_message,
+    "pre_skill": events.handle_pre_skill,
     "pre_ledger": events.handle_pre_ledger,
     "post_any": events.handle_post_any,
     "post_activity": events.handle_post_activity,

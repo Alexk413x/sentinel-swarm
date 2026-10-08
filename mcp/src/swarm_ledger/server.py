@@ -296,7 +296,8 @@ def profile_set(
     lint_command: str | None = None,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
-    """Sets the run's test, build, and lint commands; the Oracle calls this."""
+    """Sets the run's test, build, and lint commands; the Oracle calls this. Refuses a build
+    command that serves or watches (--watch, serve, dev-server, npm run dev, npm start)."""
     return _call(
         _ledger().profile_set,
         caller=caller,
@@ -328,7 +329,8 @@ def phase_add(
     depends_on: list[int] | None = None,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
-    """Adds a phase to the plan with optional phase dependencies; the Oracle calls this."""
+    """Adds a phase to the plan with optional phase dependencies; the Oracle calls this. The
+    stored name is p<ordinal>-<name>, and its Manager is named mgr-<that name>."""
     return _call(
         _ledger().phase_add, caller=caller, agent_id=agent_id, name=name, depends_on=depends_on
     )
@@ -354,11 +356,24 @@ def plan_unlocked(
 
 @mcp.tool
 def module_add(
-    caller: CallerName, phase_id: int, name: str, agent_id: str | None = _STAMPED_AGENT_ID
+    caller: CallerName,
+    phase_id: int,
+    name: str,
+    depends_on: Annotated[
+        list[int] | None,
+        Field(description="Module ids of this phase that this module uses; brief those first."),
+    ] = None,
+    agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
-    """Adds a module to the caller's own phase; a Manager calls this."""
+    """Adds a module to the caller's own phase; a Manager calls this. The name is a slug, and
+    its Lead is named lead-p<phase ordinal>-<name>."""
     return _call(
-        _ledger().module_add, caller=caller, agent_id=agent_id, phase_id=phase_id, name=name
+        _ledger().module_add,
+        caller=caller,
+        agent_id=agent_id,
+        phase_id=phase_id,
+        name=name,
+        depends_on=depends_on,
     )
 
 
@@ -383,11 +398,20 @@ def brief_create(
             "Raise it for a fresh Coder in escalation round 2 or 3."
         ),
     ] = None,
+    contract: Annotated[
+        str | None,
+        Field(
+            description="The public contract of the child's file or module. Required before "
+            "a file or module that depends on it can be briefed."
+        ),
+    ] = None,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Creates a brief for the caller's child role (Oracle->Manager, Manager->Lead, Lead->Coder).
-    A refusal for missing `finding_ids` lists the open ids and titles. Refuses an unknown
-    finding, one that hit a stop rule, or one whose area has an open pattern stop directive."""
+    A Manager brief needs an unlocked phase_id of the run; a Lead brief a module_id of the
+    caller's phase; a Coder brief the file_id claimed for child_name. A refusal for missing
+    `finding_ids` lists the open ids and titles. Refuses an unknown finding, one that hit a
+    stop rule, or one whose area has an open pattern stop directive."""
     return _call(
         _ledger().brief_create,
         caller=caller,
@@ -401,13 +425,15 @@ def brief_create(
         file_id=file_id,
         finding_ids=finding_ids,
         effort=effort,
+        contract=contract,
     )
 
 
 @mcp.tool(annotations=_READ_ONLY)
 def brief_get(caller_name: CallerName, child_name: str) -> dict[str, Any]:
     """Returns the latest brief for a child name; a new agent calls it before it has an agent_id.
-    `findings` lists the id, fingerprint, title, severity, and area of each finding it fixes."""
+    `findings` lists the id, fingerprint, title, severity, and area of each finding it fixes;
+    `depends_on_contracts` the contract of each file or module it depends on."""
     return _call(_ledger().brief_get, caller_name=caller_name, child_name=child_name)
 
 
@@ -460,9 +486,14 @@ def claim_file(
     path: str,
     test_path: str | None,
     for_name: str,
+    depends_on: Annotated[
+        list[int] | None,
+        Field(description="File ids of this module that this file uses; brief those first."),
+    ] = None,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
-    """Claims a file path for a coder under the caller's module; a Lead calls this."""
+    """Claims a file path for a coder under the caller's module; a Lead calls this. for_name is
+    coder-p<phase ordinal>-<module>-<file slug>."""
     return _call(
         _ledger().claim_file,
         caller=caller,
@@ -470,6 +501,7 @@ def claim_file(
         path=path,
         test_path=test_path,
         for_name=for_name,
+        depends_on=depends_on,
     )
 
 
@@ -494,8 +526,8 @@ def who_owns(path: str) -> dict[str, Any]:
 def message_post(
     caller: CallerName, to_name: str, body: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
-    """Posts a message of at most 32,000 characters to an agent of the run by name; returns
-    the wake-up call as `next`."""
+    """Posts a message of at most 32,000 characters to the caller's parent, child, or sibling
+    by name; returns the wake-up call as `next`."""
     return _call(
         _ledger().message_post, caller=caller, agent_id=agent_id, to_name=to_name, body=body
     )
@@ -836,7 +868,8 @@ def attempt_record(
 def accept_incomplete(
     caller: CallerName, handoff_id: int, reason: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
-    """Accepts a handoff as incomplete and opens a deferral; a Lead calls this."""
+    """Accepts a handoff as incomplete and opens a file deferral for the Manager; a Lead calls
+    this after review_compare, for work the Coder or an open issue reports as incomplete."""
     return _call(
         _ledger().accept_incomplete,
         caller=caller,
@@ -910,12 +943,28 @@ def phase_review(
 def deferral_propose(
     caller: CallerName,
     body: str,
+    kind: Literal["file", "module", "cross_module", "phase", "plan", "prd"],
     file_id: int | None = None,
+    parties: Annotated[
+        list[str] | None,
+        Field(
+            description="For a dispute: the agent names on the other side. Their closest "
+            "shared ancestor decides it."
+        ),
+    ] = None,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
-    """Proposes a deferral, optionally tied to a file; any registered agent calls this."""
+    """Proposes a deferral or scope change, or with parties a dispute; any registered agent
+    calls this. kind sets who decides: file or module, the Lead; cross_module or phase, the
+    Manager; plan or prd, the Oracle (prd with the user)."""
     return _call(
-        _ledger().deferral_propose, caller=caller, agent_id=agent_id, body=body, file_id=file_id
+        _ledger().deferral_propose,
+        caller=caller,
+        agent_id=agent_id,
+        body=body,
+        file_id=file_id,
+        kind=kind,
+        parties=parties,
     )
 
 
@@ -925,9 +974,14 @@ def agreement_decide(
     deferral_id: int,
     decision: Literal["agreed", "denied"],
     reason: str,
+    directive_id: Annotated[
+        int | None,
+        Field(description="For a prd deferral: the user_chat directive with the user's answer."),
+    ] = None,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
-    """Decides an open deferral as agreed or denied; the proposer's parent role or above calls."""
+    """Decides an open deferral as agreed or denied: a dispute by its arbiter, any other by a
+    caller at or above both the proposer's parent and the kind's level."""
     return _call(
         _ledger().agreement_decide,
         caller=caller,
@@ -935,6 +989,7 @@ def agreement_decide(
         deferral_id=deferral_id,
         decision=decision,
         reason=reason,
+        directive_id=directive_id,
     )
 
 

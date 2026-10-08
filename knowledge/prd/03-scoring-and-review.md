@@ -130,7 +130,8 @@ issue stopped improving, and it explains to the next layer why the issue arrived
 | After round 3 | | The Oracle changes the plan or notifies the user |
 
 - A round ends after 3 attempts that did not improve the score. Only a reviewer's
-  return counts, and accepting work as incomplete uses no attempt.
+  return counts, and accepting work as incomplete uses no attempt. `accept_incomplete`
+  has its own refusals; see "Lead review" in [02-run-lifecycle.md](02-run-lifecycle.md).
 - `issue_escalate(issue_id)` moves an issue to its next round, names the receiver in
   `escalated_to` (the Manager for round 2, the Oracle for round 3), messages it, and
   owes it a wake-up with a pointer, returned as `next`. Only the file owner and the

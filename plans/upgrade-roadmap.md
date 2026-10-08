@@ -1,6 +1,6 @@
 # Upgrade roadmap: efficiency, messaging, other platforms
 
-Status: part 1 is a build plan; steps 0, 1 and 2 are done, the rest is not started. Part 2 is an exploration
+Status: part 1 is a build plan; steps 0, 1, 2 and 2b are done, the rest is not started. Part 2 is an exploration
 **(proposed)**, not a build plan. Written 2026-10-07 on branch `feat/kg-start-end-cli`. It replaces
 the root `cli-plan.md`.
 
@@ -209,6 +209,19 @@ Tests:
 Success: 0 cross-run reads, and 0 members stopped with unread mail in a `modules` smoke run.
 
 ### Step 2b. Enforce the prompt-only rules
+
+Built on 2026-10-08, with the tests below in `mcp/tests/test_enforcement.py`; not run live yet.
+The open questions were settled this way: (1) the hooks reference says `PreToolUse` fires
+for the `Skill` tool when the model calls it, so change 3 builds `pre_skill`, reading the
+skill name from `tool_input.skill`, the field the `Skill` tool's input schema names;
+(2) web-driver navigates to a URL the Driver passes and serves nothing, so `profile_set`
+refuses only serve and watch words, and the PRD records the residual gap; (3) `cr_open`
+from above the Lead is not direction and still routes to the Coder; (4) the token list is
+`--watch`, `serve`, `dev-server`, and a `dev` or `start` script through `npm`, `yarn`, or
+`pnpm`. Changes from the text below: the Oracle may also `SendMessage` any live agent
+that is not working, because its Stop hook names such agents to wake; a dispute's
+arbiter is the closest shared strict ancestor, so a party never judges its own dispute;
+and `brief_create` also refuses a Manager brief for a planned phase.
 
 A PRD audit found rules that only role-template prompt text carries. No hook or ledger gate stops
 a role that breaks them. Each change below names its mechanism. A ledger gate comes first, because
@@ -495,8 +508,7 @@ Checked against the code on 2026-10-08. None of these checks exist today.
 Each item is listed in `knowledge/prd/16-open-items.md`. Remove its mark from the PRD when it
 ships, and delete its line from `16-open-items.md`.
 
-1. **Oracle arbitration between Managers** (PRD 01). Build with step 2b, change 6: the closest
-   shared ancestor of two Managers is the Oracle.
+1. **Oracle arbitration between Managers** (PRD 01). Done with step 2b, change 6.
 2. **A fix Coder's brief** (PRD 02). `brief_get` returns the evidence of each finding in the
    brief's `finding_ids`. The fix brief re-claims the file through `claim_file`.
 3. **Overrides tied to a run** (PRD 04). `override_consume` matches `run_id` as well as the rule,

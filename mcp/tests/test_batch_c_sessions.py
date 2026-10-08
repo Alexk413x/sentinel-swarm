@@ -74,14 +74,14 @@ def _bootstrap(ledger: Ledger) -> dict:
     ledger.brief_create(
         "oracle",
         oracle_id,
-        "manager-1",
+        "mgr-p1-phase-a",
         "manager",
         "opus",
         "Own phase-a.",
         phase_id=phase_a["phase_id"],
     )
     ledger.agent_register_start("mgr-agent", "manager", parent_agent_id=oracle_id)
-    manager = ledger.brief_ack("manager-1", "mgr-agent")
+    manager = ledger.brief_ack("mgr-p1-phase-a", "mgr-agent")
     _as_session(ledger, oracle_id, "host-r1-oracle")
     _as_session(ledger, "mgr-agent", "host-r1-manager-1")
     manager = dict(manager) | {"session_name": "host-r1-manager-1"}
@@ -177,10 +177,11 @@ def _spawn_bootstrap(
     oracle_id = started["oracle"]["agent_id"]
     ledger.repo_check("oracle", oracle_id)
     phase = ledger.phase_add("oracle", oracle_id, "phase-1")
+    ledger.phase_update("oracle", oracle_id, phase["phase_id"], "unlocked")
     ledger.brief_create(
         "oracle",
         oracle_id,
-        "manager-1",
+        "mgr-p1-phase-1",
         "manager",
         "opus",
         "Own it.",
@@ -239,7 +240,7 @@ def test_agent_spawn_refuses_into_a_paused_phase(claude: FakeClaude, spawn_ledge
     ctx = _spawn_bootstrap(spawn_ledger, claude)
     spawn_ledger.run_pause("oracle", ctx["oracle_id"], "blocked", phases=[ctx["phase_id"]])
     with pytest.raises(LedgerError, match="is paused"):
-        spawn_ledger.agent_spawn("oracle", ctx["oracle_id"], "manager-1")
+        spawn_ledger.agent_spawn("oracle", ctx["oracle_id"], "mgr-p1-phase-1")
 
 
 def test_agent_spawn_succeeds_once_the_phase_is_resumed(
@@ -248,7 +249,7 @@ def test_agent_spawn_succeeds_once_the_phase_is_resumed(
     ctx = _spawn_bootstrap(spawn_ledger, claude)
     spawn_ledger.run_pause("oracle", ctx["oracle_id"], "blocked", phases=[ctx["phase_id"]])
     spawn_ledger.phase_resume("oracle", ctx["oracle_id"], [ctx["phase_id"]])
-    spawned = spawn_ledger.agent_spawn("oracle", ctx["oracle_id"], "manager-1")
+    spawned = spawn_ledger.agent_spawn("oracle", ctx["oracle_id"], "mgr-p1-phase-1")
     assert spawned["state"] == "registered"
 
 
@@ -311,7 +312,7 @@ def test_agent_spawn_cap_counts_other_swarms_on_the_machine(
     claude.add("other-session-id", "other-repo-r9-coder-a")
     spawn_ledger.settings.parallelism_cap = 1
     with pytest.raises(LedgerError, match="parallelism cap of 1 is reached"):
-        spawn_ledger.agent_spawn("oracle", ctx["oracle_id"], "manager-1")
+        spawn_ledger.agent_spawn("oracle", ctx["oracle_id"], "mgr-p1-phase-1")
 
 
 def test_agent_spawn_cap_ignores_a_non_swarm_session_name(
@@ -320,22 +321,30 @@ def test_agent_spawn_cap_ignores_a_non_swarm_session_name(
     ctx = _spawn_bootstrap(spawn_ledger, claude)
     claude.add("other-session-id", "some-developers-terminal")
     spawn_ledger.settings.parallelism_cap = 2
-    spawned = spawn_ledger.agent_spawn("oracle", ctx["oracle_id"], "manager-1")
+    spawned = spawn_ledger.agent_spawn("oracle", ctx["oracle_id"], "mgr-p1-phase-1")
     assert spawned["state"] == "registered"
 
 
 def test_agent_spawn_applies_a_per_role_cap(claude: FakeClaude, spawn_ledger: Ledger) -> None:
     ctx = _spawn_bootstrap(spawn_ledger, claude)
     spawn_ledger.settings.role_parallelism_cap = {"manager": 1}
-    spawned = spawn_ledger.agent_spawn("oracle", ctx["oracle_id"], "manager-1")
-    manager = ("manager-1", spawned["agent_id"])
+    spawned = spawn_ledger.agent_spawn("oracle", ctx["oracle_id"], "mgr-p1-phase-1")
+    manager = ("mgr-p1-phase-1", spawned["agent_id"])
     spawn_ledger.brief_ack(*manager)
 
+    second = spawn_ledger.phase_add("oracle", ctx["oracle_id"], "phase-2")
+    spawn_ledger.phase_update("oracle", ctx["oracle_id"], second["phase_id"], "unlocked")
     spawn_ledger.brief_create(
-        "oracle", ctx["oracle_id"], "manager-2", "manager", "opus", "Own it too."
+        "oracle",
+        ctx["oracle_id"],
+        "mgr-p2-phase-2",
+        "manager",
+        "opus",
+        "Own it too.",
+        phase_id=second["phase_id"],
     )
     with pytest.raises(LedgerError, match="the manager parallelism cap of 1 is reached"):
-        spawn_ledger.agent_spawn("oracle", ctx["oracle_id"], "manager-2")
+        spawn_ledger.agent_spawn("oracle", ctx["oracle_id"], "mgr-p2-phase-2")
 
 
 # == Item 12: multi-repo lock ===================================================================
@@ -532,7 +541,7 @@ def test_agent_spawn_passes_the_role_s_effort_and_cache_ttl(
     ctx = _spawn_bootstrap(spawn_ledger, claude)
     spawn_ledger.settings.effort = {"manager": "xhigh"}
     spawn_ledger.settings.prompt_cache_ttl = {"manager": "1h"}
-    spawn_ledger.agent_spawn("oracle", ctx["oracle_id"], "manager-1")
+    spawn_ledger.agent_spawn("oracle", ctx["oracle_id"], "mgr-p1-phase-1")
 
     spawn_calls = [args for args, _ in claude.calls if "--bg" in args]
     options = spawn_calls[-1]

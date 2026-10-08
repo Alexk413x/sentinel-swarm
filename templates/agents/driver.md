@@ -41,6 +41,11 @@ hooks:
         - type: command
           command: "python3 .sentinel-swarm/hook.py hook pre_send_message || python .sentinel-swarm/hook.py hook pre_send_message"
           timeout: 60
+    - matcher: "Skill"
+      hooks:
+        - type: command
+          command: "python3 .sentinel-swarm/hook.py hook pre_skill || python .sentinel-swarm/hook.py hook pre_skill"
+          timeout: 60
     - matcher: "mcp__swarm-ledger__.*"
       hooks:
         - type: command
@@ -128,7 +133,8 @@ and you end your turn when your own exploration ends and that last wake-up is se
    Make the call its `next` field names, then stop. `blocked` notifies the user, and
    `drive_done` refuses it until a finding is recorded.
 7. Invoke the `map-test` skill first, to replay every recorded route with no AI and
-   recheck earlier findings against the build you just made.
+   recheck earlier findings against the build you just made. A hook denies
+   `map-explore` until `map-test` has run in this exploration.
 8. Invoke the `map-explore` skill with the focus list as its goal. It spawns
    `cartographer:map-driver` to drive the device and `cartographer:map-reviewer` to
    judge what it finds; you never drive the device yourself outside those subagents.
@@ -162,6 +168,8 @@ it yourself. Your job is findings and check-ins, not the stop-rule decision.
   The `pre_agent` hook denies every other `subagent_type`.
 - Test a dev server that reloads on edits. Fixes start while you explore, so a Coder
   may edit source during your exploration. You test the build you made at its start.
+  `profile_set` refuses a build command that serves or watches, but nothing checks
+  the URL a driver plugin's launch tool opens: never point it at a dev server.
 - Start a second exploration. `drive_request` is the Oracle's call, not yours.
 
 ## Finding code

@@ -18,6 +18,7 @@
 | `PreToolUse` | `Bash\|PowerShell` | `pre_shell` | all |
 | `PreToolUse` | `Monitor` | `pre_monitor` | all |
 | `PreToolUse` | `SendMessage` | `pre_send_message` | all |
+| `PreToolUse` | `Skill` | `pre_skill` | Driver |
 | `PreToolUse` | `mcp__swarm-ledger__.*` | `pre_ledger` | all |
 | `PostToolUse` | `SendMessage\|PushNotification\|Monitor\|Write\|Edit\|MultiEdit\|NotebookEdit` | `post_any` | all |
 | `PostToolUse` | all, `async: true` | `post_activity` | all |
@@ -65,7 +66,7 @@ Every hook command is
 
 When the server does not answer and then the registry, the install, `uv`, or the
 ledger hook fails, or the two paths together run longer than 50 seconds, a gating event (`pre_agent`, `pre_write`, `pre_shell`, `pre_monitor`,
-`pre_send_message`, `pre_ledger`) answers `deny` with the reason, and every event adds
+`pre_send_message`, `pre_skill`, `pre_ledger`) answers `deny` with the reason, and every event adds
 a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 
 ## Rules every ledger hook follows
@@ -92,7 +93,19 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
   has no legitimate exception, so `pre_agent` never calls `override_consume`.
 - `pre_send_message`: denies a `SendMessage` whose `to` does not name a registered
   agent's `session_name` in the caller's own run, and lists the valid names in the
-  reason. A caller the registry does not know, or one with no run yet, passes.
+  reason. Within the run, it allows the caller's parent, children, and siblings, a
+  session the caller owes an unsent wake-up, and, for the Oracle, any live agent that
+  is not working; it denies any other target and lists the allowed ones. See
+  "Messages" in [05-sessions.md](05-sessions.md). A caller the registry does not know,
+  or one with no run yet, passes.
+- `pre_skill`: in the Driver's agent file only. For a Driver with an open exploration,
+  it records `drive_requests.map_test_at` when the skill in `tool_input.skill` is
+  `map-test` or `cartographer:map-test`, and denies `map-explore` or
+  `cartographer:map-explore` while `map_test_at` is empty, naming `map-test`. Any other
+  skill, and any other caller, passes. No override rule covers it. Claude Code fires
+  `PreToolUse` with the `Skill` matcher when the model calls the tool, not when a user
+  types `/skill`; the hooks reference says so, and the field name comes from the
+  `Skill` tool's input schema. It has not run live.
 - `pre_write`: while a run is active or paused, denies anyone a write into the records
   folder, unconditionally; the records folder is the ledger's own state, so no
   override rule covers it either. Denies a write by any role but the
@@ -109,7 +122,8 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
   yet in the ledger counts as a swarm session when its `agent_type` is `swarm-<role>`.
   No override rule covers it.
 - `pre_ledger`: stamps `agent_id`, and denies `override_grant` to anyone but the
-  Oracle. The identity stamp itself takes no override: faking `agent_id` is what the
+  Oracle. On a `brief_get` whose `child_name` is the calling session's own agent name,
+  it records `briefs.last_read_by_child_at`, which `handoff_submit` reads. The identity stamp itself takes no override: faking `agent_id` is what the
   stamp exists to prevent. The stamp is the hook input's `agent_id`, or
   else its `session_id`. For the five tools that take no identity (`ledger_info`,
   `brief_get`, `who_owns`, `directive_submit`, `events`), it removes `agent_id`
@@ -130,7 +144,10 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
   one call. Otherwise it writes the heartbeat and current activity and records the
   transcript path. It sets an idle agent to working only when the agent's last move to
   `idle` came before `sentinel_swarm_fired_at`: an async hook can land after the Stop
-  hook, and the tool call it reports came before the stop.
+  hook, and the tool call it reports came before the stop. After a `Grep` or `Glob` by a
+  swarm session, it writes a `graph_gaps` row: the run, the agent, the tool, the
+  pattern, the path, and the first 20 result paths from `tool_response`. codebase-kg's
+  own gate decides whether the search may run; this only records it.
 - `post_shell`: after a Coder's shell call, lists changed paths with `git status`.
   A change outside the Coder's claim, other claimed files of the run, the records
   folder, and `knowledge/` is recorded as a `violation` event and posted to its Lead.
@@ -177,6 +194,18 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 | The Oracle never grants itself a write or shell override | `override_grant` refuses a `target_agent_name` that names the Oracle |
 | Look in the graph before writing | codebase-kg's own search gate hook |
 | A message goes to an agent of the run | `message_post`; `pre_send_message` for `SendMessage` itself |
+| A Manager directs a Coder only through its Lead, and the Oracle a Lead or Coder only through its Manager | `message_post` allows only the caller's parent, children, and siblings; `pre_send_message` allows those, owed wake-ups, and the Oracle's waiting agents |
+| Helpers and contracts come before the files and modules that use them | `claim_file` and `module_add` record `depends_on`; `brief_create` refuses a dependent's brief until each dependency's latest brief has a contract; `brief_get` returns the contracts |
+| A new Coder for a running module comes through its Manager and Lead | `brief_create` scope checks: a Manager briefs a Lead only for a module of its phase, a Lead a Coder only for a file its module claimed for that name |
+| Names follow the patterns | `phase_add` prefixes the ordinal; `module_add` refuses a non-slug; `brief_create` and `claim_file` refuse a name off the pattern |
+| A phase unlocks only when its dependencies are approved | `phase_update(unlocked)`; `brief_create` and `agent_spawn` refuse a Manager of a planned phase |
+| Work is accepted as incomplete only for a reported reason, after a blind review | `accept_incomplete` refuses an empty reason, a handoff without `review_compare`, and work with no open issue |
+| A deferral is decided at its responsible level, and a PRD change by the user | `deferral_propose(kind)`; `agreement_decide` checks the kind's level and, for `prd`, a later `user_chat` directive |
+| A dispute is decided by the closest shared ancestor of its parties | `deferral_propose(parties)` records the arbiter and owes it a wake-up; `agreement_decide` accepts only the arbiter |
+| The Driver tests a build, not a server that reloads | `profile_set` refuses a build command that serves or watches; `pre_shell` limits the Driver to `build_command` |
+| The Driver runs `map-test` before `map-explore` | `pre_skill` |
+| A role's fallback search is recorded | `post_activity` writes a `graph_gaps` row for each `Grep` and `Glob`; the report lists them |
+| A Coder re-reads its brief after a return | `pre_ledger` records the read; `handoff_submit` refuses without one since the last return |
 | An agent reads only its own run's mail, in bounded batches | `message_inbox` filters by `run_id` and name and caps one call at 40,000 characters; `message_post` refuses a body over 32,000 |
 | A Manager, Lead, Coder, or Driver reads its mail before it stops | The member `stop` blocks once while the caller has unread messages in its run |
 | Only the owner's chain escalates an issue | `issue_escalate` |

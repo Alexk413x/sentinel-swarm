@@ -189,6 +189,19 @@ class Caller:
     parent_agent_id: str | None
 
 
+def caller_of(agent: sqlite3.Row | dict) -> Caller:
+    return Caller(
+        agent_id=agent["agent_id"],
+        name=agent["name"],
+        role=agent["role"],
+        run_id=agent["run_id"],
+        phase_id=agent["phase_id"],
+        module_id=agent["module_id"],
+        file_id=agent["file_id"],
+        parent_agent_id=agent["parent_agent_id"],
+    )
+
+
 def child_roles_of(role: str) -> tuple[str, ...]:
     return _CHILD_ROLES.get(role, ())
 

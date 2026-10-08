@@ -51,6 +51,18 @@
 - **Overrides across runs.** `override_consume` matches the rule, the agent name, and
   the target, but not the run. An unused override from an earlier run can be used up
   by an agent with the same name in a later run.
+- **`pre_skill`, live.** Built and unit-tested from the hooks reference and the `Skill`
+  tool's input schema. No live Driver session has shown a `PreToolUse` hook firing on
+  `Skill` with the skill name in `tool_input.skill`.
+- **A web build that must be served.** `profile_set` refuses a build command that
+  serves, and the Driver's shell runs only the build command, so nothing serves a built
+  web app over HTTP. web-driver navigates to any URL the Driver passes, so a dev server
+  someone left running passes every check. See "Explorations" in
+  [02-run-lifecycle.md](02-run-lifecycle.md).
+- **The Oracle's wake of a waiting agent.** `pre_send_message` lets the Oracle wake any
+  live agent of its run that is not working, because its Stop hook names such agents.
+  The text of that `SendMessage` is not checked, so it can carry direction past a
+  Manager.
 - **A Driver outside `drive_request`.** `brief_create` accepts `child_role="driver"`
   from the Oracle, and `agent_spawn` then starts that Driver. It has no request row, so
   `drive_issue` refuses its findings. Only `drive_request` should start a Driver.
@@ -59,9 +71,6 @@
 
 Each item below is marked **(needs implementation)** in its document.
 
-- **Oracle arbitration between Managers** ([01-roles.md](01-roles.md)). The Oracle
-  template has no step for settling a dispute between Managers, such as which Manager
-  owns a shared file.
 - **A fix Coder's brief** ([02-run-lifecycle.md](02-run-lifecycle.md)). The brief body
   does not carry the finding's evidence, and the fix does not re-claim the file.
 - **Narrow overrides** ([04-agreements.md](04-agreements.md)). `override_consume` does

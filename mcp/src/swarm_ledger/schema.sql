@@ -121,9 +121,26 @@ CREATE TABLE IF NOT EXISTS briefs (
     -- The drive_findings this brief fixes, as a JSON list of finding ids. A child's brief
     -- inherits its parent's list unless brief_create names its own.
     finding_ids_json TEXT,
+    -- The public contract of the child's file or module. A dependent's brief needs one on
+    -- each dependency's latest brief.
+    contract TEXT,
+    -- Set by the pre_ledger hook when the child's own session calls brief_get.
+    last_read_by_child_at TEXT,
     acked_by_agent_id TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
     acked_at TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS module_deps (
+    module_id INTEGER NOT NULL REFERENCES modules (module_id) ON DELETE RESTRICT,
+    depends_on_module_id INTEGER NOT NULL REFERENCES modules (module_id) ON DELETE RESTRICT,
+    PRIMARY KEY (module_id, depends_on_module_id)
+);
+
+CREATE TABLE IF NOT EXISTS file_deps (
+    file_id INTEGER NOT NULL REFERENCES files (file_id) ON DELETE RESTRICT,
+    depends_on_file_id INTEGER NOT NULL REFERENCES files (file_id) ON DELETE RESTRICT,
+    PRIMARY KEY (file_id, depends_on_file_id)
 );
 
 CREATE TABLE IF NOT EXISTS reviews (
@@ -300,6 +317,17 @@ CREATE TABLE IF NOT EXISTS deferrals (
     file_id INTEGER REFERENCES files (file_id) ON DELETE RESTRICT,
     proposed_by TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
     reason TEXT NOT NULL,
+    -- file, module, cross_module, phase, plan, or prd: the level that decides it.
+    kind TEXT,
+    -- A dispute: the agent names on the other side, and the closest shared ancestor who
+    -- alone decides it.
+    parties_json TEXT,
+    arbiter_agent_id TEXT,
+    -- For accept_incomplete: the Coder's open issue strings and the file's open issue ids.
+    open_issues_json TEXT,
+    issue_ids_json TEXT,
+    -- For a prd deferral: the user_chat directive the decision rests on.
+    directive_id INTEGER REFERENCES directives (directive_id) ON DELETE RESTRICT,
     state TEXT NOT NULL DEFAULT 'open',
     decided_by TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
     decision_reason TEXT,
@@ -419,7 +447,9 @@ CREATE TABLE IF NOT EXISTS drive_requests (
     last_checkin_at TEXT,
     last_covered TEXT,
     last_steps TEXT,
-    last_notes TEXT
+    last_notes TEXT,
+    -- Set by the pre_skill hook when the Driver invokes map-test; map-explore waits on it.
+    map_test_at TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_drive_requests_open
@@ -483,3 +513,15 @@ CREATE TABLE IF NOT EXISTS notifications (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_event
     ON notifications (run_id, event_key);
+
+-- One row per Grep or Glob a swarm role ran: what the code graph did not answer.
+CREATE TABLE IF NOT EXISTS graph_gaps (
+    gap_id INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL REFERENCES runs (run_id) ON DELETE RESTRICT,
+    agent_id TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    pattern TEXT,
+    path TEXT,
+    results_json TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);

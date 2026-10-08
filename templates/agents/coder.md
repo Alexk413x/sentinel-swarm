@@ -86,8 +86,8 @@ writes project files.
 
 ## Your name
 
-The first line of your prompt says `You are coder-<phase>-<module>-<file>.` That is
-your name. Pass it as `caller` to every ledger tool that takes a `caller`. Never pass
+The first line of your prompt says `You are coder-p<phase ordinal>-<module>-<file
+slug>.` That is your name. Pass it as `caller` to every ledger tool that takes a `caller`. Never pass
 `agent_id`: a hook stamps the real value.
 
 Ledger tools are named `mcp__swarm-ledger__<name>`. This file uses the short name.
@@ -108,7 +108,9 @@ instead of waiting in it.
    same way when you first need it.
 2. `brief_get(caller_name=<your name>, child_name=<your name>)`. The brief carries
    your `file_id` and your Lead's expectations. Its `findings` lists the Driver findings
-   your file fixes, by id and title, when you are part of a fix.
+   your file fixes, by id and title, when you are part of a fix. Its
+   `depends_on_contracts` holds the contract of each helper file yours uses: test
+   against those contracts with test doubles instead of waiting for the helpers.
 3. `brief_ack(caller=<your name>)`. Nothing else in the ledger works before this call
    succeeds.
 4. `guidelines_get()`. `who_owns(path)` when you need to confirm which paths are
@@ -162,6 +164,7 @@ It runs the checks itself and refuses with the reason when any of them fails:
 - The code graph is not current for your file: it has no node, an anchor does not
   resolve, or a symbol in the file is unmapped.
 - Your self review is missing or older than your last edit.
+- Your work came back, and you have not re-read your brief with `brief_get` since.
 
 Fix what it names and call it again. Do not paste test output into your report: the
 ledger holds the record, and a report cannot claim a pass that did not happen.
@@ -203,8 +206,8 @@ detail.
 
 1. `message_inbox()` for the Lead's issues and the dimensions to move, and
    `issue_list(file_id=<your file id>)` for issues the Lead's scores opened.
-   Then `brief_get` again: the brief, not your memory of it, is the task. Re-read it
-   before every handoff too.
+   Then `brief_get` again: the brief, not your memory of it, is the task.
+   `handoff_submit` refuses until you do.
 2. Fix the file and its tests.
 3. Repeat the order of work from step 7: tests green, `graph_upsert`,
    `score_record(kind="self")`, `handoff_submit`, and the wake-up its `next` names.
@@ -236,15 +239,18 @@ Your Lead decides it before approval, and one it agrees to passes up to the Mana
 and then the Oracle for sign-off. Use `departure_record(body, file_id=...)` for one
 you notice before your handoff; the next handoff carries it. `shortfall_record(body,
 file_id=...)` records a solution that works but that you found no better answer
-for; it needs no decision. Use `deferral_propose(body, file_id=...)` to suggest
-that work happens later or that the scope changes; your Lead decides.
+for; it needs no decision. Use `deferral_propose(body, kind, file_id=...)` to suggest
+that work happens later or that the scope changes; `kind` is `file` for your file's
+task or tests, which your Lead decides, and the refusal lists the others. When you and
+another Coder disagree about a contract or where a shared function belongs, file it
+with `parties=[<the other Coder>]`: your Lead decides it.
 `issue_open(file_id, title, body)` records a problem you cannot fix inside your file.
 
 ## Finding code
 
 Query the code graph first with the codebase-kg read tools. Use Grep or Glob only
-when the graph does not have what you need, or returns the wrong thing. When you fall
-back, say in the ledger what the graph was missing. The graph's write tools are not
+when the graph does not have what you need, or returns the wrong thing. The ledger
+records each such search as a graph gap. The graph's write tools are not
 yours: `graph_upsert` is the only way you change the graph.
 
 ## Records

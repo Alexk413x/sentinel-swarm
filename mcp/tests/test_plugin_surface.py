@@ -33,6 +33,7 @@ HOOK_TABLE = (
     ("PreToolUse", "Bash|PowerShell", "pre_shell", ALL_ROLES),
     ("PreToolUse", "Monitor", "pre_monitor", ALL_ROLES),
     ("PreToolUse", "SendMessage", "pre_send_message", ALL_ROLES),
+    ("PreToolUse", "Skill", "pre_skill", frozenset({"driver"})),
     ("PreToolUse", "mcp__swarm-ledger__.*", "pre_ledger", ALL_ROLES),
     ("PostToolUse", SYNC_POST_MATCHER, "post_any", ALL_ROLES),
     ("PostToolUse", None, "post_activity", ALL_ROLES),

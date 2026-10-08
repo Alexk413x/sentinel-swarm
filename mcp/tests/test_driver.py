@@ -139,9 +139,11 @@ def _bootstrap(ledger: Ledger, claude: FakeClaude, oracle_session: str = "sess-o
     }
 
 
-def _fabricate_fixer(ledger: Ledger, oracle_id: str, role: str, name: str) -> None:
-    ledger.brief_create("oracle", oracle_id, name, "manager", "opus", "Own it.")
-    ledger.agent_register_start(f"{name}-agent", role, parent_agent_id=oracle_id)
+def _fabricate_fixer(ledger: Ledger, ctx: dict, role: str, name: str) -> None:
+    ledger.brief_create(
+        "oracle", ctx["oracle_id"], name, "manager", "opus", "Own it.", phase_id=ctx["phase_id"]
+    )
+    ledger.agent_register_start(f"{name}-agent", role, parent_agent_id=ctx["oracle_id"])
     ledger.brief_ack(name, f"{name}-agent")
 
 
@@ -381,16 +383,16 @@ def test_drive_request_refuses_a_second_open_exploration(
 
 def test_drive_request_refuses_while_a_fix_is_running(ledger: Ledger, claude: FakeClaude) -> None:
     ctx = _bootstrap(ledger, claude)
-    _fabricate_fixer(ledger, ctx["oracle_id"], "manager", "manager-1")
+    _fabricate_fixer(ledger, ctx, "manager", "mgr-p1-phase-1")
     with pytest.raises(LedgerError, match="a fix is still running"):
         ledger.drive_request("oracle", ctx["oracle_id"], "next pass")
 
 
 def test_drive_request_is_oracle_only(ledger: Ledger, claude: FakeClaude) -> None:
     ctx = _bootstrap(ledger, claude)
-    _fabricate_fixer(ledger, ctx["oracle_id"], "manager", "manager-1")
+    _fabricate_fixer(ledger, ctx, "manager", "mgr-p1-phase-1")
     with pytest.raises(LedgerError):
-        ledger.drive_request("manager-1", "manager-1-agent", "not yours to request")
+        ledger.drive_request("mgr-p1-phase-1", "mgr-p1-phase-1-agent", "not yours to request")
 
 
 # -- drive_issue, drive_checkin, drive_done ------------------------------------------------------

@@ -84,7 +84,12 @@ find what exists while many agents change the code at once. The graph file,
 - Every role searches the graph first, at its own level **(needs implementation: the
   role templates do not say which level each role searches at)**, and uses Grep or
   Glob only when the graph lacks the answer. codebase-kg's own search gate hook
-  enforces this order. An agent that falls back records what the graph was missing.
+  enforces this order.
+- The ledger records each Grep and Glob a role runs, with its pattern and the paths it
+  found, as a graph gap: the `post_activity` hook writes a `graph_gaps` row. The report
+  lists them. Why the graph fell short is not recorded in words; the pattern and the
+  paths found are the structural record. A search scoped to a file the graph anchors is
+  recorded too, and the report marks it.
 - Only the Coder writes to the graph, and only through `graph_upsert(nodes)`. It takes
   codebase-kg's `kg_upsert_node` node shape (`id`, `kind`, `section`, `description`,
   `anchors`, `edges`). The ledger refuses an anchor outside the Coder's file and test

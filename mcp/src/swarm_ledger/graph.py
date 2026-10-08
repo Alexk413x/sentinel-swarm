@@ -161,6 +161,25 @@ def code_symbols_for(repo_root: Path, rel_path: str) -> list[str]:
         conn.close()
 
 
+def anchored_paths(repo_root: Path, rel_paths: list[str]) -> set[str]:
+    graph_path = repo_root / "knowledge" / "code_graph.db"
+    if not rel_paths or not graph_path.is_file():
+        return set()
+    conn = sqlite3.connect(f"file:{graph_path.as_posix()}?mode=ro", uri=True)
+    try:
+        placeholders = ",".join("?" for _ in rel_paths)
+        return {
+            row[0]
+            for row in conn.execute(
+                f"SELECT DISTINCT path FROM anchor WHERE path IN ({placeholders})", rel_paths
+            )
+        }
+    except sqlite3.Error:
+        return set()
+    finally:
+        conn.close()
+
+
 def graph_current_for(repo_root: Path, rel_path: str) -> tuple[bool, list[str]]:
     graph_path = repo_root / "knowledge" / "code_graph.db"
     if not graph_path.is_file():

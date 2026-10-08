@@ -148,25 +148,34 @@ def test_score_record_arguments_pass_the_schema_to_the_ledger(host: Path):
     assert message == "the oracle role may not call score_record"
 
 
+async def _brief_manager(client: Client) -> None:
+    await client.call_tool("run_start", {"prd": "Build X", "session_id": "sess-1"})
+    oracle = {"caller": "oracle", "agent_id": "sess-1"}
+    phase = (await client.call_tool("phase_add", {**oracle, "name": "phase-1"})).data
+    await client.call_tool(
+        "phase_update", {**oracle, "phase_id": phase["phase_id"], "state": "unlocked"}
+    )
+    await client.call_tool(
+        "brief_create",
+        {
+            **oracle,
+            "child_name": "mgr-p1-phase-1",
+            "child_role": "manager",
+            "model": "opus",
+            "body": "Own phase-1.",
+            "phase_id": phase["phase_id"],
+        },
+    )
+
+
 async def _manager_calls(tools: list[str]) -> list[str]:
     results: list[str] = []
     async with Client(mcp) as client:
-        await client.call_tool("run_start", {"prd": "Build X", "session_id": "sess-1"})
-        await client.call_tool(
-            "brief_create",
-            {
-                "caller": "oracle",
-                "agent_id": "sess-1",
-                "child_name": "manager-1",
-                "child_role": "manager",
-                "model": "opus",
-                "body": "Own phase-1.",
-            },
-        )
-        await client.call_tool("brief_ack", {"caller": "manager-1", "agent_id": "mgr-1"})
+        await _brief_manager(client)
+        await client.call_tool("brief_ack", {"caller": "mgr-p1-phase-1", "agent_id": "mgr-1"})
         for tool in tools:
             try:
-                await client.call_tool(tool, {"caller": "manager-1", "agent_id": "mgr-1"})
+                await client.call_tool(tool, {"caller": "mgr-p1-phase-1", "agent_id": "mgr-1"})
                 results.append("allowed")
             except ToolError as exc:
                 results.append(str(exc))
@@ -252,32 +261,21 @@ def test_brief_create_refuses_an_unapproved_model(host: Path):
 
 async def _brief_get_and_ack_flow() -> dict[str, Any]:
     async with Client(mcp) as client:
-        await client.call_tool("run_start", {"prd": "Build X", "session_id": "sess-1"})
-        await client.call_tool(
-            "brief_create",
-            {
-                "caller": "oracle",
-                "agent_id": "sess-1",
-                "child_name": "manager-1",
-                "child_role": "manager",
-                "model": "opus",
-                "body": "Own phase-1.",
-            },
-        )
+        await _brief_manager(client)
         brief = (
             await client.call_tool(
-                "brief_get", {"caller_name": "manager-1", "child_name": "manager-1"}
+                "brief_get", {"caller_name": "mgr-p1-phase-1", "child_name": "mgr-p1-phase-1"}
             )
         ).data
         acked = (
-            await client.call_tool("brief_ack", {"caller": "manager-1", "agent_id": "mgr-1"})
+            await client.call_tool("brief_ack", {"caller": "mgr-p1-phase-1", "agent_id": "mgr-1"})
         ).data
         return {"brief": brief, "acked": acked}
 
 
 def test_brief_get_and_brief_ack_flow(host: Path):
     result = asyncio.run(_brief_get_and_ack_flow())
-    assert result["brief"]["child_name"] == "manager-1"
+    assert result["brief"]["child_name"] == "mgr-p1-phase-1"
     assert result["brief"]["model"] == "opus"
     assert result["acked"]["agent_id"] == "mgr-1"
     assert result["acked"]["role"] == "manager"

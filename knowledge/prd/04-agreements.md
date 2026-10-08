@@ -72,26 +72,48 @@ outside the run.
 ## Deferrals and scope changes
 
 - Any agent can suggest that work happens later, or that the scope changes, with
-  `deferral_propose(body, file_id)`. `accept_incomplete` opens one too.
+  `deferral_propose(body, kind, file_id, parties)`. `kind` is required and names what
+  changes, from the table below. `accept_incomplete` opens one of kind `file`.
 - A suggestion takes effect only when the responsible level agrees.
-  `agreement_decide(deferral_id, "agreed" | "denied", reason)` needs a caller whose role
-  ranks at or above the proposer's parent role.
+  `agreement_decide(deferral_id, "agreed" | "denied", reason, directive_id)` needs a
+  caller whose role ranks at or above both the proposer's parent role and the kind's
+  level.
 - The deferral must also sit in the caller's scope: a Lead decides only in its own
   module, a Manager only in its own phase, and the Oracle anywhere in its run. The
   deferral's file sets its module and phase. A deferral with no file takes the
   proposer's.
+- A `prd` deferral also needs a `user_chat` directive of the run created after the
+  deferral, named in `directive_id`. The deferral records it.
+- Whether the proposer chose the right kind is not checked. A decider who sees the kind
+  is too low denies it with that reason, and the proposer files it again.
 - An open deferral on a file blocks `phase_update(approved)` for that file's phase. Any
   open deferral blocks `run_finish`.
 
 The responsible level:
 
-| What changes | Who agrees |
-|---|---|
-| A file's task or its tests | The Lead |
-| A module's scope, or a contract between files | The Lead, and the Manager when another module is affected |
-| A phase's scope, or a contract between modules | The Manager |
-| The phase plan, or work moved to a later phase | The Oracle |
-| What the PRD asks for | The user, through the Oracle |
+| What changes | `kind` | Who agrees |
+|---|---|---|
+| A file's task or its tests | `file` | The Lead |
+| A module's scope, or a contract between files | `module` | The Lead |
+| The same, when another module is affected | `cross_module` | The Manager |
+| A phase's scope, or a contract between modules | `phase` | The Manager |
+| The phase plan, or work moved to a later phase | `plan` | The Oracle |
+| What the PRD asks for | `prd` | The user, through the Oracle |
+
+## Disputes
+
+- A dispute is a deferral with `parties`: the agent names on the other side. The
+  ledger finds the closest agent that is an ancestor of the proposer and of every
+  party, through `parent_agent_id`, records it as the arbiter, and owes it a wake-up;
+  the result names the arbiter and returns the call as `next`. Two Coders of one module
+  reach their Lead, two Leads of one phase reach their Manager, and two Managers, or
+  Leads of two phases, reach the Oracle.
+- `agreement_decide` on a dispute accepts only the arbiter, or the Oracle that resumed
+  the run under the arbiter's name. The kind and scope checks above do not apply; a
+  `prd` dispute still needs the user's directive. An open dispute blocks like any open
+  deferral.
+- Whether the arbiter decides well is not checked. The ledger fixes who decides and
+  that the decision has a recorded reason. The report lists every dispute.
 
 ## Overrides
 
@@ -113,7 +135,7 @@ The responsible level:
   `pre_write`, the identity stamp in `pre_ledger`, the `Agent` denial in `pre_agent`
   (every role but the Driver, and the Driver outside cartographer's `map-driver` and
   `map-reviewer`), the `Monitor` denial in `pre_monitor`, and the `SendMessage` denial
-  in `pre_send_message` are unconditional; no rule-level exception fits them, so they
+  in `pre_send_message` and `pre_skill` are unconditional; no rule-level exception fits them, so they
   never check for one.
 
 ## Directives

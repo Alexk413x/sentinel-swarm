@@ -67,13 +67,19 @@ the project's code in the host repo itself. Tracking is `local` only.
   busy timeout. Every write runs inside `BEGIN IMMEDIATE`.
 - `migrate` applies `schema.sql` at schema version 1 and adds later columns and tables
   idempotently.
-- Tables, grouped: the plan (`runs`, `phases`, `phase_deps`, `modules`, `files`,
-  `guidelines`); agents (`agents`, `agent_events`, `briefs`, `wakeups`); review
-  (`handoffs`, `reviews`, `scores`, `test_runs`, `versions`, `attempts`, `issues`,
-  `ideas`); agreements (`change_requests`, `departures`, `departure_decisions`,
-  `deferrals`, `overrides`); communication (`messages`, `directives`,
-  `watchdog_findings`, `notifications`); the Driver (`drive_requests`,
-  `drive_findings`, `drive_stops`). Read `schema.sql` for the columns.
+- Tables, grouped: the plan (`runs`, `phases`, `phase_deps`, `modules`, `module_deps`,
+  `files`, `file_deps`, `guidelines`); agents (`agents`, `agent_events`, `briefs`,
+  `wakeups`); review (`handoffs`, `reviews`, `scores`, `test_runs`, `versions`,
+  `attempts`, `issues`, `ideas`); agreements (`change_requests`, `departures`,
+  `departure_decisions`, `deferrals`, `overrides`); communication (`messages`,
+  `directives`, `watchdog_findings`, `notifications`); the Driver (`drive_requests`,
+  `drive_findings`, `drive_stops`); the code graph (`graph_gaps`). Read `schema.sql`
+  for the columns.
+- `module_deps` and `file_deps` hold the dependencies a dependent's brief waits on, and
+  `graph_gaps` the searches the code graph did not answer. Columns that hold a gate's
+  state: `briefs.contract` and `briefs.last_read_by_child_at`; `deferrals.kind`,
+  `parties_json`, `arbiter_agent_id`, `open_issues_json`, `issue_ids_json`, and
+  `directive_id`; `drive_requests.map_test_at`.
 - Ledger enum values, such as states, outcomes, and decisions, use snake_case.
 - `agent_events` is append-only, and nothing deletes rows when a run finishes.
 - Each run records the plugin version and a settings snapshot.
@@ -103,7 +109,14 @@ partial success.
   not declare. The server's `StampedAgentId` middleware pops `agent_id` from each call's
   arguments before validation and holds it in a context variable for that one request.
   A tool reads it from there, never from its arguments.
-- `caller`, `targeted`, and `finding_ids` carry parameter descriptions in the schema.
+- `caller`, `targeted`, and `finding_ids` carry parameter descriptions in the schema, and
+  so do `contract`, `depends_on`, `parties`, and `directive_id`.
+- Signatures that carry a gate: `module_add(phase_id, name, depends_on)`,
+  `claim_file(path, test_path, for_name, depends_on)`, `brief_create(..., contract)`,
+  `deferral_propose(body, kind, file_id, parties)`, and
+  `agreement_decide(deferral_id, decision, reason, directive_id)`. `brief_get` returns
+  `depends_on_contracts`, and `deferral_propose` with `parties` returns `arbiter` and
+  `next`.
 - `score_record`'s schema lists every rubric key, built from `rubric.DIMENSIONS`:
   `ratings` pairs each dimension with its own criteria, `applicable` requires every
   dimension key, and `targeted` lists the dimension keys. The description no longer

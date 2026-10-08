@@ -11,7 +11,7 @@ from pathlib import Path
 from .. import pricing, sessions
 from ..agentfiles import plugin_installed
 from ..db import ensure_git_exclude, write_tx
-from ..identity import ROLES, LedgerError
+from ..identity import ROLES, LedgerError, caller_of
 from ..ledger import Ledger
 from ..watchdog import MONITOR_CALL, REGISTER_GRACE, WATCH_COMMAND, parse_stamp, utcnow
 
@@ -32,6 +32,9 @@ _DRIVER_SUBAGENTS = frozenset(
     {"map-driver", "map-reviewer", "cartographer:map-driver", "cartographer:map-reviewer"}
 )
 _SHELL_OPERATORS = re.compile(r"[;&|<>`\n]|\$\(")
+_SEARCH_TOOLS = frozenset({"Grep", "Glob"})
+_GAP_PATHS = 20
+_CONTENT_LINE = re.compile(r"^((?:[A-Za-z]:)?[^:]+):\d+[:-]")
 _LIVE_RUN = "state IN ('active', 'paused')"
 _PAUSE_HINT = "If the run is blocked on something only the user can fix, call run_pause(reason)."
 _WATCH_STALE = timedelta(seconds=60)
@@ -323,11 +326,52 @@ def handle_pre_send_message(ledger: Ledger, data: dict) -> dict | None:
             (caller["run_id"],),
         )
     }
-    if to in names:
+    if to not in names:
+        return _deny(
+            "SendMessage may target only a session of this run; valid session names: "
+            f"{sorted(names)}"
+        )
+    allowed = {
+        row["session_name"]
+        for row in ledger.message_peers(ledger.conn, caller_of(caller))
+        if row["session_name"]
+    }
+    allowed |= {
+        row["to_session_name"]
+        for row in ledger.conn.execute(
+            "SELECT to_session_name FROM wakeups WHERE from_agent_id = ? AND sent_at IS NULL",
+            (caller["agent_id"],),
+        )
+    }
+    if caller["role"] == "oracle":
+        # The Oracle's Stop hook names any waiting agent of a stalled run to wake.
+        allowed |= {
+            row["session_name"]
+            for row in ledger.conn.execute(
+                "SELECT session_name FROM agents WHERE run_id = ? AND ended_at IS NULL "
+                "AND state != 'working' AND session_name IS NOT NULL",
+                (caller["run_id"],),
+            )
+        }
+    if to in allowed:
         return None
     return _deny(
-        f"SendMessage may target only a session of this run; valid session names: {sorted(names)}"
+        f"SendMessage from {caller['name']} goes to its parent, its children, its siblings, or "
+        f"a session it owes a wake-up: {sorted(allowed)}. Reach anyone else through that chain"
     )
+
+
+# -- 4c. PreToolUse: Skill -----------------------------------------------------------
+
+
+def handle_pre_skill(ledger: Ledger, data: dict) -> dict | None:
+    caller = _swarm_caller(ledger, _caller_id(data))
+    if caller is None or caller["role"] != "driver":
+        return None
+    tool_input = data.get("tool_input") or {}
+    skill = str(tool_input.get("skill") or tool_input.get("command") or "")
+    reason = ledger.drive_skill(caller["agent_id"], skill)
+    return _deny(reason) if reason is not None else None
 
 
 # -- 5. PreToolUse: the swarm-ledger MCP tools -------------------------------------
@@ -344,6 +388,8 @@ def handle_pre_ledger(ledger: Ledger, data: dict) -> dict:
             return _deny("override_grant is for the Oracle only")
 
     tool_input = dict(data.get("tool_input") or {})
+    if method == "brief_get" and caller_id:
+        ledger.brief_read(caller_id, str(tool_input.get("child_name") or ""))
     if method in _UNSTAMPED_TOOLS:
         tool_input.pop("agent_id", None)
     else:
@@ -428,7 +474,47 @@ def handle_post_activity(ledger: Ledger, data: dict) -> None:
     if caller is None:
         return None
     _record_activity(ledger, caller, data, tool_name, parse_stamp(data.get(FIRED_AT_KEY)))
+    if tool_name in _SEARCH_TOOLS:
+        tool_input = data.get("tool_input") or {}
+        raw_path = str(tool_input.get("path") or "")
+        ledger.graph_gap(
+            caller["agent_id"],
+            tool_name,
+            str(tool_input.get("pattern") or "") or None,
+            (_repo_relative(ledger, raw_path) or raw_path) if raw_path else None,
+            _found_paths(ledger, data.get("tool_response")),
+        )
     return None
+
+
+def _found_paths(ledger: Ledger, response: object) -> list[str]:
+    if isinstance(response, dict):
+        filenames = response.get("filenames")
+        if isinstance(filenames, list):
+            raw = [str(name) for name in filenames]
+        else:
+            content = response.get("content")
+            raw = _content_paths(content) if isinstance(content, str) else []
+    elif isinstance(response, str):
+        raw = _content_paths(response)
+    else:
+        raw = []
+    found: list[str] = []
+    for name in raw:
+        path = _repo_relative(ledger, name) or name
+        if path not in found:
+            found.append(path)
+        if len(found) == _GAP_PATHS:
+            break
+    return found
+
+
+def _content_paths(text: str) -> list[str]:
+    paths = []
+    for line in text.splitlines():
+        match = _CONTENT_LINE.match(line)
+        paths.append(match.group(1) if match else line.strip())
+    return [p for p in paths if p]
 
 
 # -- 7. PostToolUse: Bash, PowerShell ----------------------------------------------

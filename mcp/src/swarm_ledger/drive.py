@@ -459,6 +459,29 @@ class DriveMixin:
             self._release_agent(conn, agent_id, "exploration closed; final wake-up sent")
         return True
 
+    def drive_skill(self, agent_id: str, skill: str) -> str | None:
+        name = skill.strip().removeprefix("/").removeprefix("cartographer:")
+        if name not in ("map-test", "map-explore"):
+            return None
+        with write_tx(self.conn) as conn:
+            request = conn.execute(
+                "SELECT * FROM drive_requests WHERE agent_id = ? AND state = 'open'", (agent_id,)
+            ).fetchone()
+            if request is None:
+                return None
+            if name == "map-test":
+                conn.execute(
+                    f"UPDATE drive_requests SET map_test_at = {_NOW} WHERE request_id = ?",
+                    (request["request_id"],),
+                )
+                return None
+        if request["map_test_at"] is None:
+            return (
+                "invoke the map-test skill first: it replays the recorded routes against this "
+                "build and rechecks earlier findings. map-explore comes after it"
+            )
+        return None
+
     def _own_open_request(self, c: Caller, request_id: int) -> dict:
         row = self.conn.execute(
             "SELECT * FROM drive_requests WHERE request_id = ?", (request_id,)

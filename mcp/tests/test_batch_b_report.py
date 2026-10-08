@@ -49,19 +49,31 @@ def _bootstrap(ledger: Ledger) -> dict:
     ledger.phase_update("oracle", oracle_id, phase_id, "unlocked")
 
     ledger.brief_create(
-        "oracle", oracle_id, "manager-1", "manager", "opus", "Own phase-1.", phase_id=phase_id
+        "oracle",
+        oracle_id,
+        "mgr-p1-phase-1",
+        "manager",
+        "opus",
+        "Own p1-phase-1.",
+        phase_id=phase_id,
     )
     ledger.agent_register_start("mgr-agent", "manager", parent_agent_id=oracle_id)
-    manager = ledger.brief_ack("manager-1", "mgr-agent")
+    manager = ledger.brief_ack("mgr-p1-phase-1", "mgr-agent")
 
-    module = ledger.module_add("manager-1", "mgr-agent", phase_id, "module-1")
+    module = ledger.module_add("mgr-p1-phase-1", "mgr-agent", phase_id, "module-1")
     module_id = module["module_id"]
 
     ledger.brief_create(
-        "manager-1", "mgr-agent", "lead-1", "lead", "sonnet", "Own module-1.", module_id=module_id
+        "mgr-p1-phase-1",
+        "mgr-agent",
+        "lead-p1-module-1",
+        "lead",
+        "sonnet",
+        "Own module-1.",
+        module_id=module_id,
     )
     ledger.agent_register_start("lead-agent", "lead", parent_agent_id="mgr-agent")
-    lead = ledger.brief_ack("lead-1", "lead-agent")
+    lead = ledger.brief_ack("lead-p1-module-1", "lead-agent")
 
     return {
         "run_id": started["run"]["run_id"],
@@ -250,26 +262,47 @@ def test_write_report_keeps_a_report_per_run_and_report_md_as_the_latest(ledger:
 def test_report_lists_decided_deferrals_with_proposer_decider_and_reason(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     claimed = ledger.claim_file(
-        "lead-1", ctx["lead"]["agent_id"], "src/a.py", "tests/test_a.py", "coder-1"
+        "lead-p1-module-1",
+        ctx["lead"]["agent_id"],
+        "src/a.py",
+        "tests/test_a.py",
+        "coder-p1-module-1-a",
     )
     _insert_agent(
-        ledger, "coder-agent-1", "coder-1", "coder", run_id=ctx["run_id"], phase_id=ctx["phase_id"]
+        ledger,
+        "coder-agent-1",
+        "coder-p1-module-1-a",
+        "coder",
+        run_id=ctx["run_id"],
+        phase_id=ctx["phase_id"],
     )
     decided = ledger.deferral_propose(
-        "coder-1", "coder-agent-1", "Skip caching for now.", file_id=claimed["file_id"]
+        "coder-p1-module-1-a",
+        "coder-agent-1",
+        "Skip caching for now.",
+        file_id=claimed["file_id"],
+        kind="file",
     )
     ledger.agreement_decide(
-        "lead-1", ctx["lead"]["agent_id"], decided["deferral_id"], "agreed", "Fine for v1."
+        "lead-p1-module-1",
+        ctx["lead"]["agent_id"],
+        decided["deferral_id"],
+        "agreed",
+        "Fine for v1.",
     )
     still_open = ledger.deferral_propose(
-        "coder-1", "coder-agent-1", "Rename the module later.", file_id=claimed["file_id"]
+        "coder-p1-module-1-a",
+        "coder-agent-1",
+        "Rename the module later.",
+        file_id=claimed["file_id"],
+        kind="file",
     )
 
     report = ledger.write_report(ctx["run_id"])["text"]
     assert "## Decided deferrals" in report
     assert (
         f"- Deferral #{decided['deferral_id']} on src/a.py: Skip caching for now. -- "
-        "proposed by coder-1, decided by lead-1 (agreed): Fine for v1."
+        "proposed by coder-p1-module-1-a, decided by lead-p1-module-1 (agreed): Fine for v1."
     ) in report
 
     # The still-open deferral stays out of the decided section, and shows in Open items.
@@ -330,10 +363,18 @@ def test_report_final_test_run_section_notes_when_none_recorded(ledger: Ledger) 
 def test_report_measures_lists_returns_per_file(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     file_a = ledger.claim_file(
-        "lead-1", ctx["lead"]["agent_id"], "src/a.py", "tests/test_a.py", "coder-a"
+        "lead-p1-module-1",
+        ctx["lead"]["agent_id"],
+        "src/a.py",
+        "tests/test_a.py",
+        "coder-p1-module-1-a",
     )
     file_b = ledger.claim_file(
-        "lead-1", ctx["lead"]["agent_id"], "src/b.py", "tests/test_b.py", "coder-b"
+        "lead-p1-module-1",
+        ctx["lead"]["agent_id"],
+        "src/b.py",
+        "tests/test_b.py",
+        "coder-p1-module-1-b",
     )
     with write_tx(ledger.conn) as conn:
         conn.execute(
@@ -359,7 +400,7 @@ def test_report_measures_lists_role_time_totals_and_cost_per_phase(ledger: Ledge
     _insert_agent(
         ledger,
         "coder-agent-1",
-        "coder-1",
+        "coder-p1-module-1-1",
         "coder",
         run_id=ctx["run_id"],
         phase_id=ctx["phase_id"],
@@ -371,12 +412,12 @@ def test_report_measures_lists_role_time_totals_and_cost_per_phase(ledger: Ledge
 
     report = ledger.write_report(ctx["run_id"])["text"]
     assert "### Time per stage" in report
-    assert "- Phase phase-1 working time:" in report
+    assert "- Phase p1-phase-1 working time:" in report
     assert "- oracle agent time total:" in report
     assert "- manager agent time total:" in report
     assert "- lead agent time total:" in report
     assert "- coder agent time total: 10m 0s" in report
 
     assert "### Cost per phase" in report
-    assert "- Phase phase-1: $1.50" in report
+    assert "- Phase p1-phase-1: $1.50" in report
     assert "- Oracle (run total): $" in report
