@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 from pathlib import Path
 
 import pytest
 
-from swarm_ledger import notify, sessions
-from swarm_ledger.db import connect, write_tx
+from swarm_ledger import auth, notify, sessions
+from swarm_ledger.db import write_tx
 from swarm_ledger.drive import compute_loop_status, open_findings
 from swarm_ledger.identity import LedgerError
 from swarm_ledger.ledger import Ledger
@@ -84,6 +83,7 @@ def host(tmp_path: Path, repo_root: Path) -> Path:
     (records / "server.json").write_text(
         json.dumps({"url": "http://127.0.0.1:4321/mcp", "port": 4321, "pid": 1}), "utf-8"
     )
+    auth.ensure_token(root)
     registry = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "plugins" / "installed_plugins.json"
     registry.parent.mkdir(parents=True, exist_ok=True)
     plugins = ("cartographer@cartographer", "web-driver@accessibility-tools")
@@ -147,10 +147,53 @@ def _explore(ledger: Ledger, ctx: dict, findings: list[dict], done: bool = True)
     return result
 
 
-def _brief_fix(ledger: Ledger, ctx: dict, name: str, finding_ids: list[int]) -> dict:
+def _brief_manager(ledger: Ledger, ctx: dict, slug: str, body: str = "Fix it.", **kwargs) -> dict:
+    phase = ledger.phase_add("oracle", ctx["oracle_id"], slug)
+    ledger.phase_update("oracle", ctx["oracle_id"], phase["phase_id"], "unlocked")
     return ledger.brief_create(
-        "oracle", ctx["oracle_id"], name, "manager", "opus", "Fix it.", finding_ids=finding_ids
+        "oracle",
+        ctx["oracle_id"],
+        f"mgr-{phase['name']}",
+        "manager",
+        "opus",
+        body,
+        phase_id=phase["phase_id"],
+        **kwargs,
     )
+
+
+def _brief_fix(ledger: Ledger, ctx: dict, slug: str, finding_ids: list[int]) -> dict:
+    return _brief_manager(ledger, ctx, slug, finding_ids=finding_ids)
+
+
+def _start_manager(ledger: Ledger, ctx: dict) -> str:
+    name = "mgr-p1-phase-1"
+    ledger.brief_create(
+        "oracle", ctx["oracle_id"], name, "manager", "opus", "Own it.", phase_id=ctx["phase_id"]
+    )
+    ledger.agent_register_start("mgr-agent", "manager", parent_agent_id=ctx["oracle_id"])
+    ledger.brief_ack(name, "mgr-agent")
+    return name
+
+
+def _start_lead(ledger: Ledger, ctx: dict) -> int:
+    manager = _start_manager(ledger, ctx)
+    module = ledger.module_add(manager, "mgr-agent", ctx["phase_id"], "mod")
+    ledger.brief_create(
+        manager,
+        "mgr-agent",
+        "lead-p1-mod",
+        "lead",
+        "sonnet",
+        "Own it.",
+        module_id=module["module_id"],
+    )
+    ledger.agent_register_start("lead-agent", "lead", parent_agent_id="mgr-agent")
+    ledger.brief_ack("lead-p1-mod", "lead-agent")
+    claimed = ledger.claim_file(
+        "lead-p1-mod", "lead-agent", "pkg/a.py", "tests/test_a.py", "coder-p1-mod-a"
+    )
+    return claimed["file_id"]
 
 
 def _notifications(ledger: Ledger) -> list[dict]:
@@ -285,11 +328,9 @@ def test_drive_unavailable_needs_a_reason_and_the_oracle_or_the_driver(
     ctx = _bootstrap(ledger, claude)
     with pytest.raises(LedgerError, match="needs a reason"):
         ledger.drive_unavailable("oracle", ctx["oracle_id"], "  ")
-    ledger.brief_create("oracle", ctx["oracle_id"], "mgr-1", "manager", "opus", "Own it.")
-    ledger.agent_register_start("mgr-agent", "manager", parent_agent_id=ctx["oracle_id"])
-    ledger.brief_ack("mgr-1", "mgr-agent")
+    manager = _start_manager(ledger, ctx)
     with pytest.raises(LedgerError):
-        ledger.drive_unavailable("mgr-1", "mgr-agent", "not mine to say")
+        ledger.drive_unavailable(manager, "mgr-agent", "not mine to say")
 
 
 # -- 2. Every dimension scored every time -------------------------------------------------------
@@ -297,29 +338,18 @@ def test_drive_unavailable_needs_a_reason_and_the_oracle_or_the_driver(
 
 def test_score_record_refuses_a_partial_score_set(ledger: Ledger, claude: FakeClaude) -> None:
     ctx = _bootstrap(ledger, claude)
+    file_id = _start_lead(ledger, ctx)
     ledger.brief_create(
-        "oracle", ctx["oracle_id"], "mgr-1", "manager", "opus", "Own it.", phase_id=ctx["phase_id"]
-    )
-    ledger.agent_register_start("mgr-agent", "manager", parent_agent_id=ctx["oracle_id"])
-    ledger.brief_ack("mgr-1", "mgr-agent")
-    module = ledger.module_add("mgr-1", "mgr-agent", ctx["phase_id"], "mod")
-    ledger.brief_create(
-        "mgr-1", "mgr-agent", "lead-1", "lead", "sonnet", "Own it.", module_id=module["module_id"]
-    )
-    ledger.agent_register_start("lead-agent", "lead", parent_agent_id="mgr-agent")
-    ledger.brief_ack("lead-1", "lead-agent")
-    claimed = ledger.claim_file("lead-1", "lead-agent", "pkg/a.py", "tests/test_a.py", "coder-1")
-    ledger.brief_create(
-        "lead-1",
+        "lead-p1-mod",
         "lead-agent",
-        "coder-1",
+        "coder-p1-mod-a",
         "coder",
         "sonnet",
         "Write it.",
-        file_id=claimed["file_id"],
+        file_id=file_id,
     )
     ledger.agent_register_start("coder-agent", "coder", parent_agent_id="lead-agent")
-    ledger.brief_ack("coder-1", "coder-agent")
+    ledger.brief_ack("coder-p1-mod-a", "coder-agent")
 
     ratings = [
         {"dimension": "meets_the_brief", "criterion": key, "value": 10}
@@ -327,10 +357,10 @@ def test_score_record_refuses_a_partial_score_set(ledger: Ledger, claude: FakeCl
     ]
     with pytest.raises(LedgerError, match="every dimension is scored on every review"):
         ledger.score_record(
-            "coder-1", "coder-agent", claimed["file_id"], ratings, {"meets_the_brief": None}, "self"
+            "coder-p1-mod-a", "coder-agent", file_id, ratings, {"meets_the_brief": None}, "self"
         )
     with pytest.raises(LedgerError, match="every dimension is scored on every review"):
-        ledger.score_record("coder-1", "coder-agent", claimed["file_id"], [], {}, "self")
+        ledger.score_record("coder-p1-mod-a", "coder-agent", file_id, [], {}, "self")
 
 
 # -- 3. Releasing a stuck Driver abandons its exploration ---------------------------------------
@@ -401,18 +431,18 @@ def test_a_regression_pauses_fixes_in_its_area_until_the_directive_is_resolved(
     assert stop["area"] == "login"
 
     with pytest.raises(LedgerError, match="fixes in area login are paused"):
-        _brief_fix(ledger, ctx, "mgr-f1", [f1])
+        _brief_fix(ledger, ctx, "f1", [f1])
     with pytest.raises(LedgerError, match="fixes in area login are paused"):
-        _brief_fix(ledger, ctx, "mgr-f2", [f2])
-    assert _brief_fix(ledger, ctx, "mgr-g2", [g2])["finding_ids_json"] == json.dumps([g2])
+        _brief_fix(ledger, ctx, "f2", [f2])
+    assert _brief_fix(ledger, ctx, "g2", [g2])["finding_ids_json"] == json.dumps([g2])
 
     for directive in ledger.directive_inbox("oracle", ctx["oracle_id"]):
         with pytest.raises(LedgerError, match="paused"):
-            _brief_fix(ledger, ctx, "mgr-f2", [f2])
+            _brief_fix(ledger, ctx, "f2", [f2])
         ledger.directive_resolve(
             "oracle", ctx["oracle_id"], directive["directive_id"], "applied", "ok"
         )
-    assert _brief_fix(ledger, ctx, "mgr-f2", [f2])
+    assert _brief_fix(ledger, ctx, "f2", [f2])
 
 
 def test_a_pattern_stops_a_briefed_fix_at_spawn_and_through_inheritance(
@@ -423,18 +453,27 @@ def test_a_pattern_stops_a_briefed_fix_at_spawn_and_through_inheritance(
     _seed(ledger, ctx["run_id"], 2, [("G1", "settings")])
     explored = _explore(ledger, ctx, [{**_FINDING, "fingerprint": "F1"}], done=False)
     [f1] = explored["finding_ids"]
-    _brief_fix(ledger, ctx, "mgr-f1", [f1])
+    manager = _brief_fix(ledger, ctx, "f1", [f1])
     ledger.drive_done(
         explored["name"], explored["request"]["agent_id"], explored["request"]["request_id"]
     )
 
     with pytest.raises(LedgerError, match="paused"):
-        ledger.agent_spawn("oracle", ctx["oracle_id"], "mgr-f1")
+        ledger.agent_spawn("oracle", ctx["oracle_id"], manager["child_name"])
 
     ledger.agent_register_start("mgr-agent", "manager", parent_agent_id=ctx["oracle_id"])
-    ledger.brief_ack("mgr-f1", "mgr-agent")
+    ledger.brief_ack(manager["child_name"], "mgr-agent")
+    module = ledger.module_add(manager["child_name"], "mgr-agent", manager["phase_id"], "m1")
     with pytest.raises(LedgerError, match="paused"):
-        ledger.brief_create("mgr-f1", "mgr-agent", "lead-f1", "lead", "sonnet", "Fix it.")
+        ledger.brief_create(
+            manager["child_name"],
+            "mgr-agent",
+            "lead-p2-m1",
+            "lead",
+            "sonnet",
+            "Fix it.",
+            module_id=module["module_id"],
+        )
 
 
 # -- 5. A stopped bug gets no more fixes, and its evidence reaches the user ---------------------
@@ -463,8 +502,8 @@ def test_a_stopped_finding_gets_no_more_fixes_even_after_its_directive_resolves(
     assert stop["fingerprint"] == "F1"
     ledger.directive_resolve("oracle", ctx["oracle_id"], stop["directive_id"], "applied", "told")
     with pytest.raises(LedgerError, match="gets no more fixes"):
-        _brief_fix(ledger, ctx, "mgr-f1", [f1])
-    assert _brief_fix(ledger, ctx, "mgr-g4", [g4])
+        _brief_fix(ledger, ctx, "f1", [f1])
+    assert _brief_fix(ledger, ctx, "g4", [g4])
 
 
 def test_a_stop_carries_the_evidence_in_its_directive_and_notification(
@@ -495,13 +534,13 @@ def test_a_finding_that_reaches_a_stop_mid_exploration_gets_no_fix(
         _seed(ledger, ctx["run_id"], ordinal, [("F1", "login")])
     explored = _explore(ledger, ctx, [{**_FINDING, "fingerprint": "F1"}], done=False)
     with pytest.raises(LedgerError, match="reached a stop rule"):
-        _brief_fix(ledger, ctx, "mgr-f1", explored["finding_ids"])
+        _brief_fix(ledger, ctx, "f1", explored["finding_ids"])
 
 
 def test_brief_create_refuses_a_finding_of_another_run(ledger: Ledger, claude: FakeClaude) -> None:
     ctx = _bootstrap(ledger, claude)
     with pytest.raises(LedgerError, match="not a Driver finding of this run"):
-        _brief_fix(ledger, ctx, "mgr-x", [999])
+        _brief_fix(ledger, ctx, "x", [999])
 
 
 # -- 5b. Fixes always name their finding ids -----------------------------------------------------
@@ -511,17 +550,17 @@ def test_the_oracle_must_name_finding_ids_while_a_finding_is_open(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
     ctx = _bootstrap(ledger, claude)
-    assert ledger.brief_create("oracle", ctx["oracle_id"], "mgr-0", "manager", "opus", "Build.")
+    assert _brief_manager(ledger, ctx, "start", "Build.")
     [f1] = _explore(ledger, ctx, [{**_FINDING, "fingerprint": "F1"}], done=False)["finding_ids"]
 
     with pytest.raises(
         LedgerError, match=f"1 Driver finding.* open: {f1} Login button fails contrast"
     ):
-        ledger.brief_create("oracle", ctx["oracle_id"], "mgr-1", "manager", "opus", "Build.")
-    assert _brief_fix(ledger, ctx, "mgr-1", [])["finding_ids_json"] is None
-    assert _brief_fix(ledger, ctx, "mgr-f1", [f1])["finding_ids_json"] == json.dumps([f1])
+        _brief_manager(ledger, ctx, "one", "Build.")
+    assert _brief_fix(ledger, ctx, "one", [])["finding_ids_json"] is None
+    assert _brief_fix(ledger, ctx, "f1", [f1])["finding_ids_json"] == json.dumps([f1])
     with pytest.raises(LedgerError, match="not a Driver finding of this run"):
-        _brief_fix(ledger, ctx, "mgr-x", [f1, 999])
+        _brief_fix(ledger, ctx, "x", [f1, 999])
 
 
 def test_a_finding_a_later_exploration_cleared_or_a_stop_closed_is_not_open(
@@ -533,7 +572,7 @@ def test_a_finding_a_later_exploration_cleared_or_a_stop_closed_is_not_open(
 
     _explore(ledger, ctx, [])
     assert open_findings(ledger.conn, ctx["run_id"]) == []
-    assert ledger.brief_create("oracle", ctx["oracle_id"], "mgr-1", "manager", "opus", "Build.")
+    assert _brief_manager(ledger, ctx, "one", "Build.")
 
 
 def test_every_role_sees_the_finding_ids_a_fix_names(ledger: Ledger, claude: FakeClaude) -> None:
@@ -547,12 +586,17 @@ def test_every_role_sees_the_finding_ids_a_fix_names(ledger: Ledger, claude: Fak
         ],
     )
     f1, f2 = explored["finding_ids"]
-    _brief_fix(ledger, ctx, "mgr-f1", [f1])
+    fix = _brief_fix(ledger, ctx, "f1", [f1])
+    manager = fix["child_name"]
     ledger.agent_register_start("mgr-agent", "manager", parent_agent_id=ctx["oracle_id"])
-    ledger.brief_ack("mgr-f1", "mgr-agent")
-    ledger.brief_create("mgr-f1", "mgr-agent", "lead-f1", "lead", "sonnet", "Fix it.")
+    ledger.brief_ack(manager, "mgr-agent")
+    module = ledger.module_add(manager, "mgr-agent", fix["phase_id"], "m1")
+    lead = "lead-p2-m1"
+    ledger.brief_create(
+        manager, "mgr-agent", lead, "lead", "sonnet", "Fix it.", module_id=module["module_id"]
+    )
 
-    brief = ledger.brief_get("lead-f1", "lead-f1")
+    brief = ledger.brief_get(lead, lead)
     assert brief["finding_ids_json"] == json.dumps([f1])
     assert [(f["finding_id"], f["title"]) for f in brief["findings"]] == [
         (f1, "Login button fails contrast")
@@ -563,16 +607,16 @@ def test_every_role_sees_the_finding_ids_a_fix_names(ledger: Ledger, claude: Fak
     assert [
         (fix["child_name"], [f["finding_id"] for f in fix["findings"]]) for fix in tree["fixes"]
     ] == [
-        ("mgr-f1", [f1]),
-        ("lead-f1", [f1]),
+        (manager, [f1]),
+        (lead, [f1]),
     ]
 
     report = ledger.write_report(ctx["run_id"])["text"]
     explorations = report.split("## Explorations", 1)[1].split("## Open items", 1)[0]
     assert f"finding {f2}: Cart total wrong (F2)" in explorations
     assert "### Fixes" in explorations
-    assert f"- mgr-f1 (manager): finding {f1} Login button fails contrast" in explorations
-    assert f"- lead-f1 (lead): finding {f1} Login button fails contrast" in explorations
+    assert f"- {manager} (manager): finding {f1} Login button fails contrast" in explorations
+    assert f"- {lead} (lead): finding {f1} Login button fails contrast" in explorations
 
 
 # -- 6. Three waves that fix nothing: the Oracle reports what is left ---------------------------
@@ -615,44 +659,12 @@ def test_a_stalled_loop_records_what_is_left_and_the_report_shows_it(
     assert notice["message"] in notifications
 
 
-# -- 7. Role prompts match "fixes start while the Driver explores" ------------------------------
-
-
-@pytest.mark.parametrize(
-    ("role", "rule"),
-    [
-        ("driver", "Fixes start while you explore"),
-        ("oracle", "Fixes start while the Driver explores"),
-    ],
-)
-def test_the_role_prompts_let_fixes_run_while_the_driver_explores(
-    repo_root: Path, role: str, rule: str
-) -> None:
-    text = (repo_root / "templates" / "agents" / f"{role}.md").read_text(encoding="utf-8")
-    flat = " ".join(text.split())
-    assert "while no Coder is editing" not in flat
-    assert "never during yours" not in flat
-    assert rule in flat
-
-
 # -- 8. An issue that ends its last round below the floor notifies the user ----------------------
 
 
 def _lead_setup(ledger: Ledger, claude: FakeClaude) -> dict:
     ctx = _bootstrap(ledger, claude)
-    ledger.brief_create(
-        "oracle", ctx["oracle_id"], "mgr-1", "manager", "opus", "Own it.", phase_id=ctx["phase_id"]
-    )
-    ledger.agent_register_start("mgr-agent", "manager", parent_agent_id=ctx["oracle_id"])
-    ledger.brief_ack("mgr-1", "mgr-agent")
-    module = ledger.module_add("mgr-1", "mgr-agent", ctx["phase_id"], "mod")
-    ledger.brief_create(
-        "mgr-1", "mgr-agent", "lead-1", "lead", "sonnet", "Own it.", module_id=module["module_id"]
-    )
-    ledger.agent_register_start("lead-agent", "lead", parent_agent_id="mgr-agent")
-    ledger.brief_ack("lead-1", "lead-agent")
-    claimed = ledger.claim_file("lead-1", "lead-agent", "pkg/a.py", "tests/test_a.py", "coder-1")
-    return {**ctx, "file_id": claimed["file_id"]}
+    return {**ctx, "file_id": _start_lead(ledger, ctx)}
 
 
 def _lead_review(ledger: Ledger, file_id: int, security: int) -> None:
@@ -701,7 +713,7 @@ def test_an_issue_ending_round_three_below_the_floor_notifies_an_error(
     _lead_review(ledger, ctx["file_id"], security=4)
     issue_id = _issue_at(ledger, ctx, round_=3, attempts=2)
 
-    result = ledger.attempt_record("lead-1", "lead-agent", ctx["file_id"])
+    result = ledger.attempt_record("lead-p1-mod", "lead-agent", ctx["file_id"])
 
     assert result["outcome"] == "plateau"
     [notice] = result["notifications"]
@@ -716,7 +728,7 @@ def test_an_issue_ending_round_three_below_the_floor_notifies_an_error(
 
     _issue_at(ledger, ctx, round_=3, attempts=5)
     ledger.conn.execute("UPDATE issues SET state = 'closed' WHERE issue_id != ?", (issue_id,))
-    again = ledger.attempt_record("lead-1", "lead-agent", ctx["file_id"])
+    again = ledger.attempt_record("lead-p1-mod", "lead-agent", ctx["file_id"])
     assert again["notifications"] == []
 
 
@@ -729,64 +741,7 @@ def test_no_floor_notification_before_the_last_round_or_above_the_floor(
     _lead_review(ledger, ctx["file_id"], security=security)
     _issue_at(ledger, ctx, round_=round_, attempts=2)
 
-    result = ledger.attempt_record("lead-1", "lead-agent", ctx["file_id"])
+    result = ledger.attempt_record("lead-p1-mod", "lead-agent", ctx["file_id"])
 
     assert result["notifications"] == []
     assert _notifications(ledger) == []
-
-
-# -- Schema migration ---------------------------------------------------------------------------
-
-
-def test_connect_adds_the_finding_ids_column_and_the_drive_stops_table(tmp_path: Path) -> None:
-    db_path = tmp_path / "ledger.db"
-    old = sqlite3.connect(str(db_path))
-    old.executescript(
-        "CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
-        "version INTEGER NOT NULL);"
-        "INSERT INTO schema_version (id, version) VALUES (1, 1);"
-        "CREATE TABLE runs (run_id INTEGER PRIMARY KEY, state TEXT NOT NULL);"
-        "CREATE TABLE briefs (brief_id INTEGER PRIMARY KEY, child_name TEXT NOT NULL);"
-        "INSERT INTO runs (run_id, state) VALUES (1, 'active');"
-    )
-    old.close()
-
-    conn = connect(db_path)
-    try:
-        runs = {r["name"] for r in conn.execute("PRAGMA table_info(runs)")}
-        assert "driver_unavailable_at" not in runs
-        briefs = {r["name"] for r in conn.execute("PRAGMA table_info(briefs)")}
-        assert "finding_ids_json" in briefs
-        stops = {r["name"] for r in conn.execute("PRAGMA table_info(drive_stops)")}
-        assert {"directive_id", "kind", "reason", "fingerprint", "area"} <= stops
-    finally:
-        conn.close()
-
-
-def test_connect_turns_a_driver_unavailable_run_into_a_declined_directive(
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / "ledger.db"
-    connect(db_path).close()
-    old = sqlite3.connect(str(db_path))
-    old.executescript(
-        "ALTER TABLE runs ADD COLUMN driver_unavailable_at TEXT;"
-        "ALTER TABLE runs ADD COLUMN driver_unavailable_reason TEXT;"
-        "INSERT INTO runs (run_id, state, driver_unavailable_at, driver_unavailable_reason) "
-        "VALUES (1, 'active', '2026-09-27T10:00:00.000Z', 'cartographer failed');"
-        "INSERT INTO runs (run_id, state) VALUES (2, 'finished');"
-    )
-    old.close()
-
-    for _ in range(2):
-        conn = connect(db_path)
-        try:
-            [row] = conn.execute("SELECT * FROM directives").fetchall()
-            assert row["run_id"] == 1
-            assert row["source"] == "driver"
-            assert row["body"] == "[driver-unavailable] cartographer failed"
-            assert (row["state"], row["outcome"]) == ("resolved", "declined")
-            runs = {r["name"] for r in conn.execute("PRAGMA table_info(runs)")}
-            assert "driver_unavailable_at" not in runs
-        finally:
-            conn.close()

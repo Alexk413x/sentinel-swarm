@@ -146,19 +146,25 @@ def _bootstrap(ledger: Ledger) -> dict:
     ledger.phase_update("oracle", oracle_id, phase_id, "unlocked")
 
     ledger.brief_create(
-        "oracle", oracle_id, "manager-1", "manager", "opus", "Own phase-1.", phase_id=phase_id
+        "oracle", oracle_id, "mgr-p1-phase-1", "manager", "opus", "Own phase-1.", phase_id=phase_id
     )
     ledger.agent_register_start("mgr-agent", "manager", parent_agent_id=oracle_id)
-    manager = ledger.brief_ack("manager-1", "mgr-agent")
+    manager = ledger.brief_ack("mgr-p1-phase-1", "mgr-agent")
 
-    module = ledger.module_add("manager-1", "mgr-agent", phase_id, "module-1")
+    module = ledger.module_add("mgr-p1-phase-1", "mgr-agent", phase_id, "module-1")
     module_id = module["module_id"]
 
     ledger.brief_create(
-        "manager-1", "mgr-agent", "lead-1", "lead", "sonnet", "Own module-1.", module_id=module_id
+        "mgr-p1-phase-1",
+        "mgr-agent",
+        "lead-p1-module-1",
+        "lead",
+        "sonnet",
+        "Own module-1.",
+        module_id=module_id,
     )
     ledger.agent_register_start("lead-agent", "lead", parent_agent_id="mgr-agent")
-    lead = ledger.brief_ack("lead-1", "lead-agent")
+    lead = ledger.brief_ack("lead-p1-module-1", "lead-agent")
 
     return {
         "run_id": started["run"]["run_id"],
@@ -180,17 +186,17 @@ def _insert_passing_test_run(ledger: Ledger, run_id: int, agent_id: str, scope: 
 
 
 def _accept_module_and_phase(ledger: Ledger, ctx: dict) -> None:
-    ledger.agent_release("manager-1", ctx["manager"]["agent_id"], ctx["lead"]["agent_id"])
+    ledger.agent_release("mgr-p1-phase-1", ctx["manager"]["agent_id"], ctx["lead"]["agent_id"])
     _insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
     ledger.module_review(
-        "manager-1",
+        "mgr-p1-phase-1",
         ctx["manager"]["agent_id"],
         ctx["module_id"],
         "accepted",
         "looks good",
         scores=_review_scores(),
     )
-    ledger.phase_update("manager-1", ctx["manager"]["agent_id"], ctx["phase_id"], "handed_up")
+    ledger.phase_update("mgr-p1-phase-1", ctx["manager"]["agent_id"], ctx["phase_id"], "handed_up")
     _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
     ledger.phase_review(
         "oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ship it", scores=_review_scores()
@@ -198,9 +204,11 @@ def _accept_module_and_phase(ledger: Ledger, ctx: dict) -> None:
 
 
 def _spawn_coder(ledger: Ledger, ctx: dict, coder_name: str, path: str, test_path: str) -> dict:
-    claimed = ledger.claim_file("lead-1", ctx["lead"]["agent_id"], path, test_path, coder_name)
+    claimed = ledger.claim_file(
+        "lead-p1-module-1", ctx["lead"]["agent_id"], path, test_path, coder_name
+    )
     ledger.brief_create(
-        "lead-1",
+        "lead-p1-module-1",
         ctx["lead"]["agent_id"],
         coder_name,
         "coder",
@@ -255,51 +263,66 @@ def _file_id_for(ledger: Ledger, path: str) -> int:
 
 def test_handoff_refused_on_failing_tests(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-fail", "pkg/failing.py", "tests/test_failing.py")
+    coder = _spawn_coder(
+        ledger, ctx, "coder-p1-module-1-fail", "pkg/failing.py", "tests/test_failing.py"
+    )
     file_id = _file_id_for(ledger, "pkg/failing.py")
     with pytest.raises(LedgerError, match="tests are not passing"):
-        ledger.handoff_submit("coder-fail", coder["agent_id"], file_id, [], [])
+        ledger.handoff_submit("coder-p1-module-1-fail", coder["agent_id"], file_id, [], [])
 
 
 def test_handoff_refused_on_zero_tests(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-zero", "pkg/zero.py", "tests/test_zero.py")
+    coder = _spawn_coder(ledger, ctx, "coder-p1-module-1-zero", "pkg/zero.py", "tests/test_zero.py")
     file_id = _file_id_for(ledger, "pkg/zero.py")
     with pytest.raises(LedgerError, match="tests are not passing"):
-        ledger.handoff_submit("coder-zero", coder["agent_id"], file_id, [], [])
+        ledger.handoff_submit("coder-p1-module-1-zero", coder["agent_id"], file_id, [], [])
 
 
 def test_handoff_refused_on_a_skipped_test(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-skip", "pkg/skipped.py", "tests/test_skipped.py")
+    coder = _spawn_coder(
+        ledger, ctx, "coder-p1-module-1-skip", "pkg/skipped.py", "tests/test_skipped.py"
+    )
     file_id = _file_id_for(ledger, "pkg/skipped.py")
     with pytest.raises(LedgerError, match="tests are not passing"):
-        ledger.handoff_submit("coder-skip", coder["agent_id"], file_id, [], [])
+        ledger.handoff_submit("coder-p1-module-1-skip", coder["agent_id"], file_id, [], [])
 
 
 def test_handoff_refused_on_a_missing_node(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-nograph", "pkg/nograph.py", "tests/test_nograph.py")
+    coder = _spawn_coder(
+        ledger, ctx, "coder-p1-module-1-nograph", "pkg/nograph.py", "tests/test_nograph.py"
+    )
     file_id = _file_id_for(ledger, "pkg/nograph.py")
     with pytest.raises(LedgerError, match="no node anchors"):
-        ledger.handoff_submit("coder-nograph", coder["agent_id"], file_id, [], [])
+        ledger.handoff_submit("coder-p1-module-1-nograph", coder["agent_id"], file_id, [], [])
 
 
 def test_handoff_refused_on_an_unmapped_symbol(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-unmapped", "pkg/unmapped.py", "tests/test_unmapped.py")
+    coder = _spawn_coder(
+        ledger, ctx, "coder-p1-module-1-unmapped", "pkg/unmapped.py", "tests/test_unmapped.py"
+    )
     file_id = _file_id_for(ledger, "pkg/unmapped.py")
     with pytest.raises(LedgerError, match="is unmapped"):
-        ledger.handoff_submit("coder-unmapped", coder["agent_id"], file_id, [], [])
+        ledger.handoff_submit("coder-p1-module-1-unmapped", coder["agent_id"], file_id, [], [])
 
 
 def test_handoff_refused_on_a_stale_self_review(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-stale", "pkg/stale.py", "tests/test_stale.py")
+    coder = _spawn_coder(
+        ledger, ctx, "coder-p1-module-1-stale", "pkg/stale.py", "tests/test_stale.py"
+    )
     file_id = _file_id_for(ledger, "pkg/stale.py")
 
     review = ledger.score_record(
-        "coder-stale", coder["agent_id"], file_id, _all_ratings(10), _all_applicable(), "self"
+        "coder-p1-module-1-stale",
+        coder["agent_id"],
+        file_id,
+        _all_ratings(10),
+        _all_applicable(),
+        "self",
     )
     review_row = ledger.conn.execute(
         "SELECT created_at FROM reviews WHERE review_id = ?", (review["review_id"],)
@@ -311,7 +334,7 @@ def test_handoff_refused_on_a_stale_self_review(ledger: Ledger) -> None:
         )
 
     with pytest.raises(LedgerError, match="self review is missing or older"):
-        ledger.handoff_submit("coder-stale", coder["agent_id"], file_id, [], [])
+        ledger.handoff_submit("coder-p1-module-1-stale", coder["agent_id"], file_id, [], [])
 
 
 # -- a clean handoff ----------------------------------------------------------------
@@ -319,13 +342,18 @@ def test_handoff_refused_on_a_stale_self_review(ledger: Ledger) -> None:
 
 def test_handoff_succeeds_and_saves_two_versions(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-good", "pkg/good.py", "tests/test_good.py")
+    coder = _spawn_coder(ledger, ctx, "coder-p1-module-1-good", "pkg/good.py", "tests/test_good.py")
     file_id = _file_id_for(ledger, "pkg/good.py")
     ledger.score_record(
-        "coder-good", coder["agent_id"], file_id, _all_ratings(10), _all_applicable(), "self"
+        "coder-p1-module-1-good",
+        coder["agent_id"],
+        file_id,
+        _all_ratings(10),
+        _all_applicable(),
+        "self",
     )
 
-    handoff = ledger.handoff_submit("coder-good", coder["agent_id"], file_id, [], [])
+    handoff = ledger.handoff_submit("coder-p1-module-1-good", coder["agent_id"], file_id, [], [])
     assert handoff["state"] == "submitted"
 
     versions = ledger.conn.execute(
@@ -349,38 +377,52 @@ def test_handoff_succeeds_and_saves_two_versions(ledger: Ledger) -> None:
 
 def test_review_compare_refuses_without_a_lead_review(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-blind1", "pkg/good.py", "tests/test_good.py")
+    coder = _spawn_coder(
+        ledger, ctx, "coder-p1-module-1-blind1", "pkg/good.py", "tests/test_good.py"
+    )
     file_id = _file_id_for(ledger, "pkg/good.py")
     ledger.score_record(
-        "coder-blind1", coder["agent_id"], file_id, _all_ratings(10), _all_applicable(), "self"
+        "coder-p1-module-1-blind1",
+        coder["agent_id"],
+        file_id,
+        _all_ratings(10),
+        _all_applicable(),
+        "self",
     )
-    handoff = ledger.handoff_submit("coder-blind1", coder["agent_id"], file_id, [], [])
+    handoff = ledger.handoff_submit("coder-p1-module-1-blind1", coder["agent_id"], file_id, [], [])
 
     with pytest.raises(LedgerError, match="no lead review exists"):
-        ledger.review_compare("lead-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
+        ledger.review_compare("lead-p1-module-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
 
 
 def test_score_record_lead_refuses_after_review_compare_already_ran(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-blind2", "pkg/good.py", "tests/test_good.py")
+    coder = _spawn_coder(
+        ledger, ctx, "coder-p1-module-1-blind2", "pkg/good.py", "tests/test_good.py"
+    )
     file_id = _file_id_for(ledger, "pkg/good.py")
     ledger.score_record(
-        "coder-blind2", coder["agent_id"], file_id, _all_ratings(10), _all_applicable(), "self"
+        "coder-p1-module-1-blind2",
+        coder["agent_id"],
+        file_id,
+        _all_ratings(10),
+        _all_applicable(),
+        "self",
     )
-    handoff = ledger.handoff_submit("coder-blind2", coder["agent_id"], file_id, [], [])
+    handoff = ledger.handoff_submit("coder-p1-module-1-blind2", coder["agent_id"], file_id, [], [])
     ledger.score_record(
-        "lead-1",
+        "lead-p1-module-1",
         ctx["lead"]["agent_id"],
         file_id,
         _all_ratings(10),
         _all_applicable(),
         "lead",
     )
-    ledger.review_compare("lead-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
+    ledger.review_compare("lead-p1-module-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
 
     with pytest.raises(LedgerError, match="blind scoring is closed"):
         ledger.score_record(
-            "lead-1",
+            "lead-p1-module-1",
             ctx["lead"]["agent_id"],
             file_id,
             _all_ratings(10),
@@ -394,52 +436,92 @@ def test_score_record_lead_refuses_after_review_compare_already_ran(ledger: Ledg
 
 def test_approve_refused_without_compare(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-appr1", "pkg/good.py", "tests/test_good.py")
+    coder = _spawn_coder(
+        ledger, ctx, "coder-p1-module-1-appr1", "pkg/good.py", "tests/test_good.py"
+    )
     file_id = _file_id_for(ledger, "pkg/good.py")
     ledger.score_record(
-        "coder-appr1", coder["agent_id"], file_id, _all_ratings(10), _all_applicable(), "self"
+        "coder-p1-module-1-appr1",
+        coder["agent_id"],
+        file_id,
+        _all_ratings(10),
+        _all_applicable(),
+        "self",
     )
-    handoff = ledger.handoff_submit("coder-appr1", coder["agent_id"], file_id, [], [])
+    handoff = ledger.handoff_submit("coder-p1-module-1-appr1", coder["agent_id"], file_id, [], [])
     ledger.score_record(
-        "lead-1", ctx["lead"]["agent_id"], file_id, _all_ratings(10), _all_applicable(), "lead"
+        "lead-p1-module-1",
+        ctx["lead"]["agent_id"],
+        file_id,
+        _all_ratings(10),
+        _all_applicable(),
+        "lead",
     )
 
     with pytest.raises(LedgerError, match="review_compare has not run"):
-        ledger.approve("lead-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
+        ledger.approve("lead-p1-module-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
 
 
 def test_approve_refused_with_an_open_issue(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-appr2", "pkg/good.py", "tests/test_good.py")
+    coder = _spawn_coder(
+        ledger, ctx, "coder-p1-module-1-appr2", "pkg/good.py", "tests/test_good.py"
+    )
     file_id = _file_id_for(ledger, "pkg/good.py")
     ledger.score_record(
-        "coder-appr2", coder["agent_id"], file_id, _all_ratings(10), _all_applicable(), "self"
+        "coder-p1-module-1-appr2",
+        coder["agent_id"],
+        file_id,
+        _all_ratings(10),
+        _all_applicable(),
+        "self",
     )
-    handoff = ledger.handoff_submit("coder-appr2", coder["agent_id"], file_id, [], [])
+    handoff = ledger.handoff_submit("coder-p1-module-1-appr2", coder["agent_id"], file_id, [], [])
     ledger.score_record(
-        "lead-1", ctx["lead"]["agent_id"], file_id, _all_ratings(10), _all_applicable(), "lead"
+        "lead-p1-module-1",
+        ctx["lead"]["agent_id"],
+        file_id,
+        _all_ratings(10),
+        _all_applicable(),
+        "lead",
     )
-    ledger.review_compare("lead-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
-    ledger.issue_open("lead-1", ctx["lead"]["agent_id"], file_id, "Stray issue", "Found later.")
+    ledger.review_compare("lead-p1-module-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
+    ledger.issue_open(
+        "lead-p1-module-1", ctx["lead"]["agent_id"], file_id, "Stray issue", "Found later."
+    )
 
     with pytest.raises(LedgerError, match="open issue"):
-        ledger.approve("lead-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
+        ledger.approve("lead-p1-module-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
 
 
 def test_approve_releases_the_claim_and_the_coder(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-appr3", "pkg/good.py", "tests/test_good.py")
+    coder = _spawn_coder(
+        ledger, ctx, "coder-p1-module-1-appr3", "pkg/good.py", "tests/test_good.py"
+    )
     file_id = _file_id_for(ledger, "pkg/good.py")
     ledger.score_record(
-        "coder-appr3", coder["agent_id"], file_id, _all_ratings(10), _all_applicable(), "self"
+        "coder-p1-module-1-appr3",
+        coder["agent_id"],
+        file_id,
+        _all_ratings(10),
+        _all_applicable(),
+        "self",
     )
-    handoff = ledger.handoff_submit("coder-appr3", coder["agent_id"], file_id, [], [])
+    handoff = ledger.handoff_submit("coder-p1-module-1-appr3", coder["agent_id"], file_id, [], [])
     ledger.score_record(
-        "lead-1", ctx["lead"]["agent_id"], file_id, _all_ratings(10), _all_applicable(), "lead"
+        "lead-p1-module-1",
+        ctx["lead"]["agent_id"],
+        file_id,
+        _all_ratings(10),
+        _all_applicable(),
+        "lead",
     )
-    ledger.review_compare("lead-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
+    ledger.review_compare("lead-p1-module-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
 
-    approved = ledger.approve("lead-1", ctx["lead"]["agent_id"], handoff["handoff_id"], "nice work")
+    approved = ledger.approve(
+        "lead-p1-module-1", ctx["lead"]["agent_id"], handoff["handoff_id"], "nice work"
+    )
     assert approved["state"] == "approved"
 
     file_row = ledger.conn.execute("SELECT * FROM files WHERE file_id = ?", (file_id,)).fetchone()
@@ -466,16 +548,23 @@ def test_handoff_next_wakes_the_lead_and_approve_stops_the_coders_session(
 
     monkeypatch.setattr(sessions, "_run", fake_run)
     ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-next", "pkg/good.py", "tests/test_good.py")
+    coder = _spawn_coder(ledger, ctx, "coder-p1-module-1-next", "pkg/good.py", "tests/test_good.py")
     with write_tx(ledger.conn) as conn:
-        conn.execute("UPDATE agents SET session_name = 'host-r1-lead-1' WHERE name = 'lead-1'")
+        conn.execute(
+            "UPDATE agents SET session_name = 'host-r1-lead-1' WHERE name = 'lead-p1-module-1'"
+        )
         conn.execute("UPDATE agents SET bg_id = 'coderbg' WHERE agent_id = ?", (coder["agent_id"],))
     file_id = _file_id_for(ledger, "pkg/good.py")
     ledger.score_record(
-        "coder-next", coder["agent_id"], file_id, _all_ratings(10), _all_applicable(), "self"
+        "coder-p1-module-1-next",
+        coder["agent_id"],
+        file_id,
+        _all_ratings(10),
+        _all_applicable(),
+        "self",
     )
 
-    handoff = ledger.handoff_submit("coder-next", coder["agent_id"], file_id, [], [])
+    handoff = ledger.handoff_submit("coder-p1-module-1-next", coder["agent_id"], file_id, [], [])
     assert handoff["next"] == (
         'SendMessage(to="host-r1-lead-1", '
         f'message="Handoff {handoff["handoff_id"]} for pkg/good.py is waiting in the ledger.")'
@@ -483,9 +572,11 @@ def test_handoff_next_wakes_the_lead_and_approve_stops_the_coders_session(
     assert [w["reason"] for w in ledger.owed_wakeups(coder["agent_id"])] == ["handoff_submit"]
 
     lead_id = ctx["lead"]["agent_id"]
-    ledger.score_record("lead-1", lead_id, file_id, _all_ratings(10), _all_applicable(), "lead")
-    ledger.review_compare("lead-1", lead_id, handoff["handoff_id"])
-    ledger.approve("lead-1", lead_id, handoff["handoff_id"])
+    ledger.score_record(
+        "lead-p1-module-1", lead_id, file_id, _all_ratings(10), _all_applicable(), "lead"
+    )
+    ledger.review_compare("lead-p1-module-1", lead_id, handoff["handoff_id"])
+    ledger.approve("lead-p1-module-1", lead_id, handoff["handoff_id"])
     assert ["stop", "coderbg"] in calls
 
 
@@ -501,7 +592,7 @@ def _round_trip(
     round2_overrides: dict[str, int],
     targeted: list[str],
 ) -> str:
-    coder_name = f"coder-{name}"
+    coder_name = f"coder-p1-module-1-{name.replace('_', '-')}"
     path, test_path = f"pkg/{name}.py", f"tests/test_{name}.py"
     coder = _spawn_coder(ledger, ctx, coder_name, path, test_path)
     file_id = _file_id_for(ledger, path)
@@ -511,15 +602,17 @@ def _round_trip(
     )
     handoff1 = ledger.handoff_submit(coder_name, coder["agent_id"], file_id, [], [])
     ledger.score_record(
-        "lead-1",
+        "lead-p1-module-1",
         ctx["lead"]["agent_id"],
         file_id,
         _all_ratings(overrides=round1_overrides),
         _all_applicable(),
         "lead",
     )
-    ledger.review_compare("lead-1", ctx["lead"]["agent_id"], handoff1["handoff_id"])
-    ledger.return_work("lead-1", ctx["lead"]["agent_id"], handoff1["handoff_id"], [], targeted)
+    ledger.review_compare("lead-p1-module-1", ctx["lead"]["agent_id"], handoff1["handoff_id"])
+    ledger.return_work(
+        "lead-p1-module-1", ctx["lead"]["agent_id"], handoff1["handoff_id"], [], targeted
+    )
     returned = ledger.conn.execute(
         "SELECT state FROM agents WHERE agent_id = ?", (coder["agent_id"],)
     ).fetchone()
@@ -529,9 +622,10 @@ def _round_trip(
     ledger.score_record(
         coder_name, coder["agent_id"], file_id, _all_ratings(10), _all_applicable(), "self"
     )
+    ledger.brief_read(coder["agent_id"], coder_name)
     ledger.handoff_submit(coder_name, coder["agent_id"], file_id, [], [])
     ledger.score_record(
-        "lead-1",
+        "lead-p1-module-1",
         ctx["lead"]["agent_id"],
         file_id,
         _all_ratings(overrides=round2_overrides),
@@ -542,9 +636,9 @@ def _round_trip(
         "SELECT handoff_id FROM handoffs WHERE file_id = ? ORDER BY handoff_id DESC LIMIT 1",
         (file_id,),
     ).fetchone()["handoff_id"]
-    ledger.review_compare("lead-1", ctx["lead"]["agent_id"], handoff2_id)
+    ledger.review_compare("lead-p1-module-1", ctx["lead"]["agent_id"], handoff2_id)
 
-    outcome = ledger.attempt_record("lead-1", ctx["lead"]["agent_id"], file_id)["outcome"]
+    outcome = ledger.attempt_record("lead-p1-module-1", ctx["lead"]["agent_id"], file_id)["outcome"]
     return outcome
 
 
@@ -607,20 +701,40 @@ def test_accept_incomplete_creates_a_deferral_and_run_finish_refuses_until_decid
     ledger: Ledger,
 ) -> None:
     ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-incomplete", "pkg/good.py", "tests/test_good.py")
+    coder = _spawn_coder(
+        ledger, ctx, "coder-p1-module-1-incomplete", "pkg/good.py", "tests/test_good.py"
+    )
     file_id = _file_id_for(ledger, "pkg/good.py")
     ledger.score_record(
-        "coder-incomplete",
+        "coder-p1-module-1-incomplete",
         coder["agent_id"],
         file_id,
         _all_ratings(10),
         _all_applicable(),
         "self",
     )
-    handoff = ledger.handoff_submit("coder-incomplete", coder["agent_id"], file_id, [], [])
+    handoff = ledger.handoff_submit(
+        "coder-p1-module-1-incomplete",
+        coder["agent_id"],
+        file_id,
+        ["blocked on an external API"],
+        [],
+    )
+    ledger.score_record(
+        "lead-p1-module-1",
+        ctx["lead"]["agent_id"],
+        file_id,
+        _all_ratings(10),
+        _all_applicable(),
+        "lead",
+    )
+    ledger.review_compare("lead-p1-module-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
 
     deferral = ledger.accept_incomplete(
-        "lead-1", ctx["lead"]["agent_id"], handoff["handoff_id"], "blocked on an external API"
+        "lead-p1-module-1",
+        ctx["lead"]["agent_id"],
+        handoff["handoff_id"],
+        "blocked on an external API",
     )
     assert deferral["state"] == "open"
 
@@ -636,7 +750,7 @@ def test_accept_incomplete_creates_a_deferral_and_run_finish_refuses_until_decid
         ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
 
     ledger.agreement_decide(
-        "manager-1",
+        "mgr-p1-phase-1",
         ctx["manager"]["agent_id"],
         deferral["deferral_id"],
         "agreed",
@@ -652,19 +766,37 @@ def test_agreement_decide_refuses_a_decider_below_the_proposers_parent_role(
     ledger: Ledger,
 ) -> None:
     ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-defer", "pkg/good.py", "tests/test_good.py")
+    coder = _spawn_coder(
+        ledger, ctx, "coder-p1-module-1-defer", "pkg/good.py", "tests/test_good.py"
+    )
     file_id = _file_id_for(ledger, "pkg/good.py")
     ledger.score_record(
-        "coder-defer", coder["agent_id"], file_id, _all_ratings(10), _all_applicable(), "self"
+        "coder-p1-module-1-defer",
+        coder["agent_id"],
+        file_id,
+        _all_ratings(10),
+        _all_applicable(),
+        "self",
     )
-    handoff = ledger.handoff_submit("coder-defer", coder["agent_id"], file_id, [], [])
+    handoff = ledger.handoff_submit(
+        "coder-p1-module-1-defer", coder["agent_id"], file_id, ["blocked"], []
+    )
+    ledger.score_record(
+        "lead-p1-module-1",
+        ctx["lead"]["agent_id"],
+        file_id,
+        _all_ratings(10),
+        _all_applicable(),
+        "lead",
+    )
+    ledger.review_compare("lead-p1-module-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
     deferral = ledger.accept_incomplete(
-        "lead-1", ctx["lead"]["agent_id"], handoff["handoff_id"], "blocked"
+        "lead-p1-module-1", ctx["lead"]["agent_id"], handoff["handoff_id"], "blocked"
     )
 
     with pytest.raises(LedgerError):
         ledger.agreement_decide(
-            "lead-1", ctx["lead"]["agent_id"], deferral["deferral_id"], "agreed", "ok"
+            "lead-p1-module-1", ctx["lead"]["agent_id"], deferral["deferral_id"], "agreed", "ok"
         )
 
 
@@ -672,44 +804,52 @@ def test_agreement_decide_refuses_a_decider_outside_the_deferrals_scope(
     ledger: Ledger,
 ) -> None:
     ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-scope", "pkg/good.py", "tests/test_good.py")
+    coder = _spawn_coder(
+        ledger, ctx, "coder-p1-module-1-scope", "pkg/good.py", "tests/test_good.py"
+    )
     file_id = _file_id_for(ledger, "pkg/good.py")
-    deferral = ledger.deferral_propose("coder-scope", coder["agent_id"], "later", file_id)
+    deferral = ledger.deferral_propose(
+        "coder-p1-module-1-scope", coder["agent_id"], "later", file_id, kind="file"
+    )
 
-    module_2 = ledger.module_add("manager-1", "mgr-agent", ctx["phase_id"], "module-2")
+    module_2 = ledger.module_add("mgr-p1-phase-1", "mgr-agent", ctx["phase_id"], "module-2")
     ledger.brief_create(
-        "manager-1",
+        "mgr-p1-phase-1",
         "mgr-agent",
-        "lead-2",
+        "lead-p1-module-2",
         "lead",
         "sonnet",
         "Own module-2.",
         module_id=module_2["module_id"],
     )
     ledger.agent_register_start("lead-2-agent", "lead", parent_agent_id="mgr-agent")
-    ledger.brief_ack("lead-2", "lead-2-agent")
+    ledger.brief_ack("lead-p1-module-2", "lead-2-agent")
 
     phase_2 = ledger.phase_add("oracle", ctx["oracle_id"], "phase-2")
     ledger.phase_update("oracle", ctx["oracle_id"], phase_2["phase_id"], "unlocked")
     ledger.brief_create(
         "oracle",
         ctx["oracle_id"],
-        "manager-2",
+        "mgr-p2-phase-2",
         "manager",
         "opus",
         "Own phase-2.",
         phase_id=phase_2["phase_id"],
     )
     ledger.agent_register_start("mgr-2-agent", "manager", parent_agent_id=ctx["oracle_id"])
-    ledger.brief_ack("manager-2", "mgr-2-agent")
+    ledger.brief_ack("mgr-p2-phase-2", "mgr-2-agent")
 
     with pytest.raises(LedgerError, match="outside the lead scope"):
-        ledger.agreement_decide("lead-2", "lead-2-agent", deferral["deferral_id"], "agreed", "ok")
+        ledger.agreement_decide(
+            "lead-p1-module-2", "lead-2-agent", deferral["deferral_id"], "agreed", "ok"
+        )
     with pytest.raises(LedgerError, match="outside the manager scope"):
-        ledger.agreement_decide("manager-2", "mgr-2-agent", deferral["deferral_id"], "agreed", "ok")
+        ledger.agreement_decide(
+            "mgr-p2-phase-2", "mgr-2-agent", deferral["deferral_id"], "agreed", "ok"
+        )
 
     decided = ledger.agreement_decide(
-        "lead-1", ctx["lead"]["agent_id"], deferral["deferral_id"], "agreed", "ok"
+        "lead-p1-module-1", ctx["lead"]["agent_id"], deferral["deferral_id"], "agreed", "ok"
     )
     assert decided["state"] == "agreed"
 
@@ -746,12 +886,14 @@ def test_graph_upsert_refuses_an_anchor_outside_the_owned_file(
     ledger: Ledger, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-graph1", "pkg/good.py", "tests/test_good.py")
+    coder = _spawn_coder(
+        ledger, ctx, "coder-p1-module-1-graph1", "pkg/good.py", "tests/test_good.py"
+    )
     monkeypatch.setattr(graph_module, "graph_upsert", lambda repo_root, nodes: {"ok": True})
 
     with pytest.raises(LedgerError, match="updates only the nodes"):
         ledger.graph_upsert(
-            "coder-graph1",
+            "coder-p1-module-1-graph1",
             coder["agent_id"],
             [{"id": "x", "kind": "function", "anchors": ["pkg/other.py#foo"]}],
         )
@@ -761,7 +903,9 @@ def test_graph_upsert_passes_through_for_the_owned_file(
     ledger: Ledger, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-graph2", "pkg/good.py", "tests/test_good.py")
+    coder = _spawn_coder(
+        ledger, ctx, "coder-p1-module-1-graph2", "pkg/good.py", "tests/test_good.py"
+    )
     seen: dict = {}
 
     def fake_upsert(repo_root: Path, nodes: list[dict]) -> dict:
@@ -772,7 +916,7 @@ def test_graph_upsert_passes_through_for_the_owned_file(
     monkeypatch.setattr(graph_module, "graph_upsert", fake_upsert)
 
     result = ledger.graph_upsert(
-        "coder-graph2",
+        "coder-p1-module-1-graph2",
         coder["agent_id"],
         [{"id": "swarmtest_good", "kind": "function", "anchors": ["pkg/good.py#add"]}],
     )
@@ -782,17 +926,15 @@ def test_graph_upsert_passes_through_for_the_owned_file(
 
 
 @pytest.mark.integration
-def test_graph_upsert_integration_calls_the_real_codebase_kg(ledger: Ledger) -> None:
-    try:
-        graph_module.codebase_kg_root()
-    except LedgerError:
-        pytest.skip("codebase-kg is not installed in this environment")
-
+def test_graph_upsert_integration_calls_the_real_codebase_kg(ledger: Ledger, kg_root: Path) -> None:
+    del kg_root
     ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-graph3", "pkg/good.py", "tests/test_good.py")
+    coder = _spawn_coder(
+        ledger, ctx, "coder-p1-module-1-graph3", "pkg/good.py", "tests/test_good.py"
+    )
 
     result = ledger.graph_upsert(
-        "coder-graph3",
+        "coder-p1-module-1-graph3",
         coder["agent_id"],
         [
             {
@@ -812,33 +954,45 @@ def test_graph_upsert_integration_calls_the_real_codebase_kg(ledger: Ledger) -> 
 def test_lead_review_closes_resolved_issues_and_dedupes_open_ones(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     lead = ctx["lead"]["agent_id"]
-    coder = _spawn_coder(ledger, ctx, "coder-iss", "pkg/good.py", "tests/test_good.py")
+    coder = _spawn_coder(ledger, ctx, "coder-p1-module-1-iss", "pkg/good.py", "tests/test_good.py")
     file_id = _file_id_for(ledger, "pkg/good.py")
     low = _all_ratings(10, overrides={"performance": 4})
-    ledger.score_record("coder-iss", coder["agent_id"], file_id, low, _all_applicable(), "self")
-    first = ledger.handoff_submit("coder-iss", coder["agent_id"], file_id, [], [])
-    opened = ledger.score_record("lead-1", lead, file_id, low, _all_applicable(), "lead")
+    ledger.score_record(
+        "coder-p1-module-1-iss", coder["agent_id"], file_id, low, _all_applicable(), "self"
+    )
+    first = ledger.handoff_submit("coder-p1-module-1-iss", coder["agent_id"], file_id, [], [])
+    opened = ledger.score_record("lead-p1-module-1", lead, file_id, low, _all_applicable(), "lead")
     assert opened["issues"]
-    open_now = [i for i in ledger.issue_list("lead-1", lead, file_id) if i["state"] == "open"]
+    open_now = [
+        i for i in ledger.issue_list("lead-p1-module-1", lead, file_id) if i["state"] == "open"
+    ]
     assert len(open_now) == len(opened["issues"])
-    ledger.review_compare("lead-1", lead, first["handoff_id"])
-    ledger.return_work("lead-1", lead, first["handoff_id"], ["slow"], ["performance"])
+    ledger.review_compare("lead-p1-module-1", lead, first["handoff_id"])
+    ledger.return_work("lead-p1-module-1", lead, first["handoff_id"], ["slow"], ["performance"])
 
     ledger.score_record(
-        "coder-iss", coder["agent_id"], file_id, _all_ratings(10), _all_applicable(), "self"
+        "coder-p1-module-1-iss",
+        coder["agent_id"],
+        file_id,
+        _all_ratings(10),
+        _all_applicable(),
+        "self",
     )
-    second = ledger.handoff_submit("coder-iss", coder["agent_id"], file_id, [], [])
+    ledger.brief_read(coder["agent_id"], "coder-p1-module-1-iss")
+    second = ledger.handoff_submit("coder-p1-module-1-iss", coder["agent_id"], file_id, [], [])
     closed = ledger.score_record(
-        "lead-1", lead, file_id, _all_ratings(10), _all_applicable(), "lead"
+        "lead-p1-module-1", lead, file_id, _all_ratings(10), _all_applicable(), "lead"
     )
     assert sorted(closed["closed_issues"]) == sorted(opened["issues"])
     assert closed["issues"] == []
-    ledger.review_compare("lead-1", lead, second["handoff_id"])
-    assert ledger.approve("lead-1", lead, second["handoff_id"])["state"] == "approved"
+    ledger.review_compare("lead-p1-module-1", lead, second["handoff_id"])
+    assert ledger.approve("lead-p1-module-1", lead, second["handoff_id"])["state"] == "approved"
 
     text = ledger.report_build("oracle", ctx["oracle_id"])["text"]
     returns = text.split("## Returns and fix attempts")[1].split("## Open items")[0]
-    assert "pkg/good.py, fix round 1, returned by lead-1 -- targeted: performance" in returns
+    assert (
+        "pkg/good.py, fix round 1, returned by lead-p1-module-1 -- targeted: performance" in returns
+    )
     assert "  - slow" in returns
     assert "attempts): " in text.split("## Open items")[1]
 
@@ -846,12 +1000,12 @@ def test_lead_review_closes_resolved_issues_and_dedupes_open_ones(ledger: Ledger
 def test_issue_close_is_for_the_lead_manager_or_oracle(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     lead = ctx["lead"]["agent_id"]
-    coder = _spawn_coder(ledger, ctx, "coder-cl", "pkg/good.py", "tests/test_good.py")
+    coder = _spawn_coder(ledger, ctx, "coder-p1-module-1-cl", "pkg/good.py", "tests/test_good.py")
     file_id = _file_id_for(ledger, "pkg/good.py")
-    issue = ledger.issue_open("lead-1", lead, file_id, "Stray", "Found.")
+    issue = ledger.issue_open("lead-p1-module-1", lead, file_id, "Stray", "Found.")
     with pytest.raises(LedgerError):
-        ledger.issue_close("coder-cl", coder["agent_id"], issue["issue_id"], "fixed")
-    closed = ledger.issue_close("lead-1", lead, issue["issue_id"], "fixed in review")
+        ledger.issue_close("coder-p1-module-1-cl", coder["agent_id"], issue["issue_id"], "fixed")
+    closed = ledger.issue_close("lead-p1-module-1", lead, issue["issue_id"], "fixed in review")
     assert closed["state"] == "closed"
     with pytest.raises(LedgerError, match="already closed"):
         ledger.issue_close("oracle", ctx["oracle_id"], issue["issue_id"], "again")
@@ -862,11 +1016,13 @@ def test_issue_close_is_for_the_lead_manager_or_oracle(ledger: Ledger) -> None:
 
 def test_score_record_names_the_shape_on_a_malformed_rating(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    coder = _spawn_coder(ledger, ctx, "coder-shape", "pkg/good.py", "tests/test_good.py")
+    coder = _spawn_coder(
+        ledger, ctx, "coder-p1-module-1-shape", "pkg/good.py", "tests/test_good.py"
+    )
     file_id = _file_id_for(ledger, "pkg/good.py")
     with pytest.raises(LedgerError, match=r"missing \['criterion', 'value'\].*meets_the_brief"):
         ledger.score_record(
-            "coder-shape",
+            "coder-p1-module-1-shape",
             coder["agent_id"],
             file_id,
             [{"dimension": "Functionality", "score": 10}],
@@ -875,7 +1031,7 @@ def test_score_record_names_the_shape_on_a_malformed_rating(ledger: Ledger) -> N
         )
     with pytest.raises(LedgerError, match="unknown dimension 'Functionality'.*Keys: "):
         ledger.score_record(
-            "coder-shape",
+            "coder-p1-module-1-shape",
             coder["agent_id"],
             file_id,
             [{"dimension": "Functionality", "criterion": "x", "value": 10}],

@@ -5,11 +5,15 @@ import json
 import os
 import subprocess
 import sys
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from .identity import LedgerError
 
 _GIT_TIMEOUT_S = 10
+_FILE_LOCK_POLL_S = 0.05
 
 
 class LockHeldError(LedgerError):
@@ -125,3 +129,33 @@ def release_owned(repo_root: Path, server_pid: int) -> None:
             _lock_path(repo_root).unlink()
         except OSError:
             pass
+
+
+@contextmanager
+def file_lock(path: Path) -> Iterator[None]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as handle:
+        fd = handle.fileno()
+        if sys.platform == "win32":
+            import msvcrt
+
+            handle.seek(0)
+            while True:
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    time.sleep(_FILE_LOCK_POLL_S)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)

@@ -19,10 +19,8 @@ KG_TOOLS = (
     "kg_find_by_path",
     "kg_find_by_link",
     "kg_find_by_reference",
-    "kg_parity_gaps",
-    "kg_stats",
-    "kg_validate",
 )
+KG_CLI_TOOLS = ("kg_parity_gaps", "kg_stats", "kg_validate")
 LEDGER_PREFIX = "mcp__swarm-ledger__"
 LEDGER_MODULES = ("ledger", "review", "agreements", "oversight", "drive", "repo")
 ALL_ROLES = frozenset(ROLES)
@@ -35,6 +33,7 @@ HOOK_TABLE = (
     ("PreToolUse", "Bash|PowerShell", "pre_shell", ALL_ROLES),
     ("PreToolUse", "Monitor", "pre_monitor", ALL_ROLES),
     ("PreToolUse", "SendMessage", "pre_send_message", ALL_ROLES),
+    ("PreToolUse", "Skill", "pre_skill", frozenset({"driver"})),
     ("PreToolUse", "mcp__swarm-ledger__.*", "pre_ledger", ALL_ROLES),
     ("PostToolUse", SYNC_POST_MATCHER, "post_any", ALL_ROLES),
     ("PostToolUse", None, "post_activity", ALL_ROLES),
@@ -149,6 +148,8 @@ def test_template_tools(repo_root: Path, role: str):
     assert "mcp__swarm-ledger" not in tools
     for tool in KG_TOOLS:
         assert f"mcp__codebase-kg__{tool}" in tools
+    for tool in KG_CLI_TOOLS:
+        assert f"mcp__codebase-kg__{tool}" not in tools
     assert not any(t.startswith("mcp__plugin_") for t in tools)
     assert not any("a11y" in t or "driver" in t for t in tools)
 
@@ -211,11 +212,111 @@ def test_template_body_calls_only_the_roles_ledger_tools(repo_root: Path, role: 
     from swarm_ledger.server import _TOOL_NAMES
 
     _, body = _split(_template(repo_root, role))
-    working_set = re.search(r'ToolSearch\(query="select:([^"]+)"', body)
-    assert working_set, f"{role} has no ToolSearch working set"
-    assert _ledger_tools(set(working_set.group(1).split(","))) <= ROLE_TOOLS[role]
+    selects = _selects(body)
+    assert selects, f"{role} has no ToolSearch working set"
+    for selected in selects:
+        assert _ledger_tools(selected) <= ROLE_TOOLS[role]
     called = {name for name in _TOOL_NAMES if re.search(rf"\b{name}\(", body)}
     assert called <= ROLE_TOOLS[role]
+
+
+def _selects(body: str) -> list[set[str]]:
+    return [set(m.split(",")) for m in re.findall(r'ToolSearch\(query="select:([^"]+)"', body)]
+
+
+def _ledger_set(*names: str) -> set[str]:
+    return {f"{LEDGER_PREFIX}{name}" for name in names}
+
+
+SELECT_SETS = {
+    "oracle": _ledger_set(
+        "ledger_info",
+        "run_start",
+        "repo_check",
+        "repo_branch_create",
+        "profile_set",
+        "guidelines_set",
+        "phase_add",
+        "phase_update",
+        "brief_create",
+        "agent_spawn",
+        "directive_inbox",
+        "status_tree",
+        "phase_review",
+        "tests_run",
+        "run_finish",
+    )
+    | {"mcp__codebase-kg__kg_search", "SendMessage", "Monitor"},
+    "manager": _ledger_set(
+        "message_inbox",
+        "module_add",
+        "who_owns",
+        "brief_create",
+        "agent_spawn",
+        "status_tree",
+        "module_review",
+        "tests_run",
+        "issue_list",
+    )
+    | {"mcp__codebase-kg__kg_search", "SendMessage"},
+    "lead": _ledger_set(
+        "message_inbox",
+        "claim_file",
+        "brief_create",
+        "agent_spawn",
+        "score_record",
+        "review_compare",
+        "approve",
+        "return_work",
+        "tests_run",
+        "issue_list",
+    )
+    | {"mcp__codebase-kg__kg_search", "SendMessage"},
+    "coder": _ledger_set(
+        "who_owns", "tests_run", "graph_upsert", "message_inbox", "issue_list", "cr_list"
+    )
+    | {"mcp__codebase-kg__kg_search", "SendMessage"},
+    "driver": _ledger_set("message_inbox", "drive_checkin", "drive_issue") | {"SendMessage"},
+}
+END_SELECTS = {
+    "coder": _ledger_set("score_record", "handoff_submit"),
+    "driver": _ledger_set("drive_done"),
+}
+HOOK_START_CALLS = _ledger_set(
+    "ledger_info", "brief_get", "brief_ack", "guidelines_get", "run_status"
+)
+
+
+@pytest.mark.parametrize("role", ROLES)
+def test_template_up_front_select_is_the_expected_set(repo_root: Path, role: str):
+    _, body = _split(_template(repo_root, role))
+    selects = _selects(body)
+    assert selects[0] == SELECT_SETS[role]
+    max_results = re.search(r'ToolSearch\(query="select:[^"]+", max_results=(\d+)\)', body)
+    assert max_results and int(max_results.group(1)) == len(SELECT_SETS[role])
+
+
+@pytest.mark.parametrize("role", [r for r in ROLES if r != "oracle"])
+def test_hook_start_calls_stay_out_of_the_up_front_select(repo_root: Path, role: str):
+    _, body = _split(_template(repo_root, role))
+    assert not _selects(body)[0] & HOOK_START_CALLS
+    assert "SessionStart" in body
+    assert "brief_ack(caller=<your name>)" not in body
+
+
+@pytest.mark.parametrize("role", sorted(END_SELECTS))
+def test_end_tools_load_in_their_own_select_before_the_first_call(repo_root: Path, role: str):
+    _, body = _split(_template(repo_root, role))
+    found = [
+        m.start()
+        for m in re.finditer(r'ToolSearch\(query="select:([^"]+)"', body)
+        if set(m.group(1).split(",")) == END_SELECTS[role]
+    ]
+    assert len(found) == 1
+    end_select = found[0]
+    for tool in END_SELECTS[role]:
+        name = tool.removeprefix(LEDGER_PREFIX)
+        assert end_select < body.index(f"{name}("), f"{role} calls {name} before loading it"
 
 
 def test_role_tool_sets_match_the_ledgers_role_checks():
@@ -268,28 +369,12 @@ def test_template_mcp_servers_go_through_the_shim(repo_root: Path, role: str):
                 "args": [
                     ".sentinel-swarm/hook.py",
                     "mcp",
-                    "codebase-kg@codebase-kg",
+                    "codebase-kg@alexk413x",
                     "codebase-kg",
                 ],
             }
         }
     ]
-
-
-@pytest.mark.parametrize("role", ROLES)
-def test_template_hooks_match_the_spec_table(repo_root: Path, role: str):
-    hooks = _split(_template(repo_root, role))[0]["hooks"]
-    expected: dict[str, list[dict]] = {}
-    for event, matcher, ledger_event, roles in HOOK_TABLE:
-        if role not in roles:
-            continue
-        group: dict = {} if matcher is None else {"matcher": matcher}
-        hook: dict = {"type": "command", "command": _hook_command(ledger_event), "timeout": 60}
-        if ledger_event in ASYNC_EVENTS:
-            hook["async"] = True
-        group["hooks"] = [hook]
-        expected.setdefault(event, []).append(group)
-    assert hooks == expected
 
 
 def test_the_sync_post_matcher_names_the_tools_post_activity_skips():
@@ -328,6 +413,22 @@ def test_hook_shim_template_exists(repo_root: Path):
     assert imported <= set(sys.stdlib_module_names) | {"__future__"}
 
 
+def test_nothing_shipped_names_the_removed_channel(repo_root: Path):
+    shipped = [
+        *(repo_root / "templates").rglob("*.md"),
+        *(repo_root / "templates").rglob("*.example"),
+        repo_root / "templates" / "hook_shim.py",
+        *(repo_root / "skills").rglob("*.md"),
+        *(repo_root / "hooks").iterdir(),
+        *(repo_root / ".claude-plugin").glob("*.json"),
+    ]
+    for path in shipped:
+        text = path.read_text(encoding="utf-8")
+        for word in ("swarm-events", "wake_transport", "development channel"):
+            assert word not in text, f"{path} names {word}"
+    assert not (repo_root / "mcp" / "src" / "swarm_ledger" / "bridge.py").exists()
+
+
 @pytest.mark.parametrize("name", SKILLS)
 def test_skill_file_exists_with_name_and_description(repo_root: Path, name: str):
     fields, _ = _split(repo_root / "skills" / name / "SKILL.md")
@@ -354,6 +455,62 @@ def test_hooks_json_has_no_hooks(repo_root: Path):
     assert data["hooks"] == {}
 
 
+def test_hooks_json_names_the_one_mod_module(repo_root: Path):
+    data = json.loads((repo_root / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+    assert data["modules"] == ["./register.ts"]
+    assert (repo_root / "hooks" / "register.ts").is_file()
+    plugin = json.loads((repo_root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    assert plugin["types"] == "./types/index.d.ts"
+    assert (repo_root / "types" / "index.d.ts").is_file()
+
+
+def _mod_source(repo_root: Path) -> str:
+    return (repo_root / "hooks" / "register.ts").read_text(encoding="utf-8")
+
+
+def test_the_mod_runs_every_ledger_hook_event_of_the_table(repo_root: Path):
+    source = _mod_source(repo_root)
+    for _, _, ledger_event, _ in HOOK_TABLE:
+        assert f"'{ledger_event}'" in source, ledger_event
+
+
+def test_the_mod_sync_post_tools_match_the_server(repo_root: Path):
+    from swarm_ledger.hooks.events import SYNC_POST_TOOLS
+
+    source = _mod_source(repo_root)
+    assert "const WRITE_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']" in source
+    assert "['SendMessage', 'PushNotification', 'Monitor', ...WRITE_TOOLS]" in source
+    assert list(SYNC_POST_TOOLS) == [
+        "SendMessage",
+        "PushNotification",
+        "Monitor",
+        "Write",
+        "Edit",
+        "MultiEdit",
+        "NotebookEdit",
+    ]
+
+
+def test_the_mod_posts_only_events_the_server_handles(repo_root: Path):
+    from swarm_ledger.hooks import HANDLERS
+
+    posted = set(re.findall(r"(?:runHook|post)\(\$, s, '(\w+)'", _mod_source(repo_root)))
+    posted |= set(re.findall(r"judge\(\$, e, next, '(\w+)'", _mod_source(repo_root)))
+    assert posted
+    assert posted <= set(HANDLERS)
+
+
+@pytest.mark.parametrize("role", ROLES)
+def test_a_role_template_has_no_hooks(role: str):
+    from swarm_ledger import setup
+
+    head, _ = setup.split_document(setup.role_template(role))
+    fields = yaml.safe_load(head)
+    assert "hooks" not in fields
+    assert fields["name"] == f"swarm-{role}"
+    assert "mcpServers" in fields
+
+
 def _pyproject_version(repo_root: Path) -> str:
     text = (repo_root / "mcp" / "pyproject.toml").read_text(encoding="utf-8")
     if sys.version_info >= (3, 11):
@@ -371,3 +528,46 @@ def test_versions_match(repo_root: Path):
     plugin = json.loads((repo_root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
     assert _pyproject_version(repo_root) == __version__
     assert plugin["version"] == __version__
+
+
+def test_user_config_test_command_schema(repo_root: Path) -> None:
+    data = json.loads((repo_root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    option = data["userConfig"]["test_command"]
+    allowed = {
+        "type",
+        "title",
+        "description",
+        "required",
+        "default",
+        "options",
+        "multiple",
+        "sensitive",
+        "min",
+        "max",
+    }
+    assert set(option) <= allowed
+    assert option["type"] == "string"
+    assert str(option["title"]).strip()
+    assert str(option["description"]).strip()
+
+
+def test_setup_skill_reads_the_user_config_option(repo_root: Path) -> None:
+    text = (repo_root / "skills" / "setup" / "SKILL.md").read_text(encoding="utf-8")
+    assert "${user_config.test_command}" in text
+
+
+@pytest.mark.parametrize(
+    ("role", "rule"),
+    [
+        ("driver", "Fixes start while you explore"),
+        ("oracle", "Fixes start while the Driver explores"),
+    ],
+)
+def test_the_role_prompts_let_fixes_run_while_the_driver_explores(
+    repo_root: Path, role: str, rule: str
+) -> None:
+    text = (repo_root / "templates" / "agents" / f"{role}.md").read_text(encoding="utf-8")
+    flat = " ".join(text.split())
+    assert "while no Coder is editing" not in flat
+    assert "never during yours" not in flat
+    assert rule in flat

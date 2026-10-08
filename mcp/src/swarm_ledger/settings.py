@@ -21,19 +21,14 @@ _DEFAULT_MODELS = {
     "manager": ["opus"],
     "lead": ["opus", "sonnet"],
     "coder": ["sonnet", "haiku"],
-    # (proposed) The Driver runs on Sonnet by default, as cartographer's map-driver does.
+    # The Driver runs on Sonnet by default, as cartographer's map-driver does.
     "driver": ["sonnet", "opus"],
 }
 DEFAULT_EFFORT = {role: "medium" for role in _DEFAULT_MODELS}
 _SETTINGS_PATH = Path(".claude") / "sentinel-swarm.local.md"
-WAKE_TRANSPORTS = ("channel", "sendmessage")
-DEFAULT_WAKE_TRANSPORT = "channel"
 NOTIFY_CHANNELS = ("os", "push")
-
-
-def normalize_transport(raw: object) -> str:
-    value = str(raw or "").strip().lower().replace("_", "").replace("-", "")
-    return value if value in WAKE_TRANSPORTS else DEFAULT_WAKE_TRANSPORT
+DEFAULT_MAX_WORKERS = 8
+PROFILE_KEYS = ("test_command", "build_command", "lint_command")
 
 
 def normalize_budget(raw: object) -> int | None:
@@ -44,6 +39,16 @@ def normalize_budget(raw: object) -> int | None:
     except ValueError:
         return None
     return minutes if minutes > 0 else None
+
+
+def normalize_max_workers(raw: object) -> int:
+    if raw is None or isinstance(raw, bool):
+        return DEFAULT_MAX_WORKERS
+    try:
+        workers = int(str(raw).strip())
+    except ValueError:
+        return DEFAULT_MAX_WORKERS
+    return max(0, workers)
 
 
 def normalize_notify(raw: object) -> list[str]:
@@ -105,11 +110,34 @@ class Settings:
     prompt_cache_ttl: dict[str, str] = field(default_factory=dict)
     # Per-role cap on that role's own live sessions in the run, on top of parallelism_cap.
     role_parallelism_cap: dict[str, int] = field(default_factory=dict)
-    wake_transport: str = DEFAULT_WAKE_TRANSPORT
     notify: list[str] = field(default_factory=lambda: list(NOTIFY_CHANNELS))
+    max_workers: int = DEFAULT_MAX_WORKERS
+    # Empty means setup picks mod on a Claude Code build that runs the mod, command otherwise.
 
     def snapshot(self) -> str:
         return json.dumps(asdict(self), sort_keys=True)
+
+    @classmethod
+    def from_snapshot(cls, text: str) -> Settings:
+        data = json.loads(text)
+        return cls(
+            **{
+                **data,
+                "rubric": RubricSettings(**data["rubric"]),
+                "escalation": EscalationSettings(**data["escalation"]),
+                "watchdog": WatchdogSettings(**data["watchdog"]),
+            }
+        )
+
+    def adopt_profile(self, snapshot: str | None) -> None:
+        try:
+            data = json.loads(snapshot or "{}")
+        except ValueError:
+            return
+        if isinstance(data, dict):
+            for key in PROFILE_KEYS:
+                if key in data:
+                    setattr(self, key, data[key])
 
 
 def _frontmatter(text: str) -> dict[str, Any]:
@@ -200,6 +228,6 @@ def load_settings(repo_root: Path) -> Settings:
         effort=effort,
         prompt_cache_ttl=prompt_cache_ttl,
         role_parallelism_cap=role_parallelism_cap,
-        wake_transport=normalize_transport(data.get("wake_transport")),
         notify=normalize_notify(data.get("notify")),
+        max_workers=normalize_max_workers(data.get("max_workers")),
     )

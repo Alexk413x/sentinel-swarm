@@ -6,7 +6,7 @@ from contextlib import AbstractContextManager
 from typing import Literal
 
 from .db import write_tx
-from .identity import Caller, LedgerError, require_role, resolve
+from .identity import Caller, LedgerError, caller_of, require_role, resolve
 from .review import _ROLE_RANK
 from .settings import Settings
 
@@ -22,19 +22,6 @@ _ROLE_TITLE = {"lead": "Lead", "manager": "Manager", "oracle": "Oracle"}
 
 def _rows(cursor: sqlite3.Cursor) -> list[dict]:
     return [dict(row) for row in cursor.fetchall()]
-
-
-def _caller_of(agent: sqlite3.Row) -> Caller:
-    return Caller(
-        agent_id=agent["agent_id"],
-        name=agent["name"],
-        role=agent["role"],
-        run_id=agent["run_id"],
-        phase_id=agent["phase_id"],
-        module_id=agent["module_id"],
-        file_id=agent["file_id"],
-        parent_agent_id=agent["parent_agent_id"],
-    )
 
 
 def _test_run_passed(row: sqlite3.Row) -> bool:
@@ -883,7 +870,7 @@ class AgreementsMixin:
             )
             if index == 0:
                 wakeup = owed
-            upper = _caller_of(agent)
+            upper = caller_of(agent)
         return wakeup
 
     def shortfall_record(

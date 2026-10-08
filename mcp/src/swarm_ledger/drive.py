@@ -327,19 +327,27 @@ def open_findings(conn: sqlite3.Connection, run_id: int) -> list[dict]:
     ]
 
 
-def findings_named(conn: sqlite3.Connection, finding_ids: list[int]) -> list[dict]:
+def findings_named(
+    conn: sqlite3.Connection, finding_ids: list[int], evidence: bool = False
+) -> list[dict]:
     if not finding_ids:
         return []
     marks = ", ".join("?" for _ in finding_ids)
+    columns = "finding_id, fingerprint, title, severity, area"
+    if evidence:
+        columns += ", steps, expected, actual, evidence_json"
     rows = {
         row["finding_id"]: dict(row)
         for row in conn.execute(
-            "SELECT finding_id, fingerprint, title, severity, area FROM drive_findings "
-            f"WHERE finding_id IN ({marks})",
+            f"SELECT {columns} FROM drive_findings WHERE finding_id IN ({marks})",
             finding_ids,
         )
     }
-    return [rows[i] for i in finding_ids if i in rows]
+    found = [rows[i] for i in finding_ids if i in rows]
+    if evidence:
+        for f in found:
+            f["evidence"] = json.loads(f.pop("evidence_json") or "[]")
+    return found
 
 
 def next_checkin(request: dict, now: datetime | None = None) -> dict[str, Any]:
@@ -398,7 +406,7 @@ class DriveMixin:
     Split out of `ledger.py`; every method here still assumes it is mixed into
     `Ledger` and relies on `self.conn`, `self.settings`, `self.repo_root`,
     `self._release_tx`, `self._release_agent`, `self._owe_wakeup`, `self.next_step`,
-    `self.brief_create`, and `self.agent_spawn`.
+    `self._write_brief`, and `self.agent_spawn`.
     """
 
     # Declared, not assigned: Ledger.__init__ sets these. The declarations let
@@ -424,7 +432,7 @@ class DriveMixin:
 
     def next_step(self, wakeup: dict | None) -> str | None: ...
 
-    def brief_create(
+    def _write_brief(
         self,
         caller: str,
         agent_id: str,
@@ -458,6 +466,29 @@ class DriveMixin:
                 return False
             self._release_agent(conn, agent_id, "exploration closed; final wake-up sent")
         return True
+
+    def drive_skill(self, agent_id: str, skill: str) -> str | None:
+        name = skill.strip().removeprefix("/").removeprefix("cartographer:")
+        if name not in ("map-test", "map-explore"):
+            return None
+        with write_tx(self.conn) as conn:
+            request = conn.execute(
+                "SELECT * FROM drive_requests WHERE agent_id = ? AND state = 'open'", (agent_id,)
+            ).fetchone()
+            if request is None:
+                return None
+            if name == "map-test":
+                conn.execute(
+                    f"UPDATE drive_requests SET map_test_at = {_NOW} WHERE request_id = ?",
+                    (request["request_id"],),
+                )
+                return None
+        if request["map_test_at"] is None:
+            return (
+                "invoke the map-test skill first: it replays the recorded routes against this "
+                "build and rechecks earlier findings. map-explore comes after it"
+            )
+        return None
 
     def _own_open_request(self, c: Caller, request_id: int) -> dict:
         row = self.conn.execute(
@@ -640,6 +671,24 @@ class DriveMixin:
                     f"Resolve directive {paused['directive_id']} first"
                 )
 
+    def _require_fix_claim(
+        self, conn: sqlite3.Connection, run_id: int, file_id: int | None, finding_ids: list[int]
+    ) -> None:
+        if not finding_ids or file_id is None:
+            return
+        claim = conn.execute(
+            "SELECT path, claimed_at FROM files WHERE file_id = ?", (file_id,)
+        ).fetchone()
+        if claim is None:
+            return
+        for finding in self._findings_of(conn, run_id, finding_ids):
+            if (claim["claimed_at"] or "") < finding["created_at"]:
+                raise LedgerError(
+                    f"the claim on {claim['path']} is older than finding "
+                    f"{finding['finding_id']}; a fix Coder works on a fresh claim: "
+                    "release_file the path and claim_file it again for the fix Coder"
+                )
+
     # -- Tools ----------------------------------------------------------------------
 
     def drive_request(self, caller: str, agent_id: str, focus: str) -> dict:
@@ -722,7 +771,7 @@ class DriveMixin:
             f"drive_checkin(request_id={request_id}, ...) every 30 minutes, and "
             f"drive_done(request_id={request_id}) when the exploration ends."
         )
-        self.brief_create(caller, agent_id, child_name, "driver", model, body, finding_ids=[])
+        self._write_brief(caller, agent_id, child_name, "driver", model, body, finding_ids=[])
         spawned = self.agent_spawn(caller, agent_id, child_name)
 
         with write_tx(self.conn) as conn:

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from swarm_ledger import agentfiles, sessions, setup
+from swarm_ledger import agentfiles, auth, sessions, setup
 from swarm_ledger.clock import stamp
 from swarm_ledger.db import connect, write_tx
 from swarm_ledger.drive import (
@@ -42,7 +42,7 @@ tools: Read, SendMessage, Bash, Agent, mcp__swarm-ledger
 mcpServers:
   - codebase-kg:
       command: python
-      args: [".sentinel-swarm/hook.py", "mcp", "codebase-kg@codebase-kg", "codebase-kg"]
+      args: [".sentinel-swarm/hook.py", "mcp", "codebase-kg@alexk413x", "codebase-kg"]
 ---
 
 You are a {role}.
@@ -117,6 +117,7 @@ def host(tmp_path: Path, repo_root: Path) -> Path:
     (records / "server.json").write_text(
         json.dumps({"url": "http://127.0.0.1:4321/mcp", "port": 4321, "pid": 1}), "utf-8"
     )
+    auth.ensure_token(root)
     _register_plugins(["cartographer@cartographer", "web-driver@accessibility-tools"])
     return root
 
@@ -139,9 +140,11 @@ def _bootstrap(ledger: Ledger, claude: FakeClaude, oracle_session: str = "sess-o
     }
 
 
-def _fabricate_fixer(ledger: Ledger, oracle_id: str, role: str, name: str) -> None:
-    ledger.brief_create("oracle", oracle_id, name, "manager", "opus", "Own it.")
-    ledger.agent_register_start(f"{name}-agent", role, parent_agent_id=oracle_id)
+def _fabricate_fixer(ledger: Ledger, ctx: dict, role: str, name: str) -> None:
+    ledger.brief_create(
+        "oracle", ctx["oracle_id"], name, "manager", "opus", "Own it.", phase_id=ctx["phase_id"]
+    )
+    ledger.agent_register_start(f"{name}-agent", role, parent_agent_id=ctx["oracle_id"])
     ledger.brief_ack(name, f"{name}-agent")
 
 
@@ -381,16 +384,16 @@ def test_drive_request_refuses_a_second_open_exploration(
 
 def test_drive_request_refuses_while_a_fix_is_running(ledger: Ledger, claude: FakeClaude) -> None:
     ctx = _bootstrap(ledger, claude)
-    _fabricate_fixer(ledger, ctx["oracle_id"], "manager", "manager-1")
+    _fabricate_fixer(ledger, ctx, "manager", "mgr-p1-phase-1")
     with pytest.raises(LedgerError, match="a fix is still running"):
         ledger.drive_request("oracle", ctx["oracle_id"], "next pass")
 
 
 def test_drive_request_is_oracle_only(ledger: Ledger, claude: FakeClaude) -> None:
     ctx = _bootstrap(ledger, claude)
-    _fabricate_fixer(ledger, ctx["oracle_id"], "manager", "manager-1")
+    _fabricate_fixer(ledger, ctx, "manager", "mgr-p1-phase-1")
     with pytest.raises(LedgerError):
-        ledger.drive_request("manager-1", "manager-1-agent", "not yours to request")
+        ledger.drive_request("mgr-p1-phase-1", "mgr-p1-phase-1-agent", "not yours to request")
 
 
 # -- drive_issue, drive_checkin, drive_done ------------------------------------------------------

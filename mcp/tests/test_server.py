@@ -9,8 +9,7 @@ import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
-from swarm_ledger import __version__, rubric, sessions
-from swarm_ledger import server as server_module
+from swarm_ledger import __version__, front, rubric, sessions
 from swarm_ledger.server import _TOOL_NAMES, configure, mcp
 
 
@@ -25,7 +24,7 @@ def no_claude_sessions(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def host(tmp_path: Path, repo_root: Path) -> Path:
+def host(tmp_path: Path, repo_root: Path, check_in) -> Path:
     root = tmp_path / "host"
     (root / ".git").mkdir(parents=True)
     claude_dir = root / ".claude"
@@ -35,6 +34,7 @@ def host(tmp_path: Path, repo_root: Path) -> Path:
     )
     (claude_dir / "sentinel-swarm.local.md").write_text(template, encoding="utf-8")
     configure(root)
+    check_in(root, "sess-1", "stamped-1", "mgr-1")
     return root
 
 
@@ -148,25 +148,34 @@ def test_score_record_arguments_pass_the_schema_to_the_ledger(host: Path):
     assert message == "the oracle role may not call score_record"
 
 
+async def _brief_manager(client: Client) -> None:
+    await client.call_tool("run_start", {"prd": "Build X", "session_id": "sess-1"})
+    oracle = {"caller": "oracle", "agent_id": "sess-1"}
+    phase = (await client.call_tool("phase_add", {**oracle, "name": "phase-1"})).data
+    await client.call_tool(
+        "phase_update", {**oracle, "phase_id": phase["phase_id"], "state": "unlocked"}
+    )
+    await client.call_tool(
+        "brief_create",
+        {
+            **oracle,
+            "child_name": "mgr-p1-phase-1",
+            "child_role": "manager",
+            "model": "opus",
+            "body": "Own phase-1.",
+            "phase_id": phase["phase_id"],
+        },
+    )
+
+
 async def _manager_calls(tools: list[str]) -> list[str]:
     results: list[str] = []
     async with Client(mcp) as client:
-        await client.call_tool("run_start", {"prd": "Build X", "session_id": "sess-1"})
-        await client.call_tool(
-            "brief_create",
-            {
-                "caller": "oracle",
-                "agent_id": "sess-1",
-                "child_name": "manager-1",
-                "child_role": "manager",
-                "model": "opus",
-                "body": "Own phase-1.",
-            },
-        )
-        await client.call_tool("brief_ack", {"caller": "manager-1", "agent_id": "mgr-1"})
+        await _brief_manager(client)
+        await client.call_tool("brief_ack", {"caller": "mgr-p1-phase-1", "agent_id": "mgr-1"})
         for tool in tools:
             try:
-                await client.call_tool(tool, {"caller": "manager-1", "agent_id": "mgr-1"})
+                await client.call_tool(tool, {"caller": "mgr-p1-phase-1", "agent_id": "mgr-1"})
                 results.append("allowed")
             except ToolError as exc:
                 results.append(str(exc))
@@ -176,6 +185,43 @@ async def _manager_calls(tools: list[str]) -> list[str]:
 def test_a_role_calls_only_its_own_ledger_tools(host: Path):
     assert asyncio.run(_manager_calls(["plan_unlocked", "guidelines_get"])) == [
         "the manager role may not call plan_unlocked",
+        "allowed",
+    ]
+
+
+async def _registered_manager_calls() -> list[str]:
+    calls = [
+        ("guidelines_get", {"caller": "mgr-1", "agent_id": "mgr-1"}),
+        ("ledger_info", {"agent_id": "mgr-1"}),
+        ("who_owns", {"path": "src/a.py", "agent_id": "mgr-1"}),
+        (
+            "brief_get",
+            {"caller_name": "mgr-1", "child_name": "mgr-p1-phase-1", "agent_id": "mgr-1"},
+        ),
+        ("brief_ack", {"caller": "mgr-p1-phase-1", "agent_id": "mgr-1"}),
+        ("guidelines_get", {"caller": "mgr-p1-phase-1", "agent_id": "mgr-1"}),
+    ]
+    results: list[str] = []
+    async with Client(mcp) as client:
+        await _brief_manager(client)
+        front._ledger().agent_register_start("mgr-1", "manager", parent_agent_id="sess-1")
+        for tool, arguments in calls:
+            try:
+                await client.call_tool(tool, arguments)
+                results.append("allowed")
+            except ToolError as exc:
+                results.append(str(exc))
+    return results
+
+
+def test_a_registered_session_reaches_only_brief_ack_and_the_identity_free_tools(host: Path):
+    assert asyncio.run(_registered_manager_calls()) == [
+        "you are not bound to the ledger yet: call brief_ack(caller='mgr-1'). "
+        "No other ledger tool works until it succeeds",
+        "allowed",
+        "allowed",
+        "allowed",
+        "allowed",
         "allowed",
     ]
 
@@ -204,6 +250,22 @@ def test_ledger_info_reports_ready_status_and_tool_count(host: Path):
         "tools": len(_TOOL_NAMES),
         "repo_root": str(host),
     }
+
+
+async def _run_start_as(session_id: str) -> str:
+    async with Client(mcp) as client:
+        try:
+            await client.call_tool("run_start", {"prd": "Build X", "session_id": session_id})
+        except ToolError as exc:
+            return str(exc)
+    raise AssertionError("expected run_start to raise a ToolError")
+
+
+def test_run_start_refuses_a_session_the_mod_never_checked_in_for(host: Path):
+    message = asyncio.run(_run_start_as("main"))
+    assert message.startswith(
+        "run_start refuses session 'main': the sentinel-swarm mod never checked in for it"
+    )
 
 
 async def _run_start_then_status() -> tuple[dict, dict]:
@@ -252,32 +314,21 @@ def test_brief_create_refuses_an_unapproved_model(host: Path):
 
 async def _brief_get_and_ack_flow() -> dict[str, Any]:
     async with Client(mcp) as client:
-        await client.call_tool("run_start", {"prd": "Build X", "session_id": "sess-1"})
-        await client.call_tool(
-            "brief_create",
-            {
-                "caller": "oracle",
-                "agent_id": "sess-1",
-                "child_name": "manager-1",
-                "child_role": "manager",
-                "model": "opus",
-                "body": "Own phase-1.",
-            },
-        )
+        await _brief_manager(client)
         brief = (
             await client.call_tool(
-                "brief_get", {"caller_name": "manager-1", "child_name": "manager-1"}
+                "brief_get", {"caller_name": "mgr-p1-phase-1", "child_name": "mgr-p1-phase-1"}
             )
         ).data
         acked = (
-            await client.call_tool("brief_ack", {"caller": "manager-1", "agent_id": "mgr-1"})
+            await client.call_tool("brief_ack", {"caller": "mgr-p1-phase-1", "agent_id": "mgr-1"})
         ).data
         return {"brief": brief, "acked": acked}
 
 
 def test_brief_get_and_brief_ack_flow(host: Path):
     result = asyncio.run(_brief_get_and_ack_flow())
-    assert result["brief"]["child_name"] == "manager-1"
+    assert result["brief"]["child_name"] == "mgr-p1-phase-1"
     assert result["brief"]["model"] == "opus"
     assert result["acked"]["agent_id"] == "mgr-1"
     assert result["acked"]["role"] == "manager"
@@ -333,7 +384,7 @@ def test_run_finish_calls_the_on_run_finish_hook(
     host: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     finished: list[str | None] = []
-    monkeypatch.setattr(server_module, "on_run_finish", finished.append)
+    monkeypatch.setattr(front, "on_run_finish", finished.append)
     assert asyncio.run(_start_and_finish())["state"] == "finished"
     assert len(finished) == 1
     assert finished[0] is not None

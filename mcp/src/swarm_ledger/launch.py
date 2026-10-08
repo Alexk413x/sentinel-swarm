@@ -11,11 +11,6 @@ from typing import Literal
 from . import setup
 
 Mode = Literal["interactive", "bg", "headless"]
-CHANNEL_NOTICE = (
-    "The Oracle loads the swarm-events development channel for wake-ups. When Claude Code "
-    'asks, choose "I am using this for local development". Set wake_transport: sendmessage '
-    "in .claude/sentinel-swarm.local.md to launch without it."
-)
 
 
 def _ensure_server(repo: Path) -> str:
@@ -31,9 +26,7 @@ def _oracle_model(repo: Path) -> str | None:
     return oracle_model(repo, load_settings(repo).models.get("oracle", []))
 
 
-def _session_options(
-    repo: Path, role: str, model: str | None, ledger_url: str, channel: bool = False
-) -> list[str]:
+def _session_options(repo: Path, role: str, model: str | None, ledger_url: str) -> list[str]:
     from .agentfiles import session_options
     from .settings import load_settings
 
@@ -45,16 +38,7 @@ def _session_options(
         ledger_url,
         effort=settings.effort.get(role),
         prompt_cache_ttl=settings.prompt_cache_ttl.get(role),
-        channel=channel,
     )
-
-
-def carries_channel(repo: Path, mode: Mode) -> bool:
-    from .settings import load_settings
-
-    # Claude Code reads the development-channel flag only in an interactive session: a --bg or
-    # -p session discards it, so only an interactive launch can register swarm-events.
-    return mode == "interactive" and load_settings(repo).wake_transport == "channel"
 
 
 def _claude_binary() -> str:
@@ -63,10 +47,22 @@ def _claude_binary() -> str:
     return claude_binary()
 
 
-def _dev_channel_args(extra: list[str]) -> list[str]:
+def _plugin_load_problem(repo: Path) -> str | None:
+    from .sessions import plugin_load_problem
+
+    return plugin_load_problem(repo)
+
+
+def _child_env() -> dict[str, str]:
+    from .sessions import child_env
+
+    return child_env()
+
+
+def _dev_channel_args() -> list[str]:
     from .sessions import dev_channel_args
 
-    return dev_channel_args(extra)
+    return dev_channel_args()
 
 
 def repo_slug(repo: Path) -> str:
@@ -83,12 +79,9 @@ def oracle_session_name(repo: Path, started: float | None = None) -> str:
 def oracle_command(
     repo: Path, prompt: str, ledger_url: str, mode: Mode, name: str | None = None
 ) -> list[str]:
-    from .wake import CHANNEL_ENTRY
-
-    channel = carries_channel(repo, mode)
-    options = _session_options(repo, "oracle", _oracle_model(repo), ledger_url, channel)
+    options = _session_options(repo, "oracle", _oracle_model(repo), ledger_url)
     claude = _claude_binary()
-    dev = _dev_channel_args([CHANNEL_ENTRY] if channel else [])
+    dev = _dev_channel_args()
     if mode == "headless":
         return [claude, "-p", *options, "--output-format", "stream-json", "--verbose", *dev]
     # The prompt goes first: --allowedTools takes a space-separated list and swallows a
@@ -109,13 +102,15 @@ def _needs_setup(repo: Path) -> bool:
 
 def _run(command: list[str], repo: Path, prompt: str, mode: Mode, transcript: Path | None) -> int:
     if mode != "headless":
-        return subprocess.run(command, cwd=repo).returncode
+        return subprocess.run(command, cwd=repo, env=_child_env()).returncode
     payload = prompt.encode("utf-8")
     if transcript is None:
-        return subprocess.run(command, input=payload, cwd=repo).returncode
+        return subprocess.run(command, input=payload, cwd=repo, env=_child_env()).returncode
     transcript.parent.mkdir(parents=True, exist_ok=True)
     with transcript.open("wb") as out:
-        return subprocess.run(command, input=payload, stdout=out, cwd=repo).returncode
+        return subprocess.run(
+            command, input=payload, stdout=out, cwd=repo, env=_child_env()
+        ).returncode
 
 
 def launch(repo: Path, prompt: str, mode: Mode, transcript: Path | None = None) -> int:
@@ -126,14 +121,19 @@ def launch(repo: Path, prompt: str, mode: Mode, transcript: Path | None = None) 
     if mode != "interactive" and not setup.is_trusted(repo):
         sys.stderr.write(setup.trust_instructions(repo) + "\n")
         return 1
+    problem = _plugin_load_problem(repo)
+    if problem is not None:
+        sys.stderr.write(
+            f"cannot start the Oracle: the sentinel-swarm plugin does not load in {repo}, so "
+            f"its mod would not gate the roles: {problem}\n"
+        )
+        return 1
     name = oracle_session_name(repo)
     try:
         command = oracle_command(repo, prompt, _ensure_server(repo), mode, name)
     except Exception as exc:
         sys.stderr.write(f"cannot start the Oracle: {exc}\n")
         return 1
-    if carries_channel(repo, mode):
-        print(CHANNEL_NOTICE)
     try:
         code = _run(command, repo, prompt, mode, transcript)
     except OSError as exc:

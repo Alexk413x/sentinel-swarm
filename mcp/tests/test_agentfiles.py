@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from swarm_ledger import auth
 from swarm_ledger.agentfiles import (
     SESSION_SETTINGS,
     agent_file_path,
@@ -25,7 +26,7 @@ tools: Read, Write, SendMessage, mcp__swarm-ledger
 mcpServers:
   - codebase-kg:
       command: python
-      args: [".sentinel-swarm/hook.py", "mcp", "codebase-kg@codebase-kg", "codebase-kg"]
+      args: [".sentinel-swarm/hook.py", "mcp", "codebase-kg@alexk413x", "codebase-kg"]
 hooks:
   Stop:
     - hooks:
@@ -43,7 +44,16 @@ def _write(root: Path, role: str, text: str) -> Path:
     path = agent_file_path(root, role)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+    auth.ensure_token(root)
     return path
+
+
+def _ledger_entry(root: Path, url: str) -> dict:
+    return {
+        "type": "http",
+        "url": url,
+        "headers": {"Authorization": f"Bearer {auth.read_token(root)}"},
+    }
 
 
 def test_read_agent_file_returns_the_frontmatter_and_the_body(tmp_path: Path) -> None:
@@ -101,13 +111,13 @@ def test_session_options_builds_the_flags_from_the_role_file(tmp_path: Path) -> 
     config = json.loads(options[options.index("--mcp-config") + 1])
     assert config == {
         "mcpServers": {
-            "swarm-ledger": {"type": "http", "url": "http://127.0.0.1:5000/mcp"},
+            "swarm-ledger": _ledger_entry(tmp_path, "http://127.0.0.1:5000/mcp"),
             "codebase-kg": {
                 "command": "python",
                 "args": [
                     ".sentinel-swarm/hook.py",
                     "mcp",
-                    "codebase-kg@codebase-kg",
+                    "codebase-kg@alexk413x",
                     "codebase-kg",
                 ],
             },
@@ -182,11 +192,11 @@ def test_session_options_run_every_plugin_server_through_the_stdio_shim(
     options = session_options(host, "coder", None, "http://127.0.0.1:1/mcp")
     servers = json.loads(options[options.index("--mcp-config") + 1])["mcpServers"]
 
-    assert servers["swarm-ledger"] == {"type": "http", "url": "http://127.0.0.1:1/mcp"}
+    assert servers["swarm-ledger"] == _ledger_entry(host, "http://127.0.0.1:1/mcp")
     assert servers["codebase-kg"]["args"] == [
         ".sentinel-swarm/hook.py",
         "mcp",
-        "codebase-kg@codebase-kg",
+        "codebase-kg@alexk413x",
         "codebase-kg",
     ]
     for name in ("a11y-tools", "a11y-kg"):
@@ -194,3 +204,162 @@ def test_session_options_run_every_plugin_server_through_the_stdio_shim(
             "command": "python",
             "args": [".sentinel-swarm/hook.py", "mcp", "a11y@accessibility-tools", name],
         }
+
+
+def _kg_install(root: Path, port_default: int = 47821) -> Path:
+    install = root / "kg-install"
+    (install / ".claude-plugin").mkdir(parents=True)
+    (install / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "codebase-kg": {
+                        "type": "http",
+                        "url": "http://127.0.0.1:${user_config.server_port}/mcp",
+                        "headersHelper": 'py -3 "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_headers.py"',
+                    }
+                }
+            }
+        ),
+        "utf-8",
+    )
+    (install / ".claude-plugin" / "plugin.json").write_text(
+        json.dumps(
+            {
+                "name": "codebase-kg",
+                "userConfig": {"server_port": {"type": "number", "default": port_default}},
+            }
+        ),
+        "utf-8",
+    )
+    return install
+
+
+def _kg_registry(config_dir: Path, install: Path) -> None:
+    path = config_dir / "plugins" / "installed_plugins.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {"plugins": {"codebase-kg@alexk413x": [{"scope": "user", "installPath": str(install)}]}}
+        ),
+        "utf-8",
+    )
+
+
+def _servers(host: Path) -> dict:
+    options = session_options(host, "coder", None, "http://127.0.0.1:1/mcp")
+    return json.loads(options[options.index("--mcp-config") + 1])["mcpServers"]
+
+
+def test_session_options_connect_an_http_plugin_server_directly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = tmp_path / "host"
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    install = _kg_install(tmp_path)
+    _kg_registry(config_dir, install)
+    _write(host, "coder", _CODER)
+
+    assert _servers(host)["codebase-kg"] == {
+        "type": "http",
+        "url": "http://127.0.0.1:47821/mcp",
+        "headersHelper": f'py -3 "{install}/mcp/launch/kg_headers.py"',
+    }
+
+
+def test_session_options_use_the_users_port_setting_not_the_repos(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = tmp_path / "host"
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    _kg_registry(config_dir, _kg_install(tmp_path))
+    _write(host, "coder", _CODER)
+    (config_dir / "settings.json").write_text(
+        json.dumps(
+            {"pluginConfigs": {"codebase-kg@alexk413x": {"options": {"server_port": 47900}}}}
+        ),
+        "utf-8",
+    )
+    (host / ".claude" / "settings.local.json").write_text(
+        json.dumps(
+            {"pluginConfigs": {"codebase-kg@alexk413x": {"options": {"server_port": 47901}}}}
+        ),
+        "utf-8",
+    )
+
+    assert _servers(host)["codebase-kg"]["url"] == "http://127.0.0.1:47900/mcp"
+
+
+@pytest.mark.parametrize("port", ["1@evil.example", "47821/x", "47821; calc", True, 47821.5])
+def test_session_options_keep_the_relay_for_an_unsafe_port_setting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, port: object
+) -> None:
+    host = tmp_path / "host"
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    _kg_registry(config_dir, _kg_install(tmp_path))
+    _write(host, "coder", _CODER)
+    (config_dir / "settings.json").write_text(
+        json.dumps(
+            {"pluginConfigs": {"codebase-kg@alexk413x": {"options": {"server_port": port}}}}
+        ),
+        "utf-8",
+    )
+
+    assert _servers(host)["codebase-kg"]["args"][:2] == [".sentinel-swarm/hook.py", "mcp"]
+
+
+def test_session_options_keep_the_relay_for_an_unresolved_placeholder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = tmp_path / "host"
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    install = _kg_install(tmp_path)
+    manifest = install / ".claude-plugin" / "plugin.json"
+    manifest.write_text(json.dumps({"name": "codebase-kg"}), "utf-8")
+    _kg_registry(config_dir, install)
+    _write(host, "coder", _CODER)
+
+    assert _servers(host)["codebase-kg"]["args"][:2] == [".sentinel-swarm/hook.py", "mcp"]
+
+
+def test_session_options_send_the_repos_token_as_a_static_header(tmp_path: Path) -> None:
+    _write(tmp_path, "coder", _CODER)
+    token = auth.read_token(tmp_path)
+    options = session_options(tmp_path, "coder", None, "http://127.0.0.1:5000/mcp")
+    entry = json.loads(options[options.index("--mcp-config") + 1])["mcpServers"]["swarm-ledger"]
+    assert entry["headers"] == {"Authorization": f"Bearer {token}"}
+    assert "headersHelper" not in entry
+    assert auth.ensure_token(tmp_path) == token
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost:5000/mcp",
+        "http://10.0.0.2:5000/mcp",
+        "https://127.0.0.1:5000/mcp",
+        "http://127.0.0.1:5000/other",
+        "http://127.0.0.1:99999/mcp",
+        "http://127.0.0.1:5000@evil.example/mcp",
+    ],
+)
+def test_session_options_refuse_a_ledger_url_off_loopback(tmp_path: Path, url: str) -> None:
+    _write(tmp_path, "coder", _CODER)
+    with pytest.raises(LedgerError, match="is not http://127.0.0.1:<port>/mcp"):
+        session_options(tmp_path, "coder", None, url)
+
+
+@pytest.mark.parametrize("token", ["", "short", "a" * 31, "a" * 129, "has space " + "a" * 40])
+def test_session_options_refuse_a_missing_or_malformed_token(tmp_path: Path, token: str) -> None:
+    _write(tmp_path, "coder", _CODER)
+    path = auth.token_path(tmp_path)
+    if token:
+        path.write_text(token, "utf-8")
+    else:
+        path.unlink()
+    with pytest.raises(LedgerError, match="ledger token"):
+        session_options(tmp_path, "coder", None, "http://127.0.0.1:5000/mcp")

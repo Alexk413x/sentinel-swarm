@@ -6,7 +6,7 @@ The rubric is identical for every scorer. Every number is a setting in
 ## Who scores
 
 - Every file gets two reviews: the Coder's self review and the Lead's blind review.
-- A Coder's own scores never pass a file. Only the Lead's review does. **(proposed)**
+- A Coder's own scores never pass a file. Only the Lead's review does.
 - The Manager does not score files. It reviews whether each Lead met its tasks, and the
   files whose self and Lead scores on the approved handoff disagreed.
 - The Oracle does not score files. It audits the scores and investigates the low ones.
@@ -20,8 +20,8 @@ The rubric is identical for every scorer. Every number is a setting in
 Nine dimensions, each with fixed criteria: meets the brief, testing, error handling,
 security, architecture, code structure, performance, maintainability, and accessibility.
 `mcp/src/swarm_ledger/rubric.py` holds every dimension and criterion key and its text.
-`score_record`'s JSON schema lists the same keys, built from it. The split of design
-into architecture and code structure is **(proposed)**.
+`score_record`'s JSON schema lists the same keys, built from it. Design is split
+into architecture and code structure.
 
 - A scorer rates every criterion of every applicable dimension. A dimension that does
   not apply, such as accessibility on a back-end file, is marked not applicable with a
@@ -29,18 +29,17 @@ into architecture and code structure is **(proposed)**.
 - Every dimension is scored on every review, including the dimensions a fix did not
   target. `score_record` refuses a Coder or Lead score set whose `applicable` does not
   list all nine dimensions, and a dimension marked not applicable with an empty reason.
-  **(proposed)**
 
-## Scale **(proposed)**
+## Scale
 
 - Each criterion is rated from 1 to 10.
 - A dimension's score is the average of its ratings times 10, from 10 to 100.
 - There is no combined score and there are no weights. Each dimension passes or fails
   on its own, and a criterion can fail on its own.
 - A rating below 9 needs a reason and a `ref` (file and line). `score_record` refuses
-  a rating below 9 that lacks either. **(proposed)**
+  a rating below 9 that lacks either.
 
-## Module and phase review scores **(proposed)**
+## Module and phase review scores
 
 - `module_review` and `phase_review` take a `scores` list when the outcome is
   `accepted`: one rating from 1 to 10 for each of three dimensions — completeness,
@@ -55,13 +54,13 @@ into architecture and code structure is **(proposed)**.
 |---|---|
 | 9 to 10 | Fully met |
 | 7 to 8 | Met, with a minor suggestion |
-| 5 to 6 | Partly met; an issue is recorded |
+| 5 to 6 | Partly met |
 | 3 to 4 | Not met; must be fixed |
 | 1 to 2 | Wrong, unsafe, or missing |
 
 ## Thresholds
 
-| Setting | Default **(proposed)** | Meaning |
+| Setting | Default | Meaning |
 |---|---|---|
 | `target` | 90 | The goal for every dimension |
 | `floor` | 70 | A fix that drops a dimension below this is a regression |
@@ -74,22 +73,23 @@ into architecture and code structure is **(proposed)**.
   is below the criterion floor. `approve` requires it of the Lead review, or the floor
   pass below.
 - **Disagreement:** a gap of `disagreement_gap` or more on a dimension, or one score at
-  or above the target and the other below it. **(proposed)**
+  or above the target and the other below it.
 
-## Floor pass **(proposed)**
+## Floor pass
 
 - A file that fails the pass rule still passes when it ends its last escalation round
   with every applicable dimension at or above `floor` and no criterion below
   `criterion_floor`. `attempts.round` counts fix attempts per file, not per issue, so
-  it never caps at `rounds`; a file is at its last round once its recorded attempts
-  reach the full escalation budget, `rounds` times `attempts_per_round`.
+  it never caps at `rounds`; a file is at its last round once its attempts that did not improve
+  reach the full escalation budget, `rounds` times `attempts_per_round`. An improved
+  attempt does not count, as in the improvement loop.
 - `approve` accepts the handoff then. It records which dimensions passed at the floor,
   as a shortfall for each dimension still below `target`, and the report shows them.
 
 ## Issues
 
 - Every rating of 4 or lower, in a self or a Lead review, opens an issue on the file,
-  one per open criterion. **(proposed)**
+  one per open criterion.
 - A later Lead review that rates that criterion 5 or higher closes it.
 - `issue_close(issue_id, resolution)` closes an issue by hand: the file's Lead, a
   Manager, or the Oracle.
@@ -97,9 +97,9 @@ into architecture and code structure is **(proposed)**.
   hand. `idea_record` records an idea tried against an issue and its outcome.
 - **Blind scoring.** Until the file's Lead has recorded its own score for the file's
   current handoff, `issue_list` hides from that Lead the issues the Coder's self
-  review opened for that file. They show once the Lead scores. **(proposed)**
+  review opened for that file. They show once the Lead scores.
 
-## The improvement loop **(proposed)**
+## The improvement loop
 
 - A score below the target is something to research and improve. The loop stops when
   new scores stop getting better.
@@ -129,22 +129,21 @@ issue stopped improving, and it explains to the next layer why the issue arrived
 | 3 | 7 to 9 | The Oracle adds its suggestions |
 | After round 3 | | The Oracle changes the plan or notifies the user |
 
-- A round ends after 3 attempts that did not improve the score. **(counting rule
-  proposed)** Only a reviewer's return counts, and accepting work as incomplete uses no
-  attempt.
+- A round ends after 3 attempts that did not improve the score. Only a reviewer's
+  return counts, and accepting work as incomplete uses no attempt. `accept_incomplete`
+  has its own refusals; see "Lead review" in [02-run-lifecycle.md](02-run-lifecycle.md).
 - `issue_escalate(issue_id)` moves an issue to its next round, names the receiver in
   `escalated_to` (the Manager for round 2, the Oracle for round 3), messages it, and
   owes it a wake-up with a pointer, returned as `next`. Only the file owner and the
   owner's parent chain may call it. It refuses an issue already at round `rounds`.
-  **(proposed)**
 - `attempt_record` advances a round the same way: on a plateau or a regression that
   exhausts `attempts_per_round`, it sets `escalated_to`, messages the receiver, and
-  owes it the same wake-up, listed in the result's `escalated`. **(proposed)**
+  owes it the same wake-up, listed in the result's `escalated`.
 - The Manager's resources include its other Leads and Coders, a new Lead, a fresh Coder,
   a stronger model, a higher effort (`brief_create(effort=...)`), and a structural
-  change such as a split file or a changed contract. **(proposed)**
+  change such as a split file or a changed contract.
 - An issue opened by hand with `issue_open` starts at round 1 for a Coder or a Lead,
-  round 2 for a Manager, and round 3 for the Oracle. **(proposed)** An issue a
+  round 2 for a Manager, and round 3 for the Oracle. An issue a
   self or Lead review opens automatically always starts at round 1.
 - A layer with no new idea passes the issue up.
 - An issue that ends round 3 below the floor notifies the user now. `attempt_record`
@@ -155,11 +154,11 @@ issue stopped improving, and it explains to the next layer why the issue arrived
   `issue:<issue_id>`. For an issue with no dimension, any dimension or criterion of the
   file counts. The ledger server shows the OS notification, and the Oracle owes the
   `PushNotification`. See "Driver notifications" in
-  [02-run-lifecycle.md](02-run-lifecycle.md) for both paths. **(proposed)**
+  [02-run-lifecycle.md](02-run-lifecycle.md) for both paths.
 
 ## Evidence
 
 - Passing tests are the only evidence the handoff requires. Coverage, lint, type checks,
-  and security scans support the scores and do not gate. **(proposed)**
+  and security scans support the scores and do not gate.
 - The ledger runs the tests and records the result. A report cannot claim a pass that
-  did not happen. **(proposed)**
+  did not happen.

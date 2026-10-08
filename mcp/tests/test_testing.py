@@ -212,3 +212,20 @@ def test_summarize_output_keeps_the_tail_of_a_pass_or_an_unknown_format() -> Non
 
     other = "x" * 10000 + "\nFAIL\tpkg 0.1s\n"
     assert summarize_output(other, ok=False) == other[-SUMMARY_CHARS:]
+
+
+def test_the_host_env_drops_the_ledger_venv_a_worker_has_on_its_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from swarm_ledger import testing
+
+    venv = tmp_path / "venv"
+    (venv / "Lib" / "site-packages").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = x\n", encoding="utf-8")
+    scripts = venv / "Scripts"
+    other = tmp_path / "python"
+    monkeypatch.setattr(sys, "prefix", sys.base_prefix)
+    monkeypatch.setattr(sys, "path", [str(venv / "Lib" / "site-packages")])
+    monkeypatch.setenv("PATH", os.pathsep.join([str(scripts), str(other)]))
+
+    assert testing._host_env()["PATH"] == str(other)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -343,56 +342,3 @@ def test_readonly_open_falls_back_when_locked(
     monkeypatch.setattr(checklist.sqlite3, "connect", _flaky_connect)
     checks = checklist.run_checklist(root)
     assert any(c.name.startswith("the run finished") for c in checks)
-
-
-# -- plugin.json userConfig ----------------------------------------------------
-
-
-def test_user_config_test_command_schema(repo_root: Path) -> None:
-    data = json.loads((repo_root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
-    option = data["userConfig"]["test_command"]
-    allowed = {
-        "type",
-        "title",
-        "description",
-        "required",
-        "default",
-        "options",
-        "multiple",
-        "sensitive",
-        "min",
-        "max",
-    }
-    assert set(option) <= allowed
-    assert option["type"] == "string"
-    assert str(option["title"]).strip()
-    assert str(option["description"]).strip()
-
-
-def test_setup_skill_reads_the_user_config_option(repo_root: Path) -> None:
-    text = (repo_root / "skills" / "setup" / "SKILL.md").read_text(encoding="utf-8")
-    assert "${user_config.test_command}" in text
-
-
-# -- smoke.sh -------------------------------------------------------------------
-
-
-def test_smoke_sh_rewrites_a_dev_version_before_install(repo_root: Path) -> None:
-    text = (repo_root / "scripts" / "smoke.sh").read_text(encoding="utf-8")
-    install_at = text.index("plugin marketplace add")
-    version_at = text.index("d['version']=sys.argv[2]")
-    assert version_at < install_at
-    assert 'dev_version="$base_version-dev.' in text
-
-
-def test_smoke_sh_cleans_up_old_dev_cache_copies(repo_root: Path) -> None:
-    text = (repo_root / "scripts" / "smoke.sh").read_text(encoding="utf-8")
-    assert 'plugins/cache/sentinel-swarm/sentinel-swarm"/*-dev.*' in text
-
-
-def test_smoke_sh_results_runs_the_checklist(repo_root: Path) -> None:
-    text = (repo_root / "scripts" / "smoke.sh").read_text(encoding="utf-8")
-    results_at = text.index('mode" = results')
-    checklist_at = text.index("swarm_ledger.checklist")
-    exit_at = text.index('exit "$rc"')
-    assert results_at < checklist_at < exit_at

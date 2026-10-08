@@ -6,29 +6,32 @@ import os
 import re
 import sqlite3
 import subprocess
-import threading
+import sys
 from pathlib import Path
 
+from .agentfiles import CODEBASE_KG_PLUGIN, install_path
+from .db import ledger_path
 from .identity import LedgerError
+from .lock import file_lock
 
-KG_LOCK = threading.Lock()
+KG_LOCK_FILE = "kg.lock"
 
 _ENV_VAR = "SENTINEL_SWARM_KG_ROOT"
-_CACHE_ROOT = Path.home() / ".claude" / "plugins" / "cache" / "codebase-kg" / "codebase-kg"
 _UPSERT_SCRIPT = (
     "import json,sys; from codebase_kg import edits; "
     "print(json.dumps(edits.upsert_node(sys.argv[1], json.loads(sys.stdin.read()))))"
 )
+_BASE_UPSERT_SCRIPT = (
+    "import json,sys; sys.path.insert(0, sys.argv[1]); from codebase_kg import edits; "
+    "print(json.dumps(edits.upsert_node(sys.argv[2], json.loads(sys.stdin.read()))))"
+)
+_DEFAULT_FLOOR = (3, 10)
+_FLOOR_RE = re.compile(r'requires-python\s*=\s*"\s*>=\s*(\d+)\.(\d+)')
+_NO_DEPENDENCIES = re.compile(r"^dependencies\s*=\s*\[\s*\]", re.MULTILINE)
 _WORD_RE = re.compile(r"\w+")
 
 
-def _version_tuple(name: str) -> tuple[int, ...] | None:
-    if not re.fullmatch(r"\d+(\.\d+)*", name):
-        return None
-    return tuple(int(part) for part in name.split("."))
-
-
-def codebase_kg_root() -> Path:
+def codebase_kg_root(repo_root: Path) -> Path:
     env = os.environ.get(_ENV_VAR)
     if env:
         root = Path(env)
@@ -36,28 +39,15 @@ def codebase_kg_root() -> Path:
             raise LedgerError(f"{_ENV_VAR}={env!r} does not point at a directory")
         return root
 
-    if not _CACHE_ROOT.is_dir():
+    install = install_path(repo_root, CODEBASE_KG_PLUGIN)
+    if install is None:
         raise LedgerError(
-            f"no codebase-kg plugin cache at {_CACHE_ROOT}; set {_ENV_VAR} to override"
+            f"{CODEBASE_KG_PLUGIN} is not installed for {repo_root}; "
+            f"install it or set {_ENV_VAR} to override"
         )
-
-    candidates = [p for p in _CACHE_ROOT.iterdir() if p.is_dir()]
-    if not candidates:
-        raise LedgerError(f"no version folders under {_CACHE_ROOT}")
-
-    numbered = [(_version_tuple(p.name), p) for p in candidates]
-    numbered = [(key, p) for key, p in numbered if key is not None]
-    if numbered:
-        numbered.sort(key=lambda pair: pair[0])
-        best = numbered[-1][1]
-    else:
-        # No numeric version folder. Fall back to the lexicographically last one
-        # rather than failing outright.
-        best = sorted(candidates, key=lambda p: p.name)[-1]
-
-    mcp_dir = best / "mcp"
+    mcp_dir = install / "mcp"
     if not mcp_dir.is_dir():
-        raise LedgerError(f"no mcp folder under {best}")
+        raise LedgerError(f"no mcp folder under {install}")
     return mcp_dir
 
 
@@ -78,32 +68,70 @@ def _check_edges(graph_path: Path, nodes: list[dict]) -> None:
                 )
 
 
+def _pyproject(kg_root: Path) -> str:
+    try:
+        return (kg_root / "pyproject.toml").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def python_floor(kg_root: Path) -> tuple[int, int]:
+    match = _FLOOR_RE.search(_pyproject(kg_root))
+    return (int(match.group(1)), int(match.group(2))) if match else _DEFAULT_FLOOR
+
+
+def runs_on_base(kg_root: Path) -> bool:
+    return (
+        sys.version_info[:2] >= python_floor(kg_root)
+        and _NO_DEPENDENCIES.search(_pyproject(kg_root)) is not None
+        and (kg_root / "src" / "codebase_kg" / "edits.py").is_file()
+    )
+
+
+def upsert_command(kg_root: Path, graph_path: Path, base: bool) -> list[str]:
+    if base:
+        # The base interpreter, as codebase-kg's own workers run: a Windows venv's python.exe
+        # is a launcher that starts the base interpreter as a second process.
+        python = getattr(sys, "_base_executable", None) or sys.executable
+        return [
+            python,
+            "-I",
+            "-S",
+            "-c",
+            _BASE_UPSERT_SCRIPT,
+            str(kg_root / "src"),
+            str(graph_path),
+        ]
+    return [
+        "uv",
+        "run",
+        "--project",
+        str(kg_root),
+        "--frozen",
+        "--no-dev",
+        "python",
+        "-c",
+        _UPSERT_SCRIPT,
+        str(graph_path),
+    ]
+
+
 def _tail(text: str, lines: int = 20) -> str:
     return "\n".join(text.splitlines()[-lines:])
 
 
 def graph_upsert(repo_root: Path, nodes: list[dict]) -> dict:
-    kg_root = codebase_kg_root()
     graph_path = repo_root / "knowledge" / "code_graph.db"
     _check_edges(graph_path, nodes)
+    kg_root = codebase_kg_root(repo_root)
     # The ledger's own venv leaks through VIRTUAL_ENV and makes uv refuse the kg project.
     env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
 
-    with KG_LOCK:
+    base = runs_on_base(kg_root)
+    with file_lock(ledger_path(repo_root).parent / KG_LOCK_FILE):
         try:
             completed = subprocess.run(
-                [
-                    "uv",
-                    "run",
-                    "--project",
-                    str(kg_root),
-                    "--frozen",
-                    "--no-dev",
-                    "python",
-                    "-c",
-                    _UPSERT_SCRIPT,
-                    str(graph_path),
-                ],
+                upsert_command(kg_root, graph_path, base),
                 cwd=repo_root,
                 env=env,
                 input=json.dumps(nodes),
@@ -112,7 +140,8 @@ def graph_upsert(repo_root: Path, nodes: list[dict]) -> dict:
                 timeout=120,
             )
         except OSError as exc:
-            raise LedgerError(f"failed to launch uv for graph_upsert: {exc}") from exc
+            launcher = "Python" if base else "uv"
+            raise LedgerError(f"failed to launch {launcher} for graph_upsert: {exc}") from exc
 
     if completed.returncode != 0:
         raise LedgerError(f"graph_upsert failed: {_tail(completed.stderr)}")
@@ -157,6 +186,25 @@ def code_symbols_for(repo_root: Path, rel_path: str) -> list[str]:
                 (rel_path,),
             )
         ]
+    finally:
+        conn.close()
+
+
+def anchored_paths(repo_root: Path, rel_paths: list[str]) -> set[str]:
+    graph_path = repo_root / "knowledge" / "code_graph.db"
+    if not rel_paths or not graph_path.is_file():
+        return set()
+    conn = sqlite3.connect(f"file:{graph_path.as_posix()}?mode=ro", uri=True)
+    try:
+        placeholders = ",".join("?" for _ in rel_paths)
+        return {
+            row[0]
+            for row in conn.execute(
+                f"SELECT DISTINCT path FROM anchor WHERE path IN ({placeholders})", rel_paths
+            )
+        }
+    except sqlite3.Error:
+        return set()
     finally:
         conn.close()
 

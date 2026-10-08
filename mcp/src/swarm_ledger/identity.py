@@ -14,6 +14,10 @@ _CHILD_ROLES: dict[str, tuple[str, ...]] = {
 }
 
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+IDENTITY_FREE_TOOLS = frozenset(
+    {"ledger_info", "brief_get", "who_owns", "directive_submit", "events"}
+)
+PRE_BIND_TOOLS = IDENTITY_FREE_TOOLS | {"brief_ack"}
 _CHANGE_REQUEST_TOOLS = frozenset({"cr_open", "cr_accept", "cr_complete", "cr_verify", "cr_list"})
 
 ROLE_TOOLS: dict[str, frozenset[str]] = {
@@ -116,6 +120,7 @@ ROLE_TOOLS: dict[str, frozenset[str]] = {
             "issue_list",
             "issue_close",
             "tests_run",
+            "graph_upsert",
             "score_record",
             "review_compare",
             "approve",
@@ -140,6 +145,7 @@ ROLE_TOOLS: dict[str, frozenset[str]] = {
             "guidelines_get",
             "who_owns",
             "agent_resume",
+            "message_post",
             "message_inbox",
             "tests_run",
             "graph_upsert",
@@ -188,6 +194,19 @@ class Caller:
     parent_agent_id: str | None
 
 
+def caller_of(agent: sqlite3.Row | dict) -> Caller:
+    return Caller(
+        agent_id=agent["agent_id"],
+        name=agent["name"],
+        role=agent["role"],
+        run_id=agent["run_id"],
+        phase_id=agent["phase_id"],
+        module_id=agent["module_id"],
+        file_id=agent["file_id"],
+        parent_agent_id=agent["parent_agent_id"],
+    )
+
+
 def child_roles_of(role: str) -> tuple[str, ...]:
     return _CHILD_ROLES.get(role, ())
 
@@ -217,6 +236,46 @@ def resolve(conn: sqlite3.Connection, caller: str, agent_id: str | None) -> Call
 def require_role(c: Caller, *roles: str) -> None:
     if c.role not in roles:
         raise LedgerError(f"role {c.role!r} may not call this; requires one of {roles}")
+
+
+def unbound_reason(name: str) -> str:
+    return (
+        f"you are not bound to the ledger yet: call brief_ack(caller={name!r}). "
+        "No other ledger tool works until it succeeds"
+    )
+
+
+# The calls that bind a session to the ledger: a session the mod never checked in for would run
+# its role ungated.
+MOD_CHECKED_TOOLS = frozenset({"run_start", "brief_ack"})
+
+
+def require_bound(conn: sqlite3.Connection, tool: str, agent_id: str | None) -> None:
+    if not agent_id or tool in PRE_BIND_TOOLS:
+        return
+    row = conn.execute(
+        "SELECT name, role, state FROM agents WHERE agent_id = ? AND ended_at IS NULL",
+        (agent_id,),
+    ).fetchone()
+    if row is not None and row["role"] in ROLES and row["state"] == "registered":
+        raise LedgerError(unbound_reason(row["name"]))
+
+
+def require_mod_session(conn: sqlite3.Connection, tool: str, session_id: str | None) -> None:
+    if tool not in MOD_CHECKED_TOOLS:
+        return
+    if (
+        session_id
+        and conn.execute(
+            "SELECT 1 FROM mod_sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+    ):
+        return
+    raise LedgerError(
+        f"{tool} refuses session {session_id!r}: the sentinel-swarm mod never checked in for "
+        "it, so no hook gates this session. Run claude plugin list in the repo: sentinel-swarm "
+        "must show enabled, not failed to load. Fix that, then start the session again"
+    )
 
 
 def require_role_tool(conn: sqlite3.Connection, tool: str, agent_id: str | None) -> None:

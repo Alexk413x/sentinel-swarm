@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from .identity import LedgerError
@@ -16,7 +16,30 @@ CLAUDE_VAR = "SENTINEL_SWARM_CLAUDE"
 DEV_CHANNELS_VAR = "CLAUDE_DEV_CHANNELS"
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _BG_LINE = re.compile(r"backgrounded\s+\S+\s+([0-9A-Za-z-]+)")
-_LABELS = ("agents", "stop", "--resume", "--bg")
+_PLUGIN_LINE = re.compile(r"^\s*❯\s+(\S+)")
+_STATUS_LINE = re.compile(r"^\s*Status:\s*(.+?)\s*$")
+# A parent Claude Code session sets these for its own child processes. A session started
+# with them, CLAUDE_CODE_CHILD_SESSION above all, never registers: `claude agents` does not
+# list it and a send to its session id finds no live session.
+PARENT_SESSION_VARS = frozenset(
+    {
+        "CLAUDECODE",
+        "CLAUDE_PID",
+        "CLAUDE_JOB_DIR",
+        "CLAUDE_EFFORT",
+        "CLAUDE_PLUGIN_DATA",
+        "CLAUDE_CODE_CHILD_SESSION",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_CODE_BRIDGE_SESSION_ID",
+        "CLAUDE_CODE_SESSION_ATTENDED",
+        "CLAUDE_CODE_MESSAGING_SOCKET",
+        "CLAUDE_CODE_MESSAGING_TOKEN",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDE_CODE_EXECPATH",
+        "CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT",
+    }
+)
+_LABELS = ("agents", "plugin", "stop", "--resume", "--bg")
 # Not "done": a background session reports state "done" once its turn ends, while its process
 # still runs and takes messages. Resuming it with --resume starts a second session.
 _DEAD = frozenset({"stopped", "exited", "crashed", "failed", "killed", "dead", "completed"})
@@ -25,15 +48,20 @@ _SPAWN_WAIT_S = 15.0
 _POLL_S = 0.5
 
 
+def child_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
+    source = os.environ if base is None else base
+    return {key: value for key, value in source.items() if key not in PARENT_SESSION_VARS}
+
+
 def claude_binary() -> str:
     raw = os.environ.get(CLAUDE_VAR) or "claude"
     return shutil.which(raw) or raw
 
 
-def dev_channel_args(extra: Sequence[str] = ()) -> list[str]:
+def dev_channel_args() -> list[str]:
     # Last on the command line: the flag takes several values and swallows anything after it.
     raw = [e for e in re.split(r"[\s,]+", os.environ.get(DEV_CHANNELS_VAR, "")) if e]
-    entries = list(dict.fromkeys([*raw, *extra]))
+    entries = list(dict.fromkeys(raw))
     return ["--dangerously-load-development-channels", *entries] if entries else []
 
 
@@ -45,6 +73,7 @@ def _run(args: list[str], cwd: Path | None = None) -> str:
             result = subprocess.run(
                 [binary, *args],
                 cwd=cwd,
+                env=child_env(),
                 stdin=subprocess.DEVNULL,
                 stdout=out,
                 stderr=err,
@@ -66,6 +95,28 @@ def _run(args: list[str], cwd: Path | None = None) -> str:
             f"{binary} {_describe(args)} failed with exit code {result.returncode}: {detail}"
         )
     return stdout
+
+
+def plugin_load_problem(repo: Path, name: str = "sentinel-swarm") -> str | None:
+    try:
+        output = _strip_ansi(_run(["plugin", "list"], cwd=repo))
+    except LedgerError as exc:
+        return str(exc)
+    statuses: list[str] = []
+    current: str | None = None
+    for line in output.splitlines():
+        plugin = _PLUGIN_LINE.match(line)
+        if plugin is not None:
+            current = plugin.group(1)
+            continue
+        status = _STATUS_LINE.match(line)
+        if status is not None and current is not None and current.split("@")[0] == name:
+            statuses.append(status.group(1))
+    if any(status.endswith(" enabled") and "✔" in status for status in statuses):
+        return None
+    if not statuses:
+        return f"claude plugin list shows no {name} plugin for this repo"
+    return f"claude plugin list shows {name}: {'; '.join(statuses)}"
 
 
 def _describe(args: list[str]) -> str:

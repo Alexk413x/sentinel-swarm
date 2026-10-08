@@ -1,0 +1,3207 @@
+{
+ "instructions": null,
+ "tools": [
+  {
+   "name": "run_start",
+   "title": "Run Start",
+   "description": "Starts a run from a PRD and registers the Oracle; the Oracle calls this.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "prd": {
+      "type": "string"
+     },
+     "session_id": {
+      "type": "string"
+     },
+     "oracle_name": {
+      "default": "oracle",
+      "type": "string"
+     }
+    },
+    "required": [
+     "prd",
+     "session_id"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "run_status",
+   "title": "Run Status",
+   "description": "Returns the run's phases, modules, files, agents, issues, and directives; any agent may.\n\nThe run's PRD text is left out unless include_prd is true.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "include_prd": {
+      "default": false,
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "caller"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "annotations": {
+    "readOnlyHint": true
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "run_finish",
+   "title": "Run Finish",
+   "description": "Finishes the active run once every phase is approved; the Oracle calls this.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "outcome": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "outcome"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "run_pause",
+   "title": "Run Pause",
+   "description": "Pauses the run, or just the named phases, on a blocker only the user can fix; the Oracle\ncalls this. With phases, the run stays active: agent_spawn refuses those phases until\nphase_resume clears them, and the others keep going.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "reason": {
+      "type": "string"
+     },
+     "phases": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "integer"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     }
+    },
+    "required": [
+     "caller",
+     "reason"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "phase_resume",
+   "title": "Phase Resume",
+   "description": "Clears a scoped pause from the named phases so agent_spawn can start work in them again;\nthe Oracle calls this.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "phase_ids": {
+      "items": {
+       "type": "integer"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "caller",
+     "phase_ids"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "repo_check",
+   "title": "Repo Check",
+   "description": "Checks the repo's branch and clean state against its base branch and upstream, and\nrecords the result on the run; the Oracle calls this before planning.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "fetch": {
+      "default": false,
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "caller"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "repo_branch_create",
+   "title": "Repo Branch Create",
+   "description": "Creates a run branch from the base branch once repo_check reports obvious_start; the\nOracle calls this.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "name": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "name"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "profile_set",
+   "title": "Profile Set",
+   "description": "Sets the run's test, build, and lint commands; the Oracle calls this. Refuses a build\ncommand that serves or watches (--watch, serve, dev-server, npm run dev, npm start).",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "test_command": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "build_command": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "lint_command": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     }
+    },
+    "required": [
+     "caller"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "guidelines_set",
+   "title": "Guidelines Set",
+   "description": "Records the run's latest guidelines body; the Oracle calls this.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "body": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "body"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "guidelines_get",
+   "title": "Guidelines Get",
+   "description": "Returns the run's latest guidelines body; any registered agent calls this.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "annotations": {
+    "readOnlyHint": true
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "phase_add",
+   "title": "Phase Add",
+   "description": "Adds a phase to the plan with optional phase dependencies; the Oracle calls this. The\nstored name is p<ordinal>-<name>, and its Manager is named mgr-<that name>.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "name": {
+      "type": "string"
+     },
+     "depends_on": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "integer"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     }
+    },
+    "required": [
+     "caller",
+     "name"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "phase_update",
+   "title": "Phase Update",
+   "description": "Updates a phase's state; handed_up returns the wake-up call to make as `next`.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "phase_id": {
+      "type": "integer"
+     },
+     "state": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "phase_id",
+     "state"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "plan_unlocked",
+   "title": "Plan Unlocked",
+   "description": "Lists phases whose dependencies are all approved; any registered agent calls this.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller"
+    ]
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "items": {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "type": "object",
+    "x-fastmcp-wrap-result": true
+   },
+   "annotations": {
+    "readOnlyHint": true
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "module_add",
+   "title": "Module Add",
+   "description": "Adds a module to the caller's own phase; a Manager calls this. The name is a slug, and\nits Lead is named lead-p<phase ordinal>-<name>.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "phase_id": {
+      "type": "integer"
+     },
+     "name": {
+      "type": "string"
+     },
+     "depends_on": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "items": {
+           "type": "integer"
+          },
+          "type": "array"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "description": "Module ids of this phase that this module uses; brief those first."
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     }
+    },
+    "required": [
+     "caller",
+     "phase_id",
+     "name"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "brief_create",
+   "title": "Brief Create",
+   "description": "Creates a brief for the caller's child role (Oracle->Manager, Manager->Lead, Lead->Coder).\nA Manager brief needs an unlocked phase_id of the run; a Lead brief a module_id of the\ncaller's phase; a Coder brief the file_id claimed for child_name. A refusal for missing\n`finding_ids` lists the open ids and titles. Refuses an unknown finding, one that hit a\nstop rule, or one whose area has an open pattern stop directive. Refuses a Driver: only\ndrive_request starts one.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "child_name": {
+      "type": "string"
+     },
+     "child_role": {
+      "type": "string"
+     },
+     "model": {
+      "type": "string"
+     },
+     "body": {
+      "type": "string"
+     },
+     "phase_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "module_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "file_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "finding_ids": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "integer"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "The Driver finding ids the child fixes; [] when it fixes none. The Oracle must pass it while the run has an open finding. Omitted by a Manager or Lead, the child inherits the caller's own brief's list."
+     },
+     "effort": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "enum": [
+           "low",
+           "medium",
+           "high",
+           "xhigh",
+           "max"
+          ],
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "description": "The child's effort level; leave unset for the role's default. Raise it for a fresh Coder in escalation round 2 or 3."
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "contract": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "description": "The public contract of the child's file or module. Required before a file or module that depends on it can be briefed."
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     }
+    },
+    "required": [
+     "caller",
+     "child_name",
+     "child_role",
+     "model",
+     "body"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "brief_get",
+   "title": "Brief Get",
+   "description": "Returns the latest brief for a child name; a new agent calls it before it has an agent_id.\n`findings` lists the id, fingerprint, title, severity, area, steps, expected and actual\nresult, and evidence paths of each finding it fixes; `depends_on_contracts` the contract\nof each file or module it depends on.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller_name": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "child_name": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller_name",
+     "child_name"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "annotations": {
+    "readOnlyHint": true
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "brief_ack",
+   "title": "Brief Ack",
+   "description": "Binds the caller's name to its agent_id via an unacked brief; a new child agent calls it.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "agent_type": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     }
+    },
+    "required": [
+     "caller"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "agent_release",
+   "title": "Agent Release",
+   "description": "Releases an agent it directly parented; any parent role calls this for its own child.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "target_agent_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "target_agent_id"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "agent_spawn",
+   "title": "Agent Spawn",
+   "description": "Starts the session for a briefed child and registers it; the brief's parent calls this.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "child_name": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "child_name"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "agent_resume",
+   "title": "Agent Resume",
+   "description": "Resumes a stopped session of the run with the wake-ups owed to it; any agent calls it.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "target_name": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "target_name"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "claim_file",
+   "title": "Claim File",
+   "description": "Claims a file path for a coder under the caller's module; a Lead calls this. for_name is\ncoder-p<phase ordinal>-<module>-<file slug>.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "path": {
+      "type": "string"
+     },
+     "test_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "for_name": {
+      "type": "string"
+     },
+     "depends_on": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "items": {
+           "type": "integer"
+          },
+          "type": "array"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "description": "File ids of this module that this file uses; brief those first."
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     }
+    },
+    "required": [
+     "caller",
+     "path",
+     "test_path",
+     "for_name"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "release_file",
+   "title": "Release File",
+   "description": "Releases a live claim on a file path; a Lead calls this.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "path": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "path"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "who_owns",
+   "title": "Who Owns",
+   "description": "Looks up the live owner of a file path; any caller may call this.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "path": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "path"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "annotations": {
+    "readOnlyHint": true
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "message_post",
+   "title": "Message Post",
+   "description": "Posts a message of at most 32,000 characters to the caller's parent, child, or sibling\nby name; returns the wake-up call as `next`.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "to_name": {
+      "type": "string"
+     },
+     "body": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "to_name",
+     "body"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "message_inbox",
+   "title": "Message Inbox",
+   "description": "Returns and marks read the caller's unread messages in its run, oldest first, up to\n40,000 characters of bodies; `remaining` counts the unread ones left for the next call.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "directive_submit",
+   "title": "Directive Submit",
+   "description": "Submits a directive to the run from chat, a skill, or the watchdog; no identity required.\n\nSources: user_chat, outside_session, skill, watchdog (the old user-chat and\noutside-session spellings are still accepted and normalized). A reply_to that\nnames any open directive of the run resolves it, whatever its outcome.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "source": {
+      "type": "string"
+     },
+     "sender_name": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "body": {
+      "type": "string"
+     },
+     "reply_to": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     }
+    },
+    "required": [
+     "source",
+     "sender_name",
+     "body"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "directive_inbox",
+   "title": "Directive Inbox",
+   "description": "Returns the run's open directives; the Oracle calls this.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller"
+    ]
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "items": {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "type": "object",
+    "x-fastmcp-wrap-result": true
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "directive_resolve",
+   "title": "Directive Resolve",
+   "description": "Resolves an open directive with an outcome; the Oracle calls this.\n\nOutcomes: applied, scheduled, declined, needs_user. A needs_user directive stays open\nuntil a directive_submit with reply_to answers it, or the Oracle resolves it again.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "directive_id": {
+      "type": "integer"
+     },
+     "outcome": {
+      "type": "string"
+     },
+     "resolution": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "directive_id",
+     "outcome",
+     "resolution"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "override_grant",
+   "title": "Override Grant",
+   "description": "Grants a one-time override of a rule for an agent; the Oracle calls this.\n\nRefuses a target_agent_name that names the Oracle itself: the Oracle must never\ngrant itself a write or shell override.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "rule": {
+      "type": "string"
+     },
+     "target_agent_name": {
+      "type": "string"
+     },
+     "target": {
+      "type": "string"
+     },
+     "reason": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "rule",
+     "target_agent_name",
+     "target",
+     "reason"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "issue_open",
+   "title": "Issue Open",
+   "description": "Opens an issue against a file; any registered agent calls this. An issue a Manager\nopens starts at round 2, and one the Oracle opens starts at round 3.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "file_id": {
+      "type": "integer"
+     },
+     "title": {
+      "type": "string"
+     },
+     "body": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "file_id",
+     "title",
+     "body"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "issue_list",
+   "title": "Issue List",
+   "description": "Lists the run's issues, optionally filtered to one file; any registered agent calls this.\nFor a Lead, hides issues its own module's self-review opened until the Lead records its\nown score for the file's current handoff.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "file_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     }
+    },
+    "required": [
+     "caller"
+    ]
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "items": {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "type": "object",
+    "x-fastmcp-wrap-result": true
+   },
+   "annotations": {
+    "readOnlyHint": true
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "issue_close",
+   "title": "Issue Close",
+   "description": "Closes an open issue with a resolution; the file's Lead, its Manager, or the Oracle.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "issue_id": {
+      "type": "integer"
+     },
+     "resolution": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "issue_id",
+     "resolution"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "idea_record",
+   "title": "Idea Record",
+   "description": "Records an idea tried against an issue and its outcome; any registered agent calls this.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "issue_id": {
+      "type": "integer"
+     },
+     "body": {
+      "type": "string"
+     },
+     "outcome": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "issue_id",
+     "body",
+     "outcome"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "issue_escalate",
+   "title": "Issue Escalate",
+   "description": "Escalates an issue to its next round, names the receiver in escalated_to, and messages\nit; only the issue's owner and the owner's parent chain call it. Returns the wake-up call\nto make as `next`.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "issue_id": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "caller",
+     "issue_id"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "events",
+   "title": "Events",
+   "description": "Lists recent agent lifecycle events, optionally filtered to one agent; any caller may.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "target_agent_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "limit": {
+      "default": 200,
+      "type": "integer"
+     }
+    }
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "items": {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "type": "object",
+    "x-fastmcp-wrap-result": true
+   },
+   "annotations": {
+    "readOnlyHint": true
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "tests_run",
+   "title": "Tests Run",
+   "description": "Runs the profile's test command for a scope; the required role scales Coder to Oracle.\n\nThe result's output is a summary: the tail of a pass, or the first traceback and the\nshort test summary of a failure. test_run_get returns the full output. When a passing\nrun in this run used the same command on an unchanged working tree, the ledger records\na copy of it instead of running again and returns reused: true with reused_from.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "scope": {
+      "enum": [
+       "file",
+       "module",
+       "phase",
+       "full"
+      ],
+      "type": "string"
+     },
+     "target": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "force": {
+      "default": false,
+      "description": "Run the tests even when an earlier passing run can be reused.",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "caller",
+     "scope"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "test_run_get",
+   "title": "Test Run Get",
+   "description": "Returns one recorded test run of this run, with its full output.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "test_run_id": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "caller",
+     "test_run_id"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "annotations": {
+    "readOnlyHint": true
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "graph_upsert",
+   "title": "Graph Upsert",
+   "description": "Upserts code graph nodes. A Coder's nodes anchor only on its own claimed file; a Lead's\nmay span the files of its module.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "nodes": {
+      "items": {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "caller",
+     "nodes"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "score_record",
+   "title": "Score Record",
+   "description": "Records a self or lead review; a Coder records self, a Lead records lead. Every\ndimension is scored: rate each criterion of an applicable dimension, and give a reason and\na ref for any rating below 9.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "file_id": {
+      "type": "integer"
+     },
+     "ratings": {
+      "description": "One rating for every criterion of every applicable dimension.",
+      "items": {
+       "oneOf": [
+        {
+         "properties": {
+          "dimension": {
+           "const": "meets_the_brief"
+          },
+          "criterion": {
+           "enum": [
+            "does_what_was_asked",
+            "nothing_extra"
+           ]
+          }
+         }
+        },
+        {
+         "properties": {
+          "dimension": {
+           "const": "testing"
+          },
+          "criterion": {
+           "enum": [
+            "happy_path",
+            "edge_cases",
+            "proves_the_brief",
+            "no_empty_or_skipped"
+           ]
+          }
+         }
+        },
+        {
+         "properties": {
+          "dimension": {
+           "const": "error_handling"
+          },
+          "criterion": {
+           "enum": [
+            "api_and_io_errors",
+            "specific_and_catch_all",
+            "failures_reported"
+           ]
+          }
+         }
+        },
+        {
+         "properties": {
+          "dimension": {
+           "const": "security"
+          },
+          "criterion": {
+           "enum": [
+            "input_validation",
+            "injection",
+            "secrets",
+            "authn_and_authz",
+            "unsafe_defaults",
+            "new_dependencies"
+           ]
+          }
+         }
+        },
+        {
+         "properties": {
+          "dimension": {
+           "const": "architecture"
+          },
+          "criterion": {
+           "enum": [
+            "patterns_followed",
+            "guidelines_followed",
+            "contracts_honored",
+            "right_file",
+            "departures_recorded"
+           ]
+          }
+         }
+        },
+        {
+         "properties": {
+          "dimension": {
+           "const": "code_structure"
+          },
+          "criterion": {
+           "enum": [
+            "single_responsibility",
+            "modular",
+            "reusable",
+            "no_duplication"
+           ]
+          }
+         }
+        },
+        {
+         "properties": {
+          "dimension": {
+           "const": "performance"
+          },
+          "criterion": {
+           "enum": [
+            "no_needless_work",
+            "complexity_fits_data_size",
+            "sensible_resource_use"
+           ]
+          }
+         }
+        },
+        {
+         "properties": {
+          "dimension": {
+           "const": "maintainability"
+          },
+          "criterion": {
+           "enum": [
+            "clear_names",
+            "small_units",
+            "minimal_comments"
+           ]
+          }
+         }
+        },
+        {
+         "properties": {
+          "dimension": {
+           "const": "accessibility"
+          },
+          "criterion": {
+           "enum": [
+            "ui_files_only",
+            "accessibility_tools_check"
+           ]
+          }
+         }
+        }
+       ],
+       "properties": {
+        "dimension": {
+         "enum": [
+          "meets_the_brief",
+          "testing",
+          "error_handling",
+          "security",
+          "architecture",
+          "code_structure",
+          "performance",
+          "maintainability",
+          "accessibility"
+         ],
+         "type": "string"
+        },
+        "criterion": {
+         "type": "string"
+        },
+        "value": {
+         "maximum": 10,
+         "minimum": 1,
+         "type": "integer"
+        },
+        "reason": {
+         "description": "Required below 9.",
+         "type": "string"
+        },
+        "ref": {
+         "description": "file:line; required below 9.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "dimension",
+        "criterion",
+        "value"
+       ],
+       "type": "object"
+      },
+      "type": "array"
+     },
+     "applicable": {
+      "additionalProperties": false,
+      "description": "Every dimension key: null when it applies, or a one-line reason it does not.",
+      "properties": {
+       "meets_the_brief": {
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "testing": {
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "error_handling": {
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "security": {
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "architecture": {
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "code_structure": {
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "performance": {
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "maintainability": {
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "accessibility": {
+        "type": [
+         "string",
+         "null"
+        ]
+       }
+      },
+      "required": [
+       "meets_the_brief",
+       "testing",
+       "error_handling",
+       "security",
+       "architecture",
+       "code_structure",
+       "performance",
+       "maintainability",
+       "accessibility"
+      ],
+      "type": "object"
+     },
+     "kind": {
+      "enum": [
+       "self",
+       "lead"
+      ],
+      "type": "string"
+     },
+     "targeted": {
+      "anyOf": [
+       {
+        "items": {
+         "enum": [
+          "meets_the_brief",
+          "testing",
+          "error_handling",
+          "security",
+          "architecture",
+          "code_structure",
+          "performance",
+          "maintainability",
+          "accessibility"
+         ],
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "For a Lead review after a return: the dimension keys the fix aimed at."
+     }
+    },
+    "required": [
+     "caller",
+     "file_id",
+     "ratings",
+     "applicable",
+     "kind"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "handoff_submit",
+   "title": "Handoff Submit",
+   "description": "Submits a Coder's file once its tests pass and its graph is current; returns `next`.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "file_id": {
+      "type": "integer"
+     },
+     "open_issues": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "departures": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "caller",
+     "file_id",
+     "open_issues",
+     "departures"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "review_compare",
+   "title": "Review Compare",
+   "description": "Compares a handoff's self and lead review scores and flags disagreements; a Lead calls it.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "handoff_id": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "caller",
+     "handoff_id"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "approve",
+   "title": "Approve",
+   "description": "Approves a handoff once its lead review passes and no issue is open; a Lead calls this.\nAlso accepts a floor pass: every dimension at or above the rubric floor, no criterion\nbelow the criterion floor, and the file's attempts at the full escalation budget\n(rounds times attempts_per_round), once the review itself misses the target. A floor\npass records a shortfall for each dimension still below target and lists them in\n`floor_pass_dimensions`.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "handoff_id": {
+      "type": "integer"
+     },
+     "notes": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     }
+    },
+    "required": [
+     "caller",
+     "handoff_id"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "return_work",
+   "title": "Return Work",
+   "description": "Returns a handoff to its Coder with issues to fix; a Lead calls this; returns `next`.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "handoff_id": {
+      "type": "integer"
+     },
+     "issues": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "targeted": {
+      "description": "The dimension keys the fix must raise.",
+      "items": {
+       "enum": [
+        "meets_the_brief",
+        "testing",
+        "error_handling",
+        "security",
+        "architecture",
+        "code_structure",
+        "performance",
+        "maintainability",
+        "accessibility"
+       ],
+       "type": "string"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "caller",
+     "handoff_id",
+     "issues",
+     "targeted"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "attempt_record",
+   "title": "Attempt Record",
+   "description": "Classifies a file's latest attempt as improved, plateau, or regression; a Lead calls it.\nWhen a plateau or regression moves an issue to round 2 or 3, `escalated` lists each\nescalation with its `escalated_to` agent and the wake-up call to make as its `next`.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "file_id": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "caller",
+     "file_id"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "accept_incomplete",
+   "title": "Accept Incomplete",
+   "description": "Accepts a handoff as incomplete and opens a file deferral for the Manager; a Lead calls\nthis after review_compare, for work the Coder or an open issue reports as incomplete.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "handoff_id": {
+      "type": "integer"
+     },
+     "reason": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "handoff_id",
+     "reason"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "module_review",
+   "title": "Module Review",
+   "description": "Records the Manager's review of a module before it hands the phase up; an accepted\nreview refuses while a departure in the module waits on the Lead or the Manager, and a\nreturned module owes its live Lead a wake-up as `next`. An accepted review requires\n`scores`: one rating 1..10 for each of completeness, integration, and open items, with a\nreason below 9.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "module_id": {
+      "type": "integer"
+     },
+     "outcome": {
+      "enum": [
+       "accepted",
+       "returned"
+      ],
+      "type": "string"
+     },
+     "notes": {
+      "type": "string"
+     },
+     "disagreement_notes": {
+      "anyOf": [
+       {
+        "additionalProperties": {
+         "type": "string"
+        },
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "scores": {
+      "anyOf": [
+       {
+        "items": {
+         "additionalProperties": true,
+         "type": "object"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     }
+    },
+    "required": [
+     "caller",
+     "module_id",
+     "outcome",
+     "notes"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "phase_review",
+   "title": "Phase Review",
+   "description": "Records the Oracle's review of a handed-up phase before phase_update(approved); an\naccepted review refuses while a departure in the phase is not signed off or reworked, and\na returned phase owes its live Manager a wake-up as `next`. An accepted review requires\n`scores`: one rating 1..10 for each of completeness, integration, and open items, with a\nreason below 9.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "phase_id": {
+      "type": "integer"
+     },
+     "outcome": {
+      "enum": [
+       "accepted",
+       "returned"
+      ],
+      "type": "string"
+     },
+     "notes": {
+      "type": "string"
+     },
+     "low_score_notes": {
+      "anyOf": [
+       {
+        "additionalProperties": {
+         "type": "string"
+        },
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "scores": {
+      "anyOf": [
+       {
+        "items": {
+         "additionalProperties": true,
+         "type": "object"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     }
+    },
+    "required": [
+     "caller",
+     "phase_id",
+     "outcome",
+     "notes"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "deferral_propose",
+   "title": "Deferral Propose",
+   "description": "Proposes a deferral or scope change, or with parties a dispute; any registered agent\ncalls this. kind sets who decides: file or module, the Lead; cross_module or phase, the\nManager; plan or prd, the Oracle (prd with the user).",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "body": {
+      "type": "string"
+     },
+     "kind": {
+      "enum": [
+       "file",
+       "module",
+       "cross_module",
+       "phase",
+       "plan",
+       "prd"
+      ],
+      "type": "string"
+     },
+     "file_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "parties": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "items": {
+           "type": "string"
+          },
+          "type": "array"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "description": "For a dispute: the agent names on the other side. Their closest shared ancestor decides it."
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     }
+    },
+    "required": [
+     "caller",
+     "body",
+     "kind"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "agreement_decide",
+   "title": "Agreement Decide",
+   "description": "Decides an open deferral as agreed or denied: a dispute by its arbiter, any other by a\ncaller at or above both the proposer's parent and the kind's level.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "deferral_id": {
+      "type": "integer"
+     },
+     "decision": {
+      "enum": [
+       "agreed",
+       "denied"
+      ],
+      "type": "string"
+     },
+     "reason": {
+      "type": "string"
+     },
+     "directive_id": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "description": "For a prd deferral: the user_chat directive with the user's answer."
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     }
+    },
+    "required": [
+     "caller",
+     "deferral_id",
+     "decision",
+     "reason"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "cr_open",
+   "title": "Cr Open",
+   "description": "Opens a change request on a path the caller does not own; any role calls this. The\nledger routes it to the file's owner, or up the chain when the owner has ended.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "path": {
+      "type": "string"
+     },
+     "body": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "path",
+     "body"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "cr_accept",
+   "title": "Cr Accept",
+   "description": "Accepts or declines an open change request; only its recipient calls this. A decline\nneeds a non-empty reason.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "cr_id": {
+      "type": "integer"
+     },
+     "accept": {
+      "type": "boolean"
+     },
+     "reason": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "cr_id",
+     "accept",
+     "reason"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "cr_complete",
+   "title": "Cr Complete",
+   "description": "Completes an accepted change request with evidence; only its recipient calls this. It\nrefuses without a passing test run or an approved handoff for the path since acceptance.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "cr_id": {
+      "type": "integer"
+     },
+     "notes": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "cr_id",
+     "notes"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "cr_verify",
+   "title": "Cr Verify",
+   "description": "Verifies a completed change request; only the requester or its nearest live ancestor\ncalls this. A failed verification goes back to accepted and owes the recipient a wake-up.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "cr_id": {
+      "type": "integer"
+     },
+     "ok": {
+      "type": "boolean"
+     },
+     "notes": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "cr_id",
+     "ok",
+     "notes"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "cr_list",
+   "title": "Cr List",
+   "description": "Lists the change requests the caller sent or received; the Oracle sees every one.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "state": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     }
+    },
+    "required": [
+     "caller"
+    ]
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "items": {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "type": "object",
+    "x-fastmcp-wrap-result": true
+   },
+   "annotations": {
+    "readOnlyHint": true
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "departure_record",
+   "title": "Departure Record",
+   "description": "Records a departure from the guidelines; a Coder for its own file, or a Lead, Manager,\nor Oracle for work in its scope.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "body": {
+      "type": "string"
+     },
+     "file_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "guideline_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     }
+    },
+    "required": [
+     "caller",
+     "body"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "departure_decide",
+   "title": "Departure Decide",
+   "description": "Decides a departure at the next level of its sign-off chain: the file's Lead decides an\nopen one, the phase's Manager a lead_agreed one, and the Oracle a manager_agreed one, whose\nagreement signs it off. A push_back needs a solution; above the Lead, it reopens the file\nfor the same Coder, resumes the agents below the decider, and returns the first wake-up\nas `next`.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "departure_id": {
+      "type": "integer"
+     },
+     "decision": {
+      "enum": [
+       "agree",
+       "push_back"
+      ],
+      "type": "string"
+     },
+     "reason": {
+      "type": "string"
+     },
+     "solution": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     }
+    },
+    "required": [
+     "caller",
+     "departure_id",
+     "decision",
+     "reason"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "shortfall_record",
+   "title": "Shortfall Record",
+   "description": "Records a shortfall: a solution that works but that nobody found better; any role\ncalls this, and it needs no decision.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "body": {
+      "type": "string"
+     },
+     "file_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     }
+    },
+    "required": [
+     "caller",
+     "body"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "version_restore",
+   "title": "Version Restore",
+   "description": "Restores a saved version onto the coder's own owned file; a Coder calls this.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "version_id": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "caller",
+     "version_id"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "status_tree",
+   "title": "Status Tree",
+   "description": "Returns the run's phase, module, and file status tree with live agents; any agent may.\n`open_findings` lists the Driver findings not yet fixed or stopped, and `fixes` lists each\nbrief that names findings, with their ids and titles. The run's PRD text is left out\nunless include_prd is true.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "include_prd": {
+      "default": false,
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "caller"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "annotations": {
+    "readOnlyHint": true
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "report_build",
+   "title": "Report Build",
+   "description": "Builds and writes the run's report.md from its current state; the Oracle calls this.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "analytics_query",
+   "title": "Analytics Query",
+   "description": "Runs a single read-only SELECT against the ledger database; the Oracle calls it.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "sql": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "sql"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "annotations": {
+    "readOnlyHint": true
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "drive_request",
+   "title": "Drive Request",
+   "description": "Requests an exploration and starts its Driver session; the Oracle calls this once the\nprevious exploration and every fix it spawned have finished. Refuses when the host has no\nDriver available (cartographer and a driver plugin), while an exploration is still open,\nor while a Manager, Lead, or Coder is still live. It releases an earlier Driver whose\nexploration ended but whose session is still live. The result's `loop_status` reports the\nstop-rule state computed from every exploration and finding so far.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "focus": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "focus"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "drive_issue",
+   "title": "Drive Issue",
+   "description": "Records one Driver finding against an open exploration and wakes the Oracle; the Driver\ncalls this for each finding, including a failed build. `finding` holds `fingerprint`,\n`title`, `steps`, `expected`, `actual`, `severity` (blocker, major, or minor), `area`, and\n`evidence` (paths into cartographer's run folder). The result's `next_checkin_due_at` and\n`next_checkin_in_s` give when the exploration's next check-in is due.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "request_id": {
+      "type": "integer"
+     },
+     "finding": {
+      "additionalProperties": true,
+      "type": "object"
+     }
+    },
+    "required": [
+     "caller",
+     "request_id",
+     "finding"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "drive_checkin",
+   "title": "Drive Checkin",
+   "description": "Records a 30-minute progress check-in for an open exploration and wakes the Oracle; the\nDriver calls this. The watchdog does not report the Driver as stuck while its check-ins are\non time. The result's `next_checkin_due_at` and `next_checkin_in_s` give when the next\ncheck-in is due.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "request_id": {
+      "type": "integer"
+     },
+     "covered": {
+      "type": "string"
+     },
+     "steps": {
+      "type": "string"
+     },
+     "notes": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "request_id",
+     "covered",
+     "steps",
+     "notes"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "drive_done",
+   "title": "Drive Done",
+   "description": "Ends an exploration; the Driver calls this. Any newly detected stop-rule directive is\nfiled for the Oracle, and the Driver owes the Oracle a wake-up that says how the\nexploration ended: make the call in `next`, then stop. The ledger releases and stops the\nDriver's session once that wake-up is sent. Pass `blocked` with what failed when the\nDriver cannot continue, such as a failed build or a device that will not boot; it needs a\nfinding already recorded with drive_issue. A clean exploration, a new stop rule, or\n`blocked` records a notification for the user.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "request_id": {
+      "type": "integer"
+     },
+     "blocked": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     }
+    },
+    "required": [
+     "caller",
+     "request_id"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "drive_unavailable",
+   "title": "Drive Unavailable",
+   "description": "Files a [driver-unavailable] directive when the Driver's plugin servers fail to load;\nthe Driver or the Oracle calls this with what failed. Any open exploration is abandoned and\nthe user is notified. Called by the Oracle, it releases the Driver at once. Called by the\nDriver, the Driver owes the Oracle a wake-up: make the call in `next`, then stop; the\nledger releases and stops the Driver's session once that wake-up is sent. drive_request\nand run_finish refuse while the directive is open. Resolved applied or scheduled,\nexplorations resume; resolved declined, the run skips them and run_finish needs none.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "reason": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "reason"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "ledger_info",
+   "title": "Ledger Info",
+   "description": "Returns the server's name, version, status, tool count, and repo root.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "annotations": {
+    "readOnlyHint": true
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  }
+ ],
+ "checks": {
+  "score_record": {
+   "ratings": {
+    "items": {
+     "additionalProperties": true,
+     "type": "object"
+    },
+    "type": "array"
+   },
+   "applicable": {
+    "additionalProperties": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "type": "object"
+   },
+   "targeted": {
+    "anyOf": [
+     {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     {
+      "type": "null"
+     }
+    ]
+   }
+  },
+  "return_work": {
+   "targeted": {
+    "items": {
+     "type": "string"
+    },
+    "type": "array"
+   }
+  }
+ },
+ "stamped": [
+  "accept_incomplete",
+  "agent_release",
+  "agent_resume",
+  "agent_spawn",
+  "agreement_decide",
+  "analytics_query",
+  "approve",
+  "attempt_record",
+  "brief_ack",
+  "brief_create",
+  "claim_file",
+  "cr_accept",
+  "cr_complete",
+  "cr_list",
+  "cr_open",
+  "cr_verify",
+  "deferral_propose",
+  "departure_decide",
+  "departure_record",
+  "directive_inbox",
+  "directive_resolve",
+  "drive_checkin",
+  "drive_done",
+  "drive_issue",
+  "drive_request",
+  "drive_unavailable",
+  "graph_upsert",
+  "guidelines_get",
+  "guidelines_set",
+  "handoff_submit",
+  "idea_record",
+  "issue_close",
+  "issue_escalate",
+  "issue_list",
+  "issue_open",
+  "message_inbox",
+  "message_post",
+  "module_add",
+  "module_review",
+  "override_grant",
+  "phase_add",
+  "phase_resume",
+  "phase_review",
+  "phase_update",
+  "plan_unlocked",
+  "profile_set",
+  "release_file",
+  "repo_branch_create",
+  "repo_check",
+  "report_build",
+  "return_work",
+  "review_compare",
+  "run_finish",
+  "run_pause",
+  "run_start",
+  "run_status",
+  "score_record",
+  "shortfall_record",
+  "status_tree",
+  "test_run_get",
+  "tests_run",
+  "version_restore"
+ ]
+}

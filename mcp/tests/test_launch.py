@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from swarm_ledger import launch, setup
+from swarm_ledger import auth, launch, setup
 
 URL = "http://127.0.0.1:5123/mcp"
 
@@ -37,12 +37,21 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     def ensure_server(root: Path) -> str:
         servers.append(root)
+        auth.ensure_token(root)
         return URL
 
     monkeypatch.setattr(launch, "_ensure_server", ensure_server)
+    problems: list[str | None] = [None]
+    monkeypatch.setattr(launch, "_plugin_load_problem", lambda root: problems[0])
     recorder = Recorder()
     monkeypatch.setattr(launch.subprocess, "run", recorder)
-    return {"repo": repo, "config": config, "servers": servers, "run": recorder}
+    return {
+        "repo": repo,
+        "config": config,
+        "servers": servers,
+        "run": recorder,
+        "problems": problems,
+    }
 
 
 def _trust(config: Path, repo: Path) -> None:
@@ -54,6 +63,19 @@ def _trust(config: Path, repo: Path) -> None:
 
 def _option(command: list[str], flag: str) -> str:
     return command[command.index(flag) + 1]
+
+
+def test_the_oracle_does_not_inherit_the_parent_sessions_variables(env, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_CHILD_SESSION", "1")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("SOME_USER_VAR", "kept")
+
+    launch.main(["--repo", str(env["repo"]), "Build hello.py"])
+
+    child = env["run"].calls[-1]["env"]
+    assert "CLAUDE_CODE_CHILD_SESSION" not in child
+    assert "CLAUDECODE" not in child
+    assert child["SOME_USER_VAR"] == "kept"
 
 
 def test_interactive_puts_the_prompt_first_and_builds_the_flags(env):
@@ -69,10 +91,14 @@ def test_interactive_puts_the_prompt_first_and_builds_the_flags(env):
     assert _option(command, "--permission-mode") == "default"
     assert "--strict-mcp-config" in command
     config = json.loads(_option(command, "--mcp-config"))
-    assert config["mcpServers"]["swarm-ledger"] == {"type": "http", "url": URL}
+    assert config["mcpServers"]["swarm-ledger"] == {
+        "type": "http",
+        "url": URL,
+        "headers": {"Authorization": f"Bearer {auth.read_token(env['repo'])}"},
+    }
     assert config["mcpServers"]["codebase-kg"] == {
         "command": "python",
-        "args": [".sentinel-swarm/hook.py", "mcp", "codebase-kg@codebase-kg", "codebase-kg"],
+        "args": [".sentinel-swarm/hook.py", "mcp", "codebase-kg@alexk413x", "codebase-kg"],
     }
     tools = _option(command, "--allowedTools").split(",")
     assert "mcp__swarm-ledger__run_start" in tools
@@ -217,16 +243,36 @@ def test_a_missing_claude_binary_is_reported(env, monkeypatch, capsys):
     assert "SENTINEL_SWARM_CLAUDE" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize(
-    "flags,channel",
-    [([], ["server:swarm-events"]), (["--bg"], []), (["--headless"], [])],
-)
-def test_dev_channels_go_last_in_every_mode(env, monkeypatch: pytest.MonkeyPatch, flags, channel):
+@pytest.mark.parametrize("flags", [[], ["--bg"], ["--headless"]])
+def test_dev_channels_go_last_in_every_mode(env, monkeypatch: pytest.MonkeyPatch, flags):
     _trust(env["config"], env["repo"])
     monkeypatch.setenv("CLAUDE_DEV_CHANNELS", "plugin:q@m,server:x")
 
     assert launch.main(["--repo", str(env["repo"]), *flags, "Build hello.py"]) == 0
     command = env["run"].calls[-1]["command"]
-    expected = ["--dangerously-load-development-channels", "plugin:q@m", "server:x", *channel]
+    expected = ["--dangerously-load-development-channels", "plugin:q@m", "server:x"]
     assert command[-len(expected) :] == expected
     assert command.count("--dangerously-load-development-channels") == 1
+
+
+@pytest.mark.parametrize("flags", [[], ["--bg"], ["--headless"]])
+def test_no_launch_loads_a_channel_of_its_own(env, capsys: pytest.CaptureFixture[str], flags):
+    _trust(env["config"], env["repo"])
+
+    assert launch.main(["--repo", str(env["repo"]), *flags, "Build hello.py"]) == 0
+    command = env["run"].calls[-1]["command"]
+    assert "--dangerously-load-development-channels" not in command
+    assert "swarm-events" not in " ".join(command)
+    assert "development channel" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("flags", [[], ["--bg"], ["--headless"]])
+def test_a_plugin_that_does_not_load_stops_the_launch(
+    env, capsys: pytest.CaptureFixture[str], flags: list[str]
+):
+    _trust(env["config"], env["repo"])
+    env["problems"][0] = "claude plugin list shows sentinel-swarm: ✘ failed to load"
+    assert launch.main(["--repo", str(env["repo"]), *flags, "build it"]) == 1
+    assert env["run"].calls == []
+    assert env["servers"] == []
+    assert "failed to load" in capsys.readouterr().err

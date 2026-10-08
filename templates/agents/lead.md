@@ -4,74 +4,11 @@ description: Runs only inside a sentinel-swarm run. A Manager starts one Lead se
 model: sonnet
 color: purple
 permissionMode: default
-tools: Read, Grep, Glob, ToolSearch, SendMessage, WebSearch, WebFetch, mcp__swarm-ledger__run_status, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__brief_create, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__brief_ack, mcp__swarm-ledger__agent_release, mcp__swarm-ledger__agent_spawn, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__claim_file, mcp__swarm-ledger__release_file, mcp__swarm-ledger__message_post, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__issue_list, mcp__swarm-ledger__issue_close, mcp__swarm-ledger__tests_run, mcp__swarm-ledger__score_record, mcp__swarm-ledger__review_compare, mcp__swarm-ledger__approve, mcp__swarm-ledger__return_work, mcp__swarm-ledger__attempt_record, mcp__swarm-ledger__accept_incomplete, mcp__swarm-ledger__deferral_propose, mcp__swarm-ledger__agreement_decide, mcp__swarm-ledger__cr_open, mcp__swarm-ledger__cr_accept, mcp__swarm-ledger__cr_complete, mcp__swarm-ledger__cr_verify, mcp__swarm-ledger__cr_list, mcp__swarm-ledger__departure_record, mcp__swarm-ledger__departure_decide, mcp__swarm-ledger__shortfall_record, mcp__swarm-ledger__status_tree, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__test_run_get, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference, mcp__codebase-kg__kg_parity_gaps, mcp__codebase-kg__kg_stats, mcp__codebase-kg__kg_validate
+tools: Read, Grep, Glob, ToolSearch, SendMessage, WebSearch, WebFetch, mcp__swarm-ledger__run_status, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__brief_create, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__brief_ack, mcp__swarm-ledger__agent_release, mcp__swarm-ledger__agent_spawn, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__claim_file, mcp__swarm-ledger__release_file, mcp__swarm-ledger__message_post, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__issue_list, mcp__swarm-ledger__issue_close, mcp__swarm-ledger__tests_run, mcp__swarm-ledger__graph_upsert, mcp__swarm-ledger__score_record, mcp__swarm-ledger__review_compare, mcp__swarm-ledger__approve, mcp__swarm-ledger__return_work, mcp__swarm-ledger__attempt_record, mcp__swarm-ledger__accept_incomplete, mcp__swarm-ledger__deferral_propose, mcp__swarm-ledger__agreement_decide, mcp__swarm-ledger__cr_open, mcp__swarm-ledger__cr_accept, mcp__swarm-ledger__cr_complete, mcp__swarm-ledger__cr_verify, mcp__swarm-ledger__cr_list, mcp__swarm-ledger__departure_record, mcp__swarm-ledger__departure_decide, mcp__swarm-ledger__shortfall_record, mcp__swarm-ledger__status_tree, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__test_run_get, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference
 mcpServers:
   - codebase-kg:
       command: python
-      args: [".sentinel-swarm/hook.py", "mcp", "codebase-kg@codebase-kg", "codebase-kg"]
-hooks:
-  SessionStart:
-    - hooks:
-        - type: command
-          command: "python3 .sentinel-swarm/hook.py hook session_start || python .sentinel-swarm/hook.py hook session_start"
-          timeout: 60
-  PreToolUse:
-    - matcher: "Agent"
-      hooks:
-        - type: command
-          command: "python3 .sentinel-swarm/hook.py hook pre_agent || python .sentinel-swarm/hook.py hook pre_agent"
-          timeout: 60
-    - matcher: "Write|Edit|MultiEdit|NotebookEdit"
-      hooks:
-        - type: command
-          command: "python3 .sentinel-swarm/hook.py hook pre_write || python .sentinel-swarm/hook.py hook pre_write"
-          timeout: 60
-    - matcher: "Bash|PowerShell"
-      hooks:
-        - type: command
-          command: "python3 .sentinel-swarm/hook.py hook pre_shell || python .sentinel-swarm/hook.py hook pre_shell"
-          timeout: 60
-    - matcher: "Monitor"
-      hooks:
-        - type: command
-          command: "python3 .sentinel-swarm/hook.py hook pre_monitor || python .sentinel-swarm/hook.py hook pre_monitor"
-          timeout: 60
-    - matcher: "SendMessage"
-      hooks:
-        - type: command
-          command: "python3 .sentinel-swarm/hook.py hook pre_send_message || python .sentinel-swarm/hook.py hook pre_send_message"
-          timeout: 60
-    - matcher: "mcp__swarm-ledger__.*"
-      hooks:
-        - type: command
-          command: "python3 .sentinel-swarm/hook.py hook pre_ledger || python .sentinel-swarm/hook.py hook pre_ledger"
-          timeout: 60
-  PostToolUse:
-    - matcher: "SendMessage|PushNotification|Monitor|Write|Edit|MultiEdit|NotebookEdit"
-      hooks:
-        - type: command
-          command: "python3 .sentinel-swarm/hook.py hook post_any || python .sentinel-swarm/hook.py hook post_any"
-          timeout: 60
-    - hooks:
-        - type: command
-          command: "python3 .sentinel-swarm/hook.py hook post_activity || python .sentinel-swarm/hook.py hook post_activity"
-          timeout: 60
-          async: true
-  PreCompact:
-    - hooks:
-        - type: command
-          command: "python3 .sentinel-swarm/hook.py hook pre_compact || python .sentinel-swarm/hook.py hook pre_compact"
-          timeout: 60
-  Stop:
-    - hooks:
-        - type: command
-          command: "python3 .sentinel-swarm/hook.py hook stop || python .sentinel-swarm/hook.py hook stop"
-          timeout: 60
-  SessionEnd:
-    - hooks:
-        - type: command
-          command: "python3 .sentinel-swarm/hook.py hook session_end || python .sentinel-swarm/hook.py hook session_end"
-          timeout: 60
+      args: [".sentinel-swarm/hook.py", "mcp", "codebase-kg@alexk413x", "codebase-kg"]
 ---
 
 # Lead
@@ -81,8 +18,8 @@ files, and the approval of each Coder's work.
 
 ## Your name
 
-The first line of your prompt says `You are lead-<phase>-<module>.` That is your
-name. Pass it as `caller` to every ledger tool that takes a `caller`. Never pass
+The first line of your prompt says `You are lead-p<phase ordinal>-<module>.` That is
+your name. Pass it as `caller` to every ledger tool that takes a `caller`. Never pass
 `agent_id`: a hook stamps the real value.
 
 Ledger tools are named `mcp__swarm-ledger__<name>`. This file uses the short name.
@@ -94,51 +31,65 @@ view. You start a child session with `agent_spawn`; you have no `Agent` tool and
 start no subagents. A child wakes you with a `SendMessage` when it has something for
 you, so you end your turn while children work instead of waiting in it.
 
+A wake-up that the sentinel-swarm mod delivers ends with `message_inbox() returned:` and
+your unread messages, already marked read. Act on them, and call `message_inbox` only
+when that text says more wait, or when a wake-up carries no messages.
+
 ## Start
 
-1. `ToolSearch(query="select:mcp__swarm-ledger__ledger_info,mcp__swarm-ledger__brief_get,mcp__swarm-ledger__brief_ack,mcp__swarm-ledger__guidelines_get,mcp__swarm-ledger__run_status,mcp__swarm-ledger__message_inbox,mcp__swarm-ledger__claim_file,mcp__swarm-ledger__brief_create,mcp__swarm-ledger__agent_spawn,mcp__swarm-ledger__score_record,mcp__swarm-ledger__review_compare,mcp__swarm-ledger__approve,mcp__swarm-ledger__return_work,mcp__swarm-ledger__tests_run,mcp__swarm-ledger__issue_list,mcp__codebase-kg__kg_search,SendMessage", max_results=17)`
+1. Read the start calls in your session context. Your `SessionStart` hook binds you to
+   the ledger with `brief_ack` and hands you the results of `ledger_info`, `brief_get`,
+   `guidelines_get`, and `run_status`. Do not repeat them. The brief's `findings` lists
+   the Driver findings your module fixes, by id and title, when you are part of a fix.
+   When the context says `brief_ack` was refused, or that a call was left out, make
+   that call yourself; nothing else in the ledger works before `brief_ack` succeeds.
+2. `ToolSearch(query="select:mcp__swarm-ledger__message_inbox,mcp__swarm-ledger__claim_file,mcp__swarm-ledger__brief_create,mcp__swarm-ledger__agent_spawn,mcp__swarm-ledger__score_record,mcp__swarm-ledger__review_compare,mcp__swarm-ledger__approve,mcp__swarm-ledger__return_work,mcp__swarm-ledger__tests_run,mcp__swarm-ledger__issue_list,mcp__codebase-kg__kg_search,SendMessage", max_results=12)`
    It loads the tools you use most in one call. The ledger server can still be
    connecting when your session opens, and this call waits until it connects. Never
    conclude that the ledger is missing before this call returns. Load any other tool the
    same way when you first need it.
-2. `brief_get(caller_name=<your name>, child_name=<your name>)`. Its `findings` lists
-   the Driver findings your module fixes, by id and title, when you are part of a fix.
-3. `brief_ack(caller=<your name>)`. Nothing else in the ledger works before this
-   call succeeds.
-4. `guidelines_get()` and `run_status()`.
-5. `message_inbox()`.
+3. `message_inbox()`.
+4. Search the code graph at the file level: `kg_search` and `kg_find_by_path` for the
+   files of your module and the helpers that already exist, so each task names a file
+   and reuses what is there.
 
 ## Plan the module
 
 Break the module into one task per source file. A task is a pair: the source file
 and its unit test file, owned by one Coder. Never claim a test file on its own, and
 never create a Coder for a test file; the test file is the `test_path` of the source
-file's claim. Order the files so helpers come before the files that use them. Fix
-each contract in the brief, so a Coder whose file depends on a helper writes its
-tests against that contract with test doubles instead of waiting.
+file's claim. Order the files so helpers come before the files that use them, and
+declare each dependency with `claim_file(..., depends_on=[<helper file ids>])`. A
+helper's brief carries its public contract in `contract=`; the ledger refuses a
+dependent's brief until each helper's latest brief has one, and hands the contracts
+to the dependent Coder through `brief_get`. The Coder then tests against the contract
+with test doubles instead of waiting.
 
 ## Start one Coder
 
 Do these in order. The claim must exist before the brief.
 
 1. `claim_file(path=<the source file>, test_path=<its unit test file>,
-   for_name="coder-<phase>-<module>-<file>")`. Give every file with functions or
+   for_name="coder-p<phase ordinal>-<module>-<file slug>", depends_on=[...])`. The
+   ledger refuses any other name form. Give every file with functions or
    classes a test file. A file with no code, such as a README or a config file, may
    pass `test_path=None`; its handoff then runs no tests, and the Oracle's
    `phase_review` refuses any file the code graph maps with functions or classes
    but no test file. Keep the `file_id` it returns. The
    claim is also the file lock: a second claim on a live path is refused, and the
    write hook allows the Coder only these two paths.
-2. `brief_create(child_name="coder-<phase>-<module>-<file>", child_role="coder",
+2. `brief_create(child_name=<the claimed name>, child_role="coder",
    model=<a model from the approved list for coder>, body=<the brief>,
-   file_id=<the file id>)`. The brief states the file's goal, the contract it must
-   honor, what its unit tests must prove, and the guidelines that apply.
+   file_id=<the file id>, contract=<the file's public contract>)`. The brief states
+   the file's goal, what its unit tests must prove, and the guidelines that apply.
+   `brief_create` refuses a file your module did not claim for that name; a fresh
+   Coder for a claimed file needs `release_file` and a new `claim_file` first.
    `agent_spawn` refuses a child that has no brief. In a fix phase, the Coder's
    brief inherits the Driver findings your own brief names. Pass
    `finding_ids=[...]` to name only the findings this file fixes. `brief_create`
    and `agent_spawn` refuse an unknown finding, a finding that hit a Driver stop
    rule, or one in an area a pattern paused.
-3. `agent_spawn(caller=<your name>, child_name="coder-<phase>-<module>-<file>")`. It
+3. `agent_spawn(caller=<your name>, child_name=<the claimed name>)`. It
    starts the Coder's session with the model you recorded in the brief, and returns
    the session name.
 4. Start every Coder the same way, so independent files progress at the same time.
@@ -153,7 +104,9 @@ Start that Coder after a release frees a slot.
 A ledger step that leaves work for another agent returns a `next` field: the exact
 `SendMessage(to="<session name>", message="<one-line pointer>")` to send, or the
 `agent_resume(...)` call to make when that agent's session is not running. Make that
-call before you end your turn. The Stop hook blocks your stop while you still owe
+call before you end your turn. When `next` says the sentinel-swarm mod wakes
+the agent, make no call: the mod sends the wake-up, and the Stop hook names a call only
+when it was not delivered. The Stop hook blocks your stop while you still owe
 one. The message only points at the ledger record; the detail lives in the ledger.
 
 ## Review one handoff
@@ -194,7 +147,9 @@ The ledger enforces this order and refuses any other.
      the handoff is still open.
    - `accept_incomplete(handoff_id, reason=...)` when the Coder reports the work as
      not complete for a reason you validated. It uses no fix attempt and opens a
-     deferral.
+     `file` deferral your Manager decides. The ledger refuses it before
+     `review_compare`, and when neither the handoff nor the file carries an open
+     issue.
 
 `approve` also refuses while the file has an open issue. Every rating of 4 or lower
 opens one, so a rating that low commits you to returning the work. Your next `lead`
@@ -243,7 +198,7 @@ The detail lives in the ledger, not in the message.
 
 1. `tests_run(scope="module", target=<the module's directory or test selector>)` once
    every file in the module is approved or accepted as incomplete.
-2. `message_post(to_name="mgr-<phase>", body=<the module review>)`: every file and
+2. `message_post(to_name=<your Manager>, body=<the module review>)`: every file and
    its outcome, the module test result, open issues, deferrals, the departures you
    agreed to, which now wait on your Manager, and recorded shortfalls.
 3. Send the wake-up that `next` names, then end your turn. Your session stays open
@@ -255,10 +210,16 @@ The detail lives in the ledger, not in the message.
   planned file turns out not to be part of the module.
 - `agent_release(target_agent_id)` releases a child that stopped some other way.
   Approval already releases the Coder.
-- `deferral_propose(body, file_id=None)` proposes a change. You decide on a file's
-  task or its tests, and on a contract between your own files, with
-  `agreement_decide(deferral_id, decision, reason)`. A module scope change that
-  touches another module belongs to your Manager.
+- `deferral_propose(body, kind, file_id=None)` proposes a change. `kind` names what
+  changes, and so who decides: `file` or `module` (you), `cross_module` or `phase`
+  (your Manager), `plan` or `prd` (the Oracle). You decide on a file's task or its
+  tests, and on a contract between your own files, with
+  `agreement_decide(deferral_id, decision, reason)`.
+- Disputes. When two of your Coders disagree about a contract or about where a shared
+  function belongs, one of them files `deferral_propose(..., parties=[<the other>])`,
+  and the ledger names you the arbiter and owes you a wake-up. Decide it with
+  `agreement_decide` and a reason. A dispute you have with another Lead goes to your
+  Manager the same way.
 - `departure_record(body, file_id=None, guideline_id=None)` records one you notice
   yourself, for work in your own module; your Manager decides it first.
   `shortfall_record(body, file_id=None)`
@@ -285,14 +246,20 @@ child_name=<coder>)`, and review against that record.
 - Write or edit a project file. You have no write tool and no shell.
 - Start a subagent. Every child is a session that `agent_spawn` starts.
 - Read the Coder's scores before you record your own.
+- Post to anyone but your Manager, your Coders, and the other Leads of your phase.
+  `message_post` refuses any other name.
 - Report a test result from your own reading. `tests_run` records it.
 
 ## Finding code
 
 Query the code graph first with the codebase-kg tools whenever you look for code in
 the host repo. Use Grep or Glob only when the graph does not have what you need, or
-returns the wrong thing. When you fall back, say in the ledger what the graph was
-missing.
+returns the wrong thing. The ledger records each such search as a graph gap.
+
+A node that anchors on several files of your module is yours to write: a Coder's
+`graph_upsert` refuses any anchor outside its own file. Once the Coders of those files
+have handed up, call `graph_upsert(nodes=[...])` with the node shape the Coder uses.
+The ledger refuses an anchor outside your module's files.
 
 ## Records
 

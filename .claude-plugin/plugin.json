@@ -9,6 +9,7 @@
   "homepage": "https://github.com/Alexk413x/sentinel-swarm",
   "repository": "https://github.com/Alexk413x/sentinel-swarm",
   "license": "LicenseRef-Proprietary",
+  "types": "./types/index.d.ts",
   "keywords": [
     "agent-swarm",
     "multi-agent",
@@ -22,7 +23,7 @@
   "dependencies": [
     {
       "name": "codebase-kg",
-      "marketplace": "codebase-kg",
+      "marketplace": "alexk413x",
       "version": ">=0.8.2"
     }
   ],

@@ -5,17 +5,23 @@ import os
 import re
 import shlex
 import subprocess
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .. import pricing, sessions
-from ..agentfiles import plugin_installed
+from .. import __version__, pricing, sessions
+from ..agentfiles import CODEBASE_KG_PLUGIN, plugin_installed
 from ..db import ensure_git_exclude, write_tx
-from ..identity import ROLES, LedgerError
+from ..identity import (
+    IDENTITY_FREE_TOOLS,
+    PRE_BIND_TOOLS,
+    ROLES,
+    LedgerError,
+    caller_of,
+    unbound_reason,
+)
 from ..ledger import Ledger
 from ..watchdog import MONITOR_CALL, REGISTER_GRACE, WATCH_COMMAND, parse_stamp, utcnow
-
-_CODEBASE_KG_PLUGIN = "codebase-kg@codebase-kg"
 
 _RECORDS_DIR = ".sentinel-swarm"
 _WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
@@ -23,15 +29,22 @@ _WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 # handoff_submit read what post_any records for these tools, so it cannot run async.
 SYNC_POST_TOOLS = ("SendMessage", "PushNotification", "Monitor", *_WRITE_TOOLS)
 FIRED_AT_KEY = "sentinel_swarm_fired_at"
+TRANSPORT_KEY = "sentinel_swarm_transport"
 _READONLY_GIT = frozenset({"status", "diff", "log", "show", "ls-files", "branch"})
 _POSIX = os.name != "nt"
-_UNSTAMPED_TOOLS = frozenset({"ledger_info", "brief_get", "who_owns", "directive_submit", "events"})
+_RUN_STATUS_ROLES = frozenset({"manager", "lead"})
+# Claude Code saves additionalContext over 10,000 characters to a file and shows the model
+# only a 2,000-character preview, so the start calls must fit under the cap.
+_START_CONTEXT_CAP = 9_500
 # The Driver is the one role with an Agent tool, and only for cartographer's own
 # subagents: it never runs a subagent of its own or any other plugin's.
 _DRIVER_SUBAGENTS = frozenset(
     {"map-driver", "map-reviewer", "cartographer:map-driver", "cartographer:map-reviewer"}
 )
 _SHELL_OPERATORS = re.compile(r"[;&|<>`\n]|\$\(")
+_SEARCH_TOOLS = frozenset({"Grep", "Glob"})
+_GAP_PATHS = 20
+_CONTENT_LINE = re.compile(r"^((?:[A-Za-z]:)?[^:]+):\d+[:-]")
 _LIVE_RUN = "state IN ('active', 'paused')"
 _PAUSE_HINT = "If the run is blocked on something only the user can fix, call run_pause(reason)."
 _WATCH_STALE = timedelta(seconds=60)
@@ -100,14 +113,96 @@ def _deny(reason: str) -> dict:
 # -- 1. SessionStart ------------------------------------------------------------
 
 
+def _session_context(text: str) -> dict:
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": text,
+        }
+    }
+
+
+def _compact_json(value: object) -> str:
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False, default=str)
+
+
+def _start_calls(ledger: Ledger, caller: dict) -> list[tuple[str, Callable[[], object]]]:
+    name, agent_id = caller["name"], caller["agent_id"]
+    info = {
+        "name": "swarm-ledger",
+        "version": __version__,
+        "status": "ready",
+        "repo_root": str(ledger.repo_root),
+    }
+    calls: list[tuple[str, Callable[[], object]]] = [
+        ("ledger_info()", lambda: info),
+        (
+            f"brief_get(caller_name={name!r}, child_name={name!r})",
+            lambda: ledger.brief_get(name, name),
+        ),
+        ("guidelines_get()", lambda: ledger.guidelines_get(name, agent_id)),
+    ]
+    if caller["role"] in _RUN_STATUS_ROLES:
+        calls.append(("run_status()", lambda: ledger.run_status(name, agent_id)))
+    return calls
+
+
+def _start_context(ledger: Ledger, caller: dict) -> str:
+    name, agent_id = caller["name"], caller["agent_id"]
+    names = ", ".join(label.split("(")[0] for label, _ in _start_calls(ledger, caller))
+    if caller["state"] == "registered":
+        try:
+            ledger.brief_ack(name, agent_id)
+        except LedgerError as exc:
+            return (
+                f"The SessionStart hook called brief_ack(caller={name!r}) for you, and the "
+                f"ledger refused it: {exc}. No other ledger tool works until brief_ack "
+                f"succeeds. Call brief_ack(caller={name!r}) yourself once the cause is fixed, "
+                f"then {names}."
+            )
+        head = f"The SessionStart hook bound you to the ledger with brief_ack(caller={name!r})."
+    else:
+        head = f"You are {name}, already bound to the ledger. Do not call brief_ack again."
+    parts = [
+        f"{head} It also made your start calls ({names}); their results follow. Do not "
+        "repeat them now. Call brief_get again whenever your template says to re-read "
+        "your brief."
+    ]
+    size = len(parts[0])
+    brief_in = False
+    for label, call in _start_calls(ledger, caller):
+        try:
+            line = f"{label} returned: {_compact_json(call())}"
+            answered = True
+        except LedgerError as exc:
+            line = f"{label} was refused: {exc}"
+            answered = False
+        if size + len(line) + 1 > _START_CONTEXT_CAP:
+            line = (
+                f"{label} is left out: its result is {len(line)} characters, over the room "
+                "left in this hook's context. Call it yourself."
+            )
+        elif answered and label.startswith("brief_get"):
+            brief_in = True
+        parts.append(line)
+        size += len(line) + 1
+    if brief_in:
+        ledger.brief_read(agent_id, name)
+    return "\n".join(parts)
+
+
 def handle_session_start(ledger: Ledger, data: dict) -> dict | None:
+    if data.get(TRANSPORT_KEY) == "mod" and data.get("session_id"):
+        ledger.mod_session(str(data["session_id"]))
     caller = _swarm_caller(ledger, data.get("session_id"))
     if caller is not None:
         if data.get("transcript_path"):
             ledger.agent_transcript(caller["agent_id"], str(data["transcript_path"]))
         if caller["state"] == "idle":
             ledger.agent_active(caller["agent_id"], "session_start")
-        return None
+        if caller["role"] == "oracle":
+            return None
+        return _session_context(_start_context(ledger, caller))
 
     parts: list[str] = []
 
@@ -131,7 +226,7 @@ def handle_session_start(ledger: Ledger, data: dict) -> dict | None:
                 "The resume skill continues it."
             )
 
-    if not plugin_installed(ledger.repo_root, _CODEBASE_KG_PLUGIN):
+    if not plugin_installed(ledger.repo_root, CODEBASE_KG_PLUGIN):
         parts.append(
             "codebase-kg is not installed for this repo; install it, then run "
             "/sentinel-swarm:setup."
@@ -149,12 +244,7 @@ def handle_session_start(ledger: Ledger, data: dict) -> dict | None:
 
     if not parts:
         return None
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": "SessionStart",
-            "additionalContext": " ".join(parts),
-        }
-    }
+    return _session_context(" ".join(parts))
 
 
 # -- 2. PreToolUse: Agent ---------------------------------------------------------
@@ -200,7 +290,7 @@ def handle_pre_write(ledger: Ledger, data: dict) -> dict | None:
     target = rel if rel is not None else raw_path
 
     def _deny_or_override(reason: str) -> dict | None:
-        if ledger.override_consume("write", caller["name"], target):
+        if ledger.override_consume(caller["run_id"], "write", caller["name"], target):
             return None
         return _deny(reason)
 
@@ -269,7 +359,7 @@ def handle_pre_shell(ledger: Ledger, data: dict) -> dict | None:
     command = str((data.get("tool_input") or {}).get("command") or "")
 
     def _deny_or_override(reason: str) -> dict | None:
-        if ledger.override_consume("shell", caller["name"], command):
+        if ledger.override_consume(caller["run_id"], "shell", caller["name"], command):
             return None
         return _deny(reason)
 
@@ -310,11 +400,7 @@ def handle_pre_monitor(ledger: Ledger, data: dict) -> dict | None:
 # -- 4b. PreToolUse: SendMessage ----------------------------------------------------
 
 
-def handle_pre_send_message(ledger: Ledger, data: dict) -> dict | None:
-    caller = _swarm_caller(ledger, _caller_id(data))
-    if caller is None or caller["run_id"] is None:
-        return None
-    to = str((data.get("tool_input") or {}).get("to") or "")
+def _send_refusal(ledger: Ledger, caller: dict, to: str) -> str | None:
     names = {
         row["session_name"]
         for row in ledger.conn.execute(
@@ -323,11 +409,60 @@ def handle_pre_send_message(ledger: Ledger, data: dict) -> dict | None:
             (caller["run_id"],),
         )
     }
-    if to in names:
+    if to not in names:
+        return (
+            "SendMessage may target only a session of this run; valid session names: "
+            f"{sorted(names)}"
+        )
+    allowed = {
+        row["session_name"]
+        for row in ledger.message_peers(ledger.conn, caller_of(caller))
+        if row["session_name"]
+    }
+    allowed |= {
+        row["to_session_name"]
+        for row in ledger.conn.execute(
+            "SELECT to_session_name FROM wakeups WHERE from_agent_id = ? AND sent_at IS NULL",
+            (caller["agent_id"],),
+        )
+    }
+    if caller["role"] == "oracle":
+        # The Oracle's Stop hook names any waiting agent of a stalled run to wake.
+        allowed |= {
+            row["session_name"]
+            for row in ledger.conn.execute(
+                "SELECT session_name FROM agents WHERE run_id = ? AND ended_at IS NULL "
+                "AND state != 'working' AND session_name IS NOT NULL",
+                (caller["run_id"],),
+            )
+        }
+    if to in allowed:
         return None
-    return _deny(
-        f"SendMessage may target only a session of this run; valid session names: {sorted(names)}"
+    return (
+        f"SendMessage from {caller['name']} goes to its parent, its children, its siblings, or "
+        f"a session it owes a wake-up: {sorted(allowed)}. Reach anyone else through that chain"
     )
+
+
+def handle_pre_send_message(ledger: Ledger, data: dict) -> dict | None:
+    caller = _swarm_caller(ledger, _caller_id(data))
+    if caller is None or caller["run_id"] is None:
+        return None
+    reason = _send_refusal(ledger, caller, str((data.get("tool_input") or {}).get("to") or ""))
+    return _deny(reason) if reason is not None else None
+
+
+# -- 4c. PreToolUse: Skill -----------------------------------------------------------
+
+
+def handle_pre_skill(ledger: Ledger, data: dict) -> dict | None:
+    caller = _swarm_caller(ledger, _caller_id(data))
+    if caller is None or caller["role"] != "driver":
+        return None
+    tool_input = data.get("tool_input") or {}
+    skill = str(tool_input.get("skill") or tool_input.get("command") or "")
+    reason = ledger.drive_skill(caller["agent_id"], skill)
+    return _deny(reason) if reason is not None else None
 
 
 # -- 5. PreToolUse: the swarm-ledger MCP tools -------------------------------------
@@ -338,13 +473,16 @@ def handle_pre_ledger(ledger: Ledger, data: dict) -> dict:
     method = tool_name.rsplit("__", 1)[-1] if "__" in tool_name else tool_name
     caller_id = _caller_id(data)
 
-    if method == "override_grant":
-        caller = _swarm_caller(ledger, caller_id)
-        if caller is None or caller["role"] != "oracle":
-            return _deny("override_grant is for the Oracle only")
+    caller = _swarm_caller(ledger, caller_id)
+    if method == "override_grant" and (caller is None or caller["role"] != "oracle"):
+        return _deny("override_grant is for the Oracle only")
+    if caller is not None and caller["state"] == "registered" and method not in PRE_BIND_TOOLS:
+        return _deny(unbound_reason(caller["name"]))
 
     tool_input = dict(data.get("tool_input") or {})
-    if method in _UNSTAMPED_TOOLS:
+    if method == "brief_get" and caller_id:
+        ledger.brief_read(caller_id, str(tool_input.get("child_name") or ""))
+    if method in IDENTITY_FREE_TOOLS:
         tool_input.pop("agent_id", None)
     else:
         tool_input["agent_id"] = caller_id
@@ -428,7 +566,47 @@ def handle_post_activity(ledger: Ledger, data: dict) -> None:
     if caller is None:
         return None
     _record_activity(ledger, caller, data, tool_name, parse_stamp(data.get(FIRED_AT_KEY)))
+    if tool_name in _SEARCH_TOOLS:
+        tool_input = data.get("tool_input") or {}
+        raw_path = str(tool_input.get("path") or "")
+        ledger.graph_gap(
+            caller["agent_id"],
+            tool_name,
+            str(tool_input.get("pattern") or "") or None,
+            (_repo_relative(ledger, raw_path) or raw_path) if raw_path else None,
+            _found_paths(ledger, data.get("tool_response")),
+        )
     return None
+
+
+def _found_paths(ledger: Ledger, response: object) -> list[str]:
+    if isinstance(response, dict):
+        filenames = response.get("filenames")
+        if isinstance(filenames, list):
+            raw = [str(name) for name in filenames]
+        else:
+            content = response.get("content")
+            raw = _content_paths(content) if isinstance(content, str) else []
+    elif isinstance(response, str):
+        raw = _content_paths(response)
+    else:
+        raw = []
+    found: list[str] = []
+    for name in raw:
+        path = _repo_relative(ledger, name) or name
+        if path not in found:
+            found.append(path)
+        if len(found) == _GAP_PATHS:
+            break
+    return found
+
+
+def _content_paths(text: str) -> list[str]:
+    paths = []
+    for line in text.splitlines():
+        match = _CONTENT_LINE.match(line)
+        paths.append(match.group(1) if match else line.strip())
+    return [p for p in paths if p]
 
 
 # -- 7. PostToolUse: Bash, PowerShell ----------------------------------------------
@@ -640,10 +818,7 @@ def _wake_hint(ledger: Ledger, agent: dict, live_ids: set[str] | None) -> str:
             "to_name": agent["name"],
             "to_session_name": agent["session_name"],
         },
-        transport=ledger.settings.wake_transport,
         live=None if live_ids is None else agent["agent_id"] in live_ids,
-        channel=agent.get("channel") or "none",
-        hub=ledger.hub,
     )
     if delivery.send is None:
         return f"resume it with {delivery.resume}"
@@ -914,16 +1089,14 @@ def _oracle_work_block(ledger: Ledger, run: dict, oracle: dict) -> dict | None:
 
 
 def _owed_steps(ledger: Ledger, agent_id: str) -> list[str]:
-    from .. import wake
+    return [ledger.wake_step(w) for w in ledger.owed_wakeups(agent_id)]
 
-    owed = ledger.owed_wakeups(agent_id)
-    pushed = [w for w in owed if w["pushed_at"] is not None]
-    unconfirmed = {w["wakeup_id"] for w in wake.await_confirmation(ledger.conn, pushed)}
-    return [
-        ledger.fallback_step(w) if w["pushed_at"] is not None else ledger.wake_step(w)
-        for w in owed
-        if w["pushed_at"] is None or w["wakeup_id"] in unconfirmed
-    ]
+
+def _unread_count(ledger: Ledger, caller: dict) -> int:
+    return ledger.conn.execute(
+        "SELECT COUNT(*) AS n FROM messages WHERE run_id = ? AND to_name = ? AND read_at IS NULL",
+        (caller["run_id"], caller["name"]),
+    ).fetchone()["n"]
 
 
 def _member_stop(ledger: Ledger, caller: dict, data: dict) -> dict | None:
@@ -934,13 +1107,17 @@ def _member_stop(ledger: Ledger, caller: dict, data: dict) -> dict | None:
 
     if not data.get("stop_hook_active"):
         steps = [f"- {step}" for step in _owed_steps(ledger, caller["agent_id"])]
-        if steps:
-            return {
-                "decision": "block",
-                "reason": "\n".join(
-                    ["You still owe a wake-up. Make each call below, then stop:", *steps]
-                ),
-            }
+        unread = _unread_count(ledger, caller)
+        if steps or unread:
+            lines = []
+            if steps:
+                lines += ["You still owe a wake-up. Make each call below, then stop:", *steps]
+            if unread:
+                lines.append(
+                    f"You have {unread} unread message(s). Call message_inbox, act on them, "
+                    "then stop."
+                )
+            return {"decision": "block", "reason": "\n".join(lines)}
 
     if caller["role"] == "driver" and ledger.release_closed_driver(caller["agent_id"]):
         return None
@@ -990,3 +1167,73 @@ def _refresh_finished_report(
             caller_id, transcript_path=transcript_path, tokens=_sum_tokens(transcript_path)
         )
     ledger.write_report(run["run_id"])
+
+
+# -- 11. The mod: owed wake-ups and the inbox --------------------------------------
+
+
+def handle_owed(ledger: Ledger, data: dict) -> dict | None:
+    from .. import wake
+
+    caller = _swarm_caller(ledger, _caller_id(data))
+    if caller is None:
+        return None
+    targets: dict[str, dict] = {}
+    for wakeup in ledger.owed_wakeups(caller["agent_id"]):
+        if caller["run_id"] is not None and _send_refusal(
+            ledger, caller, wakeup["to_session_name"]
+        ):
+            continue
+        target = targets.get(wakeup["to_agent_id"])
+        if target is None:
+            row = ledger.conn.execute(
+                "SELECT role FROM agents WHERE agent_id = ?", (wakeup["to_agent_id"],)
+            ).fetchone()
+            target = targets[wakeup["to_agent_id"]] = {
+                "session_id": wakeup["to_agent_id"],
+                "session_name": wakeup["to_session_name"],
+                "name": wakeup["to_name"],
+                "role": row["role"] if row is not None else None,
+                "pointers": [],
+                "wakeup_ids": [],
+            }
+        target["pointers"].append(wakeup["pointer"])
+        target["wakeup_ids"].append(wakeup["wakeup_id"])
+    wakeups = []
+    for target in targets.values():
+        text = " ".join(target.pop("pointers"))
+        target["text"] = wake.timed(text, wake.signal_for(ledger.conn, target["session_id"]))
+        wakeups.append(target)
+    return {"wakeups": wakeups}
+
+
+def handle_wake_sent(ledger: Ledger, data: dict) -> dict | None:
+    caller = _swarm_caller(ledger, _caller_id(data))
+    if caller is None:
+        return None
+    raw = data.get("wakeup_ids")
+    ids = [i for i in raw if isinstance(i, int)] if isinstance(raw, list) else []
+    return {"sent": ledger.wakeups_paid(caller["agent_id"], ids)}
+
+
+def handle_inbox_take(ledger: Ledger, data: dict) -> dict | None:
+    caller = _swarm_caller(ledger, _caller_id(data))
+    if caller is None or caller["run_id"] is None:
+        return None
+    return ledger.inbox_take(caller_of(caller))
+
+
+def _settle(ledger: Ledger, data: dict, *, read: bool) -> dict | None:
+    caller = _swarm_caller(ledger, _caller_id(data))
+    claim = data.get("claim")
+    if caller is None or not isinstance(claim, str) or not claim:
+        return None
+    return {"settled": ledger.inbox_settle(caller_of(caller), claim, read=read)}
+
+
+def handle_inbox_ack(ledger: Ledger, data: dict) -> dict | None:
+    return _settle(ledger, data, read=True)
+
+
+def handle_inbox_release(ledger: Ledger, data: dict) -> dict | None:
+    return _settle(ledger, data, read=False)

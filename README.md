@@ -10,7 +10,7 @@ requires recorded evidence, not a claim.
 
 sentinel-swarm runs in Claude Code only: the CLI, the desktop app, or an IDE extension,
 on Windows or macOS. Every workflow starts `claude --bg` sessions from a local shell, the
-role gates are hooks in project agent files, and each host repo runs its own ledger
+plugin's mod gates each role session, and each host repo runs its own ledger
 server. claude.ai chat and Cowork cannot do any of that, so do not upload the plugin to
 claude.ai or add its marketplace to organization sync. Keep any future launcher out of a
 top-level `bin/` folder.
@@ -44,7 +44,8 @@ its child with the ledger tool `agent_spawn`; no role has the `Agent` tool.
 2. Trust the host folder once: run `claude` in it and accept the trust prompt.
 3. Run `python -m swarm_ledger.setup` (or `/sentinel-swarm:setup`). It writes the
    role files to `.claude/agents/swarm-<role>.md`, the hook shim to
-   `.sentinel-swarm/hook.py`, and the git excludes.
+   `.sentinel-swarm/hook.py`, and the git excludes. The role files carry no hooks:
+   the plugin's mod runs them.
 4. Run `python -m swarm_ledger.launch "<prompt>"` (or `/sentinel-swarm:run`). It
    starts the repo's ledger server and the Oracle session. Add `--bg` for a
    background session or `--headless` for `claude -p`.
@@ -53,7 +54,9 @@ its child with the ledger tool `agent_spawn`; no role has the `Agent` tool.
 
 ## Required dependency
 
-sentinel-swarm requires the `codebase-kg` plugin (`>=0.8.2`). Every role queries the
+sentinel-swarm requires the `codebase-kg` plugin (`>=0.8.2`), installed as
+`codebase-kg@alexk413x` from the `alexk413x` marketplace (`Alexk413x/marketplace`).
+Claude Code refuses to load sentinel-swarm in a project where it is not installed. Every role queries the
 code graph before it plans or writes, and the Coder updates it for its own file.
 `accessibility-tools` and `cartographer` are optional dependencies.
 
@@ -72,8 +75,7 @@ plans/            plans for work not built yet
 ```
 
 The plugin ships no `agents/` folder. Setup writes the four core role files into the
-host repo, plus the Driver's when the host has cartographer and a driver plugin, and
-their `hooks` frontmatter applies there.
+host repo, plus the Driver's when the host has cartographer and a driver plugin.
 
 ## Dev commands (mcp/)
 
@@ -90,6 +92,6 @@ uv run ruff format --check
 
 ## Design documents
 
-Read `knowledge/prd/README.md`, which lists one document per subject. Anything marked
-**(proposed)** has not been reviewed and is not final. `plans/` holds plans for work not
-built yet.
+Read `knowledge/prd/README.md`, which lists one document per subject. The PRD is the
+specification the code must match. Anything marked **(needs implementation)** is
+specified but not built yet. `plans/` holds plans for work not built yet.

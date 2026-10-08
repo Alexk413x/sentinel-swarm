@@ -4,6 +4,9 @@
 
 - Every role has `swarm-ledger` and `codebase-kg`. Every session starts with
   `--strict-mcp-config`, so no server loads that its config does not list.
+- `swarm-ledger` is an HTTP entry with the repo's ledger token as a static
+  `Authorization: Bearer` header. See "Access" and "The token" in
+  [06-ledger-server.md](06-ledger-server.md).
 - A role also gets the a11y plugin's servers, `a11y-tools` and `a11y-kg`, when the host
   has `a11y@accessibility-tools` installed at user scope or for the host's path.
   `agent_spawn` and the launcher check the installed-plugins registry and add the
@@ -16,15 +19,12 @@
   `web-driver-kg`), through the same shim mechanism as the a11y servers
   (`agentfiles.OPTIONAL_SERVERS` for a11y, `agentfiles.DRIVER_OPTIONAL_SERVERS` for the
   Driver's own, joined only when `role == "driver"`). Every other role's session never
-  gets them, even when the plugins are installed. **(proposed)**
+  gets them, even when the plugins are installed.
 - The Driver's own servers are keyed by the name a plugin install gives them,
   `plugin_<plugin>_<server>`: `plugin_cartographer_cartographer`,
   `plugin_android-driver_android-driver-kg`, and so on. Their tools then carry the
   `mcp__plugin_…` names that cartographer's agents grant and its hooks match. The a11y
   servers keep their bare keys until a11y renames its tools to the plugin form.
-- An Oracle launch that carries the channel also lists `swarm-events`, the stdio entry
-  `python .sentinel-swarm/hook.py channel`. It has no tools. No other launch lists it.
-  See "Wake-up delivery" in [05-sessions.md](05-sessions.md). **(proposed)**
 - Tool names: `mcp__swarm-ledger__<tool>` and `mcp__codebase-kg__<tool>`.
 - Each role keeps a fixed `tools` allowlist in its agent file. It names each ledger tool
   the role may call, from `identity.ROLE_TOOLS`, never the whole `mcp__swarm-ledger`
@@ -42,6 +42,17 @@
   `python .sentinel-swarm/hook.py mcp <plugin_id> <server>`. The shim runs the command
   that the plugin's own `.mcp.json` names, in the plugin's own environment. When that
   command is the plugin's relay, the relay does the sharing.
+- When the plugin's own entry for that server is `"type": "http"`, `session_options`
+  writes that entry into the role's `--mcp-config` instead of the shim's: `url` and
+  `headersHelper` with `${CLAUDE_PLUGIN_ROOT}` set to the install folder and each
+  `${user_config.<key>}` in `url` set to the option in the user's own `settings.json`
+  `pluginConfigs`, else the manifest's `userConfig` default. A host repo's settings never
+  count. A value must be a plain token (letters, digits, `.`, `_`, `-`; an integer for a
+  `number` option), and the URL's host must stay the template's. `headersHelper` takes
+  only `${CLAUDE_PLUGIN_ROOT}`. No relay process starts. Any entry that fails a check
+  keeps the shim. codebase-kg 0.12.0 and later serves HTTP on one server per machine
+  and resolves each session's graph from its roots. Verified live on 2026-10-07: a
+  `--strict-mcp-config` session with codebase-kg's `headersHelper` called `kg_search`.
 - codebase-kg 0.8.0 and later names its relay, `bin/kg-shim`, in its `.mcp.json`. The
   relay is one small process that connects to one codebase-kg server per machine and
   server build: the plugin version plus a digest of its Python files. Its handshake
@@ -56,34 +67,60 @@
   release. Each names a relay in its `.mcp.json`. The relay connects to one server per machine
   and server build, and falls back to a private stdio server when it cannot reach the
   shared one.
-- An older plugin version that names a plain `uv run` or `uvx` command runs one server
-  per session.
+- A plugin version that names a plain `uv run` or `uvx` command runs one server per
+  session.
 - Graph writes go through `graph_upsert`, which calls codebase-kg's
   `edits.upsert_node` with the host graph's explicit path under the ledger's lock, so
   the shared codebase-kg server only ever serves reads.
+- `graph_upsert` runs `edits.upsert_node` in a child process on the base interpreter
+  (`sys._base_executable`, the one the ledger's venv was made from) with `-I -S` and
+  `<codebase-kg>/mcp/src` on `sys.path`, as codebase-kg's own workers run. It needs no
+  venv in the plugin cache. It falls back to `uv run --project <codebase-kg>/mcp
+  --frozen --no-dev python` when the running Python is older than the floor in
+  codebase-kg's `pyproject.toml` (`requires-python = ">=3.10"` in 0.14.0), when that
+  file declares any dependency (codebase-kg is standard library only since 0.12.0), or
+  when `mcp/src/codebase_kg/edits.py` is missing.
 
 ## The code graph
 
-codebase-kg is a required dependency (`>=0.8.2`). 0.8.2 is the floor because it is the
-first release whose relay shares one server per machine and runs on Windows (the
-`.cmd` fix); 0.7.x starts its own `uv run` servers in every session. An up-to-date graph lets each agent
+codebase-kg is a required dependency (`>=0.8.2`). It is the plugin
+`codebase-kg@alexk413x`, from the `alexk413x` marketplace (`Alexk413x/marketplace`),
+installed per project. sentinel-swarm's `plugin.json` depends on it, and Claude Code
+refuses to load sentinel-swarm in a project where it is not installed. 0.8.2 is the
+floor because it is the first release whose relay shares one server per machine and
+runs on Windows (the `.cmd` fix). An up-to-date graph lets each agent
 find what exists while many agents change the code at once. The graph file,
 `knowledge/code_graph.db`, belongs to the host repo and is committed with its code.
 
-- Every role searches the graph first, at its own level **(proposed)**, and uses Grep
-  or Glob only when the graph lacks the answer. codebase-kg's own search gate hook
-  enforces this order. An agent that falls back records what the graph was missing.
-  **(proposed)**
-- Only the Coder writes to the graph, and only through `graph_upsert(nodes)`. It takes
-  codebase-kg's `kg_upsert_node` node shape (`id`, `kind`, `section`, `description`,
-  `anchors`, `edges`). The ledger refuses an anchor outside the Coder's file and test
-  file, and an edge to a node that does not exist. It applies the upsert under a lock
-  in the ledger process, through `uv run` in the `mcp` folder of the highest numbered
-  version under `~/.claude/plugins/cache/codebase-kg/codebase-kg/`, or in
-  `SENTINEL_SWARM_KG_ROOT`. **(mechanism proposed)**
+- Every role searches the graph first, at its own level, and uses Grep or Glob only
+  when the graph lacks the answer. Each role template's start sequence names the
+  level: the Oracle searches at the system level (components and their dependencies),
+  a Manager at the component level (the components and folders of its phase), a Lead
+  at the file level (the files of its module and the helpers that exist), a Coder at
+  the symbol level (functions and classes it can reuse), and the Driver at the screen
+  level (the module or file behind a screen in a finding). codebase-kg's own search gate hook
+  enforces this order.
+- The ledger records each Grep and Glob a role runs, with its pattern and the paths it
+  found, as a graph gap: the `post_activity` hook writes a `graph_gaps` row. The report
+  lists them. Why the graph fell short is not recorded in words; the pattern and the
+  paths found are the structural record. A search scoped to a file the graph anchors is
+  recorded too, and the report marks it.
+- Only the Coder and the Lead write to the graph, and only through
+  `graph_upsert(nodes)`. It takes codebase-kg's `kg_upsert_node` node shape (`id`,
+  `kind`, `section`, `description`, `anchors`, `edges`). The ledger refuses a Coder's
+  anchor outside its file and test file, a Lead's anchor outside the files and test
+  files its module claimed (released and superseded claims excluded), and an edge to a
+  node that does not exist. It applies the upsert under a lock, with the codebase-kg
+  copy that `graph.codebase_kg_root(repo_root)` resolves, run as described above.
+  That function reads the install of `codebase-kg@alexk413x` for the repo from
+  `~/.claude/plugins/installed_plugins.json` (scope `local`, then `project` with a
+  matching `projectPath`, then `user`, the lookup that `agentfiles` uses for other
+  plugins) and returns its `mcp` folder. `SENTINEL_SWARM_KG_ROOT` overrides it.
 - Setup sets `post_edit_nudge: false` in the host's `.claude/codebase-kg.local.md`, so
   codebase-kg's edit hook does not send a Coder to `/codebase-kg:refresh`.
-- A node that anchors on several files is updated through the Lead. **(proposed)**
+- A node that anchors on several files is updated through the Lead, once the Coders
+  of those files have handed up. A node on one file, with or without its test file,
+  belongs to that file's Coder, and the ledger refuses it from the Lead.
 - Anchors are `"<path>#<Symbol>"` for every top-level function and class. A file with no
   functions or classes is anchored by its path alone: `"anchors": ["<path>"]`. A Coder
   never adds code only to have an anchor.
@@ -96,4 +133,4 @@ find what exists while many agents change the code at once. The graph file,
   with no test file when the graph anchors any symbol in it. Test anchors in the graph
   do not count as tests.
 - The `setup` skill builds the graph when the host has none. An empty repo starts with
-  an empty graph. **(proposed)**
+  an empty graph.

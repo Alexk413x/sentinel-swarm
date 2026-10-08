@@ -41,6 +41,11 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   does not wait for it, does not use its output, and does not enforce its `timeout`, so
   it can finish after a later hook such as `Stop`. From the hooks documentation, not
   yet checked in a live session. (2026-09-28)
+- A hook's `additionalContext` is capped at 10,000 characters. Claude Code saves a
+  longer one to a file, shows the model the path and a preview of up to 2,000
+  characters, and does not ask the model to read the file. `SessionStart` receives
+  `source` `startup`, `resume`, `clear`, `compact`, or `fork`. From the hooks
+  documentation, not yet checked in a live session. (2026-10-08)
 - On Windows, a TCP connection to a closed port on `127.0.0.1` takes about 2 seconds to
   fail with `ConnectionRefusedError`. (2026-09-28)
 - Inside an agent-file hook, `CLAUDE_PLUGIN_ROOT` points at an unrelated plugin.
@@ -112,15 +117,9 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
 - A session run with `--agent` loads the user's global `CLAUDE.md`, so a persona from
   it can appear in messages to the user. (2026-09-22)
 - On Windows, Python 3.12's `shutil.which` returns an extensionless file before its `.cmd` twin. A plugin that ships a POSIX launcher beside a `.cmd`, such as codebase-kg 0.8.0's `bin/kg-shim`, then fails with WinError 193. The shim prefers the PATHEXT variants. Verified 2026-09-25.
-- A channel reaches a `--bg` session only through `--channels` with a plugin on the allowlist: Anthropic's list, or an organization's `allowedChannelPlugins` in managed settings. `--dangerously-load-development-channels` does not carry into a `--bg` session, and the debug log reads `server <name> not in --channels list for this session`. An event pushed to an unregistered channel is dropped, not queued. Verified 2026-09-25.
-- Claude Code 2.1.283 reads `--dangerously-load-development-channels` only in an interactive session, and applies it after the user accepts the development-channels dialog. A non-interactive session, `--bg` or `-p`, discards it. Claude Code has no settings key or environment variable for development channels. Read from the binary on 2026-09-26; the `--bg` and `-p` cases also confirmed live. In an interactive session, after the prompt is confirmed, the channel registers, an event wakes the idle session within seconds, and a burst of events arrives in order. Verified live 2026-09-26.
+- A channel cannot wake a `--bg` session. A channel reaches a `--bg` session only through `--channels` with a plugin on the allowlist: Anthropic's list, or an organization's `allowedChannelPlugins` in managed settings. A Pro or Max user has no setting that adds a plugin to the allowlist. Verified 2026-09-25.
+- Claude Code 2.1.283 reads `--dangerously-load-development-channels` only in an interactive session, after the user accepts a dialog. A `--bg` or `-p` session discards it. Claude Code has no settings key or environment variable for development channels. Verified 2026-09-26.
 - `claude agents --json` lists interactive sessions too, with `kind: "interactive"`, `pid`, `sessionId`, `name`, and `status`, and no `id` or `state`. A `claude` started with a parent session's `CLAUDE_CODE_CHILD_SESSION` in its environment is left out of the list and saves no transcript. `claude --resume <id> "<message>"` continues the same session id interactively, but under a generated name unless `--name` is passed again. Verified live 2026-09-26.
-- `--channels server:<name>` for a server not on the allowlist logs `server <name> is not
-  on the approved channels allowlist (use --dangerously-load-development-channels for
-  local dev)`. A Pro or Max user has no setting that adds a plugin to the allowlist.
-  (2026-09-25)
-- A plugin installed at project scope connects as a normal MCP server. It registers as a
-  channel only when it is on the allowlist. (2026-09-25)
 - In a `claude` command line, the prompt must come before `--channels` or
   `--dangerously-load-development-channels`. The flag reads a prompt placed after it as
   another channel entry. (2026-09-25)
@@ -131,10 +130,6 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   starts. (2026-09-25)
 - A `--bg` session in the default permission mode stalls for good on a file write.
   `--permission-mode acceptEdits` clears it. (2026-09-25)
-- The development-channels dialog reads `WARNING: Loading development channels`, with
-  the choices `I am using this for local development` and `Exit`. After the first, the
-  debug log reads `Channel notifications registered`, and the screen shows each event as
-  `← <server>: <text>`. (2026-09-26)
 - Before the plugin relays, one swarm session ran 4 MCP server processes for codebase-kg
   0.7.0, or 14 with both a11y servers in their `uvx` form, and 15 to 20 MCP-related
   processes in all. (2026-09-25)
@@ -151,3 +146,55 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
 - `claude plugin eval` refuses a plugin folder that holds a hard-linked file, such as a
   uv venv linked from uv's cache. In its runs, a plugin whose `dependencies` are not
   installed loads no skill. (2026-09-28, Claude Code 2.1.284)
+- Claude Code 2.1.294, mods (function hooks) in role sessions, from a throwaway test
+  mod (`plans/mods-live-check.md`): a plugin's module loads in a
+  `claude --bg --agent swarm-coder --strict-mcp-config` session in a trusted folder,
+  from `--plugin-dir` and from a project-scope install. `claude --bg` refuses an
+  untrusted folder; `claude -p --plugin-dir` runs the mod there. (2026-10-08)
+- `classic.SessionStart` carries `agent_type: "swarm-<role>"` in a role session.
+  `session.start` reports `isInteractive: true` and `surface: "terminal"` in a `--bg`
+  session. (2026-10-08)
+- A `tool.call` hook's `{ deny }`, a `.catch` deny when the hook throws, a
+  `classic.Stop` `block`, `classic.SessionStart` `additionalContext`, and an
+  `updatedInput` or `next({ ...e, agent_id })` that adds `agent_id` to an MCP tool's
+  input all work in a `--bg` role session. The engine does not enforce
+  `additionalProperties: false` on a rewritten MCP input. (2026-10-08)
+- `$.http.fetch` reaches a loopback server from a role session; a mod hook's post took
+  6.3 ms median and 26 ms p90 over 50 calls. The shim took 383 ms median, 488 ms p90,
+  and 18.8 MB per call; the `bash -c "python3 ... || python ..."` form 766 ms median.
+  The mod's worker runs inside the session's own process. (2026-10-08)
+- `$.session.send({ to: { sessionId } })` from one `--bg` session wakes an idle `--bg`
+  session: `isDelivered: true` in about 3 s, then the target takes a turn with the text
+  inside `<cross-session-message ... from-name=...>`. The mod's own sends do not raise
+  its `session.send` hook. (2026-10-08)
+- A send by session id to an interactive session is delivered too. A session started
+  with `CLAUDE_CODE_CHILD_SESSION=1` inherited from a parent Claude Code session never
+  registers: it has no `~/.claude/sessions/<pid>.json`, `claude agents --json` does not
+  list it, and a send by its id answers "no live session". A send made before a target
+  registers, 10 to 14 s after it starts, answers the same. The id `claude agents --json`
+  lists, the sessions file's, and `$.session.id()` are the same value. (2026-10-08)
+- `$.clock.every` keeps firing in an idle `--bg` session for at least 18 minutes, and
+  `$.prompt.submit` from a timer starts a turn there. (2026-10-08)
+- `$.session.send` runs as a `SendMessage` tool call through the sending session's own
+  `tool.call` hooks. The call's `to` is the target's `uds:\.\pipe\LOCAL\cc-msg-...`
+  address, not the session id or name, and its `tool_use_id` starts with
+  `toolu_plugin_`. A hook that refuses the call makes the send answer
+  `isDelivered: false` with the refusal as `reason`. (2026-10-08)
+- sentinel-swarm's mod against a real ledger server, Haiku `--bg --agent` sessions
+  from `--plugin-dir`, launched with the inherited `CLAUDE*` variables cleared: the
+  mod's `pre_send_message` denied a `SendMessage` to a name outside the run;
+  `session_start` context reached each session; 0.7 s after a Lead's `message_post`,
+  the mod sent the owed wake-up to the Manager by session id and the ledger marked it
+  sent; the Lead made no `SendMessage` call and its Stop did not block; the Manager
+  woke with the pointer and the elapsed time, its `session.receive` hook appended the
+  unread message after `message_inbox() returned:`, and the ledger marked it read.
+  (2026-10-08)
+- A plugin whose `dependencies` entry is not installed is not loaded, mod included: the
+  debug log says `Plugin not available for MCP: <plugin>@inline - error type:
+  dependency-unsatisfied`. (2026-10-08)
+- `claude --bg` ignores `--session-id`: it prints "--bg manages the session id;
+  ignoring --session-id". `claude --resume <id> --bg "<prompt>"` on a stopped
+  background session started a session under a new session id on 2.1.294. (2026-10-08)
+- Claude Code 2.1.295 refuses to load a plugin whose `dependencies` entry is not
+  installed for the project. `claude plugin list` shows "✘ failed to load — Dependency
+  <id> is not installed", and the plugin's mod and skills do not run. (2026-10-08)

@@ -20,11 +20,20 @@ from pathlib import Path
 PLUGIN_ID = "sentinel-swarm@sentinel-swarm"
 DATA_FOLDER = "sentinel-swarm-sentinel-swarm"
 GATING_EVENTS = frozenset(
-    {"pre_agent", "pre_write", "pre_shell", "pre_ledger", "pre_monitor", "pre_send_message"}
+    {
+        "pre_agent",
+        "pre_write",
+        "pre_shell",
+        "pre_ledger",
+        "pre_monitor",
+        "pre_send_message",
+        "pre_skill",
+    }
 )
 HOOK_TIMEOUT_SECONDS = 50
 SERVER_HOST = "127.0.0.1"
 SERVER_FILE = "server.json"
+TOKEN_FILE = "http-token"
 HOOK_PATH = "/hook"
 REPO_HEADER = "X-Sentinel-Swarm-Repo"
 # Windows takes about 2 s to refuse a connection to a closed local port; a live local
@@ -35,10 +44,8 @@ SLOW_EVENT_TIMEOUT_SECONDS = {"stop": 40.0, "session_end": 40.0}
 STAMPED_EVENTS = frozenset({"post_activity"})
 FIRED_AT_KEY = "sentinel_swarm_fired_at"
 SCOPES = ("local", "project", "user")
-USAGE = (
-    "usage: hook.py hook <event> | hook.py mcp <plugin_id> <server> | hook.py watch "
-    "| hook.py channel\n"
-)
+USAGE = "usage: hook.py hook <event> | hook.py mcp <plugin_id> <server> | hook.py watch\n"
+_TOKEN = re.compile(r"[A-Za-z0-9_-]{32,128}")
 _VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 
@@ -181,9 +188,18 @@ def server_port(repo: Path) -> int | None:
     return port if 0 < port < 65536 else None
 
 
+def server_token(repo: Path) -> str | None:
+    try:
+        token = (repo / ".sentinel-swarm" / TOKEN_FILE).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return token if _TOKEN.fullmatch(token) else None
+
+
 def fast_hook(event: str, payload: bytes, repo: Path, timeout: float) -> bytes | None:
     port = server_port(repo)
-    if port is None:
+    token = server_token(repo)
+    if port is None or token is None:
         return None
     project = os.environ.get("CLAUDE_PROJECT_DIR") or str(repo)
     # A plain HTTP/1.0 request, not http.client: its email imports add about 180 ms to
@@ -193,6 +209,7 @@ def fast_hook(event: str, payload: bytes, repo: Path, timeout: float) -> bytes |
         f"Host: {SERVER_HOST}:{port}\r\n"
         "Content-Type: application/json\r\n"
         f"Content-Length: {len(payload)}\r\n"
+        f"Authorization: Bearer {token}\r\n"
         f"{REPO_HEADER}: {urllib.parse.quote(project)}\r\n\r\n"
     )
     try:
@@ -355,16 +372,6 @@ def watch_main() -> int:
     return process.wait()
 
 
-def channel_main() -> int:
-    repo = repo_root()
-    try:
-        command, env = ledger_command(repo, "swarm_ledger.bridge", "--repo", str(repo))
-        return subprocess.call(command, env=env, cwd=str(repo))
-    except (ShimError, OSError) as exc:
-        sys.stderr.write(f"sentinel-swarm cannot start the swarm-events channel: {exc}\n")
-        return 1
-
-
 def main(argv: list[str]) -> int:
     if len(argv) == 2 and argv[0] == "hook":
         return hook_main(argv[1])
@@ -372,8 +379,6 @@ def main(argv: list[str]) -> int:
         return mcp_main(argv[1], argv[2])
     if argv == ["watch"]:
         return watch_main()
-    if argv == ["channel"]:
-        return channel_main()
     sys.stderr.write(USAGE)
     return 1
 

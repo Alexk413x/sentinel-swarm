@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from swarm_ledger import notify, sessions, wake, watch, watchdog
+from swarm_ledger import auth, notify, sessions, wake, watch, watchdog
 from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import events
 from swarm_ledger.identity import LedgerError
@@ -84,6 +84,7 @@ def host(tmp_path: Path) -> Path:
     (records / "server.json").write_text(
         json.dumps({"url": "http://127.0.0.1:4321/mcp", "port": 4321, "pid": 1}), "utf-8"
     )
+    auth.ensure_token(root)
     registry = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "plugins" / "installed_plugins.json"
     registry.parent.mkdir(parents=True, exist_ok=True)
     plugins = ("cartographer@cartographer", "web-driver@accessibility-tools")
@@ -145,6 +146,7 @@ def _notifications(ledger: Ledger) -> list[dict]:
         ("", ["os", "push"]),
         ("notify:\n", ["os", "push"]),
         ("notify: []\n", []),
+        ('notify: ""\n', []),
         ("notify: [os]\n", ["os"]),
         ("notify: push\n", ["push"]),
         ("notify: [PUSH, os, pager]\n", ["os", "push"]),

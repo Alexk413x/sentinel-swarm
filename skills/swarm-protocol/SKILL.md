@@ -39,9 +39,14 @@ an `Agent` call from any swarm session.
 | Role | Pattern | Example |
 |---|---|---|
 | Oracle | `oracle` | `oracle` |
-| Manager | `mgr-<phase>` | `mgr-p2-api` |
-| Lead | `lead-<phase>-<module>` | `lead-p2-auth` |
-| Coder | `coder-<phase>-<module>-<file>` | `coder-p2-auth-login` |
+| Manager | `mgr-<phase name>` | `mgr-p2-api` |
+| Lead | `lead-p<phase ordinal>-<module>` | `lead-p2-auth` |
+| Coder | `coder-p<phase ordinal>-<module>-<file slug>` | `coder-p2-auth-login` |
+| Driver | `driver-e<exploration number>` | `driver-e2` |
+
+A phase name is `p<ordinal>-<slug>`: `phase_add("api")` stores `p2-api` for the second
+phase. Module names and file slugs are slugs, such as `auth` or `user-store`.
+`brief_create` and `claim_file` refuse any other name.
 
 A name is unique within a run and is the address other agents use in the ledger.
 The child's prompt starts with it: `You are <name>.` The child passes that name as
@@ -77,23 +82,36 @@ returns a `next` field with the exact call to make:
 - `SendMessage(to="<session name>", message="<one-line pointer>")` when the
   recipient's session is running.
 - `agent_resume(...)` when it is not.
-- "Nothing to send: the ledger delivered this wake-up to <name> through its channel."
-  when the ledger pushed it through the recipient's channel. There is no call to make.
-  If the recipient's transcript does not confirm the push within 30 seconds, the
-  `stop` hook names the `SendMessage` to send instead.
 
-The caller makes that call before it ends its turn. The `post_any` hook clears the
-debt when it sees the `SendMessage`, and the `stop` hook blocks a Manager, Lead,
-Coder, or Driver that still owes one. The message only points at the ledger record, for example
+In a session whose hooks run through the sentinel-swarm mod, `next` says the mod wakes
+the agent: the mod sends each owed wake-up itself with `$.session.send` to the target's
+session id, after each ledger call and before the Stop hook runs, and marks it paid
+only when the send is delivered. Otherwise the caller makes that call before it ends
+its turn, and the `post_any` hook clears the debt when it sees the `SendMessage`. The
+`stop` hook blocks a Manager, Lead, Coder, or Driver that still owes one, and names the
+`SendMessage` or `agent_resume` call. The message only points at the ledger record, for example
 "Handoff 1 for hello.py is waiting in the ledger." The detail lives in the ledger.
 
-## The first call in every session
+## Start calls in the SessionStart hook
+
+For a Manager, Lead, Coder, or Driver, the `session_start` hook makes the start calls
+before the model's first turn. It binds the session with `brief_ack`, then hands the
+results of `ledger_info`, `brief_get`, `guidelines_get`, and, for a Manager or Lead,
+`run_status` to the session as context. On a resumed session it hands over the same
+results without binding again. When `brief_ack` is refused, the context carries the
+refusal, and the `pre_ledger` hook denies every ledger tool but `brief_ack`,
+`brief_get`, and the other tools that take no identity until the child binds itself.
+The brief the hook hands over counts as a read of the brief for `handoff_submit`. The
+Oracle makes its own start calls, because they need the user's answers.
+
+## The first tool call in every session
 
 `ToolSearch(query="select:<the role's working set>")`, with every tool the role uses
-most in one comma-separated `select:` list, starting with
-`mcp__swarm-ledger__ledger_info`. Each role template's first step names its list. The
-ledger server can still be connecting when a session opens, and this call waits until
-it connects.
+most in one comma-separated `select:` list. Each role template's start names its list.
+The ledger server can still be connecting when a session opens, and this call waits
+until it connects. A tool a role calls only at the end of its work stays out of the
+list: a Coder loads `score_record` and `handoff_submit`, and a Driver loads
+`drive_done`, with a second `select:` just before the first call.
 
 ## Tool names
 
@@ -105,27 +123,48 @@ it connects.
 | Role | Order |
 |---|---|
 | Oracle | `ToolSearch` → `ledger_info` → `run_start` → `repo_check` → `repo_branch_create` or ask the user → `profile_set` → `guidelines_set` → `phase_add` per phase → `phase_update(unlocked)` → per phase: `brief_create` + `agent_spawn` → review: `status_tree`, `run_status`, `issue_list` → `tests_run(full)` → `phase_review` → `phase_update(approved)` → `plan_unlocked` → `directive_inbox` at safe points → `run_pause(reason)` when only the user can unblock the run → `report_build` → `run_finish` |
-| Manager | `ToolSearch` → `brief_get` → `brief_ack` → `guidelines_get` → `module_add` per module → per Lead: `brief_create` + `agent_spawn` → review the Lead reports → `tests_run(phase)` on the module's target → `module_review` → `agent_release` the Lead → `tests_run(phase)` → `phase_update(handed_up)` (a Manager sets only its own phase, to `working` or `handed_up`) → `message_post` to the Oracle → the `SendMessage` that `next` names |
-| Lead | `ToolSearch` → `brief_get` → `brief_ack` → `guidelines_get` → per file: `claim_file` then `brief_create` then `agent_spawn` → on a handoff: `score_record(kind="lead")` then `review_compare` then `approve` / `return_work` / `accept_incomplete` → after a return: `score_record(lead)`, `review_compare`, `attempt_record`, decide → `tests_run(module)` → `message_post` to the Manager → the `SendMessage` that `next` names |
-| Coder | `ToolSearch` → `brief_get` → `brief_ack` → `kg_search` → write the test file → write the source file → `tests_run(scope="file")` until green → `graph_upsert` → `score_record(kind="self")` → `handoff_submit` → the `SendMessage` that `next` names |
+| Manager | start calls in the hook → `ToolSearch` → `message_inbox` → `module_add` per module → per Lead: `brief_create` + `agent_spawn` → review the Lead reports → `tests_run(phase)` on the module's target → `module_review` → `agent_release` the Lead → `tests_run(phase)` → `phase_update(handed_up)` (a Manager sets only its own phase, to `working` or `handed_up`) → `message_post` to the Oracle → the `SendMessage` that `next` names |
+| Lead | start calls in the hook → `ToolSearch` → `message_inbox` → per file: `claim_file` then `brief_create` then `agent_spawn` → on a handoff: `score_record(kind="lead")` then `review_compare` then `approve` / `return_work` / `accept_incomplete` → after a return: `score_record(lead)`, `review_compare`, `attempt_record`, decide → `tests_run(module)` → `message_post` to the Manager → the `SendMessage` that `next` names |
+| Coder | start calls in the hook → `ToolSearch` → `kg_search` → write the test file → write the source file → `tests_run(scope="file")` until green → `graph_upsert` → `ToolSearch` for `score_record` and `handoff_submit` → `score_record(kind="self")` → `handoff_submit` → the `SendMessage` that `next` names |
+| Driver | start calls in the hook → `ToolSearch` → build → boot the device → `map-test` → `map-explore` → `drive_issue` per finding → `drive_checkin` every 30 minutes → `ToolSearch` for `drive_done` → `drive_done` → the `SendMessage` that `next` names |
 
-Every role calls `message_inbox` at the start of each turn after a wake-up or a resume.
+Every role calls `message_inbox` at the start of each turn after a wake-up or a resume,
+and again while its `remaining` is above 0. A wake-up that the mod delivers already carries the
+unread messages, marked read, after `message_inbox() returned:`; the role then calls
+`message_inbox` only when that text says more wait. A Manager's, Lead's, Coder's, or Driver's
+Stop hook blocks once while it has unread mail.
 
 `run_start` on a paused run resumes it: the run goes back to active. A paused run
 keeps every gate.
 
 ## The gates the ledger enforces
 
-- Nothing works for a child before `brief_ack`.
+- Nothing works for a child before `brief_ack`: the `pre_ledger` hook denies a
+  registered child every ledger tool but `brief_ack` and the tools that take no
+  identity.
 - `agent_spawn` refuses a child without an unacknowledged brief from the caller, a
   session name a live session already uses, and a start past the parallelism cap.
 - `brief_create` refuses a model that is not on the child role's approved list, and
-  refuses a name a live agent already holds.
+  refuses a name a live agent already holds. A Manager brief needs an unlocked phase of
+  the run; a Lead brief a module of the Manager's own phase; a Coder brief a file the
+  Lead's module claimed for that name.
+- `phase_update(unlocked)` refuses while a phase it depends on is not approved.
+- `claim_file(..., depends_on=...)` and `module_add(..., depends_on=...)` record what a
+  file or module uses. A dependent's brief is refused until each dependency's latest
+  brief has a `contract`; `brief_get` returns them as `depends_on_contracts`.
+- `message_post` reaches only the caller's parent, children, and siblings.
+  `SendMessage` reaches those, and any session the caller owes a wake-up.
 - While the run has an open Driver finding, `brief_create` refuses an Oracle brief
   without `finding_ids`: the ids it fixes, or `[]` for none. It refuses an unknown
   finding id from any role. A child's brief inherits its parent's list.
 - `claim_file` refuses a path that already has a live claim. The claim is the file
   lock; `who_owns(path)` names the owner.
+- `accept_incomplete` refuses an empty reason, a handoff without `review_compare`, and
+  work that neither the handoff nor an open issue reports as incomplete.
+- `deferral_propose(body, kind, ...)` names what changes, and `kind` sets who decides:
+  `file` or `module` the Lead, `cross_module` or `phase` the Manager, `plan` or `prd`
+  the Oracle, `prd` only with a `user_chat` directive. With `parties`, it is a dispute,
+  and only the closest shared ancestor of the parties decides it.
 - `score_record(kind="lead")` must come before `review_compare`. After
   `review_compare` runs for a handoff, blind scoring is closed.
 - `approve` refuses without a comparison, with a lead review that does not pass,
@@ -158,6 +197,7 @@ keeps every gate.
 - The self review is missing or older than the last edit.
 - The Coder has an `accepted` change request on the file that is not yet
   `completed`.
+- The work came back, and the Coder has not called `brief_get` for its own brief since.
 
 On success it records the test run, saves a version of the file and the test file,
 and marks the file handed up.
@@ -245,7 +285,7 @@ needs a reason. A rating of 4 or lower opens an issue.
 | `maintainability` | `clear_names`, `small_units`, `minimal_comments` |
 | `accessibility` | `ui_files_only`, `accessibility_tools_check` |
 
-A dimension score is the average of its criterion ratings times 10, from 0 to 100.
+A dimension score is the average of its criterion ratings times 10, from 10 to 100.
 The target is 90, the floor is 70, and the criterion floor is 5. A file passes when
 every applicable dimension is at or above the target and no criterion is below the
 criterion floor. Mark accessibility not applicable on a file that is not UI.
@@ -267,8 +307,10 @@ on a regression.
 ## Finding code
 
 Every role queries the codebase-kg code graph first. Grep and Glob are the fallback
-for when the graph does not have the answer or returns the wrong thing. Only the
-Coder writes to the graph, and only through the ledger's `graph_upsert`.
+for when the graph does not have the answer or returns the wrong thing. The ledger
+records each Grep and Glob a role runs as a graph gap, and the report lists them. Only the
+Coder and the Lead write to the graph, and only through the ledger's `graph_upsert`: a
+Coder for nodes on its own file, a Lead for nodes that span files of its module.
 
 ## Steering a live run from an ordinary session
 

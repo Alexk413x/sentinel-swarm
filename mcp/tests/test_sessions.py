@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from swarm_ledger import sessions
+from swarm_ledger import auth, sessions
 from swarm_ledger.db import write_tx
 from swarm_ledger.identity import LedgerError
 from swarm_ledger.ledger import Ledger, repo_slug, run_stamp, session_name_for
@@ -85,7 +85,7 @@ tools: Read, SendMessage, mcp__swarm-ledger
 mcpServers:
   - codebase-kg:
       command: python
-      args: [".sentinel-swarm/hook.py", "mcp", "codebase-kg@codebase-kg", "codebase-kg"]
+      args: [".sentinel-swarm/hook.py", "mcp", "codebase-kg@alexk413x", "codebase-kg"]
 ---
 
 You are a {role}.
@@ -111,6 +111,7 @@ def host(tmp_path: Path, repo_root: Path) -> Path:
     (records / "server.json").write_text(
         json.dumps({"url": "http://127.0.0.1:4321/mcp", "port": 4321, "pid": 1}), encoding="utf-8"
     )
+    auth.ensure_token(root)
     return root
 
 
@@ -141,31 +142,49 @@ def _bootstrap(ledger: Ledger, claude: FakeClaude) -> Ctx:
     oracle = ("oracle", str(started["oracle"]["agent_id"]))
     ledger.repo_check(*oracle)
     phase = ledger.phase_add(*oracle, "phase-1")
-    manager = _spawn(ledger, oracle, "manager-1", "manager", "opus", phase_id=phase["phase_id"])
-    mgr = ("manager-1", str(manager["agent_id"]))
+    ledger.phase_update(*oracle, phase["phase_id"], "unlocked")
+    manager = _spawn(
+        ledger, oracle, "mgr-p1-phase-1", "manager", "opus", phase_id=phase["phase_id"]
+    )
+    mgr = ("mgr-p1-phase-1", str(manager["agent_id"]))
     module = ledger.module_add(*mgr, phase["phase_id"], "module-1")
-    lead = _spawn(ledger, mgr, "lead-1", "lead", "sonnet", module_id=module["module_id"])
+    lead = _spawn(ledger, mgr, "lead-p1-module-1", "lead", "sonnet", module_id=module["module_id"])
     return Ctx(
         oracle=oracle,
         manager=mgr,
-        lead=("lead-1", str(lead["agent_id"])),
+        lead=("lead-p1-module-1", str(lead["agent_id"])),
         phase_id=phase["phase_id"],
         module_id=module["module_id"],
         run_id=started["run"]["run_id"],
     )
 
 
-def _spawn_coder(ledger: Ledger, ctx: Ctx, name: str = "coder-1") -> tuple[str, str]:
-    claimed = ledger.claim_file(*ctx.lead, f"src/{name}.py", f"tests/test_{name}.py", name)
-    coder = _spawn(
-        ledger,
-        ctx.lead,
-        name,
-        "coder",
-        "sonnet",
-        module_id=ctx.module_id,
-        file_id=claimed["file_id"],
+def _claim_coder(ledger: Ledger, ctx: Ctx, slug: str) -> tuple[str, int]:
+    name = f"coder-p1-module-1-{slug}"
+    claimed = ledger.claim_file(*ctx.lead, f"src/{slug}.py", f"tests/test_{slug}.py", name)
+    return name, claimed["file_id"]
+
+
+def _brief_coder(ledger: Ledger, ctx: Ctx, slug: str, model: str = "haiku", **options) -> str:
+    name, file_id = _claim_coder(ledger, ctx, slug)
+    ledger.brief_create(
+        *ctx.lead, name, "coder", model, f"Write {slug}.", file_id=file_id, **options
     )
+    return name
+
+
+def _brief_second_lead(ledger: Ledger, ctx: Ctx, number: int = 2) -> str:
+    module = ledger.module_add(*ctx.manager, ctx.phase_id, f"module-{number}")
+    name = f"lead-p1-module-{number}"
+    ledger.brief_create(
+        *ctx.manager, name, "lead", "sonnet", "Own it.", module_id=module["module_id"]
+    )
+    return name
+
+
+def _spawn_coder(ledger: Ledger, ctx: Ctx, slug: str = "c1") -> tuple[str, str]:
+    name, file_id = _claim_coder(ledger, ctx, slug)
+    coder = _spawn(ledger, ctx.lead, name, "coder", "sonnet", file_id=file_id)
     return (name, str(coder["agent_id"]))
 
 
@@ -230,6 +249,72 @@ def test_run_returns_stdout_and_raises_with_stderr(monkeypatch: pytest.MonkeyPat
         sessions._run(["-c", code])
 
 
+def test_a_started_session_does_not_inherit_the_parent_sessions_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(sessions.CLAUDE_VAR, sys.executable)
+    monkeypatch.setenv("CLAUDE_CODE_CHILD_SESSION", "1")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "parent")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "kept")
+    code = (
+        "import os; print(os.environ.get('CLAUDE_CODE_CHILD_SESSION'), "
+        "os.environ.get('CLAUDE_CODE_SESSION_ID'), os.environ.get('CLAUDE_CODE_USE_BEDROCK'))"
+    )
+    assert sessions._run(["-c", code]).split() == ["None", "None", "kept"]
+
+
+def test_child_env_drops_only_the_parent_session_variables() -> None:
+    base = {"CLAUDECODE": "1", "CLAUDE_CODE_CHILD_SESSION": "1", "PATH": "p", "CLAUDE_X": "y"}
+    assert sessions.child_env(base) == {"PATH": "p", "CLAUDE_X": "y"}
+
+
+_PLUGIN_LIST = """Installed plugins:
+
+  ❯ codebase-kg@alexk413x
+    Version: 0.14.1
+    Scope: project
+    Status: ✔ enabled
+
+  ❯ sentinel-swarm@sentinel-swarm
+    Version: 0.1.0
+    Scope: project
+    Status: {status}
+"""
+
+
+@pytest.mark.parametrize(
+    ("status", "problem"),
+    [
+        ("✔ enabled", None),
+        (
+            "✘ failed to load — Dependency codebase-kg@alexk413x is not installed",
+            "claude plugin list shows sentinel-swarm: ✘ failed to load — Dependency "
+            "codebase-kg@alexk413x is not installed",
+        ),
+        ("✘ disabled", "claude plugin list shows sentinel-swarm: ✘ disabled"),
+    ],
+)
+def test_plugin_load_problem_reads_the_plugin_list(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, status: str, problem: str | None
+) -> None:
+    seen: list[tuple[list[str], Path | None]] = []
+
+    def fake_run(args: list[str], cwd: Path | None = None) -> str:
+        seen.append((args, cwd))
+        return _PLUGIN_LIST.format(status=status)
+
+    monkeypatch.setattr(sessions, "_run", fake_run)
+    assert sessions.plugin_load_problem(tmp_path) == problem
+    assert seen == [(["plugin", "list"], tmp_path)]
+
+
+def test_plugin_load_problem_names_a_missing_plugin(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sessions, "_run", lambda args, cwd=None: "Installed plugins:\n")
+    assert sessions.plugin_load_problem(Path(".")) == (
+        "claude plugin list shows no sentinel-swarm plugin for this repo"
+    )
+
+
 def test_run_raises_when_the_binary_is_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setenv(sessions.CLAUDE_VAR, str(tmp_path / "no-claude-here"))
     with pytest.raises(LedgerError, match="cannot run"):
@@ -239,7 +324,7 @@ def test_run_raises_when_the_binary_is_missing(monkeypatch: pytest.MonkeyPatch, 
 @pytest.mark.parametrize(
     "output",
     [
-        "backgrounded · 3378dc08 · my-host-r1-lead-1\n",
+        "backgrounded · 3378dc08 · my-host-r1-lead-p1-module-1\n",
         "\x1b[32mbackgrounded\x1b[0m · 3378dc08 · x\n",
         "starting...\nbackgrounded Â· 3378dc08 Â· x\n",
     ],
@@ -301,10 +386,10 @@ def test_agent_spawn_starts_the_session_with_the_role_files_flags(
     args, cwd = spawn_calls[-1]
     assert cwd == host
     assert args[:4] == [
-        "You are lead-1. Read your brief from the swarm ledger and follow it.",
+        "You are lead-p1-module-1. Read your brief from the swarm ledger and follow it.",
         "--bg",
         "--name",
-        ledger.session_name(ctx.run_id, "lead-1"),
+        ledger.session_name(ctx.run_id, "lead-p1-module-1"),
     ]
     options = args[4:]
     assert options[:10] == [
@@ -323,6 +408,7 @@ def test_agent_spawn_starts_the_session_with_the_role_files_flags(
     assert config["mcpServers"]["swarm-ledger"] == {
         "type": "http",
         "url": "http://127.0.0.1:4321/mcp",
+        "headers": {"Authorization": f"Bearer {auth.read_token(host)}"},
     }
     assert config["mcpServers"]["codebase-kg"]["command"] == "python"
     assert options[11:] == [
@@ -337,14 +423,13 @@ def test_agent_spawn_registers_the_row_and_brief_ack_binds_it(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
     ctx = _bootstrap(ledger, claude)
-    ledger.claim_file(*ctx.lead, "src/a.py", "tests/test_a.py", "coder-a")
-    ledger.brief_create(*ctx.lead, "coder-a", "coder", "haiku", "Write a.")
-    spawned = ledger.agent_spawn(*ctx.lead, "coder-a")
+    coder = _brief_coder(ledger, ctx, "a")
+    spawned = ledger.agent_spawn(*ctx.lead, coder)
 
     entry = claude.listing[-1]
     assert spawned["agent_id"] == entry["sessionId"]
     assert spawned["bg_id"] == entry["id"]
-    assert spawned["session_name"] == ledger.session_name(ctx.run_id, "coder-a")
+    assert spawned["session_name"] == ledger.session_name(ctx.run_id, coder)
     assert spawned["state"] == "registered"
     assert spawned["role"] == "coder"
     assert spawned["model"] == "haiku"
@@ -352,7 +437,7 @@ def test_agent_spawn_registers_the_row_and_brief_ack_binds_it(
     assert spawned["module_id"] == ctx.module_id
     assert any(e["reason"].startswith("agent_spawn: ") for e in ledger.events(spawned["agent_id"]))
 
-    bound = ledger.brief_ack("coder-a", spawned["agent_id"])
+    bound = ledger.brief_ack(coder, spawned["agent_id"])
     assert bound["state"] == "working"
     assert bound["runtime"] == "session"
     assert bound["session_name"] == spawned["session_name"]
@@ -362,52 +447,52 @@ def test_brief_ack_refuses_a_spawned_session_under_another_name(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
     ctx = _bootstrap(ledger, claude)
-    ledger.brief_create(*ctx.manager, "lead-2", "lead", "sonnet", "Own it.")
-    ledger.brief_create(*ctx.manager, "lead-3", "lead", "sonnet", "Own it.")
-    spawned = ledger.agent_spawn(*ctx.manager, "lead-2")
-    with pytest.raises(LedgerError, match="was spawned as 'lead-2'"):
-        ledger.brief_ack("lead-3", spawned["agent_id"])
+    _brief_second_lead(ledger, ctx)
+    _brief_second_lead(ledger, ctx, 3)
+    spawned = ledger.agent_spawn(*ctx.manager, "lead-p1-module-2")
+    with pytest.raises(LedgerError, match="was spawned as 'lead-p1-module-2'"):
+        ledger.brief_ack("lead-p1-module-3", spawned["agent_id"])
 
 
 def test_agent_spawn_refuses_a_caller_that_is_not_the_briefs_parent(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
     ctx = _bootstrap(ledger, claude)
-    ledger.brief_create(*ctx.manager, "lead-2", "lead", "sonnet", "Own it.")
+    _brief_second_lead(ledger, ctx)
     with pytest.raises(LedgerError, match="not the parent"):
-        ledger.agent_spawn(*ctx.oracle, "lead-2")
+        ledger.agent_spawn(*ctx.oracle, "lead-p1-module-2")
     with pytest.raises(LedgerError, match="no unacknowledged brief"):
-        ledger.agent_spawn(*ctx.manager, "lead-9")
+        ledger.agent_spawn(*ctx.manager, "lead-p1-module-9")
 
 
 def test_agent_spawn_refuses_twice_for_the_same_child(ledger: Ledger, claude: FakeClaude) -> None:
     ctx = _bootstrap(ledger, claude)
-    ledger.brief_create(*ctx.manager, "lead-2", "lead", "sonnet", "Own it.")
-    ledger.agent_spawn(*ctx.manager, "lead-2")
+    _brief_second_lead(ledger, ctx)
+    ledger.agent_spawn(*ctx.manager, "lead-p1-module-2")
     with pytest.raises(LedgerError, match="already runs as session"):
-        ledger.agent_spawn(*ctx.manager, "lead-2")
+        ledger.agent_spawn(*ctx.manager, "lead-p1-module-2")
 
 
 def test_agent_spawn_refuses_a_name_a_live_session_holds(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
     ctx = _bootstrap(ledger, claude)
-    claude.add("someone-else", ledger.session_name(ctx.run_id, "lead-2"))
-    ledger.brief_create(*ctx.manager, "lead-2", "lead", "sonnet", "Own it.")
+    claude.add("someone-else", ledger.session_name(ctx.run_id, "lead-p1-module-2"))
+    _brief_second_lead(ledger, ctx)
     with pytest.raises(LedgerError, match="already has the name"):
-        ledger.agent_spawn(*ctx.manager, "lead-2")
+        ledger.agent_spawn(*ctx.manager, "lead-p1-module-2")
 
 
 def test_agent_spawn_applies_the_parallelism_cap_only_when_set(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
     ctx = _bootstrap(ledger, claude)
-    ledger.brief_create(*ctx.manager, "lead-2", "lead", "sonnet", "Own it.")
+    _brief_second_lead(ledger, ctx)
     ledger.settings.parallelism_cap = 3
     with pytest.raises(LedgerError, match="parallelism cap of 3 is reached"):
-        ledger.agent_spawn(*ctx.manager, "lead-2")
+        ledger.agent_spawn(*ctx.manager, "lead-p1-module-2")
     ledger.settings.parallelism_cap = None
-    assert ledger.agent_spawn(*ctx.manager, "lead-2")["state"] == "registered"
+    assert ledger.agent_spawn(*ctx.manager, "lead-p1-module-2")["state"] == "registered"
 
 
 def test_agent_spawn_names_setup_when_the_role_file_is_missing(
@@ -415,17 +500,41 @@ def test_agent_spawn_names_setup_when_the_role_file_is_missing(
 ) -> None:
     ctx = _bootstrap(ledger, claude)
     (host / ".claude" / "agents" / "swarm-lead.md").unlink()
-    ledger.brief_create(*ctx.manager, "lead-2", "lead", "sonnet", "Own it.")
+    _brief_second_lead(ledger, ctx)
     with pytest.raises(LedgerError, match="run /sentinel-swarm:setup"):
-        ledger.agent_spawn(*ctx.manager, "lead-2")
+        ledger.agent_spawn(*ctx.manager, "lead-p1-module-2")
 
 
 def test_agent_spawn_needs_the_server_url(ledger: Ledger, claude: FakeClaude, host: Path) -> None:
     ctx = _bootstrap(ledger, claude)
     (host / ".sentinel-swarm" / "server.json").unlink()
-    ledger.brief_create(*ctx.manager, "lead-2", "lead", "sonnet", "Own it.")
+    _brief_second_lead(ledger, ctx)
     with pytest.raises(LedgerError, match="no ledger server"):
-        ledger.agent_spawn(*ctx.manager, "lead-2")
+        ledger.agent_spawn(*ctx.manager, "lead-p1-module-2")
+
+
+def test_agent_spawn_refuses_a_recorded_url_off_loopback(
+    ledger: Ledger, claude: FakeClaude, host: Path
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    (host / ".sentinel-swarm" / "server.json").write_text(
+        json.dumps({"url": "http://10.0.0.5:4321/mcp", "port": 4321, "pid": 1}), encoding="utf-8"
+    )
+    _brief_second_lead(ledger, ctx)
+    calls = len(claude.calls)
+    with pytest.raises(LedgerError, match=r"is not http://127\.0\.0\.1:<port>/mcp"):
+        ledger.agent_spawn(*ctx.manager, "lead-p1-module-2")
+    assert not any("--bg" in args for args, _ in claude.calls[calls:])
+
+
+def test_agent_spawn_refuses_without_the_ledger_token(
+    ledger: Ledger, claude: FakeClaude, host: Path
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    auth.token_path(host).unlink()
+    _brief_second_lead(ledger, ctx)
+    with pytest.raises(LedgerError, match="no ledger token"):
+        ledger.agent_spawn(*ctx.manager, "lead-p1-module-2")
 
 
 def test_repo_slug_lowercases_and_replaces_non_alphanumerics(tmp_path: Path) -> None:
@@ -443,7 +552,7 @@ def test_repo_slug_lowercases_and_replaces_non_alphanumerics(tmp_path: Path) -> 
 def test_agent_resume_refuses_a_running_session(ledger: Ledger, claude: FakeClaude) -> None:
     ctx = _bootstrap(ledger, claude)
     with pytest.raises(LedgerError, match="still running"):
-        ledger.agent_resume(*ctx.manager, "lead-1")
+        ledger.agent_resume(*ctx.manager, "lead-p1-module-1")
     assert claude.commands("--resume") == []
 
 
@@ -452,16 +561,16 @@ def test_agent_resume_continues_a_stopped_session_with_the_owed_pointer(
 ) -> None:
     ctx = _bootstrap(ledger, claude)
     claude.stop_session(ctx.manager[1])
-    posted = ledger.message_post(*ctx.lead, "manager-1", "module-1 is done")
-    assert posted["next"] == 'agent_resume(target_name="manager-1")'
+    posted = ledger.message_post(*ctx.lead, "mgr-p1-phase-1", "module-1 is done")
+    assert posted["next"] == 'agent_resume(target_name="mgr-p1-phase-1")'
 
-    resumed = ledger.agent_resume(*ctx.lead, "manager-1")
-    pointer = f"Message {posted['message_id']} from lead-1 is waiting in the ledger; "
+    resumed = ledger.agent_resume(*ctx.lead, "mgr-p1-phase-1")
+    pointer = f"Message {posted['message_id']} from lead-p1-module-1 is waiting in the ledger; "
     assert resumed["message"].startswith(pointer)
     assert resumed["wakeups_sent"] == 1
     args, cwd = [(a, c) for a, c in claude.calls if a[0] == "--resume"][0]
     assert args[:5] == ["--resume", ctx.manager[1], "--bg", resumed["message"], "--name"]
-    assert args[5] == ledger.session_name(ctx.run_id, "manager-1")
+    assert args[5] == ledger.session_name(ctx.run_id, "mgr-p1-phase-1")
     assert cwd == host
     assert ledger.owed_wakeups(ctx.lead[1]) == []
 
@@ -471,8 +580,20 @@ def test_agent_resume_without_a_debt_sends_the_generic_pointer(
 ) -> None:
     ctx = _bootstrap(ledger, claude)
     claude.stop_session(ctx.lead[1])
-    resumed = ledger.agent_resume(*ctx.oracle, "lead-1")
+    resumed = ledger.agent_resume(*ctx.oracle, "lead-p1-module-1")
     assert resumed["message"] == "Re-read your brief and your inbox in the ledger."
+
+
+def test_agent_resume_refuses_a_target_with_no_recorded_session(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    claude.stop_session(ctx.lead[1])
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE agents SET session_name = NULL WHERE agent_id = ?", (ctx.lead[1],))
+    with pytest.raises(LedgerError, match="'lead-p1-module-1' has no recorded session"):
+        ledger.agent_resume(*ctx.oracle, "lead-p1-module-1")
+    assert claude.commands("--resume") == []
 
 
 def test_agent_resume_refuses_an_unknown_name(ledger: Ledger, claude: FakeClaude) -> None:
@@ -488,16 +609,16 @@ def test_message_post_returns_a_send_message_to_a_running_recipient(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
     ctx = _bootstrap(ledger, claude)
-    posted = ledger.message_post(*ctx.lead, "manager-1", "module-1 is done")
-    session = ledger.session_name(ctx.run_id, "manager-1")
+    posted = ledger.message_post(*ctx.lead, "mgr-p1-phase-1", "module-1 is done")
+    session = ledger.session_name(ctx.run_id, "mgr-p1-phase-1")
     pointer = (
-        f"Message {posted['message_id']} from lead-1 is waiting in the ledger; "
+        f"Message {posted['message_id']} from lead-p1-module-1 is waiting in the ledger; "
         "read it with message_inbox."
     )
     assert _untimed(posted["next"]) == f'SendMessage(to="{session}", message="{pointer}")'
     owed = ledger.owed_wakeups(ctx.lead[1])
     assert [(w["to_name"], w["to_session_name"], w["reason"]) for w in owed] == [
-        ("manager-1", session, "message_post")
+        ("mgr-p1-phase-1", session, "message_post")
     ]
     assert ledger.wakeups_sent(ctx.lead[1], session) == 1
     assert ledger.owed_wakeups(ctx.lead[1]) == []
@@ -508,9 +629,9 @@ def test_next_names_both_calls_when_the_session_list_fails(
 ) -> None:
     ctx = _bootstrap(ledger, claude)
     claude.fail["agents"] = "boom"
-    posted = ledger.message_post(*ctx.lead, "manager-1", "hi")
+    posted = ledger.message_post(*ctx.lead, "mgr-p1-phase-1", "hi")
     assert posted["next"].endswith(
-        ', or agent_resume(target_name="manager-1") if that session is not running'
+        ', or agent_resume(target_name="mgr-p1-phase-1") if that session is not running'
     )
 
 
@@ -523,7 +644,7 @@ def test_phase_update_handed_up_owes_the_oracle_a_wake_up(
     phase = ledger.phase_update(*ctx.manager, ctx.phase_id, "handed_up")
     assert _untimed(phase["next"]) == (
         'SendMessage(to="my-host-oracle", '
-        f'message="Phase {ctx.phase_id} (phase-1) is handed up and waiting in the ledger.")'
+        f'message="Phase {ctx.phase_id} (p1-phase-1) is handed up and waiting in the ledger.")'
     )
     assert "next" not in ledger.phase_update(*ctx.oracle, ctx.phase_id, "working")
 
@@ -540,13 +661,13 @@ def test_return_work_owes_the_coder_a_wake_up(ledger: Ledger, claude: FakeClaude
         handoff_id = int(cur.lastrowid or 0)
     attempt = ledger.return_work(*ctx.lead, handoff_id, ["slow"], ["performance"])
     assert attempt["next"] == (
-        f'SendMessage(to="{ledger.session_name(ctx.run_id, "coder-1")}", '
+        f'SendMessage(to="{ledger.session_name(ctx.run_id, coder[0])}", '
         f'message="Handoff {handoff_id} '
-        'for src/coder-1.py is returned; read its issues with message_inbox and fix them.")'
+        'for src/c1.py is returned; read its issues with message_inbox and fix them.")'
     )
-    inbox = ledger.message_inbox(*coder)
+    inbox = ledger.message_inbox(*coder)["messages"]
     assert len(inbox) == 1
-    assert inbox[0]["from_name"] == "lead-1"
+    assert inbox[0]["from_name"] == "lead-p1-module-1"
     assert "- slow" in inbox[0]["body"]
     assert "Dimensions to move: performance" in inbox[0]["body"]
 
@@ -554,15 +675,15 @@ def test_return_work_owes_the_coder_a_wake_up(ledger: Ledger, claude: FakeClaude
 def test_a_recipient_without_a_session_owes_nothing(ledger: Ledger, claude: FakeClaude) -> None:
     ctx = _bootstrap(ledger, claude)
     with write_tx(ledger.conn) as conn:
-        conn.execute("UPDATE agents SET session_name = NULL WHERE name = 'manager-1'")
-    posted = ledger.message_post(*ctx.lead, "manager-1", "hi")
+        conn.execute("UPDATE agents SET session_name = NULL WHERE name = 'mgr-p1-phase-1'")
+    posted = ledger.message_post(*ctx.lead, "mgr-p1-phase-1", "hi")
     assert posted["next"] is None
     assert ledger.owed_wakeups(ctx.lead[1]) == []
 
 
 def test_a_debt_to_a_released_agent_is_no_longer_owed(ledger: Ledger, claude: FakeClaude) -> None:
     ctx = _bootstrap(ledger, claude)
-    ledger.message_post(*ctx.manager, "lead-1", "wrap up")
+    ledger.message_post(*ctx.manager, "lead-p1-module-1", "wrap up")
     ledger.agent_release(*ctx.manager, ctx.lead[1])
     assert ledger.owed_wakeups(ctx.manager[1]) == []
 
@@ -710,22 +831,22 @@ def test_a_briefs_effort_overrides_the_settings_and_is_recorded(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
     ctx = _bootstrap(ledger, claude)
-    ledger.claim_file(*ctx.lead, "src/a.py", "tests/test_a.py", "coder-a")
-    ledger.brief_create(*ctx.lead, "coder-a", "coder", "haiku", "Write a.", effort="high")
-    spawned = ledger.agent_spawn(*ctx.lead, "coder-a")
+    coder = _brief_coder(ledger, ctx, "a", effort="high")
+    spawned = ledger.agent_spawn(*ctx.lead, coder)
 
     args = next(args for args, _ in reversed(claude.calls) if "--bg" in args)
     assert args[args.index("--effort") + 1] == "high"
     assert spawned["effort"] == "high"
     with pytest.raises(LedgerError, match="unknown effort"):
-        ledger.brief_create(*ctx.lead, "coder-b", "coder", "haiku", "Write b.", effort="huge")
+        ledger.brief_create(
+            *ctx.lead, "coder-p1-module-1-b", "coder", "haiku", "Write b.", effort="huge"
+        )
 
 
 def test_agent_spawn_records_the_settings_effort_without_a_brief_effort(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
     ctx = _bootstrap(ledger, claude)
-    ledger.claim_file(*ctx.lead, "src/a.py", "tests/test_a.py", "coder-a")
-    ledger.brief_create(*ctx.lead, "coder-a", "coder", "haiku", "Write a.")
+    coder = _brief_coder(ledger, ctx, "a")
 
-    assert ledger.agent_spawn(*ctx.lead, "coder-a")["effort"] == ledger.settings.effort["coder"]
+    assert ledger.agent_spawn(*ctx.lead, coder)["effort"] == ledger.settings.effort["coder"]

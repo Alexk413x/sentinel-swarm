@@ -83,13 +83,6 @@ time_budget_minutes:
 # Left empty; repo_check then tries main, then master, then reports no base branch.
 base_branch:
 
-# How a wake-up reaches its target. channel: the ledger pushes it through the target's
-# swarm-events channel when the session has one, and the sender makes the SendMessage call
-# otherwise, or when the push is not confirmed within 30 seconds. Only an interactive Oracle
-# started by the launcher has the channel today. sendmessage: every wake-up is a SendMessage
-# call, and the launcher loads no channel.
-wake_transport: channel
-
 # How the user hears that the Driver finished or hit an error. os: the ledger server shows a
 # desktop notification itself (a Windows toast, macOS Notification Center, or notify-send on
 # Linux). push: the Oracle owes a PushNotification call, and its Stop hook blocks until it
@@ -125,6 +118,11 @@ role_parallelism_cap:
   lead:
   coder:
   driver:
+
+# Worker processes that run the ledger's tool calls and hooks. The server starts one when a
+# call finds none free, up to this many, and stops one after 60 seconds idle. 0 runs every
+# call in the server process, one at a time.
+max_workers: 8
 ---
 
 # sentinel-swarm local settings

@@ -50,19 +50,31 @@ def _bootstrap(ledger: Ledger) -> dict:
     ledger.phase_update("oracle", oracle_id, phase_id, "unlocked")
 
     ledger.brief_create(
-        "oracle", oracle_id, "manager-1", "manager", "opus", "Own phase-1.", phase_id=phase_id
+        "oracle",
+        oracle_id,
+        "mgr-p1-phase-1",
+        "manager",
+        "opus",
+        "Own p1-phase-1.",
+        phase_id=phase_id,
     )
     ledger.agent_register_start("mgr-agent", "manager", parent_agent_id=oracle_id)
-    manager = ledger.brief_ack("manager-1", "mgr-agent")
+    manager = ledger.brief_ack("mgr-p1-phase-1", "mgr-agent")
 
-    module = ledger.module_add("manager-1", "mgr-agent", phase_id, "module-1")
+    module = ledger.module_add("mgr-p1-phase-1", "mgr-agent", phase_id, "module-1")
     module_id = module["module_id"]
 
     ledger.brief_create(
-        "manager-1", "mgr-agent", "lead-1", "lead", "sonnet", "Own module-1.", module_id=module_id
+        "mgr-p1-phase-1",
+        "mgr-agent",
+        "lead-p1-module-1",
+        "lead",
+        "sonnet",
+        "Own module-1.",
+        module_id=module_id,
     )
     ledger.agent_register_start("lead-agent", "lead", parent_agent_id="mgr-agent")
-    lead = ledger.brief_ack("lead-1", "lead-agent")
+    lead = ledger.brief_ack("lead-p1-module-1", "lead-agent")
 
     return {
         "run_id": started["run"]["run_id"],
@@ -72,6 +84,12 @@ def _bootstrap(ledger: Ledger) -> dict:
         "manager": manager,
         "lead": lead,
     }
+
+
+def _second_module(ledger: Ledger, ctx: dict) -> int:
+    manager = ctx["manager"]
+    module = ledger.module_add("mgr-p1-phase-1", manager["agent_id"], ctx["phase_id"], "module-2")
+    return module["module_id"]
 
 
 def _insert_passing_test_run(ledger: Ledger, run_id: int, agent_id: str, scope: str) -> None:
@@ -94,7 +112,7 @@ def _review_scores() -> list[dict]:
 def _accept_module(ledger: Ledger, ctx: dict) -> dict:
     _insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
     return ledger.module_review(
-        "manager-1",
+        "mgr-p1-phase-1",
         ctx["manager"]["agent_id"],
         ctx["module_id"],
         "accepted",
@@ -104,7 +122,7 @@ def _accept_module(ledger: Ledger, ctx: dict) -> dict:
 
 
 def _hand_up_and_accept_phase(ledger: Ledger, ctx: dict) -> dict:
-    ledger.phase_update("manager-1", ctx["manager"]["agent_id"], ctx["phase_id"], "handed_up")
+    ledger.phase_update("mgr-p1-phase-1", ctx["manager"]["agent_id"], ctx["phase_id"], "handed_up")
     _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
     return ledger.phase_review(
         "oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ship it", scores=_review_scores()
@@ -284,7 +302,13 @@ def test_run_finish_refuses_when_a_phase_is_not_approved(ledger: Ledger) -> None
 
 def test_run_finish_refuses_when_a_file_claim_is_live(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    ledger.claim_file("lead-1", ctx["lead"]["agent_id"], "src/a.py", "tests/test_a.py", "coder-1")
+    ledger.claim_file(
+        "lead-p1-module-1",
+        ctx["lead"]["agent_id"],
+        "src/a.py",
+        "tests/test_a.py",
+        "coder-p1-module-1-c1",
+    )
     # Bypasses phase_update's own review gates: this test isolates run_finish's live-claim
     # check, which a live claim's owning module would otherwise never let reach "approved".
     with write_tx(ledger.conn) as conn:
@@ -306,19 +330,19 @@ def test_run_finish_refuses_when_a_directive_is_open(ledger: Ledger) -> None:
 
 def test_handed_up_refuses_while_a_lead_of_the_phase_is_live(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    with pytest.raises(LedgerError, match="lead-1"):
-        ledger.phase_update("manager-1", "mgr-agent", ctx["phase_id"], "handed_up")
+    with pytest.raises(LedgerError, match="lead-p1-module-1"):
+        ledger.phase_update("mgr-p1-phase-1", "mgr-agent", ctx["phase_id"], "handed_up")
 
-    ledger.agent_release("manager-1", "mgr-agent", ctx["lead"]["agent_id"])
+    ledger.agent_release("mgr-p1-phase-1", "mgr-agent", ctx["lead"]["agent_id"])
     _accept_module(ledger, ctx)
-    phase = ledger.phase_update("manager-1", "mgr-agent", ctx["phase_id"], "handed_up")
+    phase = ledger.phase_update("mgr-p1-phase-1", "mgr-agent", ctx["phase_id"], "handed_up")
     assert phase["state"] == "handed_up"
 
 
 def test_phase_approval_releases_the_manager_and_everything_under_it(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     _accept_module(ledger, ctx)
-    ledger.agent_release("manager-1", ctx["manager"]["agent_id"], ctx["lead"]["agent_id"])
+    ledger.agent_release("mgr-p1-phase-1", ctx["manager"]["agent_id"], ctx["lead"]["agent_id"])
     _hand_up_and_accept_phase(ledger, ctx)
     ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
 
@@ -326,8 +350,8 @@ def test_phase_approval_releases_the_manager_and_everything_under_it(ledger: Led
         "SELECT name, state, ended_at FROM agents WHERE role IN ('manager', 'lead')"
     ).fetchall()
     assert {(r["name"], r["state"]) for r in rows} == {
-        ("manager-1", "released"),
-        ("lead-1", "released"),
+        ("mgr-p1-phase-1", "released"),
+        ("lead-p1-module-1", "released"),
     }
     assert all(r["ended_at"] is not None for r in rows)
 
@@ -345,7 +369,7 @@ def test_run_finish_releases_every_agent_left_live(ledger: Ledger) -> None:
 def test_run_finish_succeeds_once_the_run_is_clear(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     _accept_module(ledger, ctx)
-    ledger.agent_release("manager-1", ctx["manager"]["agent_id"], ctx["lead"]["agent_id"])
+    ledger.agent_release("mgr-p1-phase-1", ctx["manager"]["agent_id"], ctx["lead"]["agent_id"])
     _hand_up_and_accept_phase(ledger, ctx)
     ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
     result = ledger.run_finish("oracle", ctx["oracle_id"], "success")
@@ -357,7 +381,7 @@ def test_run_finish_succeeds_once_the_run_is_clear(ledger: Ledger) -> None:
 def test_profile_set_is_oracle_only_and_updates_settings(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     with pytest.raises(LedgerError):
-        ledger.profile_set("manager-1", ctx["manager"]["agent_id"], test_command="pytest")
+        ledger.profile_set("mgr-p1-phase-1", ctx["manager"]["agent_id"], test_command="pytest")
 
     result = ledger.profile_set("oracle", ctx["oracle_id"], build_command="npm run build")
     assert result["build_command"] == "npm run build"
@@ -368,11 +392,11 @@ def test_profile_set_is_oracle_only_and_updates_settings(ledger: Ledger) -> None
 def test_guidelines_set_is_oracle_only_and_get_returns_the_latest(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     with pytest.raises(LedgerError):
-        ledger.guidelines_set("manager-1", ctx["manager"]["agent_id"], "nope")
+        ledger.guidelines_set("mgr-p1-phase-1", ctx["manager"]["agent_id"], "nope")
 
     ledger.guidelines_set("oracle", ctx["oracle_id"], "Keep functions under 40 lines.")
     ledger.guidelines_set("oracle", ctx["oracle_id"], "Keep functions under 30 lines.")
-    latest = ledger.guidelines_get("manager-1", ctx["manager"]["agent_id"])
+    latest = ledger.guidelines_get("mgr-p1-phase-1", ctx["manager"]["agent_id"])
     assert latest["body"] == "Keep functions under 30 lines."
 
 
@@ -413,7 +437,7 @@ def test_module_add_refuses_a_phase_that_is_not_the_managers_own(ledger: Ledger)
     other_phase = ledger.phase_add("oracle", ctx["oracle_id"], "phase-2")
     with pytest.raises(LedgerError):
         ledger.module_add(
-            "manager-1", ctx["manager"]["agent_id"], other_phase["phase_id"], "module-x"
+            "mgr-p1-phase-1", ctx["manager"]["agent_id"], other_phase["phase_id"], "module-x"
         )
 
 
@@ -424,7 +448,12 @@ def test_brief_create_refuses_wrong_child_role(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     with pytest.raises(LedgerError):
         ledger.brief_create(
-            "manager-1", ctx["manager"]["agent_id"], "coder-x", "coder", "sonnet", "body"
+            "mgr-p1-phase-1",
+            ctx["manager"]["agent_id"],
+            "coder-p1-module-1-x",
+            "coder",
+            "sonnet",
+            "body",
         )
 
 
@@ -432,7 +461,13 @@ def test_brief_create_refuses_unapproved_model(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     with pytest.raises(LedgerError):
         ledger.brief_create(
-            "manager-1", ctx["manager"]["agent_id"], "lead-x", "lead", "haiku", "body"
+            "mgr-p1-phase-1",
+            ctx["manager"]["agent_id"],
+            "lead-p1-module-2",
+            "lead",
+            "haiku",
+            "body",
+            module_id=_second_module(ledger, ctx),
         )
 
 
@@ -440,39 +475,59 @@ def test_brief_create_refuses_a_name_a_live_agent_holds(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     with pytest.raises(LedgerError):
         ledger.brief_create(
-            "manager-1", ctx["manager"]["agent_id"], "lead-1", "lead", "sonnet", "body"
+            "mgr-p1-phase-1",
+            ctx["manager"]["agent_id"],
+            "lead-p1-module-1",
+            "lead",
+            "sonnet",
+            "body",
+            module_id=ctx["module_id"],
         )
 
 
 def test_brief_create_refuses_a_duplicate_unacked_brief(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
+    module_id = _second_module(ledger, ctx)
     ledger.brief_create(
-        "manager-1", ctx["manager"]["agent_id"], "lead-2", "lead", "sonnet", "first"
+        "mgr-p1-phase-1",
+        ctx["manager"]["agent_id"],
+        "lead-p1-module-2",
+        "lead",
+        "sonnet",
+        "first",
+        module_id=module_id,
     )
     with pytest.raises(LedgerError):
         ledger.brief_create(
-            "manager-1", ctx["manager"]["agent_id"], "lead-2", "lead", "sonnet", "second"
+            "mgr-p1-phase-1",
+            ctx["manager"]["agent_id"],
+            "lead-p1-module-2",
+            "lead",
+            "sonnet",
+            "second",
+            module_id=module_id,
         )
 
 
 def test_brief_get_returns_the_latest_and_raises_when_missing(ledger: Ledger) -> None:
     _bootstrap(ledger)
-    brief = ledger.brief_get("lead-1", "lead-1")
-    assert brief["child_name"] == "lead-1"
+    brief = ledger.brief_get("lead-p1-module-1", "lead-p1-module-1")
+    assert brief["child_name"] == "lead-p1-module-1"
     with pytest.raises(LedgerError):
         ledger.brief_get("nobody", "does-not-exist")
 
 
 def test_brief_ack_binds_the_placeholder_row_from_agent_register_start(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
+    module_id = _second_module(ledger, ctx)
     ledger.brief_create(
-        "manager-1",
+        "mgr-p1-phase-1",
         ctx["manager"]["agent_id"],
-        "lead-2",
+        "lead-p1-module-2",
         "lead",
         "sonnet",
         "body",
-        module_id=ctx["module_id"],
+        module_id=module_id,
     )
     placeholder = ledger.agent_register_start(
         "lead-2-agent", "lead", parent_agent_id=ctx["manager"]["agent_id"]
@@ -480,12 +535,12 @@ def test_brief_ack_binds_the_placeholder_row_from_agent_register_start(ledger: L
     assert placeholder["state"] == "registered"
     assert placeholder["name"] == "lead-2-agent"
 
-    bound = ledger.brief_ack("lead-2", "lead-2-agent")
+    bound = ledger.brief_ack("lead-p1-module-2", "lead-2-agent")
     assert bound["agent_id"] == "lead-2-agent"
-    assert bound["name"] == "lead-2"
+    assert bound["name"] == "lead-p1-module-2"
     assert bound["role"] == "lead"
     assert bound["state"] == "working"
-    assert bound["module_id"] == ctx["module_id"]
+    assert bound["module_id"] == module_id
 
 
 def test_brief_ack_refuses_when_no_unacked_brief_exists(ledger: Ledger) -> None:
@@ -495,22 +550,39 @@ def test_brief_ack_refuses_when_no_unacked_brief_exists(ledger: Ledger) -> None:
 
 def test_brief_ack_refuses_when_the_agent_id_is_already_bound(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    ledger.brief_create("manager-1", ctx["manager"]["agent_id"], "lead-2", "lead", "sonnet", "body")
+    ledger.brief_create(
+        "mgr-p1-phase-1",
+        ctx["manager"]["agent_id"],
+        "lead-p1-module-2",
+        "lead",
+        "sonnet",
+        "body",
+        module_id=_second_module(ledger, ctx),
+    )
     with pytest.raises(LedgerError):
-        ledger.brief_ack("lead-2", ctx["lead"]["agent_id"])
+        ledger.brief_ack("lead-p1-module-2", ctx["lead"]["agent_id"])
 
 
 def test_brief_ack_refuses_when_a_live_agent_already_holds_the_name(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    ledger.brief_create("manager-1", ctx["manager"]["agent_id"], "lead-2", "lead", "sonnet", "body")
+    ledger.brief_create(
+        "mgr-p1-phase-1",
+        ctx["manager"]["agent_id"],
+        "lead-p1-module-2",
+        "lead",
+        "sonnet",
+        "body",
+        module_id=_second_module(ledger, ctx),
+    )
     with write_tx(ledger.conn) as conn:
         conn.execute(
             "INSERT INTO agents (agent_id, name, role, state, started_at) "
-            "VALUES ('ghost', 'lead-2', 'lead', 'working', strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
+            "VALUES ('ghost', 'lead-p1-module-2', 'lead', 'working', "
+            "strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
         )
     ledger.agent_register_start("lead-2-agent", "lead", parent_agent_id=ctx["manager"]["agent_id"])
     with pytest.raises(LedgerError):
-        ledger.brief_ack("lead-2", "lead-2-agent")
+        ledger.brief_ack("lead-p1-module-2", "lead-2-agent")
 
 
 # -- identity -----------------------------------------------------------------
@@ -553,7 +625,7 @@ def test_agent_stop_ignores_an_unknown_agent(ledger: Ledger) -> None:
 
 def test_agent_stop_ends_a_released_agent_and_records_tokens(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    ledger.agent_release("manager-1", ctx["manager"]["agent_id"], ctx["lead"]["agent_id"])
+    ledger.agent_release("mgr-p1-phase-1", ctx["manager"]["agent_id"], ctx["lead"]["agent_id"])
     result = ledger.agent_stop(
         ctx["lead"]["agent_id"],
         transcript_path="/tmp/t.jsonl",
@@ -581,37 +653,47 @@ def test_claim_file_requires_lead_role(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     with pytest.raises(LedgerError):
         ledger.claim_file(
-            "manager-1", ctx["manager"]["agent_id"], "src/a.py", "tests/test_a.py", "coder-1"
+            "mgr-p1-phase-1",
+            ctx["manager"]["agent_id"],
+            "src/a.py",
+            "tests/test_a.py",
+            "coder-p1-module-1-c1",
         )
 
 
 def test_claim_file_refuses_a_duplicate_live_claim(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    lead_name, lead_id = "lead-1", ctx["lead"]["agent_id"]
-    ledger.claim_file(lead_name, lead_id, "src/a.py", "tests/test_a.py", "coder-1")
+    lead_name, lead_id = "lead-p1-module-1", ctx["lead"]["agent_id"]
+    ledger.claim_file(lead_name, lead_id, "src/a.py", "tests/test_a.py", "coder-p1-module-1-c1")
     with pytest.raises(LedgerError):
-        ledger.claim_file(lead_name, lead_id, "src/a.py", "tests/test_a.py", "coder-2")
+        ledger.claim_file(lead_name, lead_id, "src/a.py", "tests/test_a.py", "coder-p1-module-1-c2")
 
 
 def test_claim_file_refuses_a_second_live_claim_for_one_coder(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    lead_name, lead_id = "lead-1", ctx["lead"]["agent_id"]
-    ledger.claim_file(lead_name, lead_id, "src/a.py", "tests/test_a.py", "coder-1")
+    lead_name, lead_id = "lead-p1-module-1", ctx["lead"]["agent_id"]
+    ledger.claim_file(lead_name, lead_id, "src/a.py", "tests/test_a.py", "coder-p1-module-1-c1")
     with pytest.raises(LedgerError, match="one Coder owns one file"):
-        ledger.claim_file(lead_name, lead_id, ".gitignore", None, "coder-1")
+        ledger.claim_file(lead_name, lead_id, ".gitignore", None, "coder-p1-module-1-c1")
     ledger.release_file(lead_name, lead_id, "src/a.py")
-    assert ledger.claim_file(lead_name, lead_id, ".gitignore", None, "coder-1")["path"] == (
-        ".gitignore"
-    )
+    assert ledger.claim_file(lead_name, lead_id, ".gitignore", None, "coder-p1-module-1-c1")[
+        "path"
+    ] == (".gitignore")
 
 
 def test_who_owns_and_release_file(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    ledger.claim_file("lead-1", ctx["lead"]["agent_id"], "src/a.py", "tests/test_a.py", "coder-1")
+    ledger.claim_file(
+        "lead-p1-module-1",
+        ctx["lead"]["agent_id"],
+        "src/a.py",
+        "tests/test_a.py",
+        "coder-p1-module-1-c1",
+    )
     owned = ledger.who_owns("src/a.py")
-    assert owned["owner"] == "coder-1"
+    assert owned["owner"] == "coder-p1-module-1-c1"
 
-    ledger.release_file("lead-1", ctx["lead"]["agent_id"], "src/a.py")
+    ledger.release_file("lead-p1-module-1", ctx["lead"]["agent_id"], "src/a.py")
     released = ledger.who_owns("src/a.py")
     assert released["owner"] is None
 
@@ -621,18 +703,91 @@ def test_who_owns_and_release_file(ledger: Ledger) -> None:
 
 def test_message_post_and_inbox_marks_messages_read(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    ledger.message_post("manager-1", ctx["manager"]["agent_id"], "lead-1", "Start on module-1.")
-    inbox = ledger.message_inbox("lead-1", ctx["lead"]["agent_id"])
-    assert len(inbox) == 1
-    assert inbox[0]["body"] == "Start on module-1."
-    assert ledger.message_inbox("lead-1", ctx["lead"]["agent_id"]) == []
+    ledger.message_post(
+        "mgr-p1-phase-1", ctx["manager"]["agent_id"], "lead-p1-module-1", "Start on module-1."
+    )
+    inbox = ledger.message_inbox("lead-p1-module-1", ctx["lead"]["agent_id"])
+    assert [m["body"] for m in inbox["messages"]] == ["Start on module-1."]
+    assert inbox["remaining"] == 0
+    assert ledger.message_inbox("lead-p1-module-1", ctx["lead"]["agent_id"]) == {
+        "messages": [],
+        "remaining": 0,
+    }
 
 
 def test_message_post_refuses_a_name_not_registered_in_the_run(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     with pytest.raises(LedgerError, match="registered names"):
-        ledger.message_post("manager-1", ctx["manager"]["agent_id"], "lead-l", "Typo.")
-    assert ledger.message_inbox("lead-1", ctx["lead"]["agent_id"]) == []
+        ledger.message_post("mgr-p1-phase-1", ctx["manager"]["agent_id"], "lead-l", "Typo.")
+    assert ledger.message_inbox("lead-p1-module-1", ctx["lead"]["agent_id"])["messages"] == []
+
+
+def test_message_inbox_skips_a_same_named_agent_s_mail_from_an_earlier_run(
+    ledger: Ledger,
+) -> None:
+    with write_tx(ledger.conn) as conn:
+        conn.execute("INSERT INTO runs (run_id, prd, state) VALUES (1, 'old', 'finished')")
+        conn.execute(
+            "INSERT INTO messages (run_id, from_name, to_name, body) "
+            "VALUES (1, 'mgr-p1-phase-1', 'lead-p1-module-1', 'Run 1 mail.')"
+        )
+    ctx = _bootstrap(ledger)
+    assert ctx["run_id"] == 2
+    ledger.message_post(
+        "mgr-p1-phase-1", ctx["manager"]["agent_id"], "lead-p1-module-1", "Run 2 mail."
+    )
+
+    inbox = ledger.message_inbox("lead-p1-module-1", ctx["lead"]["agent_id"])
+    assert [m["body"] for m in inbox["messages"]] == ["Run 2 mail."]
+    assert inbox["remaining"] == 0
+    old = ledger.conn.execute("SELECT read_at FROM messages WHERE run_id = 1").fetchone()
+    assert old["read_at"] is None
+
+
+def test_message_post_refuses_a_body_over_32000_characters(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    with pytest.raises(LedgerError, match="at most 32000"):
+        ledger.message_post(
+            "mgr-p1-phase-1", ctx["manager"]["agent_id"], "lead-p1-module-1", "x" * 32_001
+        )
+    ledger.message_post(
+        "mgr-p1-phase-1", ctx["manager"]["agent_id"], "lead-p1-module-1", "x" * 32_000
+    )
+
+
+def test_message_inbox_stops_at_40000_characters_and_leaves_the_rest_unread(
+    ledger: Ledger,
+) -> None:
+    ctx = _bootstrap(ledger)
+    for letter in "abc":
+        ledger.message_post(
+            "mgr-p1-phase-1", ctx["manager"]["agent_id"], "lead-p1-module-1", letter * 15_000
+        )
+
+    first = ledger.message_inbox("lead-p1-module-1", ctx["lead"]["agent_id"])
+    assert [m["body"][0] for m in first["messages"]] == ["a", "b"]
+    assert first["remaining"] == 1
+    third = ledger.conn.execute("SELECT read_at FROM messages WHERE body LIKE 'c%'").fetchone()
+    assert third["read_at"] is None
+
+    second = ledger.message_inbox("lead-p1-module-1", ctx["lead"]["agent_id"])
+    assert [m["body"][0] for m in second["messages"]] == ["c"]
+    assert second["remaining"] == 0
+
+
+def test_message_inbox_returns_one_ledger_written_message_over_the_budget(
+    ledger: Ledger,
+) -> None:
+    ctx = _bootstrap(ledger)
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "INSERT INTO messages (run_id, from_name, to_name, body) VALUES (?, 'ledger', "
+            "'lead-p1-module-1', ?)",
+            (ctx["run_id"], "x" * 45_000),
+        )
+    inbox = ledger.message_inbox("lead-p1-module-1", ctx["lead"]["agent_id"])
+    assert len(inbox["messages"]) == 1
+    assert inbox["remaining"] == 0
 
 
 # -- directives -----------------------------------------------------------------
@@ -664,10 +819,10 @@ def test_directive_inbox_and_resolve_are_oracle_only(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     directive = ledger.directive_submit("skill", "setup", "Detected pytest as the runner.")
     with pytest.raises(LedgerError):
-        ledger.directive_inbox("manager-1", ctx["manager"]["agent_id"])
+        ledger.directive_inbox("mgr-p1-phase-1", ctx["manager"]["agent_id"])
     with pytest.raises(LedgerError):
         ledger.directive_resolve(
-            "manager-1", ctx["manager"]["agent_id"], directive["directive_id"], "applied", "ok"
+            "mgr-p1-phase-1", ctx["manager"]["agent_id"], directive["directive_id"], "applied", "ok"
         )
 
 
@@ -729,15 +884,27 @@ def test_override_grant_is_oracle_only(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     with pytest.raises(LedgerError):
         ledger.override_grant(
-            "manager-1", ctx["manager"]["agent_id"], "hook-4", "coder-1", "src/a.py", "urgent fix"
+            "mgr-p1-phase-1",
+            ctx["manager"]["agent_id"],
+            "hook-4",
+            "coder-p1-module-1-c1",
+            "src/a.py",
+            "urgent fix",
         )
 
 
 def test_override_consume_marks_the_first_match_used_once(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    ledger.override_grant("oracle", ctx["oracle_id"], "hook-4", "coder-1", "src/a.py", "urgent fix")
-    assert ledger.override_consume("hook-4", "coder-1", "src/a.py") is True
-    assert ledger.override_consume("hook-4", "coder-1", "src/a.py") is False
+    ledger.override_grant(
+        "oracle", ctx["oracle_id"], "hook-4", "coder-p1-module-1-c1", "src/a.py", "urgent fix"
+    )
+    assert (
+        ledger.override_consume(ctx["run_id"], "hook-4", "coder-p1-module-1-c1", "src/a.py") is True
+    )
+    assert (
+        ledger.override_consume(ctx["run_id"], "hook-4", "coder-p1-module-1-c1", "src/a.py")
+        is False
+    )
 
 
 # -- issues -----------------------------------------------------------------------
@@ -747,57 +914,83 @@ def test_issue_lifecycle_and_escalation_stops_at_the_configured_round_limit(
     ledger: Ledger,
 ) -> None:
     ctx = _bootstrap(ledger)
-    ledger.claim_file("lead-1", ctx["lead"]["agent_id"], "src/a.py", "tests/test_a.py", "coder-1")
+    ledger.claim_file(
+        "lead-p1-module-1",
+        ctx["lead"]["agent_id"],
+        "src/a.py",
+        "tests/test_a.py",
+        "coder-p1-module-1-c1",
+    )
     file_row = ledger.who_owns("src/a.py")["file"]
 
     issue = ledger.issue_open(
-        "lead-1", ctx["lead"]["agent_id"], file_row["file_id"], "Flaky test", "Fails 1 in 10."
+        "lead-p1-module-1",
+        ctx["lead"]["agent_id"],
+        file_row["file_id"],
+        "Flaky test",
+        "Fails 1 in 10.",
     )
     ledger.idea_record(
-        "lead-1", ctx["lead"]["agent_id"], issue["issue_id"], "Add a retry.", "tried"
+        "lead-p1-module-1", ctx["lead"]["agent_id"], issue["issue_id"], "Add a retry.", "tried"
     )
 
-    issues = ledger.issue_list("lead-1", ctx["lead"]["agent_id"], file_id=file_row["file_id"])
+    issues = ledger.issue_list(
+        "lead-p1-module-1", ctx["lead"]["agent_id"], file_id=file_row["file_id"]
+    )
     assert len(issues) == 1
     assert issues[0]["round"] == 1
 
-    escalated = ledger.issue_escalate("lead-1", ctx["lead"]["agent_id"], issue["issue_id"])
+    escalated = ledger.issue_escalate(
+        "lead-p1-module-1", ctx["lead"]["agent_id"], issue["issue_id"]
+    )
     assert escalated["round"] == 2
-    assert escalated["escalated_to"] == "manager-1"
-    escalated = ledger.issue_escalate("manager-1", "mgr-agent", issue["issue_id"])
+    assert escalated["escalated_to"] == "mgr-p1-phase-1"
+    escalated = ledger.issue_escalate("mgr-p1-phase-1", "mgr-agent", issue["issue_id"])
     assert escalated["round"] == 3
     assert escalated["escalated_to"] == "oracle"
     with pytest.raises(LedgerError):
-        ledger.issue_escalate("lead-1", ctx["lead"]["agent_id"], issue["issue_id"])
+        ledger.issue_escalate("lead-p1-module-1", ctx["lead"]["agent_id"], issue["issue_id"])
 
-    manager_inbox = ledger.message_inbox("manager-1", "mgr-agent")
-    assert [(m["from_name"], m["to_name"]) for m in manager_inbox] == [("lead-1", "manager-1")]
-    oracle_inbox = ledger.message_inbox("oracle", ctx["oracle_id"])
-    assert [(m["from_name"], m["to_name"]) for m in oracle_inbox] == [("manager-1", "oracle")]
+    manager_inbox = ledger.message_inbox("mgr-p1-phase-1", "mgr-agent")["messages"]
+    assert [(m["from_name"], m["to_name"]) for m in manager_inbox] == [
+        ("lead-p1-module-1", "mgr-p1-phase-1")
+    ]
+    oracle_inbox = ledger.message_inbox("oracle", ctx["oracle_id"])["messages"]
+    assert [(m["from_name"], m["to_name"]) for m in oracle_inbox] == [("mgr-p1-phase-1", "oracle")]
 
 
 def test_issue_escalate_refuses_an_agent_outside_the_parent_chain(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
-    ledger.claim_file("lead-1", ctx["lead"]["agent_id"], "src/a.py", "tests/test_a.py", "coder-1")
+    ledger.claim_file(
+        "lead-p1-module-1",
+        ctx["lead"]["agent_id"],
+        "src/a.py",
+        "tests/test_a.py",
+        "coder-p1-module-1-c1",
+    )
     file_row = ledger.who_owns("src/a.py")["file"]
     issue = ledger.issue_open(
-        "lead-1", ctx["lead"]["agent_id"], file_row["file_id"], "Flaky test", "Fails 1 in 10."
+        "lead-p1-module-1",
+        ctx["lead"]["agent_id"],
+        file_row["file_id"],
+        "Flaky test",
+        "Fails 1 in 10.",
     )
     ledger.brief_create(
-        "manager-1",
+        "mgr-p1-phase-1",
         "mgr-agent",
-        "lead-2",
+        "lead-p1-module-2",
         "lead",
         "sonnet",
         "Own module-2.",
-        module_id=ctx["module_id"],
+        module_id=_second_module(ledger, ctx),
     )
     ledger.agent_register_start("lead-2-agent", "lead", parent_agent_id="mgr-agent")
-    ledger.brief_ack("lead-2", "lead-2-agent")
+    ledger.brief_ack("lead-p1-module-2", "lead-2-agent")
 
     with pytest.raises(LedgerError, match="parent chain"):
-        ledger.issue_escalate("lead-2", "lead-2-agent", issue["issue_id"])
-    assert ledger.issue_list("lead-1", ctx["lead"]["agent_id"])[0]["round"] == 1
+        ledger.issue_escalate("lead-p1-module-2", "lead-2-agent", issue["issue_id"])
+    assert ledger.issue_list("lead-p1-module-1", ctx["lead"]["agent_id"])[0]["round"] == 1
 
 
 # -- agent_events audit trail -----------------------------------------------------
@@ -816,7 +1009,7 @@ def test_every_lifecycle_transition_writes_an_agent_event(ledger: Ledger) -> Non
     register_events = ledger.events(agent_id="coder-agent")
     assert any(e["to_state"] == "registered" for e in register_events)
 
-    ledger.agent_release("manager-1", ctx["manager"]["agent_id"], ctx["lead"]["agent_id"])
+    ledger.agent_release("mgr-p1-phase-1", ctx["manager"]["agent_id"], ctx["lead"]["agent_id"])
     lead_events = ledger.events(agent_id=ctx["lead"]["agent_id"])
     assert any(e["to_state"] == "released" for e in lead_events)
 
@@ -844,17 +1037,20 @@ def test_run_start_resumes_the_active_run_for_a_new_session(ledger: Ledger) -> N
 def test_manager_sets_its_own_phase_to_working_and_handed_up_only(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     mgr = ctx["manager"]["agent_id"]
-    assert ledger.phase_update("manager-1", mgr, ctx["phase_id"], "working")["state"] == "working"
-    ledger.agent_release("manager-1", mgr, ctx["lead"]["agent_id"])
+    assert (
+        ledger.phase_update("mgr-p1-phase-1", mgr, ctx["phase_id"], "working")["state"] == "working"
+    )
+    ledger.agent_release("mgr-p1-phase-1", mgr, ctx["lead"]["agent_id"])
     _accept_module(ledger, ctx)
     assert (
-        ledger.phase_update("manager-1", mgr, ctx["phase_id"], "handed_up")["state"] == "handed_up"
+        ledger.phase_update("mgr-p1-phase-1", mgr, ctx["phase_id"], "handed_up")["state"]
+        == "handed_up"
     )
     with pytest.raises(LedgerError):
-        ledger.phase_update("manager-1", mgr, ctx["phase_id"], "approved")
+        ledger.phase_update("mgr-p1-phase-1", mgr, ctx["phase_id"], "approved")
     other = ledger.phase_add("oracle", ctx["oracle_id"], "phase-2")
     with pytest.raises(LedgerError):
-        ledger.phase_update("manager-1", mgr, other["phase_id"], "working")
+        ledger.phase_update("mgr-p1-phase-1", mgr, other["phase_id"], "working")
 
 
 # -- run_pause ----------------------------------------------------------------------
@@ -863,7 +1059,7 @@ def test_manager_sets_its_own_phase_to_working_and_handed_up_only(ledger: Ledger
 def test_run_pause_is_oracle_only_and_sets_the_run_paused(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     with pytest.raises(LedgerError):
-        ledger.run_pause("manager-1", ctx["manager"]["agent_id"], "needs a token")
+        ledger.run_pause("mgr-p1-phase-1", ctx["manager"]["agent_id"], "needs a token")
     with pytest.raises(LedgerError, match="reason"):
         ledger.run_pause("oracle", ctx["oracle_id"], "  ")
 
@@ -959,13 +1155,19 @@ def test_report_times_a_phase_from_its_first_manager_start(ledger: Ledger) -> No
             (ctx["manager"]["agent_id"],),
         )
     text = ledger.report_build("oracle", ctx["oracle_id"])["text"]
-    assert "## Phase: phase-1 (unlocked, 6m 0s)" in text
+    assert "## Phase: p1-phase-1 (unlocked, 6m 0s)" in text
 
 
 @pytest.mark.parametrize("given", ["None", "null", "", "  "])
 def test_claim_file_reads_a_text_null_test_path_as_no_test_file(ledger: Ledger, given: str) -> None:
     ctx = _bootstrap(ledger)
-    claimed = ledger.claim_file("lead-1", ctx["lead"]["agent_id"], "pkg/__init__.py", given, "c-1")
+    claimed = ledger.claim_file(
+        "lead-p1-module-1",
+        ctx["lead"]["agent_id"],
+        "pkg/__init__.py",
+        given,
+        "coder-p1-module-1-c1",
+    )
     assert claimed["test_path"] is None
 
 
@@ -999,3 +1201,65 @@ def test_directive_command_fails_without_a_live_run(
 def test_run_start_records_the_oracles_effort(ledger: Ledger) -> None:
     started = ledger.run_start(prd="Build X", session_id="sess-1")
     assert started["oracle"]["effort"] == ledger.settings.effort["oracle"]
+
+
+def test_directive_reply_to_resolves_an_open_directive_with_no_outcome_yet(ledger: Ledger) -> None:
+    _bootstrap(ledger)
+    asked = ledger.directive_submit("user_chat", "alex", "Rename the CLI flag?")
+    assert (asked["state"], asked["outcome"]) == ("open", None)
+
+    reply = ledger.directive_submit(
+        "user_chat", "alex", "Yes, rename it.", reply_to=asked["directive_id"]
+    )
+
+    parent = ledger.conn.execute(
+        "SELECT * FROM directives WHERE directive_id = ?", (asked["directive_id"],)
+    ).fetchone()
+    assert parent["state"] == "resolved"
+    assert parent["outcome"] is None
+    assert parent["resolved_at"] is not None
+    assert reply["reply_to"] == asked["directive_id"]
+
+
+def test_directive_reply_to_leaves_a_resolved_directive_alone(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    asked = ledger.directive_submit("user_chat", "alex", "Add a CLI?")
+    ledger.directive_resolve("oracle", ctx["oracle_id"], asked["directive_id"], "declined", "No.")
+
+    # A reply naming an already-resolved directive touches nothing on that row; state
+    # = 'open' is required, so the UPDATE is a no-op and the reply is just recorded.
+    ledger.directive_submit("user_chat", "alex", "Are you sure?", reply_to=asked["directive_id"])
+    parent = ledger.conn.execute(
+        "SELECT * FROM directives WHERE directive_id = ?", (asked["directive_id"],)
+    ).fetchone()
+    assert (parent["state"], parent["outcome"]) == ("resolved", "declined")
+
+
+def test_directive_submit_normalizes_old_source_spellings(ledger: Ledger) -> None:
+    _bootstrap(ledger)
+    old_chat = ledger.directive_submit("user-chat", "alex", "Old spelling.")
+    old_outside = ledger.directive_submit("outside-session", "ci", "Also old.")
+    assert old_chat["source"] == "user_chat"
+    assert old_outside["source"] == "outside_session"
+
+
+def test_directive_submit_accepts_the_new_snake_case_sources(ledger: Ledger) -> None:
+    _bootstrap(ledger)
+    submitted = ledger.directive_submit("outside_session", "ci", "New spelling.")
+    assert submitted["source"] == "outside_session"
+
+
+def test_override_grant_refuses_a_target_that_names_the_oracle(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    with pytest.raises(LedgerError, match="must not grant itself"):
+        ledger.override_grant(
+            "oracle", ctx["oracle_id"], "write", "oracle", "src/a.py", "self-serve"
+        )
+
+
+def test_override_grant_still_allows_a_non_oracle_target(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    granted = ledger.override_grant(
+        "oracle", ctx["oracle_id"], "write", "coder-1", "src/a.py", "urgent fix"
+    )
+    assert granted["target_agent_name"] == "coder-1"

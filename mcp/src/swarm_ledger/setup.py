@@ -35,16 +35,6 @@ _HOOK_ITEM_LINE = re.compile(r"^    - ")
 _LEDGER_HOOK = re.compile(r"hook\.py hook (\w+)")
 _TOOLS_LINE = re.compile(r"^tools\s*:\s*\S")
 WHOLE_LEDGER = "mcp__swarm-ledger"
-# Entries an earlier template shipped: setup swaps one it finds unedited for the template's.
-_SUPERSEDED_HOOKS = {
-    "post_any": (
-        "    - hooks:\n"
-        "        - type: command\n"
-        '          command: "python3 .sentinel-swarm/hook.py hook post_any'
-        ' || python .sentinel-swarm/hook.py hook post_any"\n'
-        "          timeout: 60"
-    ),
-}
 
 
 class SetupError(Exception):
@@ -104,53 +94,6 @@ def _join_document(frontmatter: str, body: str) -> str:
     return f"---\n{_with_newline(frontmatter)}---\n{body}"
 
 
-def _hook_entries(frontmatter: str) -> list[tuple[str, str, str]]:
-    entries: list[tuple[str, str, str]] = []
-    parent: str | None = None
-    current: list[str] = []
-
-    def flush() -> None:
-        if parent is not None and current:
-            text = "".join(current)
-            match = _LEDGER_HOOK.search(text)
-            if match:
-                entries.append((parent, match.group(1), text))
-
-    for line in key_blocks(frontmatter).get("hooks", "").splitlines(keepends=True)[1:]:
-        event = _HOOK_EVENT_LINE.match(line)
-        if event:
-            flush()
-            parent, current = event.group(1), []
-        elif _HOOK_ITEM_LINE.match(line):
-            flush()
-            current = [line]
-        elif current:
-            current.append(line)
-    flush()
-    return entries
-
-
-def add_missing_hooks(user_frontmatter: str, template_frontmatter: str) -> tuple[str, list[str]]:
-    have = {event for _, event, _ in _hook_entries(user_frontmatter)}
-    lines = _with_newline(user_frontmatter).splitlines(keepends=True)
-    added: list[str] = []
-    for parent, event, text in _hook_entries(template_frontmatter):
-        if event in have:
-            continue
-        header = f"  {parent}:"
-        at = next((i for i, line in enumerate(lines) if line.rstrip() == header), None)
-        if at is None:
-            hooks_at = next((i for i, line in enumerate(lines) if line.rstrip() == "hooks:"), None)
-            if hooks_at is None:
-                continue
-            lines.insert(hooks_at + 1, header + "\n")
-            at = hooks_at + 1
-        lines.insert(at + 1, text)
-        have.add(event)
-        added.append(event)
-    return "".join(lines), added
-
-
 def _tool_items(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
@@ -172,20 +115,44 @@ def narrow_ledger_tools(user_frontmatter: str, template_frontmatter: str) -> tup
     return user_frontmatter, False
 
 
-def replace_superseded_hooks(
-    user_frontmatter: str, template_frontmatter: str
-) -> tuple[str, list[str]]:
-    template = {event: text for _, event, text in _hook_entries(template_frontmatter)}
-    replaced: list[str] = []
-    for _, event, text in _hook_entries(user_frontmatter):
-        old = text.rstrip()
-        if event not in template or old != _SUPERSEDED_HOOKS.get(event):
-            continue
-        if old not in user_frontmatter:
-            continue
-        user_frontmatter = user_frontmatter.replace(old, template[event].rstrip(), 1)
-        replaced.append(event)
-    return user_frontmatter, replaced
+def strip_ledger_hooks(frontmatter: str) -> tuple[str, list[str]]:
+    frontmatter = _with_newline(frontmatter)
+    block = key_blocks(frontmatter).get("hooks")
+    if block is None:
+        return frontmatter, []
+    lines = block.splitlines(keepends=True)
+    loose: list[str] = []
+    events: list[tuple[str, list[list[str]]]] = []
+    for line in lines[1:]:
+        if _HOOK_EVENT_LINE.match(line):
+            events.append((line, []))
+        elif _HOOK_ITEM_LINE.match(line) and events:
+            events[-1][1].append([line])
+        elif events and events[-1][1]:
+            events[-1][1][-1].append(line)
+        else:
+            loose.append(line)
+    removed: list[str] = []
+    kept: list[str] = []
+    for header, entries in events:
+        texts = []
+        for entry in entries:
+            text = "".join(entry)
+            match = _LEDGER_HOOK.search(text)
+            if match:
+                removed.append(match.group(1))
+            else:
+                texts.append(text)
+        if texts:
+            kept.append(header + "".join(texts))
+    if not removed:
+        return frontmatter, []
+    rest = "".join(loose) + "".join(kept)
+    return frontmatter.replace(block, lines[0] + rest if rest.strip() else "", 1), removed
+
+
+def role_template(role: str) -> str:
+    return template_file(role).read_text(encoding="utf-8")
 
 
 def merge_role_file(existing: str, template: str) -> tuple[str, list[str], bool]:
@@ -196,11 +163,6 @@ def merge_role_file(existing: str, template: str) -> tuple[str, list[str], bool]
     template_keys = key_blocks(template_frontmatter)
     added = [key for key in template_keys if key not in user_keys]
     frontmatter = _with_newline(user_frontmatter) + "".join(template_keys[key] for key in added)
-    if "hooks" in user_keys:
-        frontmatter, replaced = replace_superseded_hooks(frontmatter, template_frontmatter)
-        added += [f"updated hook {event}" for event in replaced]
-        frontmatter, hooks = add_missing_hooks(frontmatter, template_frontmatter)
-        added += [f"hook {event}" for event in hooks]
     if narrowed:
         added.append(f"the role's swarm-ledger tools in place of {WHOLE_LEDGER}")
     return _join_document(frontmatter, template_body), added, user_body != template_body
@@ -233,14 +195,17 @@ def write_role_files(repo: Path, report: SetupReport) -> None:
                 "ios-driver, or web-driver) are not installed"
             )
             continue
-        template = template_file(role).read_text(encoding="utf-8")
+        template = role_template(role)
         if not target.is_file():
             _write_text(target, render_default(template))
             report.add(f"wrote {shown}")
             continue
         existing = target.read_text(encoding="utf-8")
         try:
-            merged, added, body_changed = merge_role_file(existing, template)
+            frontmatter, body = split_document(existing)
+            frontmatter, removed = strip_ledger_hooks(frontmatter)
+            start = _join_document(frontmatter, body) if removed else existing
+            merged, added, body_changed = merge_role_file(start, template)
         except SetupError as exc:
             report.add(f"left {shown} unchanged: {exc}")
             continue
@@ -253,6 +218,8 @@ def write_role_files(repo: Path, report: SetupReport) -> None:
             changes.append("replaced the prompt body")
         if added:
             changes.append(f"added keys from the template: {', '.join(added)}")
+        if removed:
+            changes.append(f"removed the ledger command hooks the mod runs: {', '.join(removed)}")
         report.add(f"updated {shown}, kept your frontmatter: {'; '.join(changes) or 'normalized'}")
 
 

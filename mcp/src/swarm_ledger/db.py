@@ -48,15 +48,32 @@ _ADDED_COLUMNS = (
     ("reviews", "details_json", "TEXT"),
     ("directives", "question", "TEXT"),
     ("handoffs", "floor_pass_json", "TEXT"),
-    ("agents", "channel", "TEXT NOT NULL DEFAULT 'none'"),
-    ("wakeups", "pushed_at", "TEXT"),
     ("briefs", "finding_ids_json", "TEXT"),
+    ("briefs", "contract", "TEXT"),
+    ("briefs", "last_read_by_child_at", "TEXT"),
+    ("deferrals", "kind", "TEXT"),
+    ("deferrals", "parties_json", "TEXT"),
+    ("deferrals", "arbiter_agent_id", "TEXT"),
+    ("deferrals", "open_issues_json", "TEXT"),
+    ("deferrals", "issue_ids_json", "TEXT"),
+    ("deferrals", "directive_id", "INTEGER"),
+    ("drive_requests", "map_test_at", "TEXT"),
+    ("messages", "claim_id", "TEXT"),
+    ("messages", "claimed_at", "TEXT"),
 )
 # Renamed to snake_case; an older ledger may still hold either the code's old
 # spelling or a value directive_submit stored before this alias table existed.
 _DIRECTIVE_SOURCE_RENAMES = (
     ("user-chat", "user_chat"),
     ("outside-session", "outside_session"),
+)
+# Indexes a later version added to a table an older ledger already has; schema.sql
+# runs again only when a table is missing.
+_ADDED_INDEXES = (
+    (
+        "messages",
+        "CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages (run_id, to_name, read_at)",
+    ),
 )
 _ADDED_TABLES = (
     "wakeups",
@@ -66,6 +83,10 @@ _ADDED_TABLES = (
     "drive_findings",
     "notifications",
     "drive_stops",
+    "module_deps",
+    "file_deps",
+    "graph_gaps",
+    "mod_sessions",
 )
 
 
@@ -101,7 +122,7 @@ def ensure_git_exclude(repo_root: Path) -> None:
 
 def connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
-    # The server runs tool calls on worker threads and serializes them with a lock.
+    # With max_workers 0 the server runs tool calls on threads and serializes them with a lock.
     conn = sqlite3.connect(str(path), timeout=5.0, isolation_level=None, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
@@ -162,6 +183,9 @@ def _upgrade(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError as exc:
             if "duplicate column" not in str(exc):
                 raise
+    for table, statement in _ADDED_INDEXES:
+        if table in tables:
+            conn.execute(statement)
     _upgrade_departure_states(conn)
     _upgrade_directive_sources(conn)
     _upgrade_driver_unavailable(conn)

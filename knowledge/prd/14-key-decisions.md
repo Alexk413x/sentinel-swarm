@@ -111,3 +111,38 @@
 - 2026-09-28: The smoke harness tears down its plugin records when a run ends: it uninstalls the project-scope install from the host folder and removes the `sentinel-swarm` marketplace, at the end of the interactive and headless modes and in `--results` mode, never in `--bg` mode. Each run first removes an earlier run's stale records. The project-scope install stays, and teardown never deletes a session. The harness does not stop processes.
 - 2026-09-28: `tests_run` reuses a passing run of the same command when `HEAD`, the tracked changes, and every claimed file are unchanged, and records the reuse as a new row; `force=true` always runs.
 - 2026-09-28: PRD 09 names the accessibility-tools relay release as "their AP-21 release", not version numbers.
+- 2026-10-07: A role session connects to a plugin's HTTP MCP server directly, with the plugin's own entry in its `--mcp-config`, not through the stdio relay. The relay stays for stdio entries.
+- 2026-10-07: The PRD is the maintained specification, and the code must match it. No item waits for review: the (proposed) mark and `15-proposed.md` are retired. An item the code does not implement yet is marked (needs implementation) and listed in `16-open-items.md`.
+- 2026-10-07: Other platforms start as a non-Claude Coder only, with the Oracle, Managers and Leads on Claude Code. The first gate is that such a Coder communicates and works with its Lead, Manager and Oracle as a Claude Coder does. See `plans/upgrade-roadmap.md`, part 2.
+- 2026-10-08: `accept_incomplete` refuses an empty reason, a handoff without `review_compare`, and a handoff that carries no open issue from the Coder and whose file has no open issue. The `file` deferral it opens records them, and the Manager decides it.
+- 2026-10-08: The Oracle asks a running module for a new Coder with a message to its Manager, and the Manager asks the Lead. Only the Lead can brief the Coder, and only for a file its module claimed for that name; `brief_create` checks every scope id against the caller.
+- 2026-10-08: Phase names are `p<ordinal>-<slug>`, and `phase_add` adds the prefix. Managers are `mgr-<phase name>`, Leads `lead-p<ordinal>-<module>`, Coders `coder-p<ordinal>-<module>-<file slug>`; `brief_create` and `claim_file` refuse any other name.
+- 2026-10-08: The ledger records each Grep and Glob a role runs as a graph gap, from `post_activity`, and the report lists them. An agent no longer records the gap itself.
+- 2026-10-08: A change request is not direction. `cr_open` from a Manager or the Oracle still routes to the file's live Coder, and `pre_send_message` allows the wake-up it owes.
+- 2026-10-08: `message_post` reaches only the caller's parent, children, and siblings. `pre_send_message` allows those, any session the caller owes a wake-up, and, for the Oracle, any live agent that is not working.
+- 2026-10-08: The Driver's `pre_skill` hook enforces `map-test` before `map-explore`, built on the hooks reference's statement that `PreToolUse` fires for the `Skill` tool when the model calls it.
+- 2026-10-08: `profile_set` refuses a build command whose words include `--watch`, `serve`, or `dev-server`, or a `dev` or `start` script run through `npm`, `yarn`, or `pnpm`. Other build commands pass, including one a served web build needs; the URL a driver plugin opens stays unchecked.
+- 2026-10-08: A phase unlocks only when every phase it depends on is approved: `phase_update(unlocked)` refuses otherwise, and `brief_create` and `agent_spawn` refuse a Manager of a planned phase.
+- 2026-10-08: `deferral_propose` takes a required `kind` (`file`, `module`, `cross_module`, `phase`, `plan`, `prd`), and `agreement_decide` needs a caller at or above both the proposer's parent and the kind's level; a `prd` decision needs a later `user_chat` directive. With `parties`, a deferral is a dispute that only the parties' closest shared ancestor decides.
+- 2026-10-08: A dependent file or module is briefed only after each dependency's latest brief records its contract; `claim_file` and `module_add` take `depends_on`, and `brief_get` returns the contracts.
+- 2026-10-08: `handoff_submit` refuses when the Coder has not read its brief since the file's last return; the `pre_ledger` hook records the read.
+- 2026-10-08: A fix Coder's brief needs a claim made after each finding it fixes, so the Lead releases and re-claims the file; `brief_get` returns each finding's steps, expected and actual result, and evidence paths.
+- 2026-10-08: `override_consume` matches the run, so an override never carries into a later run.
+- 2026-10-08: Only `drive_request` starts a Driver; `brief_create` refuses `child_role="driver"`.
+- 2026-10-08: Each role template's start sequence names its graph search level: system (Oracle), component (Manager), file (Lead), symbol (Coder), screen (Driver).
+- 2026-10-08: The Lead holds `graph_upsert` for nodes whose anchors lie on its module's files; a Coder's stay on its own file.
+- 2026-10-08: A Manager's, Lead's, Coder's, and Driver's `session_start` hook makes its start calls (`brief_ack`, `ledger_info`, `brief_get`, `guidelines_get`, and `run_status` for a Manager or Lead) and returns them as context; the brief it hands over counts as a read for `handoff_submit`. The Oracle keeps its own start calls.
+- 2026-10-08: The Coder loads `score_record` and `handoff_submit`, and the Driver `drive_done`, with a second `ToolSearch` just before the first call, not in the up-front `select:`.
+- 2026-10-08: Remove the `swarm-events` channel. Owed wake-ups go out through one delivery path.
+- 2026-10-08: The sender's mod delivers each owed wake-up with `$.session.send`, which replaces `SendMessage` once a live check shows it wakes an idle `--bg` session. See `plans/messaging-and-tooling.md`.
+- 2026-10-08: Enforcement may live in the plugin's mod, which loads in every session in the host repo, once the live check passes.
+- 2026-10-08: The device-queue broker needs a new plan on the mod's delivery path; it stays (needs implementation) until then.
+- 2026-10-08: The ledger server refuses a `registered` session every tool but `brief_ack` and the five identity-free tools, for any client. The `pre_ledger` rule stays as the fast path.
+- 2026-10-08: A fix Coder's brief is refused while any of its findings is newer than the file's claim; the Lead releases and claims the file again first.
+- 2026-10-08: A Coder updates its own file's graph node; the Lead updates only nodes that span two or more of its module's files.
+- 2026-10-08: The plugin's mod is the default hook transport; the role files' command hooks stay as the fallback for a Claude Code build older than 2.1.294, and `hook_transport` chooses. The two never run for one session.
+- 2026-10-08: The mod sends every owed wake-up by session id, the interactive Oracle included, retries a send that finds no live session, and only then leaves `SendMessage` to the model.
+- 2026-10-08: Launches and `agent_spawn` remove the variables a parent Claude Code session sets for its children, such as `CLAUDE_CODE_CHILD_SESSION`.
+- 2026-10-08: The plugin's mod is the only hook transport. The command transport, the `hook_transport` setting, and the Claude Code version check are removed. The plugin supports no older Claude Code build, retired marketplace, plugin id, or cache path.
+- 2026-10-08: The launcher refuses to start unless `claude plugin list` shows sentinel-swarm enabled, and the ledger refuses `run_start` and `brief_ack` from a session the mod never checked in for.
+- 2026-10-08: A wake-up to a target with no recorded session fails visibly instead of resuming: the watchdog records the failed Oracle wake, and `agent_resume` refuses the target.

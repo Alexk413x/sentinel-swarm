@@ -1,8 +1,48 @@
 # The ledger server
 
 - One server runs per host repo, over HTTP on `127.0.0.1`, with MCP at `/mcp` and a
-  health check at `/health`. Every session of the run connects to it. One process is
-  required: `graph_upsert` protects the code graph with a lock inside it.
+  health check at `/health`. Every session of the run connects to it. One server per
+  repo is required: its front holds the watchdog, `on_run_finish`, and the activity
+  clock, and the run lock names its process.
+- The server is a front process and a pool of worker processes. The front is the lean
+  stdlib HTTP server in `http_front.py`; it imports no fastmcp, uvicorn, or Starlette,
+  and its only third-party import is PyYAML, for the settings file. It checks access,
+  takes the stamped `agent_id` out of each call, validates the arguments against the
+  tool catalog, and sends the call to a worker. Each worker is a Python process that
+  holds its own `Ledger` and SQLite connection and runs one call at a time.
+- `max_workers` in `.claude/sentinel-swarm.local.md` caps the tool-call pool, default
+  8. Hooks run on a second pool with the same cap, so a long tool call such as
+  `tests_run` never holds up a hook. A pool starts a worker when a call finds none free,
+  up to the cap, and stops one after 60 seconds idle; past the cap a call waits for the
+  next free worker. `max_workers: 0` starts no workers: tool calls run in the front one
+  at a time under one lock on one connection, and each hook runs in the front on its own
+  connection.
+- A worker runs on the base interpreter (`sys._base_executable`) with `-I -S`, with the
+  package source and the venv's `site-packages` on its path, so a Windows venv's
+  launcher process is not started twice. It writes replies on a private copy of stdout
+  and points its own stdin and stdout elsewhere, so a print or a child process cannot
+  corrupt the protocol. A worker that exits or hangs during a call is killed; that one
+  call fails with a tool error, and the next call starts a fresh worker. A call has 30
+  minutes.
+- What happens once per server stays in the front. A worker never shows an OS
+  notification: its reply lists the notifier commands, and the front runs each one
+  once. `run_finish` in a worker returns to the front, which then calls
+  `on_run_finish`. Wake-ups need nothing from the front: a worker records the
+  `wakeups` row and returns the `next` call in its result. The run lock
+  (`lock.acquire` at `run_start`) records the front's pid, which every worker gets at
+  start, so the lock lives as long as the server, not as long as one worker.
+- SQLite across processes: every connection uses WAL, `synchronous=NORMAL`,
+  `busy_timeout` 5000, and `BEGIN IMMEDIATE` for writes (`write_tx`), so writers from
+  several workers queue on the database lock instead of failing. The front migrates
+  the database before any worker starts.
+- No worker keeps state another worker needs. Each worker gets the settings the front
+  read at start, not the file, so an edit to the file after the start reaches no
+  worker. The test, build, and lint commands come from the run's settings snapshot,
+  which `profile_set` writes: `profile_set` and `tests_run` read the snapshot first, so
+  a command set in one worker reaches a test run in another.
+- `graph_upsert` holds `.sentinel-swarm/kg.lock`, an exclusive file lock
+  (`lock.file_lock`), while codebase-kg writes the code graph, so two workers never
+  write it at once.
 - `python -m swarm_ledger.serve [--repo <root>]` binds the port saved in
   `.sentinel-swarm/server.port`, or a free port when that one is taken, and writes
   `.sentinel-swarm/server.json` with `url`, `port`, `pid`, and `started_at`. A second
@@ -13,33 +53,73 @@
   waits until it answers, and returns its URL. On Windows it starts with a hidden
   console (`CREATE_NO_WINDOW`).
 - Errors go to `.sentinel-swarm/server.log`.
+- Access: every request must come from `127.0.0.1` or `::1`, carry a `Host` header of
+  `127.0.0.1:<port>` or `localhost:<port>` with the server's own port, and carry no
+  `Origin` header other than `http://127.0.0.1:<port>` or `http://localhost:<port>`.
+  Every route except `/health` also needs `Authorization: Bearer <token>`, with the
+  token from `.sentinel-swarm/http-token`. A request that fails a check gets 403 and a
+  one-line reason, never 401: a 401 makes an MCP client start the OAuth flow of the MCP
+  authorization spec. `serve.refusal` makes the checks, and the front runs it before
+  any route.
+- The token: the server creates `.sentinel-swarm/http-token` on its first start, mode
+  0600, from 32 random bytes in URL-safe base64, and reuses it on every later start.
+  Claude Code keeps the headers a session got at connect and sends them to a restarted
+  server, so a new token per process would refuse every live session after a restart. A
+  file that does not match `[A-Za-z0-9_-]{32,128}` is replaced at the next server start.
+- `session_options` writes the `swarm-ledger` entry of every role's `--mcp-config` as
+  `{"type": "http", "url": <url>, "headers": {"Authorization": "Bearer <token>"}}`.
+  The token exists before any role starts, so no `headersHelper` and no start race
+  apply. `server.json` and the token live in the host repo's working tree, so before
+  either reaches a `--mcp-config`, `session_options` checks that the URL is exactly
+  `http://127.0.0.1:<port>/mcp` and that the token matches `[A-Za-z0-9_-]{32,128}`. A
+  failed check raises an error: `agent_spawn` refuses, and the launcher prints the
+  reason and exits 1.
+- `ensure_server` probes `/health`, which needs no token, and `python -m
+  swarm_ledger.directive` opens the ledger database directly, so neither sends the
+  token. The hook shim reads it from `http-token`.
+- After a 403, Claude Code records the server in `~/.claude/mcp-needs-auth-cache.json`,
+  a JSON object keyed by server name with a `timestamp` per entry, and stops connecting
+  to it, in later sessions too. A live session gets a 403 only when someone deletes or
+  replaces `http-token` while the run is live. To recover, stop the role sessions,
+  remove the `swarm-ledger` key from that file (or delete the file when it holds nothing
+  else you need), and resume the sessions. Not verified live: the key Claude Code uses
+  for a `--mcp-config` server, and whether a resumed session reconnects once the key is
+  gone. See [16-open-items.md](16-open-items.md).
 - The ledger server runs no other MCP server. Each plugin shares its own servers
   through its own relay. See "Plugin servers" in
   [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
-- Tool calls run one at a time under one lock, on one SQLite connection. A hook
-  request on `/hook/<event>` runs outside that lock, on its own connection.
-- The server loads the settings file once: the watchdog at start, and the ledger at the
-  first tool call. `profile_set` changes the commands for the server process and the
-  run's settings snapshot, not the file. The hooks read the file on every call, so the
-  Coder's shell gate follows the file's commands.
-- The watchdog runs on a thread inside the server.
+- The front reads the settings file once at start, for the watchdog, `max_workers`, and
+  the workers. `profile_set` changes the run's settings snapshot, not the file. The
+  hooks read the file on every call, so the Coder's shell gate follows the file's
+  commands.
+- The watchdog runs on a thread in the front.
+- MCP on `/mcp`: each request is one POST with a JSON reply; the server keeps no MCP
+  session and opens no stream, so GET and DELETE get 405. A request carrying
+  `MCP-Protocol-Version: 2026-07-28` gets the stateless protocol (`server/discover`,
+  no `initialize`), with the header checks codebase-kg's front makes. Any other request
+  gets the handshake protocol (`initialize`, `notifications/initialized`, then calls).
+  Both answer `tools/list` and `tools/call` from the same catalog.
+- The tool catalog: `catalog.json` holds the `tools/list` result exactly as the fastmcp
+  registrations in `server.py` list it, plus the argument schema pydantic checks where
+  a tool shows a richer one (`ratings`, `applicable`, `targeted`), and the tools that
+  take the stamped `agent_id`. `python -m swarm_ledger.catalog` writes it, and a test
+  fails when it differs from `server.py`. Arguments are checked the way pydantic's lax
+  mode does: a numeric string or an integral float is an integer, an unknown argument
+  is refused, a missing one takes its default. A tool result has the shape fastmcp
+  gives it: the JSON as text content and as `structuredContent`, a list wrapped as
+  `{"result": [...]}`, and an empty list with no content. A refusal is a tool error with
+  the ledger's reason as its text.
+- `server.py` keeps the fastmcp registrations. The server does not run them; they are
+  the catalog's source and the in-process client the tests use, and they call the same
+  front code as the lean front.
 - The hook route: `POST /hook/<event>` runs the handler `python -m swarm_ledger.hooks
-  <event>` runs, on the request body, and returns exactly the bytes that command would
-  print. Each request opens its own `Ledger`, so it reads the settings file again, and
-  closes it after the handler. It runs on a worker thread, off the event loop, and
-  never takes the tool-call lock. It uses an empty wake-up hub, as the subprocess does,
-  so a hook never pushes a wake-up through a channel. The handler's stderr goes to the
-  server log. The route answers 403 unless the caller is `127.0.0.1` or `::1` and the
-  `Host` header names `127.0.0.1` or `localhost`, 404 for an unknown event, and 409
-  unless the `X-Sentinel-Swarm-Repo` header names this server's repo root. A 200
-  answer carries the header back. See "The shim" in
+  <event>` runs, on the request body, on a worker of the hook pool, and returns exactly
+  the bytes that command would print. Each request opens its own `Ledger`, so it reads
+  the settings file again, and closes it after the handler. The handler's stderr goes
+  to the server log. Besides the access checks above, the route answers 404 for an
+  unknown event and 409 unless the `X-Sentinel-Swarm-Repo` header names this server's
+  repo root. A 200 answer carries the header back. See "The shim" in
   [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md).
-- `GET /events?session=<session id>` holds one session's `swarm-events` event stream
-  open: newline-delimited JSON, one event per line, and a `{"kind": "ping"}` line after
-  15 seconds without an event. The request records `launched` on that session's agent
-  row, and the stream registers the session until the connection closes. A request
-  without `session` gets 400. See "Wake-up delivery" in
-  [05-sessions.md](05-sessions.md). **(proposed)**
 - Lifetime: the launcher starts the server before the Oracle. It exits after
   `run_finish`, and after `idle_exit_minutes` with no active run, or a paused run, and
   no session of the run running. A ledger tool call restarts the idle clock. A failed
@@ -55,35 +135,54 @@
 
 `.sentinel-swarm/` at the root of the main checkout holds `ledger.db`, `versions/`,
 `report.md` (the latest run's report), `report-<run_id>.md` for each run, `server.json`,
-`server.port`, `server.log`, and the hook shim `hook.py`.
+`server.port`, `http-token`, `server.log`, `kg.lock`, and the hook shim `hook.py`.
 A worktree's `.git` file resolves to the main checkout, so every worktree shares one
 ledger. The folder is excluded through `.git/info/exclude`, never the host's
-`.gitignore`. **(proposed)** One ledger holds every run in the repo. The swarm writes
+`.gitignore`. One ledger holds every run in the repo. The swarm writes
 the project's code in the host repo itself. Tracking is `local` only.
 
 ## Database
 
 - Every connection opens with WAL, `synchronous=NORMAL`, foreign keys on, and a 5-second
-  busy timeout. Every write runs inside `BEGIN IMMEDIATE`. **(proposed)**
+  busy timeout. Every write runs inside `BEGIN IMMEDIATE`.
 - `migrate` applies `schema.sql` at schema version 1 and adds later columns and tables
   idempotently.
-- Tables, grouped: the plan (`runs`, `phases`, `phase_deps`, `modules`, `files`,
-  `guidelines`); agents (`agents`, `agent_events`, `briefs`, `wakeups`); review
-  (`handoffs`, `reviews`, `scores`, `test_runs`, `versions`, `attempts`, `issues`,
-  `ideas`); agreements (`change_requests`, `departures`, `departure_decisions`,
-  `deferrals`, `overrides`); communication (`messages`, `directives`,
-  `watchdog_findings`, `notifications` **(proposed)**); the Driver (`drive_requests`,
-  `drive_findings`, `drive_stops` **(proposed)**). Read `schema.sql` for the columns.
+- Tables, grouped: the plan (`runs`, `phases`, `phase_deps`, `modules`, `module_deps`,
+  `files`, `file_deps`, `guidelines`); agents (`agents`, `agent_events`, `briefs`,
+  `wakeups`); review (`handoffs`, `reviews`, `scores`, `test_runs`, `versions`,
+  `attempts`, `issues`, `ideas`); agreements (`change_requests`, `departures`,
+  `departure_decisions`, `deferrals`, `overrides`); communication (`messages`,
+  `directives`, `watchdog_findings`, `notifications`); the Driver (`drive_requests`,
+  `drive_findings`, `drive_stops`); the code graph (`graph_gaps`). Read `schema.sql`
+  for the columns.
+- `module_deps` and `file_deps` hold the dependencies a dependent's brief waits on, and
+  `graph_gaps` the searches the code graph did not answer. Columns that hold a gate's
+  state: `briefs.contract` and `briefs.last_read_by_child_at`; `deferrals.kind`,
+  `parties_json`, `arbiter_agent_id`, `open_issues_json`, `issue_ids_json`, and
+  `directive_id`; `drive_requests.map_test_at`.
 - Ledger enum values, such as states, outcomes, and decisions, use snake_case.
 - `agent_events` is append-only, and nothing deletes rows when a run finishes.
-  **(proposed)**
-- Each run records the plugin version and a settings snapshot. **(proposed)**
+- Each run records the plugin version and a settings snapshot.
 
 ## Tools
 
 `mcp/src/swarm_ledger/server.py` registers every tool as a thin wrapper over a `Ledger`
 method. A refused call raises a tool error with the reason. A gate never returns a
 partial success.
+
+Before any tool runs, the server checks the stamped `agent_id`, for every client:
+
+- A swarm session still in state `registered` may call only `brief_ack` and the five
+  tools that take no identity (`ledger_info`, `brief_get`, `who_owns`,
+  `directive_submit`, `events`). Any other tool fails with "you are not bound to the
+  ledger yet: call brief_ack(caller=...)". `pre_ledger` denies the same calls first;
+  see [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md).
+- A live agent may call only its role's tools (`identity.ROLE_TOOLS`).
+- `run_start` and `brief_ack` fail unless a `mod_sessions` row exists for the stamped
+  `agent_id` (for `run_start`, the call's `session_id`): the sentinel-swarm mod never
+  checked in for a session without one, so no hook gates it
+  (`identity.require_mod_session`, called from `pool.run_tool`). See "The mod" in
+  [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md).
 
 | Group | Tools |
 |---|---|
@@ -97,14 +196,21 @@ partial success.
 | Issues | `issue_open`, `issue_list`, `issue_close`, `idea_record`, `issue_escalate` |
 | Agreements | `cr_open`, `cr_accept`, `cr_complete`, `cr_verify`, `cr_list`, `departure_record`, `departure_decide`, `shortfall_record`, `deferral_propose`, `agreement_decide`, `override_grant` |
 | Reporting | `status_tree`, `report_build`, `analytics_query` (one read-only SELECT, Oracle only), `events(target_agent_id, limit)`, `ledger_info` |
-| Driver | `drive_request`, `drive_issue`, `drive_checkin`, `drive_done`, `drive_unavailable` **(proposed)** |
+| Driver | `drive_request`, `drive_issue`, `drive_checkin`, `drive_done`, `drive_unavailable` |
 
 - No tool schema lists `agent_id`. The `pre_ledger` hook stamps it through
   `updatedInput`, and Claude Code 2.1.283 and later delivers a key that the schema does
   not declare. The server's `StampedAgentId` middleware pops `agent_id` from each call's
   arguments before validation and holds it in a context variable for that one request.
   A tool reads it from there, never from its arguments.
-- `caller`, `targeted`, and `finding_ids` carry parameter descriptions in the schema.
+- `caller`, `targeted`, and `finding_ids` carry parameter descriptions in the schema, and
+  so do `contract`, `depends_on`, `parties`, and `directive_id`.
+- Signatures that carry a gate: `module_add(phase_id, name, depends_on)`,
+  `claim_file(path, test_path, for_name, depends_on)`, `brief_create(..., contract)`,
+  `deferral_propose(body, kind, file_id, parties)`, and
+  `agreement_decide(deferral_id, decision, reason, directive_id)`. `brief_get` returns
+  `depends_on_contracts`, and `deferral_propose` with `parties` returns `arbiter` and
+  `next`.
 - `score_record`'s schema lists every rubric key, built from `rubric.DIMENSIONS`:
   `ratings` pairs each dimension with its own criteria, `applicable` requires every
   dimension key, and `targeted` lists the dimension keys. The description no longer
@@ -116,10 +222,10 @@ partial success.
   ledger's own role checks. A role's set holds every tool that the ledger's role checks
   grant the role, and every tool that its template calls.
 - The ledger also refuses a live agent's call to a tool outside its role's set, in
-  `server._call`, with "the <role> role may not call <tool>". An `agent_id` that no live
-  agent holds passes this check. **(proposed)**
+  `pool.run_tool`, with "the <role> role may not call <tool>". An `agent_id` that no live
+  agent holds passes this check.
 - `events` filters on `target_agent_id`, so the filter no longer shares the stamped
-  identity's name. **(proposed)**
+  identity's name.
 - A tool that writes nothing carries the MCP annotation `readOnlyHint: true`, so Claude
   Code runs several of them from one message in parallel: `ledger_info`, `brief_get`,
   `who_owns`, `issue_list`, `cr_list`, `run_status`, `status_tree`, `guidelines_get`,
@@ -158,4 +264,3 @@ partial success.
   `notify.py`, in a background thread, when the settings' `notify` list includes `os`.
   A failure goes to the server log.
   See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md).
-  **(proposed)**
