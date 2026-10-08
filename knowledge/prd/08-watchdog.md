@@ -62,7 +62,7 @@ listing skips one pass.
   instead. The Driver's results are such events: `drive_issue`, `drive_checkin`,
   `drive_done`, and the Driver's own `drive_unavailable` each owe the Oracle a wake-up.
   See "Wake-ups owed" in [05-sessions.md](05-sessions.md).
-- The listener is `python -m swarm_ledger.watch`, run as `hook.py watch`. Every 2
+- The listener is `mcp/launch/ledger.py watch`, run as `hook.py watch`. Every 2
   seconds it prints one line per unnotified watchdog directive, marks it notified, and
   writes `runs.watch_heartbeat_at`. It also prints, once, each `PushNotification` call
   the Oracle owes the user. It exits when the run is not active. The newest

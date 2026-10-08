@@ -77,7 +77,6 @@ out="$root/runs/bench/$(date +%Y%m%d-%H%M%S)${label:+-$label}"
 mkdir -p "$out"
 bench override "${override_args[@]}" --out "$(win "$out/override.json")" > "$out/variant.json"
 
-ledger_venv="$(python "$(win "$root/mcp/ledger_venv.py")")"
 host="$root/runs/hello/host"
 for i in $(seq 1 "$trials"); do
   trial="$out/trial-$i"
@@ -97,8 +96,7 @@ for i in $(seq 1 "$trials"); do
     [ ! -f "$root/runs/hello/$name" ] || cp "$root/runs/hello/$name" "$trial/"
   done
   [ ! -f "$host/.sentinel-swarm/report.md" ] || cp "$host/.sentinel-swarm/report.md" "$trial/"
-  UV_PROJECT_ENVIRONMENT="$ledger_venv" uv run --quiet --project "$(win "$root/mcp")" --frozen \
-    --no-dev python -m swarm_ledger.checklist --json --repo "$(win "$host")" \
+  python -I -S "$(win "$root/mcp/launch/ledger.py")" checklist --json --repo "$(win "$host")" \
     > "$trial/checklist.json" || true
   bench grade --host "$(win "$host")" --acceptance "$(win "$acceptance")" \
     --checklist "$(win "$trial/checklist.json")" --work "$(win "$trial")" \

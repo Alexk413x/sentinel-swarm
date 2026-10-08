@@ -73,7 +73,7 @@
   `edits.upsert_node` with the host graph's explicit path under the ledger's lock, so
   the shared codebase-kg server only ever serves reads.
 - `graph_upsert` runs `edits.upsert_node` in a child process on the base interpreter
-  (`sys._base_executable`, the one the ledger's venv was made from) with `-I -S` and
+  (`sys._base_executable`) with `-I -S` and
   `<codebase-kg>/mcp/src` on `sys.path`, as codebase-kg's own workers run. It needs no
   venv in the plugin cache. It falls back to `uv run --project <codebase-kg>/mcp
   --frozen --no-dev python` when the running Python is older than the floor in

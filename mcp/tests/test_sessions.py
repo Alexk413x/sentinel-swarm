@@ -275,7 +275,7 @@ _PLUGIN_LIST = """Installed plugins:
     Scope: project
     Status: ✔ enabled
 
-  ❯ sentinel-swarm@sentinel-swarm
+  ❯ sentinel-swarm@alexk413x
     Version: 0.1.0
     Scope: project
     Status: {status}

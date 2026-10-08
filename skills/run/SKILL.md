@@ -31,9 +31,8 @@ Run the launcher from the host repo root. It starts the repo's ledger server, th
 starts the Oracle as a background session named `<repo>-oracle-<MMDD-HHMMSS>`:
 
 ```bash
-venv="$(python3 "${CLAUDE_PLUGIN_ROOT}/mcp/ledger_venv.py" || python "${CLAUDE_PLUGIN_ROOT}/mcp/ledger_venv.py")"
-UV_PROJECT_ENVIRONMENT="$venv" uv run --project "${CLAUDE_PLUGIN_ROOT}/mcp" --frozen --no-dev \
-  python -m swarm_ledger.launch --bg "<the PRD text>"
+python="$(command -v py >/dev/null 2>&1 && echo 'py -3' || { command -v python3 >/dev/null 2>&1 && echo python3; } || echo python)"
+$python -I -S "${CLAUDE_PLUGIN_ROOT}/mcp/launch/ledger.py" launch --bg "<the PRD text>"
 ```
 
 When the PRD is long, save it to a file in the repo and pass a prompt that names the
@@ -64,9 +63,8 @@ An ordinary session sends the Oracle a directive with the directive command, fro
 host repo root:
 
 ```bash
-venv="$(python3 "${CLAUDE_PLUGIN_ROOT}/mcp/ledger_venv.py" || python "${CLAUDE_PLUGIN_ROOT}/mcp/ledger_venv.py")"
-UV_PROJECT_ENVIRONMENT="$venv" uv run --project "${CLAUDE_PLUGIN_ROOT}/mcp" --frozen --no-dev \
-  python -m swarm_ledger.directive --source skill --sender "<your name>" "<the directive>"
+python="$(command -v py >/dev/null 2>&1 && echo 'py -3' || { command -v python3 >/dev/null 2>&1 && echo python3; } || echo python)"
+$python -I -S "${CLAUDE_PLUGIN_ROOT}/mcp/launch/ledger.py" directive --source skill --sender "<your name>" "<the directive>"
 ```
 
 Use `--source outside_session` when the text comes from the user outside this skill,

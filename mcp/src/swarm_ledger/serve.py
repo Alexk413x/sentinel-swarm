@@ -20,11 +20,12 @@ from typing import TYPE_CHECKING, Any
 from . import auth, lock, sessions
 from .db import ledger_path
 from .identity import LedgerError
-from .pool import Pool, worker_command
+from .pool import Pool, base_python, worker_command
 
 if TYPE_CHECKING:
     from .settings import Settings
 
+LAUNCHER = Path(__file__).resolve().parents[2] / "launch" / "ledger.py"
 HOST = "127.0.0.1"
 MCP_PATH = "/mcp"
 HEALTH_PATH = "/health"
@@ -77,7 +78,8 @@ def bind_socket(repo_root: Path) -> socket.socket:
             continue
         path = port_path(repo_root)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"{sock.getsockname()[1]}\n", encoding="utf-8", newline="\n")
+        with path.open("w", encoding="utf-8", newline="\n") as out:
+            out.write(f"{sock.getsockname()[1]}\n")
         return sock
     raise OSError(f"cannot bind a port on {HOST}")
 
@@ -98,7 +100,7 @@ def server_url(repo_root: Path) -> str:
     if info is None:
         raise LedgerError(
             f"no ledger server is recorded in {server_info_path(repo_root)}; "
-            "start one with python -m swarm_ledger.serve"
+            "start one with mcp/launch/ledger.py serve --detach"
         )
     return str(info["url"])
 
@@ -136,7 +138,7 @@ def ensure_server(repo_root: Path, timeout: float = START_TIMEOUT_S) -> str:
 
     log_path = records_dir(root) / LOG_FILE
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    command = [sys.executable, "-m", "swarm_ledger.serve", "--repo", str(root)]
+    command = [base_python(), "-I", "-S", str(LAUNCHER), "serve", "--repo", str(root)]
     with log_path.open("ab") as log:
         if sys.platform == "win32":
             # A hidden console, not DETACHED_PROCESS: a process with no console opens a new
@@ -227,7 +229,8 @@ def _remove_if_ours(path: Path) -> None:
 def write_server_info(path: Path, info: dict[str, Any]) -> None:
     text = json.dumps(info)
     temp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    temp.write_text(text, encoding="utf-8", newline="\n")
+    with temp.open("w", encoding="utf-8", newline="\n") as out:
+        out.write(text)
     for _ in range(20):
         try:
             os.replace(temp, path)
@@ -236,7 +239,8 @@ def write_server_info(path: Path, info: dict[str, Any]) -> None:
             # Windows refuses to replace a file that a reader holds open.
             time.sleep(0.05)
     temp.unlink(missing_ok=True)
-    path.write_text(text, encoding="utf-8", newline="\n")
+    with path.open("w", encoding="utf-8", newline="\n") as out:
+        out.write(text)
 
 
 def _shut_down(path: Path, repo_root: Path) -> None:
@@ -351,13 +355,21 @@ def _start_watchdog(root: Path, path: Path, settings: Settings) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m swarm_ledger.serve")
+    parser = argparse.ArgumentParser(prog="ledger.py serve")
     parser.add_argument("--repo", type=Path, default=None, help="the host repo root")
+    parser.add_argument(
+        "--detach",
+        action="store_true",
+        help="start the server in the background, wait until it answers, and print its URL",
+    )
     args = parser.parse_args(argv)
     # Imported here, not at the top: env imports ledger, which imports this module.
     from . import env
 
     root = (args.repo or env.repo_root()).resolve()
+    if args.detach:
+        print(ensure_server(root))
+        return 0
     url = _answering_url(root)
     if url is not None:
         print(url)

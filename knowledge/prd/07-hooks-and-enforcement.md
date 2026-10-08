@@ -52,12 +52,11 @@ it as a command hook. It has these commands:
   the connection is not accepted within 0.25 seconds, no answer comes
   within 10 seconds (40 for `stop` and `session_end`), or the answer is not a 200 that
   carries the repo header. The fallback finds the sentinel-swarm install for this repo in
-  `~/.claude/plugins/installed_plugins.json` (scope `local`, then `project`, each with a
-  matching `projectPath`, then `user`), and runs
-  `uv run --project <installPath>/mcp --frozen --no-dev python -m swarm_ledger.hooks <event>`
-  with stdin and stdout passed through. Both paths print the same bytes.
-- Every `uv run` of the shim sets `UV_PROJECT_ENVIRONMENT` to the ledger's venv in the
-  plugin data folder, keyed by `mcp/uv.lock`. See "The ledger's venv" in
+  `~/.claude/plugins/installed_plugins.json`, from any marketplace (scope `local`, then
+  `project`, each with a matching `projectPath`, then `user`), and runs
+  `<python> -I -S <installPath>/mcp/launch/ledger.py hooks <event>` on the base
+  interpreter that runs the shim, with stdin and stdout passed through. Both paths print
+  the same bytes. See "How the ledger runs" in
   [11-setup-and-settings.md](11-setup-and-settings.md).
 - For `post_activity`, the shim adds `sentinel_swarm_fired_at`, the time the hook
   fired, to the hook input.
@@ -68,10 +67,10 @@ it as a command hook. It has these commands:
   reason to stderr and exits 1. A plugin that names its own relay there shares its
   server through that relay. See "Plugin servers" in
   [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
-- `watch` runs `python -m swarm_ledger.watch` and passes each line through with no
+- `watch` runs `mcp/launch/ledger.py watch` and passes each line through with no
   timeout.
 
-When the server does not answer and then the registry, the install, `uv`, or the
+When the server does not answer and then the registry, the install, Python, or the
 ledger hook fails, or the two paths together run longer than 50 seconds, a gating event (`pre_agent`, `pre_write`, `pre_shell`, `pre_monitor`,
 `pre_send_message`, `pre_skill`, `pre_ledger`) answers `deny` with the reason, and every event adds
 a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.

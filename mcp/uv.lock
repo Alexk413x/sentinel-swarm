@@ -1581,30 +1581,26 @@ wheels = [
 
 [[package]]
 name = "swarm-ledger"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
-dependencies = [
-    { name = "fastmcp" },
-    { name = "pyyaml" },
-]
 
 [package.dev-dependencies]
 dev = [
+    { name = "fastmcp" },
     { name = "pyright" },
     { name = "pytest" },
+    { name = "pyyaml" },
     { name = "ruff" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "fastmcp", specifier = ">=4.0.3,<5" },
-    { name = "pyyaml", specifier = ">=6.0.3" },
-]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "fastmcp", specifier = ">=4.0.3,<5" },
     { name = "pyright", specifier = ">=1.1.400" },
     { name = "pytest", specifier = ">=8,<10" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "ruff", specifier = ">=0.6" },
 ]
 

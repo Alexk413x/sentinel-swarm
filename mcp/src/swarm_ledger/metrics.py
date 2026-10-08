@@ -56,7 +56,7 @@ def _blocks(record: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _ms(value: object) -> int:
-    return int(value) if isinstance(value, int | float) and not isinstance(value, bool) else 0
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
 
 
 def _is_swarm(command: object) -> bool:

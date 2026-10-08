@@ -5,8 +5,9 @@
   repo is required: its front holds the watchdog, `on_run_finish`, and the activity
   clock, and the run lock names its process.
 - The server is a front process and a pool of worker processes. The front is the lean
-  stdlib HTTP server in `http_front.py`; it imports no fastmcp, uvicorn, or Starlette,
-  and its only third-party import is PyYAML, for the settings file. It checks access,
+  stdlib HTTP server in `http_front.py`. The front and the workers import only the
+  standard library and run on Python 3.9 or newer; see "How the ledger runs" in
+  [11-setup-and-settings.md](11-setup-and-settings.md). It checks access,
   takes the stamped `agent_id` out of each call, validates the arguments against the
   tool catalog, and sends the call to a worker. Each worker is a Python process that
   holds its own `Ledger` and SQLite connection and runs one call at a time.
@@ -18,8 +19,8 @@
   at a time under one lock on one connection, and each hook runs in the front on its own
   connection.
 - A worker runs on the base interpreter (`sys._base_executable`) with `-I -S`, with the
-  package source and the venv's `site-packages` on its path, so a Windows venv's
-  launcher process is not started twice. It writes replies on a private copy of stdout
+  package source on its path, so a Windows venv's launcher process is not started
+  twice. It writes replies on a private copy of stdout
   and points its own stdin and stdout elsewhere, so a print or a child process cannot
   corrupt the protocol. A worker that exits or hangs during a call is killed; that one
   call fails with a tool error, and the next call starts a fresh worker. A call has 30
@@ -43,10 +44,12 @@
 - `graph_upsert` holds `.sentinel-swarm/kg.lock`, an exclusive file lock
   (`lock.file_lock`), while codebase-kg writes the code graph, so two workers never
   write it at once.
-- `python -m swarm_ledger.serve [--repo <root>]` binds the port saved in
+- `mcp/launch/ledger.py serve [--repo <root>] [--detach]` binds the port saved in
   `.sentinel-swarm/server.port`, or a free port when that one is taken, and writes
   `.sentinel-swarm/server.json` with `url`, `port`, `pid`, and `started_at`. A second
-  start finds the first one answering, prints its URL, and exits 0. A server counts as
+  start finds the first one answering, prints its URL, and exits 0. `--detach` starts
+  the server as a background process on the base interpreter, waits until it answers,
+  and prints its URL. A server counts as
   answering when `/health` returns the name `swarm-ledger` and this repo's root. The
   saved port lets a resumed session reach the ledger at the URL it started with.
 - `serve.ensure_server(repo_root)` starts the server detached when it does not answer,
@@ -102,7 +105,7 @@
 - The tool catalog: `catalog.json` holds the `tools/list` result exactly as the fastmcp
   registrations in `server.py` list it, plus the argument schema pydantic checks where
   a tool shows a richer one (`ratings`, `applicable`, `targeted`), and the tools that
-  take the stamped `agent_id`. `python -m swarm_ledger.catalog` writes it, and a test
+  take the stamped `agent_id`. `mcp/launch/ledger.py catalog` writes it, and a test
   fails when it differs from `server.py`. Arguments are checked the way pydantic's lax
   mode does: a numeric string or an integral float is an integer, an unknown argument
   is refused, a missing one takes its default. A tool result has the shape fastmcp
@@ -112,7 +115,7 @@
 - `server.py` keeps the fastmcp registrations. The server does not run them; they are
   the catalog's source and the in-process client the tests use, and they call the same
   front code as the lean front.
-- The hook route: `POST /hook/<event>` runs the handler `python -m swarm_ledger.hooks
+- The hook route: `POST /hook/<event>` runs the handler `mcp/launch/ledger.py hooks
   <event>` runs, on the request body, on a worker of the hook pool, and returns exactly
   the bytes that command would print. Each request opens its own `Ledger`, so it reads
   the settings file again, and closes it after the handler. The handler's stderr goes
@@ -126,7 +129,7 @@
   `claude agents --json` counts as no session running.
 - The plugin declares no MCP server of its own, so an ordinary session in a host repo
   starts no ledger process and sees none of the ledger's tool names. An ordinary session
-  steers a live run with `python -m swarm_ledger.directive [--repo <root>] [--source
+  steers a live run with `mcp/launch/ledger.py directive [--repo <root>] [--source
   skill|outside_session|user_chat] [--sender <name>] [--reply-to <id>] "<text>"`, which
   records the directive in the repo's ledger the way `directive_submit` does and prints
   it as JSON. It exits 1 with the ledger's reason when no run is active.
@@ -235,9 +238,7 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
 - `tests_run(scope, target)` is role-bound: `file` to the Coder (its own path or test
   path only), `module` to the Lead, `phase` to the Manager, `full` to the Oracle. It
   runs the profile's test command with `{target}` replaced, or removed for no target,
-  with the ledger's own venv dropped from `PATH`, `VIRTUAL_ENV`, and
-  `UV_PROJECT_ENVIRONMENT`, and a 600-second
-  timeout. It parses pytest and Go output. An agent never reports a test result itself.
+  in the ledger's environment, with a 600-second timeout. It parses pytest and Go output. An agent never reports a test result itself.
 - `tests_run` stores the last 20,000 characters of output in the ledger, and returns a
   summary of at most 4,000: the last 500 characters of a pass, or the first traceback
   from the `FAILURES` section and the `short test summary info` section of a failure.

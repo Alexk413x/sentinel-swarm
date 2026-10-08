@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextvars import ContextVar
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Optional
 
 from fastmcp import FastMCP
 from fastmcp.dependencies import Depends
@@ -70,7 +70,7 @@ Ratings = Annotated[
     ),
 ]
 Applicable = Annotated[
-    dict[str, str | None],
+    dict[str, Optional[str]],
     _schema(
         rubric.applicable_schema(),
         "Every dimension key: null when it applies, or a one-line reason it does not.",

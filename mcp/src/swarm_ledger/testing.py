@@ -5,7 +5,6 @@ import os
 import re
 import shlex
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -181,32 +180,6 @@ def tree_fingerprint(repo_root: Path, claimed: list[str]) -> str | None:
     return digest.hexdigest()
 
 
-def _host_env() -> dict[str, str]:
-    # The ledger runs in its own venv; without this, `python` in the host's test command
-    # resolves to the ledger's interpreter, which has no pytest.
-    env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
-    venvs = _ledger_venvs()
-    if venvs:
-        entries = env.get("PATH", "").split(os.pathsep)
-        env["PATH"] = os.pathsep.join(
-            e
-            for e in entries
-            if not e or not os.path.normcase(os.path.abspath(e)).startswith(venvs)
-        )
-    return env
-
-
-def _ledger_venvs() -> tuple[str, ...]:
-    # A pool worker runs the base interpreter with the venv's site-packages on sys.path, so
-    # sys.prefix alone does not name the venv there.
-    roots = {sys.prefix} if sys.prefix != sys.base_prefix else set()
-    for entry in sys.path:
-        for parent in Path(entry).parents[:3]:
-            if (parent / "pyvenv.cfg").is_file():
-                roots.add(str(parent))
-    return tuple(os.path.normcase(os.path.abspath(root)) for root in roots)
-
-
 def run_tests(
     command_template: str, target: str | None, cwd: Path, timeout_s: int = 600
 ) -> TestResult:
@@ -219,7 +192,6 @@ def run_tests(
             capture_output=True,
             text=True,
             cwd=cwd,
-            env=_host_env(),
             timeout=timeout_s,
         )
     except subprocess.TimeoutExpired as exc:

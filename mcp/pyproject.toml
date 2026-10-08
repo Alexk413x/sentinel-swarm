@@ -1,15 +1,15 @@
 [project]
 name = "swarm-ledger"
-version = "0.1.0"
+version = "0.2.0"
 description = "Per-repo HTTP MCP server for the sentinel-swarm plugin: a SQLite ledger of runs, phases, briefs, file claims, reviews, scores, and agent activity."
 readme = "README.md"
+# The ledger runs on the base interpreter, Python 3.9 or newer, through launch/ledger.py.
+# The dev tools need 3.10.
 requires-python = ">=3.10"
 authors = [{ name = "Alexk413x", email = "alexk413x@gmail.com" }]
-license = { text = "LicenseRef-Proprietary" }
-dependencies = [
-    "fastmcp>=4.0.3,<5",
-    "pyyaml>=6.0.3",
-]
+license = { text = "LicenseRef-No-Resale-1.0" }
+# The ledger imports only the standard library.
+dependencies = []
 
 [build-system]
 requires = ["hatchling>=1.29.0"]
@@ -20,6 +20,10 @@ packages = ["src/swarm_ledger"]
 
 [dependency-groups]
 dev = [
+    # The tool definitions in server.py and the catalog generator.
+    "fastmcp>=4.0.3,<5",
+    # The tests check the frontmatter parser against PyYAML; scripts/host_settings.py writes YAML.
+    "pyyaml>=6.0.3",
     "pytest>=8,<10",
     "pyright>=1.1.400",
     "ruff>=0.6",
@@ -31,15 +35,20 @@ pythonpath = ["src"]
 markers = ["integration: slower tests that call an external tool (deselect with -m 'not integration')"]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "launch", "tests"]
 venvPath = "."
 venv = ".venv"
 pythonVersion = "3.10"
 typeCheckingMode = "standard"
+executionEnvironments = [
+    { root = "src", pythonVersion = "3.9" },
+    { root = "launch", pythonVersion = "3.9" },
+    { root = "tests" },
+]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py39"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

@@ -78,16 +78,6 @@ def test_plugin_manifest_parses(repo_root: Path):
     assert "optionalDependencies" not in data
 
 
-def test_marketplace_manifest_parses(repo_root: Path):
-    data = json.loads(
-        (repo_root / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8")
-    )
-    assert data["name"] == "sentinel-swarm"
-    assert data["plugins"][0]["name"] == "sentinel-swarm"
-    assert data["plugins"][0]["source"] == "."
-    assert "codebase-kg" in data["allowCrossMarketplaceDependenciesOn"]
-
-
 def test_plugin_declares_no_mcp_server(repo_root: Path):
     assert not (repo_root / ".mcp.json").exists()
     manifest = json.loads((repo_root / ".claude-plugin" / "plugin.json").read_text("utf-8"))
@@ -411,6 +401,23 @@ def test_hook_shim_template_exists(repo_root: Path):
         if line.startswith(("import ", "from "))
     }
     assert imported <= set(sys.stdlib_module_names) | {"__future__"}
+
+
+def test_the_ledger_imports_only_the_standard_library(repo_root: Path):
+    package = repo_root / "mcp" / "src" / "swarm_ledger"
+    dev_only = {"server.py": {"fastmcp", "pydantic"}, "catalog.py": {"fastmcp", "pydantic"}}
+    allowed = set(sys.stdlib_module_names) | {"__future__", "swarm_ledger"}
+    for path in [*package.rglob("*.py"), repo_root / "mcp" / "launch" / "ledger.py"]:
+        roots: set[str] = set()
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                roots |= {alias.name.split(".")[0] for alias in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                roots.add(node.module.split(".")[0])
+        extra = roots - allowed - dev_only.get(path.name, set())
+        assert not extra, f"{path} imports {extra}"
+    pyproject = (repo_root / "mcp" / "pyproject.toml").read_text(encoding="utf-8")
+    assert "\ndependencies = []\n" in pyproject
 
 
 def test_nothing_shipped_names_the_removed_channel(repo_root: Path):

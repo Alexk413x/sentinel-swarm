@@ -13,7 +13,7 @@ SOURCES = ("skill", "outside_session", "user_chat")
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="python -m swarm_ledger.directive",
+        prog="ledger.py directive",
         description="Send the live run's Oracle a directive through the ledger.",
     )
     parser.add_argument("--repo", type=Path, default=None, help="host repo root; default: cwd")

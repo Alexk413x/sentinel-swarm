@@ -22,7 +22,7 @@ import urllib.parse
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Optional, cast
 
 from . import __version__, catalog, front
 from .pool import CallError
@@ -55,7 +55,7 @@ MAX_BODY = 8 * 1024 * 1024
 KEEPALIVE_TIMEOUT = 60.0
 HOOK_PREFIX = HOOK_PATH + "/"
 
-Refusal = Callable[[str | None, dict[str, str], str], "str | None"]
+Refusal = Callable[[Optional[str], dict[str, str], str], Optional[str]]
 
 
 def dumps(obj: Any) -> str:
@@ -330,7 +330,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(202, content_type=None)
             return
         request_id = msg["id"]
-        if isinstance(request_id, bool) or not isinstance(request_id, str | int):
+        if isinstance(request_id, bool) or not isinstance(request_id, (str, int)):
             self._rpc_error(None, INVALID_REQUEST, NOT_ONE_MESSAGE)
             return
         if version is None or version in CLASSIC_VERSIONS:

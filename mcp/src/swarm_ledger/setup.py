@@ -181,7 +181,8 @@ def render_default(template: str) -> str:
 
 def _write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8", newline="\n")
+    with path.open("w", encoding="utf-8", newline="\n") as out:
+        out.write(text)
 
 
 def write_role_files(repo: Path, report: SetupReport) -> None:
@@ -367,7 +368,7 @@ def run_setup(repo: Path) -> SetupReport:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m swarm_ledger.setup")
+    parser = argparse.ArgumentParser(prog="ledger.py setup")
     parser.add_argument("--repo", type=Path, default=None, help="host repo root; default: cwd")
     parser.add_argument(
         "--check-trust",

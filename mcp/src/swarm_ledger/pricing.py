@@ -31,7 +31,7 @@ def response_cost(model: str | None, usage: dict) -> float | None:
         write_5m,
         write_1h,
     )
-    return sum((count or 0) * rate for count, rate in zip(counts, rates, strict=True)) / 1e6
+    return sum((count or 0) * rate for count, rate in zip(counts, rates)) / 1e6
 
 
 def estimate(model: str | None, totals: dict) -> float | None:
@@ -45,4 +45,4 @@ def estimate(model: str | None, totals: dict) -> float | None:
         0,
         totals.get("cache_write_tokens"),
     )
-    return sum((count or 0) * rate for count, rate in zip(counts, rates, strict=True)) / 1e6
+    return sum((count or 0) * rate for count, rate in zip(counts, rates)) / 1e6

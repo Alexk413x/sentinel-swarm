@@ -7,8 +7,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-import yaml
-
+from . import frontmatter
 from .auth import ledger_entry
 from .identity import ROLES, LedgerError
 
@@ -233,8 +232,8 @@ def read_agent_file(repo_root: Path, role: str) -> dict[str, Any]:
     if end is None:
         raise LedgerError(f"the role file {path} has an unclosed frontmatter block; {_SETUP_HINT}")
     try:
-        data = yaml.safe_load("\n".join(lines[1:end]))
-    except yaml.YAMLError as exc:
+        data = frontmatter.parse("\n".join(lines[1:end]))
+    except frontmatter.FrontmatterError as exc:
         raise LedgerError(f"the role file {path} has invalid YAML: {exc}; {_SETUP_HINT}") from exc
     if not isinstance(data, dict):
         raise LedgerError(f"the role file {path} frontmatter is not a mapping; {_SETUP_HINT}")

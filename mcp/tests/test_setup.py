@@ -361,7 +361,7 @@ def test_enabled_project_plugins_do_not_join_new_role_files(
                 "enabledPlugins": {
                     "a11y@accessibility-tools": True,
                     "web-driver@web-driver": True,
-                    "sentinel-swarm@sentinel-swarm": True,
+                    "sentinel-swarm@alexk413x": True,
                 }
             }
         ),
@@ -496,7 +496,7 @@ def test_shim_watch_runs_the_listener_and_passes_each_line_through(
 
     assert capfdbinary.readouterr().out.splitlines() == [b"one", b"two"]
     repo = shim.repo_root()
-    assert calls == [(repo, "swarm_ledger.watch", ("--repo", str(repo)))]
+    assert calls == [(repo, "watch", ("--repo", str(repo)))]
 
 
 def test_shim_failure_answer_denies_only_gating_events(shim):
@@ -546,7 +546,7 @@ def test_shim_hook_without_install_names_the_plugin(repo: Path, config_dir: Path
     result = _run_shim(repo, config_dir, "hook", "pre_ledger")
 
     answer = json.loads(result.stdout)
-    assert "sentinel-swarm@sentinel-swarm is not installed for" in answer["systemMessage"]
+    assert "sentinel-swarm is not installed for" in answer["systemMessage"]
 
 
 def test_shim_hook_with_missing_ledger_code_denies(tmp_path: Path, repo: Path, config_dir: Path):
@@ -555,7 +555,7 @@ def test_shim_hook_with_missing_ledger_code_denies(tmp_path: Path, repo: Path, c
     install.mkdir()
     _register(
         config_dir,
-        "sentinel-swarm@sentinel-swarm",
+        "sentinel-swarm@alexk413x",
         [
             {"scope": "project", "projectPath": str(repo), "installPath": str(install)},
         ],
@@ -565,7 +565,7 @@ def test_shim_hook_with_missing_ledger_code_denies(tmp_path: Path, repo: Path, c
 
     answer = json.loads(result.stdout)
     assert answer["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "ledger code is missing" in answer["systemMessage"]
+    assert "ledger launcher" in answer["systemMessage"]
 
 
 def test_shim_mcp_runs_the_expanded_server(tmp_path: Path, repo: Path, config_dir: Path):

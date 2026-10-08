@@ -24,7 +24,7 @@ def read_token(repo_root: Path) -> str:
         token = path.read_text(encoding="utf-8").strip()
     except OSError:
         raise LedgerError(
-            f"no ledger token at {path}; start the ledger with python -m swarm_ledger.serve"
+            f"no ledger token at {path}; start the ledger with mcp/launch/ledger.py serve --detach"
         ) from None
     if not _TOKEN.fullmatch(token):
         raise LedgerError(f"the ledger token in {path} is malformed; delete it and restart")
@@ -56,7 +56,7 @@ def checked_url(url: str) -> str:
     if match is None or not 0 < int(match.group(1)) < 65536:
         raise LedgerError(
             f"the recorded ledger URL {url!r} is not http://127.0.0.1:<port>/mcp; "
-            "restart the ledger with python -m swarm_ledger.serve"
+            "restart the ledger with mcp/launch/ledger.py serve --detach"
         )
     return url
 

@@ -74,7 +74,7 @@ def _integer(value: Any, where: str) -> int:
 def _boolean(value: Any, where: str) -> bool:
     if isinstance(value, bool):
         return value
-    if isinstance(value, int | float) and value in (0, 1):
+    if isinstance(value, (int, float)) and value in (0, 1):
         return bool(value)
     if isinstance(value, str) and value.lower() in _TRUE | _FALSE:
         return value.lower() in _TRUE
@@ -105,7 +105,7 @@ def _check(schema: dict[str, Any], value: Any, where: str) -> Any:
     elif kind == "boolean":
         value = _boolean(value, where)
     elif kind == "number":
-        if isinstance(value, bool) or not isinstance(value, int | float):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"{where}\n  Input should be a valid number")
     elif kind in _TYPES and not isinstance(value, _TYPES[kind]):
         raise ValueError(f"{where}\n  Input should be a valid {_noun(kind)}")
@@ -204,7 +204,7 @@ def _strip(hint: Any, display: type, types: Any, typing: Any) -> Any:
     if origin in (typing.Union, types.UnionType):
         members = typing.get_args(hint)
         stripped = tuple(_strip(m, display, types, typing) for m in members)
-        if all(a is b for a, b in zip(stripped, members, strict=True)):
+        if all(a is b for a, b in zip(stripped, members)):
             return hint
         return typing.Union[stripped]
     return hint
@@ -215,7 +215,8 @@ def dumps(data: dict[str, Any]) -> str:
 
 
 def main() -> int:
-    PATH.write_text(dumps(generate()), encoding="utf-8", newline="\n")
+    with PATH.open("w", encoding="utf-8", newline="\n") as out:
+        out.write(dumps(generate()))
     print(f"wrote {PATH}", file=sys.stderr)
     return 0
 

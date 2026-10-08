@@ -27,9 +27,8 @@ ledger counts as live but are gone.
 Start the Oracle again from the host repo root, with a prompt that says to resume:
 
 ```bash
-venv="$(python3 "${CLAUDE_PLUGIN_ROOT}/mcp/ledger_venv.py" || python "${CLAUDE_PLUGIN_ROOT}/mcp/ledger_venv.py")"
-UV_PROJECT_ENVIRONMENT="$venv" uv run --project "${CLAUDE_PLUGIN_ROOT}/mcp" --frozen --no-dev \
-  python -m swarm_ledger.launch --bg "Resume the sentinel-swarm run in this repo."
+python="$(command -v py >/dev/null 2>&1 && echo 'py -3' || { command -v python3 >/dev/null 2>&1 && echo python3; } || echo python)"
+$python -I -S "${CLAUDE_PLUGIN_ROOT}/mcp/launch/ledger.py" launch --bg "Resume the sentinel-swarm run in this repo."
 ```
 
 The launcher starts the ledger server again when it is not running, before it starts
@@ -43,13 +42,12 @@ When a paused run's Oracle session is still open and the server has exited, star
 server first, then type "continue" in the Oracle's row:
 
 ```bash
-venv="$(python3 "${CLAUDE_PLUGIN_ROOT}/mcp/ledger_venv.py" || python "${CLAUDE_PLUGIN_ROOT}/mcp/ledger_venv.py")"
-UV_PROJECT_ENVIRONMENT="$venv" uv run --project "${CLAUDE_PLUGIN_ROOT}/mcp" --frozen --no-dev python -c \
-  "from pathlib import Path; from swarm_ledger.serve import ensure_server; print(ensure_server(Path('.')))"
+python="$(command -v py >/dev/null 2>&1 && echo 'py -3' || { command -v python3 >/dev/null 2>&1 && echo python3; } || echo python)"
+$python -I -S "${CLAUDE_PLUGIN_ROOT}/mcp/launch/ledger.py" serve --detach
 ```
 
-`ensure_server` starts the server detached when it does not answer, waits until it
-answers, and prints its URL.
+`serve --detach` starts the server in the background when it does not answer, waits until
+it answers, and prints its URL.
 
 For a paused run whose Oracle session is still open, the user can instead type
 "continue" in the Oracle's row in agent view.

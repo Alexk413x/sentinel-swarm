@@ -5,15 +5,20 @@ runs, phases, briefs, file claims, reviews, scores, and agent activity, and it
 holds every gate the swarm's roles pass through.
 
 During a run, one server per host repo listens over HTTP on a free local port.
-`python -m swarm_ledger.serve` starts it and writes its URL to
+`mcp/launch/ledger.py serve` starts it and writes its URL to
 `.sentinel-swarm/server.json`; every role session connects to that URL. The
 server exits after `run_finish`. `ARCHITECTURE.md` maps the modules.
 
+The ledger imports only the standard library and runs on Python 3.9 or newer.
+`launch/ledger.py <module> [args]` puts `src` on `sys.path` and runs
+`swarm_ledger.<module>`; run it with `-I -S` on the base interpreter. No venv ships.
+
 Entry points:
 
-- `python -m swarm_ledger.setup` prepares a host repo.
-- `python -m swarm_ledger.launch` starts the ledger server and the Oracle session.
-- `python -m swarm_ledger.hooks <event>` runs one hook. The host repo's shim,
+- `mcp/launch/ledger.py setup` prepares a host repo.
+- `mcp/launch/ledger.py launch` starts the ledger server and the Oracle session.
+- `mcp/launch/ledger.py serve --detach` starts the ledger server in the background.
+- `mcp/launch/ledger.py hooks <event>` runs one hook. The host repo's shim,
   `.sentinel-swarm/hook.py`, calls it.
 
 ## The ledger database
@@ -42,6 +47,9 @@ write statement), commits on success, and rolls back on any exception.
 call from multiple processes against the same file.
 
 ## Development
+
+The dev environment needs Python 3.10 or newer: `fastmcp` (for `server.py` and the catalog
+generator) and PyYAML (for the frontmatter tests) are dev dependencies.
 
 ```
 uv sync

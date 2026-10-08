@@ -2115,9 +2115,11 @@ class ReviewMixin:
         records_dir = ledger_path(self.repo_root).parent
         records_dir.mkdir(parents=True, exist_ok=True)
         per_run_path = records_dir / f"report-{run_id}.md"
-        per_run_path.write_text(text, encoding="utf-8", newline="\n")
+        with per_run_path.open("w", encoding="utf-8", newline="\n") as out:
+            out.write(text)
         report_path = records_dir / "report.md"
-        report_path.write_text(text, encoding="utf-8", newline="\n")
+        with report_path.open("w", encoding="utf-8", newline="\n") as out:
+            out.write(text)
 
         return {"path": str(report_path), "per_run_path": str(per_run_path), "text": text}
 

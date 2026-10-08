@@ -124,7 +124,7 @@ def graph_upsert(repo_root: Path, nodes: list[dict]) -> dict:
     graph_path = repo_root / "knowledge" / "code_graph.db"
     _check_edges(graph_path, nodes)
     kg_root = codebase_kg_root(repo_root)
-    # The ledger's own venv leaks through VIRTUAL_ENV and makes uv refuse the kg project.
+    # A caller's venv leaks through VIRTUAL_ENV and makes uv refuse the kg project.
     env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
 
     base = runs_on_base(kg_root)
@@ -164,7 +164,7 @@ def _top_level_py_symbols(source: str) -> list[str]:
         return []
     names = []
     for node in tree.body:
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if not node.name.startswith("_"):
                 names.append(node.name)
     return names

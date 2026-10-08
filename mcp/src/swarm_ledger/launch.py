@@ -146,7 +146,7 @@ def launch(repo: Path, prompt: str, mode: Mode, transcript: Path | None = None) 
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m swarm_ledger.launch")
+    parser = argparse.ArgumentParser(prog="ledger.py launch")
     parser.add_argument("--repo", type=Path, default=None, help="host repo root; default: cwd")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--bg", action="store_true", help="start the Oracle as a background session")

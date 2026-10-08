@@ -4,7 +4,7 @@
 plugin's mod. The mod is the only hook transport. Every role runs as its own Claude
 Code session, and the mod runs every hook in the table below inside that session's own
 process. The role files (`.claude/agents/swarm-<role>.md`) carry no `hooks`
-frontmatter, and `python -m swarm_ledger.setup` removes any ledger command hook it
+frontmatter, and `mcp/launch/ledger.py setup` removes any ledger command hook it
 finds in one.
 
 The mod acts only in a session whose `agent_type` is `swarm-<role>` and that has no
@@ -39,7 +39,7 @@ python3 .sentinel-swarm/hook.py hook <event> || python .sentinel-swarm/hook.py h
 
 The shim first posts the hook input to the repo's running ledger server, at
 `POST /hook/<event>` on the port in `.sentinel-swarm/server.json`, and prints the
-answer. The server runs the same handler as `python -m swarm_ledger.hooks <event>`, so
+answer. The server runs the same handler as `mcp/launch/ledger.py hooks <event>`, so
 the answer is byte for byte what the subprocess would print, without starting two
 interpreters.
 
@@ -47,14 +47,10 @@ When there is no `server.json`, the server does not accept the connection within
 0.25 seconds, it does not answer within 10 seconds (40 for `stop` and `session_end`),
 or it answers anything but 200 with the repo header, the shim falls back. It finds the
 sentinel-swarm install for the repo in `~/.claude/plugins/installed_plugins.json`,
-in this order: scope `local`, then `project` with a matching `projectPath`, then
-`user`. It then runs `uv run --project <installPath>/mcp --frozen --no-dev python -m
-swarm_ledger.hooks <event>` and passes stdin and stdout through.
-
-Every `uv run` of the shim sets `UV_PROJECT_ENVIRONMENT` to
-`<config>/plugins/data/sentinel-swarm-sentinel-swarm/venv-<first 12 hex of sha256(mcp/uv.lock)>`,
-where `<config>` is `$CLAUDE_CONFIG_DIR` or `~/.claude`, so the venv lives outside the
-versioned plugin cache. `mcp/ledger_venv.py` prints the same path for the skills.
+from any marketplace, in this order: scope `local`, then `project` with a matching
+`projectPath`, then `user`. It then runs `<python> -I -S <installPath>/mcp/launch/ledger.py
+hooks <event>` on the base interpreter that runs the shim, and passes stdin and stdout
+through. The ledger imports only the standard library, so no venv and no `uv` is involved.
 
 The per-event behavior lives in `mcp/src/swarm_ledger/hooks/events.py`, as functions
 `handle_<event>(ledger, data)` that tests call directly, in-process.
@@ -120,7 +116,7 @@ its hook input carries `agent_type` `swarm-<role>`. A non-swarm caller passes.
 ## When the fallback cannot run a hook
 
 The mod's post failed, the server did not answer the shim, and then the registry is missing, the plugin is not
-installed for the repo, the install's files are missing, `uv` is not on `PATH`, or the
+installed for the repo, the install's launcher is missing, Python cannot start, or the
 ledger hook fails. Or the two paths together run longer than 50 seconds. Then:
 
 - A gating event answers `deny`, with the reason.
@@ -154,8 +150,8 @@ runs it with stdio passed through. The role files use it for codebase-kg.
 
 ## The watchdog listener through the same shim
 
-`hook.py watch` finds the sentinel-swarm install the same way as `hook` and runs `uv
-run --project <installPath>/mcp --frozen --no-dev python -m swarm_ledger.watch`. It
+`hook.py watch` finds the sentinel-swarm install the same way as `hook` and runs
+`<python> -I -S <installPath>/mcp/launch/ledger.py watch`. It
 passes each stdout line through as it arrives and sets no timeout. The Oracle runs it
 as a `Monitor` command, so each line wakes the Oracle. When the install cannot be
 found, it prints one line with the reason and exits 1.

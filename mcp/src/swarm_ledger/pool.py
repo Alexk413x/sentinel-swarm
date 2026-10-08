@@ -19,7 +19,6 @@ import os
 import queue
 import subprocess
 import sys
-import sysconfig
 import threading
 import time
 from datetime import date, datetime
@@ -49,16 +48,8 @@ class CallError(RuntimeError):
 
 
 def worker_command(root: Path, db_path: Path, server_pid: int, settings: str) -> list[str]:
-    # A Windows venv's python.exe is a launcher that starts the base interpreter as a second
-    # process. The worker runs the base interpreter with the venv's packages on its path instead.
-    python = getattr(sys, "_base_executable", None) or sys.executable
-    paths = [str(SRC)]
-    for key in ("purelib", "platlib"):
-        path = sysconfig.get_path(key)
-        if path and path not in paths:
-            paths.append(path)
     return [
-        python,
+        base_python(),
         "-I",
         "-S",
         "-c",
@@ -67,16 +58,22 @@ def worker_command(root: Path, db_path: Path, server_pid: int, settings: str) ->
         str(db_path),
         str(server_pid),
         settings,
-        *paths,
+        str(SRC),
     ]
 
 
+def base_python() -> str:
+    # A Windows venv's python.exe is a launcher that starts the base interpreter as a second
+    # process; the ledger imports only the standard library, so the base interpreter runs it.
+    return getattr(sys, "_base_executable", None) or sys.executable
+
+
 def _jsonable(value: Any) -> Any:
-    if isinstance(value, datetime | date):
+    if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, Path):
         return str(value)
-    if isinstance(value, set | frozenset):
+    if isinstance(value, (set, frozenset)):
         return sorted(value)
     raise TypeError(f"{type(value).__name__} is not JSON serializable")
 

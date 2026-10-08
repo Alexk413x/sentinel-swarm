@@ -83,7 +83,7 @@ def watch(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m swarm_ledger.watch")
+    parser = argparse.ArgumentParser(prog="ledger.py watch")
     parser.add_argument("--repo", type=Path, default=None, help="the host repo root")
     args = parser.parse_args(argv)
     root = (args.repo or env.repo_root()).resolve()

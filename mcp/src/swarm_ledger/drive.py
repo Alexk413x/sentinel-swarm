@@ -79,7 +79,7 @@ def _ping_pong_pairs(
     for i in range(len(fps)):
         for j in range(i + 1, len(fps)):
             a, b = window_set_by_fp[fps[i]], window_set_by_fp[fps[j]]
-            if any(a) and any(b) and all(x != y for x, y in zip(a, b, strict=True)):
+            if any(a) and any(b) and all(x != y for x, y in zip(a, b)):
                 pairs.append((fps[i], fps[j]))
     return pairs
 
@@ -174,7 +174,7 @@ def compute_loop_status(requests: list[dict], findings: list[dict]) -> dict[str,
                 f"{total} attempts in all with no fix for {title} [{fp}], "
                 f"seen in explorations {seen}"
             )
-        for reason, summary in zip(status["reasons"], summaries, strict=True):
+        for reason, summary in zip(status["reasons"], summaries):
             stop(f"finding {fp}: {reason}", summary, "finding", [target(fp)], evidence_lines(fp))
         if status["regressed"]:
             stop(

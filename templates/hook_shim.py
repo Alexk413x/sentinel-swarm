@@ -1,9 +1,8 @@
-# Standard library only: this runs before the plugin's own environment is found.
-# `python -m swarm_ledger.setup` copies it to .sentinel-swarm/hook.py and overwrites local edits.
+# Standard library only: it runs on any Python 3.9+ before it finds the plugin install.
+# `mcp/launch/ledger.py setup` copies it to .sentinel-swarm/hook.py and overwrites local edits.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -17,8 +16,7 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
-PLUGIN_ID = "sentinel-swarm@sentinel-swarm"
-DATA_FOLDER = "sentinel-swarm-sentinel-swarm"
+PLUGIN_NAME = "sentinel-swarm"
 GATING_EVENTS = frozenset(
     {
         "pre_agent",
@@ -66,12 +64,6 @@ def registry_path() -> Path:
     return config_dir() / "plugins" / "installed_plugins.json"
 
 
-def ledger_venv(project: Path) -> Path:
-    # Mirrors mcp/ledger_venv.py: the hooks and the skills must share one venv.
-    digest = hashlib.sha256((project / "uv.lock").read_bytes()).hexdigest()[:12]
-    return config_dir() / "plugins" / "data" / DATA_FOLDER / f"venv-{digest}"
-
-
 def _same_path(raw: object, repo: Path) -> bool:
     if not isinstance(raw, str) or not raw:
         return False
@@ -92,9 +84,12 @@ def find_install(plugin_id: str, repo: Path, registry: Path | None = None) -> Pa
     except (OSError, ValueError) as exc:
         raise ShimError(f"cannot read the plugin registry {registry}: {exc}") from None
     plugins = data.get("plugins") if isinstance(data, dict) else None
-    entries = plugins.get(plugin_id) if isinstance(plugins, dict) else None
-    if not isinstance(entries, list):
-        entries = []
+    entries = []
+    if isinstance(plugins, dict):
+        # A bare name matches the plugin from any marketplace.
+        for key, value in plugins.items():
+            if (key == plugin_id or key.split("@")[0] == plugin_id) and isinstance(value, list):
+                entries.extend(value)
     for scope in SCOPES:
         for entry in entries:
             if not isinstance(entry, dict) or entry.get("scope") != scope:
@@ -159,24 +154,15 @@ def failure_answer(event: str, reason: str) -> dict:
 
 
 def ledger_command(repo: Path, module: str, *args: str) -> tuple[list[str], dict[str, str]]:
-    install = find_install(PLUGIN_ID, repo)
-    project = install / "mcp"
-    if not (project / "pyproject.toml").is_file():
-        raise ShimError(f"the ledger code is missing from {project}")
-    try:
-        venv = ledger_venv(project)
-    except OSError as exc:
-        raise ShimError(f"cannot read the ledger lock file in {project}: {exc}") from None
-    uv = shutil.which("uv")
-    if uv is None:
-        raise ShimError("uv is not on PATH")
+    install = find_install(PLUGIN_NAME, repo)
+    launcher = install / "mcp" / "launch" / "ledger.py"
+    if not launcher.is_file():
+        raise ShimError(f"the ledger launcher {launcher} is missing")
     env = dict(os.environ)
     env.setdefault("CLAUDE_PROJECT_DIR", str(repo))
     env["CLAUDE_PLUGIN_ROOT"] = str(install)
-    env["UV_PROJECT_ENVIRONMENT"] = str(venv)
-    command = [uv, "run", "--project", str(project), "--frozen", "--no-dev"]
-    command += ["python", "-m", module, *args]
-    return command, env
+    python = getattr(sys, "_base_executable", None) or sys.executable
+    return [python, "-I", "-S", str(launcher), module, *args], env
 
 
 def server_port(repo: Path) -> int | None:
@@ -268,7 +254,7 @@ def run_hook(event: str, payload: bytes) -> bytes:
 
 def run_ledger_hook(event: str, payload: bytes, timeout: float = HOOK_TIMEOUT_SECONDS) -> bytes:
     repo = repo_root()
-    command, env = ledger_command(repo, "swarm_ledger.hooks", event)
+    command, env = ledger_command(repo, "hooks", event)
     try:
         done = subprocess.run(
             command,
@@ -283,7 +269,7 @@ def run_ledger_hook(event: str, payload: bytes, timeout: float = HOOK_TIMEOUT_SE
             f"the ledger hook {event} timed out after {HOOK_TIMEOUT_SECONDS} s"
         ) from None
     except OSError as exc:
-        raise ShimError(f"cannot start uv: {exc}") from None
+        raise ShimError(f"cannot start Python: {exc}") from None
     if done.stderr:
         sys.stderr.write(done.stderr.decode("utf-8", errors="replace"))
     if done.returncode != 0:
@@ -355,7 +341,7 @@ def mcp_main(plugin_id: str, server: str) -> int:
 def watch_main() -> int:
     repo = repo_root()
     try:
-        command, env = ledger_command(repo, "swarm_ledger.watch", "--repo", str(repo))
+        command, env = ledger_command(repo, "watch", "--repo", str(repo))
         process = subprocess.Popen(
             command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, env=env, cwd=str(repo)
         )

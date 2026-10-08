@@ -229,7 +229,7 @@ def _line(check: Check) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m swarm_ledger.checklist")
+    parser = argparse.ArgumentParser(prog="ledger.py checklist")
     parser.add_argument("--repo", type=Path, default=None, help="host repo root; default: cwd")
     parser.add_argument(
         "--json", action="store_true", help="print the checks and the run's metrics as JSON"

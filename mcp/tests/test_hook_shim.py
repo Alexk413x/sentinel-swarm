@@ -168,7 +168,7 @@ def test_the_shim_falls_back_when_the_server_is_not_this_repos_ledger(
     assert calls == [("pre_write", b"{}")]
 
 
-def test_a_gating_hook_denies_when_the_server_and_uv_both_fail(
+def test_a_gating_hook_denies_when_the_server_and_the_fallback_both_fail(
     shim: Any, repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     with socket.socket() as sock:
@@ -176,15 +176,17 @@ def test_a_gating_hook_denies_when_the_server_and_uv_both_fail(
         port = sock.getsockname()[1]
     _record_port(repo, port)
 
-    def no_uv(*args: Any) -> None:
-        raise shim.ShimError("uv is not on PATH")
+    def no_fallback(*args: Any) -> None:
+        raise shim.ShimError("the ledger launcher is missing")
 
-    monkeypatch.setattr(shim, "ledger_command", no_uv)
+    monkeypatch.setattr(shim, "ledger_command", no_fallback)
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"{}")))
     assert shim.hook_main("pre_ledger") == 0
     answer = json.loads(capsys.readouterr().out)
     assert answer["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "uv is not on PATH" in answer["hookSpecificOutput"]["permissionDecisionReason"]
+    assert (
+        "the ledger launcher is missing" in answer["hookSpecificOutput"]["permissionDecisionReason"]
+    )
 
 
 def test_only_post_activity_is_stamped_with_the_time_it_fired(

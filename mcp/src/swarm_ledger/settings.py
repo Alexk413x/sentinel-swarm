@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
+from . import frontmatter
 
 ROLES = ("oracle", "manager", "lead", "coder", "driver")
 
@@ -141,14 +141,10 @@ class Settings:
 
 
 def _frontmatter(text: str) -> dict[str, Any]:
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
+    parts = frontmatter.split(text)
+    if parts is None:
         return {}
-    try:
-        end = lines.index("---", 1)
-    except ValueError:
-        return {}
-    loaded = yaml.safe_load("\n".join(lines[1:end]))
+    loaded = frontmatter.parse(parts[0])
     return loaded if isinstance(loaded, dict) else {}
 
 
