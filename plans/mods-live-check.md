@@ -51,7 +51,7 @@ Code 2.1.294. The model was `claude-haiku-5-5` (`--model haiku`). Not yet copied
 | 3 | `additionalContext` from `classic.SessionStart` | PASS | Transcript attachment `hook_additional_context`: `PROBE-CONTEXT: the probe word is heliotrope.`; the model answered `heliotrope`. |
 | 4 | `$.http.fetch` reaches a loopback server | PASS | `GET http://127.0.0.1:47613/health` from probe-a: `status 200`, 5.5 ms. Server log user agent: `Bun/1.4.3`. The real ledger was not running; a stub stood in. |
 | 5 | `$.session.send({ to: { sessionId } })` from a `--bg` session wakes an idle `--bg` session | PASS | Result `{"isDelivered":true}` after 2.9 s. probe-b logged `session.receive` at 16:19:55.016, `turn.start` at 16:20:04.8, and replied `pong`. Its transcript holds the text inside `<cross-session-message ... from-name="probe-a" from-plugin="mod-probe">`. |
-| 5 | Same, to an idle interactive session by session id | FAIL (as tested) | `{"isDelivered":false,"reason":"no live session on this machine has id b1855c99-..."}`. probe-e had no `~/.claude/sessions/<pid>.json` (only a `.key` file) and was missing from `claude agents --json`. |
+| 5 | Same, to an idle interactive session by session id | PASS on retest | The first run failed because the target inherited `CLAUDE_CODE_CHILD_SESSION=1` from the launching session and never registered. With a clean environment, `isDelivered: true` after 2.9 s and the target replied. See "Check 5 retest". |
 | 5 | Same, to that interactive session by name (`to: "probe-e-interactive"`) | PASS | `isDelivered: true` after 3.6 s. probe-e logged `session.receive` (sender `bridge:session_01WD...`), took a turn, and its Stop input shows `last_assistant_message: "pong"`. |
 | 6 | `$.clock.every` keeps firing in an idle `--bg` session for 10 minutes | PASS | probe-b went idle at 16:20:09. Its 30 s ticks ran to the 40-tick cap at 16:34:19 (14 min idle). Its 2 s control timer still ran at 16:38. |
 | 6 | `$.prompt.submit` from that timer starts a turn | PASS | At 16:38, 18 min idle: submit resolved in 9.9 s, `turn.start` logged, the reply was `awake`. Also passed in probe-a (6.4 s). |
@@ -82,7 +82,7 @@ Code 2.1.294. The model was `claude-haiku-5-5` (`--model haiku`). Not yet copied
 | Step | Needs | Verdict |
 |---|---|---|
 | 2. Mod as the hook transport | Checks 1 to 4, 7 | GO. Deny, `.catch` deny, Stop block, `additionalContext`, `updatedInput` and loopback fetch all work in a `--bg --agent --strict-mcp-config` session, from a project-scope install. |
-| 3. Sender's mod pays owed wake-ups with `$.session.send` | Check 5 | GO for `--bg` targets: every member role. NO-GO by session id for an interactive Oracle until a retest in a normal terminal passes; keep `SendMessage` (or send by name) as the Oracle path until then. |
+| 3. Sender's mod pays owed wake-ups with `$.session.send` | Check 5 | GO for `--bg` targets and, after the retest, for an interactive Oracle by session id, once the Oracle has registered. See "Check 5 retest". |
 | 4, recipient form (`session.receive`) | Check 5 | GO. `session.receive` fires in the target before the turn, with the full text and `origin.plugin`. Rewriting `text` was not tested. |
 | 4, timer form (`$.prompt.submit`) | Check 6 | GO. Timers survive 18 minutes idle in `--bg`, and a submit from a timer starts a turn. |
 
@@ -127,3 +127,75 @@ Code 2.1.294. The model was `claude-haiku-5-5` (`--model haiku`). Not yet copied
   host's trust entry from `~/.claude.json`. Claude Code keeps a `mod-probe@inline` usage counter in
   `~/.claude.json`.
 - The scratch files stay in `%TEMP%\claude\mod-probe*` for review.
+
+## Check 5 retest (2026-10-08)
+
+Retest of `$.session.send({ to: { sessionId } })` from a `--bg` session to an idle interactive
+session. Same machine, Claude Code 2.1.294, Haiku, the same `mod-probe` plugin and host.
+
+**Result: PASS.** The first run's failure came from the test setup, not from Claude Code.
+
+### Cause of the first failure
+
+The test started every session from inside a Claude Code session, so each child process inherited
+that session's environment, including `CLAUDE_CODE_CHILD_SESSION=1`, `CLAUDE_CODE_SESSION_ID`,
+`CLAUDE_CODE_MESSAGING_SOCKET` and `CLAUDE_CODE_BRIDGE_SESSION_ID`. In the 2.1.294 binary, the
+registration step that writes `~/.claude/sessions/<pid>.json` returns early when this check is true:
+
+```js
+function QKe(){if(a.CLAUDE_CODE_FORCE_SESSION_PERSISTENCE)return!1;if(!(a.CLAUDE_CODE_CHILD_SESSION&&fp()&&!yc()))return!1;...}
+function Uc(){return PR()==null&&!QKe()}
+async function eU(e,n){if(!Uc())return!1; ... }
+```
+
+An interactive session with `CLAUDE_CODE_CHILD_SESSION` set therefore writes no sessions file (only
+the `.key` file), does not appear in `claude agents --json`, and saves no transcript. A send by id
+finds no live session with that id. A send by name still reached it through Remote Control: the
+first run's receive showed a `bridge:session_...` sender. `--bg` sessions were not affected.
+
+### Runs
+
+| Run | Target | Send | Result |
+|---|---|---|---|
+| A | probe-t-visible `29492cc4`: visible Windows Terminal window, environment inherited from this session | by id, 2.4 s after launch | `isDelivered: false`, "no live session on this machine has id ..." |
+| A | same | by id, 3 min after launch | same failure. After 2 min the target still had only `10564.<hash>.key`, no `.json`, no `claude agents --json` row, and no transcript file. |
+| B | probe-t2-visible `542b8632`: visible window, launch script clears the inherited `CLAUDE*` variables | by id, 4 s after launch (11:05:44.7) | `isDelivered: false`, same reason. The target registered at 11:05:54.6 (`startedAt`) and its sessions file appeared at 11:05:59. |
+| B | same, registered and idle (`status: "idle"`) | by id, 11:06:42 | `isDelivered: true` after 2.9 s |
+| B | same | by name `probe-t2-visible` | `isDelivered: true` after 2.4 s |
+| B | same | by bridge id `session_01LwtQapgKcXhtCyPgArYvEM` (the sessions file's `bridgeSessionId`) | `isDelivered: true` after 2.7 s |
+
+The sender was probe-s `0490bb90` (`--bg --agent swarm-coder`, `--plugin-dir`). The target used the
+same agent, flags and `--plugin-dir`, plus `--session-id` so the id was known before launch.
+
+### Evidence for run B
+
+- Sessions file `26496.json`: `"sessionId":"542b8632-..."`, `"kind":"interactive"`,
+  `"status":"idle"`, `"bridgeSessionId":"session_01LwtQapgKcXhtCyPgArYvEM"`. `claude agents --json`
+  listed the same `sessionId`. The id the sender used matched both.
+- By id: the target logged `session.receive` at 18:06:45.2Z with origin `{"kind":"peer","plugin":"mod-probe"}`
+  and a `<cross-session-message from="uds:\.\pipe\LOCAL\cc-msg-..." from-name="probe-s">` wrapper,
+  then `turn.start` at 18:06:55.7Z. Its model answered with `SendMessage` (`pong4`) and got a reply
+  back from probe-s; the exchange stopped after one round.
+- By name: delivered over the same local pipe (`from="uds:..."`). The target answered `pong5`.
+- By bridge id: delivered through Remote Control (`from="bridge:session_01K7..."`). The target
+  answered `pong6`.
+- The transcript `542b8632-....jsonl` exists and holds all three messages and replies.
+
+### What this means
+
+- Send to an interactive Oracle by its session id. The id in `claude agents --json`, in
+  `~/.claude/sessions/<pid>.json` and from `$.session.id()` is the same value. The bridge
+  `session_...` id also works, but it goes through the cloud.
+- A send before the target registers fails with the same "no live session" reason. Registration took
+  about 14 s from launch to sessions file here. A sender must retry, or wait for the target's row in
+  `claude agents --json`.
+- Any script that starts a Claude session from inside another Claude session must clear the
+  inherited `CLAUDE_CODE_*` session variables, or the child does not register and cannot be reached
+  by id. Check whether `swarm_ledger.launch` and `agent_spawn` do this.
+
+### Spend and cleanup
+
+- Tokens across the two retest transcripts: 28,685 cache-write, 115,863 cache-read, 50 input, 3,110
+  output. About $0.06 at Haiku 4.5 list rates. Target A took no turns.
+- I ran `claude stop` on probe-s and ended both target processes. No session was removed. I removed
+  the host's trust entry from `~/.claude.json` and restored the probe's `control.json`.
