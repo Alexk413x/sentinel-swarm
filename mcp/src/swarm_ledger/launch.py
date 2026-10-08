@@ -47,6 +47,12 @@ def _claude_binary() -> str:
     return claude_binary()
 
 
+def _child_env() -> dict[str, str]:
+    from .sessions import child_env
+
+    return child_env()
+
+
 def _dev_channel_args() -> list[str]:
     from .sessions import dev_channel_args
 
@@ -90,13 +96,15 @@ def _needs_setup(repo: Path) -> bool:
 
 def _run(command: list[str], repo: Path, prompt: str, mode: Mode, transcript: Path | None) -> int:
     if mode != "headless":
-        return subprocess.run(command, cwd=repo).returncode
+        return subprocess.run(command, cwd=repo, env=_child_env()).returncode
     payload = prompt.encode("utf-8")
     if transcript is None:
-        return subprocess.run(command, input=payload, cwd=repo).returncode
+        return subprocess.run(command, input=payload, cwd=repo, env=_child_env()).returncode
     transcript.parent.mkdir(parents=True, exist_ok=True)
     with transcript.open("wb") as out:
-        return subprocess.run(command, input=payload, stdout=out, cwd=repo).returncode
+        return subprocess.run(
+            command, input=payload, stdout=out, cwd=repo, env=_child_env()
+        ).returncode
 
 
 def launch(repo: Path, prompt: str, mode: Mode, transcript: Path | None = None) -> int:

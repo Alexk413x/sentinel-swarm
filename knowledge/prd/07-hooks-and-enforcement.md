@@ -2,12 +2,25 @@
 
 ## Where the hooks live
 
-- Each role's hooks live in the frontmatter of its project agent file,
-  `.claude/agents/swarm-<role>.md`. `hooks/hooks.json` carries no hooks, so no hook
-  runs twice.
+- Each role's ledger hooks run through one of two transports, and never both for one
+  session:
+  - **mod** (the default): the plugin's mod, `hooks/register.ts`, which
+    `hooks/hooks.json` names under `modules`. Setup writes the role files without
+    their ledger command hooks. See "The mod" below.
+  - **command**: the frontmatter of the role's project agent file,
+    `.claude/agents/swarm-<role>.md`, runs each hook through the shim.
+- Setup picks `mod` when `claude --version` is 2.1.294 or later, the first build where
+  a live check ran the mod in `--bg --agent` role sessions, and `command` for an older
+  or unreadable version. The settings file's `hook_transport` overrides the check. See
+  "Setup" in [11-setup-and-settings.md](11-setup-and-settings.md).
+- `hooks/hooks.json` carries no command hooks. The mod stays out of a session whose
+  role file still carries ledger command hooks, and out of every session that is not
+  a swarm role, so no hook runs twice. A Claude Code build without function hooks
+  ignores the `modules` key, and its role files keep the command hooks.
 - Claude Code runs an agent file's frontmatter hooks only in a trusted folder.
-- The hooks are the user's to edit, and a user can weaken a hook gate in their own
-  project. The ledger tools' gates apply whatever the files say. A rerun of setup
+- The command hooks are the user's to edit, and a user can weaken a hook gate in their
+  own project. The mod is plugin code; the user can only disable the plugin, which
+  also stops its setup. The ledger tools' gates apply whatever the files say. A rerun of setup
   restores every ledger hook the template has.
 
 | Event | Matcher | Ledger hook event | Roles |
@@ -68,6 +81,48 @@ ledger hook fails, or the two paths together run longer than 50 seconds, a gatin
 `pre_send_message`, `pre_skill`, `pre_ledger`) answers `deny` with the reason, and every event adds
 a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 
+## The mod
+
+`hooks/register.ts` runs the same ledger hooks as the shim, inside the session's own
+Claude Code process. It posts the same JSON to the same `POST /hook/<event>` route,
+with the token and the repo header, and maps the answer onto the function-hook
+result. A post costs the server's own time plus a few milliseconds; the shim costs
+about 380 to 770 ms more for its process (see [13-platform-facts.md](13-platform-facts.md)).
+
+- **Which sessions.** At `classic.SessionStart` the mod takes a session whose
+  `agent_type` is `swarm-<role>` on the main thread, and only when the role file's
+  frontmatter holds no `hook.py hook` command. It keeps the session id, the
+  transcript path, the folder, and the role in `$.state`, so a reload of the module
+  keeps them. Every hook returns `next(e)` at once in any other session.
+- **Gates.** A `tool.call` hook per gating event (`pre_agent`, `pre_write`,
+  `pre_shell`, `pre_monitor`, `pre_send_message`, `pre_skill` for the Driver,
+  `pre_ledger`) posts the classic `PreToolUse` input, with `agent_id` set to the
+  loop's id for a subagent's call. A `deny` answer becomes `{ deny }`; an
+  `updatedInput` answer rewrites the call's arguments, which is how `pre_ledger`
+  stamps `agent_id`. The mod's own `$.session.send` runs as a `SendMessage` call
+  through these hooks, addressed to the target's `uds:` pipe and not to a session
+  name, so `pre_send_message` would refuse it. The `SendMessage` gate passes a call
+  whose `message` is a wake-up text the mod is sending at that moment: the ledger
+  ran the recipient check when it listed that wake-up.
+- **Fail closed.** When the post fails (no `server.json`, no valid token, no 200 with
+  the repo header, or no answer within 10 s), the mod runs the shim itself, `python3`
+  then `python .sentinel-swarm/hook.py hook <event>`, which tries the server and then
+  `uv run`. When neither answers, a gate denies with "sentinel-swarm cannot check
+  this call: <reason>; run /sentinel-swarm:setup". Each gate also carries a `.catch`
+  that denies when the hook throws or outruns its budget.
+- **Other events.** `classic.SessionStart` adds the answer's `additionalContext`;
+  `classic.Stop` maps `decision: block` to `block`; `classic.PostToolUse` posts
+  `post_any` and waits for it after the tools `post_any` covers, posts `post_activity`
+  without waiting after every other tool, with `sentinel_swarm_fired_at`, and posts
+  `post_shell` for a Coder's shell; `classic.PreCompact` and `classic.SessionEnd`
+  post theirs. A failed post here allows, as a failed shim does. Every payload
+  carries `sentinel_swarm_transport: "mod"`.
+- **Owed wake-ups and the inbox.** The mod posts `owed` and `wake_sent` to pay the
+  session's wake-ups, and `inbox_take`, `inbox_ack`, and `inbox_release` to read the
+  inbox inside a wake-up. See "Mod wake-up delivery" and "Messages" in
+  [05-sessions.md](05-sessions.md).
+- **Tests.** `hooks/register.test.ts` runs under `claude plugin test .`.
+
 ## Rules every ledger hook follows
 
 - A hook blocks by printing a JSON decision and exiting 0. It never uses exit code 2.
@@ -79,7 +134,8 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 
 ## What each hook does
 
-- `session_start`: for a swarm session, records the transcript path and sets an idle
+- `session_start`: records a `mod_sessions` row for the session when the input
+  carries `sentinel_swarm_transport: "mod"`. For a swarm session, it records the transcript path and sets an idle
   agent to working. For a Manager, Lead, Coder, or Driver, it also makes the start
   calls: `brief_ack` when the agent is still `registered`, then `ledger_info`,
   `brief_get`, `guidelines_get`, and, for a Manager or Lead, `run_status`, returned as
@@ -169,6 +225,9 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
   and that owes nothing more is released instead of set idle. After a run finishes, the
   Oracle's stop refreshes the report, then blocks while the Oracle still owes a
   `PushNotification` call.
+- `owed`, `wake_sent`, `inbox_take`, `inbox_ack`, `inbox_release`: posted by the mod
+  only, never by a command hook. See "Mod wake-up delivery" and "Messages" in
+  [05-sessions.md](05-sessions.md). Each ignores a caller the registry does not know.
 - `session_end`: records tokens and cost and the end reason. After a run finishes, the
   Oracle's `session_end` refreshes the report.
 

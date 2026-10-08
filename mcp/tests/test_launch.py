@@ -57,6 +57,19 @@ def _option(command: list[str], flag: str) -> str:
     return command[command.index(flag) + 1]
 
 
+def test_the_oracle_does_not_inherit_the_parent_sessions_variables(env, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_CHILD_SESSION", "1")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("SOME_USER_VAR", "kept")
+
+    launch.main(["--repo", str(env["repo"]), "Build hello.py"])
+
+    child = env["run"].calls[-1]["env"]
+    assert "CLAUDE_CODE_CHILD_SESSION" not in child
+    assert "CLAUDECODE" not in child
+    assert child["SOME_USER_VAR"] == "kept"
+
+
 def test_interactive_puts_the_prompt_first_and_builds_the_flags(env):
     code = launch.main(["--repo", str(env["repo"]), "Build hello.py"])
 

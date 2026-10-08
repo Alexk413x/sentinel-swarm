@@ -249,6 +249,33 @@ def test_run_returns_stdout_and_raises_with_stderr(monkeypatch: pytest.MonkeyPat
         sessions._run(["-c", code])
 
 
+def test_a_started_session_does_not_inherit_the_parent_sessions_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(sessions.CLAUDE_VAR, sys.executable)
+    monkeypatch.setenv("CLAUDE_CODE_CHILD_SESSION", "1")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "parent")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "kept")
+    code = (
+        "import os; print(os.environ.get('CLAUDE_CODE_CHILD_SESSION'), "
+        "os.environ.get('CLAUDE_CODE_SESSION_ID'), os.environ.get('CLAUDE_CODE_USE_BEDROCK'))"
+    )
+    assert sessions._run(["-c", code]).split() == ["None", "None", "kept"]
+
+
+def test_child_env_drops_only_the_parent_session_variables() -> None:
+    base = {"CLAUDECODE": "1", "CLAUDE_CODE_CHILD_SESSION": "1", "PATH": "p", "CLAUDE_X": "y"}
+    assert sessions.child_env(base) == {"PATH": "p", "CLAUDE_X": "y"}
+
+
+def test_claude_version_reads_the_cli_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.undo()
+    monkeypatch.setattr(sessions, "_run", lambda args, cwd=None: "2.1.294 (Claude Code)\n")
+    assert sessions.claude_version() == (2, 1, 294)
+    monkeypatch.setattr(sessions, "_run", lambda args, cwd=None: "unknown")
+    assert sessions.claude_version() is None
+
+
 def test_run_raises_when_the_binary_is_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setenv(sessions.CLAUDE_VAR, str(tmp_path / "no-claude-here"))
     with pytest.raises(LedgerError, match="cannot run"):

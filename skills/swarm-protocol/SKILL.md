@@ -83,9 +83,13 @@ returns a `next` field with the exact call to make:
   recipient's session is running.
 - `agent_resume(...)` when it is not.
 
-The caller makes that call before it ends its turn. The `post_any` hook clears the
-debt when it sees the `SendMessage`, and the `stop` hook blocks a Manager, Lead,
-Coder, or Driver that still owes one. The message only points at the ledger record, for example
+In a session whose hooks run through the sentinel-swarm mod, `next` says the mod wakes
+the agent: the mod sends each owed wake-up itself with `$.session.send` to the target's
+session id, after each ledger call and before the Stop hook runs, and marks it paid
+only when the send is delivered. Otherwise the caller makes that call before it ends
+its turn, and the `post_any` hook clears the debt when it sees the `SendMessage`. The
+`stop` hook blocks a Manager, Lead, Coder, or Driver that still owes one, and names the
+`SendMessage` or `agent_resume` call. The message only points at the ledger record, for example
 "Handoff 1 for hello.py is waiting in the ledger." The detail lives in the ledger.
 
 ## Start calls in the SessionStart hook
@@ -125,7 +129,9 @@ list: a Coder loads `score_record` and `handoff_submit`, and a Driver loads
 | Driver | start calls in the hook → `ToolSearch` → build → boot the device → `map-test` → `map-explore` → `drive_issue` per finding → `drive_checkin` every 30 minutes → `ToolSearch` for `drive_done` → `drive_done` → the `SendMessage` that `next` names |
 
 Every role calls `message_inbox` at the start of each turn after a wake-up or a resume,
-and again while its `remaining` is above 0. A Manager's, Lead's, Coder's, or Driver's
+and again while its `remaining` is above 0. A wake-up that the mod delivers already carries the
+unread messages, marked read, after `message_inbox() returned:`; the role then calls
+`message_inbox` only when that text says more wait. A Manager's, Lead's, Coder's, or Driver's
 Stop hook blocks once while it has unread mail.
 
 `run_start` on a paused run resumes it: the run goes back to active. A paused run

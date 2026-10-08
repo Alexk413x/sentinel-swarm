@@ -1,18 +1,37 @@
 # sentinel-swarm hooks
 
-`hooks.json` carries no hooks. Every role runs as its own Claude Code session, and
-each role's hooks live in the frontmatter of its project agent file,
-`.claude/agents/swarm-<role>.md` in the host repo. `python -m swarm_ledger.setup`
-writes those files from `templates/agents/<role>.md`. A hook in both places would run
-twice, so each hook lives in exactly one place.
+`hooks.json` carries no command hooks. It names one module, `register.ts`: the
+plugin's mod. Every role runs as its own Claude Code session, and its ledger hooks run
+through one of two transports, never both for one session:
 
-Claude Code runs an agent file's frontmatter hooks only in a trusted folder. The
-`setup` skill reports whether the host repo is trusted and prints the one command to
-trust it.
+- **mod** (the default on Claude Code 2.1.294 and later): `register.ts` runs every hook
+  in the table below inside the session's own process and posts to the same server
+  route as the shim. `python -m swarm_ledger.setup` then writes the role files without
+  their ledger command hooks.
+- **command**: the frontmatter of each role's project agent file,
+  `.claude/agents/swarm-<role>.md`, runs the hooks through the shim. Setup writes these
+  from `templates/agents/<role>.md` on an older build, or when the settings file sets
+  `hook_transport: command`.
+
+The mod acts only in a session whose `agent_type` is `swarm-<role>` and whose role file
+holds no `hook.py hook` command, so a session never runs a hook twice and every other
+session in the host repo is left alone. `register.test.ts` holds its tests; run them
+with `claude plugin test .`. See "The mod" in
+`knowledge/prd/07-hooks-and-enforcement.md` for the full contract.
+
+Claude Code runs an agent file's frontmatter hooks, and `claude --bg` starts a role
+session, only in a trusted folder. The `setup` skill reports whether the host repo is
+trusted and prints the one command to trust it.
 
 ## How a hook reaches the ledger
 
-Every hook command has this form, run from the host repo root:
+The mod posts each hook's input to `POST /hook/<event>` itself, with the token and
+the repo header, and falls back to running the shim when the post fails. It also
+posts `owed`, `wake_sent`, `inbox_take`, `inbox_ack`, and `inbox_release`, which no
+command hook posts: it pays the session's owed wake-ups with `$.session.send` and
+reads the inbox into a delivered wake-up.
+
+Under the command transport, every hook command has this form, run from the host repo root:
 
 ```
 python3 .sentinel-swarm/hook.py hook <event> || python .sentinel-swarm/hook.py hook <event>

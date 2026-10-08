@@ -1,6 +1,7 @@
 # Messaging and tooling: fewer mechanisms, mods, MCP or CLI
 
-Status: design accepted by Alex on 2026-10-08 (see "Decisions"). Step 1 is done; steps 0 and 2 to 6 are not built. Written 2026-10-08 on branch
+Status: design accepted by Alex on 2026-10-08 (see "Decisions"). Steps 0 to 4 are done: the
+PRD (05, 07, 11) is the current record of steps 2 to 4. Steps 5 and 6 are not built. Written 2026-10-08 on branch
 `feat/kg-start-end-cli`, against Claude Code 2.1.294. Nothing here is verified live unless a line
 says so. Step 0 below must pass before any build step starts.
 

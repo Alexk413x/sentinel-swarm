@@ -146,3 +146,52 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
 - `claude plugin eval` refuses a plugin folder that holds a hard-linked file, such as a
   uv venv linked from uv's cache. In its runs, a plugin whose `dependencies` are not
   installed loads no skill. (2026-09-28, Claude Code 2.1.284)
+- Claude Code 2.1.294, mods (function hooks) in role sessions, from a throwaway test
+  mod (`plans/mods-live-check.md`): a plugin's module loads in a
+  `claude --bg --agent swarm-coder --strict-mcp-config` session in a trusted folder,
+  from `--plugin-dir` and from a project-scope install. `claude --bg` refuses an
+  untrusted folder; `claude -p --plugin-dir` runs the mod there. (2026-10-08)
+- `classic.SessionStart` carries `agent_type: "swarm-<role>"` in a role session.
+  `session.start` reports `isInteractive: true` and `surface: "terminal"` in a `--bg`
+  session. (2026-10-08)
+- A `tool.call` hook's `{ deny }`, a `.catch` deny when the hook throws, a
+  `classic.Stop` `block`, `classic.SessionStart` `additionalContext`, and an
+  `updatedInput` or `next({ ...e, agent_id })` that adds `agent_id` to an MCP tool's
+  input all work in a `--bg` role session. The engine does not enforce
+  `additionalProperties: false` on a rewritten MCP input. (2026-10-08)
+- `$.http.fetch` reaches a loopback server from a role session; a mod hook's post took
+  6.3 ms median and 26 ms p90 over 50 calls. The shim took 383 ms median, 488 ms p90,
+  and 18.8 MB per call; the `bash -c "python3 ... || python ..."` form 766 ms median.
+  The mod's worker runs inside the session's own process. (2026-10-08)
+- `$.session.send({ to: { sessionId } })` from one `--bg` session wakes an idle `--bg`
+  session: `isDelivered: true` in about 3 s, then the target takes a turn with the text
+  inside `<cross-session-message ... from-name=...>`. The mod's own sends do not raise
+  its `session.send` hook. (2026-10-08)
+- A send by session id to an interactive session is delivered too. A session started
+  with `CLAUDE_CODE_CHILD_SESSION=1` inherited from a parent Claude Code session never
+  registers: it has no `~/.claude/sessions/<pid>.json`, `claude agents --json` does not
+  list it, and a send by its id answers "no live session". A send made before a target
+  registers, 10 to 14 s after it starts, answers the same. The id `claude agents --json`
+  lists, the sessions file's, and `$.session.id()` are the same value. (2026-10-08)
+- `$.clock.every` keeps firing in an idle `--bg` session for at least 18 minutes, and
+  `$.prompt.submit` from a timer starts a turn there. (2026-10-08)
+- `$.session.send` runs as a `SendMessage` tool call through the sending session's own
+  `tool.call` hooks. The call's `to` is the target's `uds:\.\pipe\LOCAL\cc-msg-...`
+  address, not the session id or name, and its `tool_use_id` starts with
+  `toolu_plugin_`. A hook that refuses the call makes the send answer
+  `isDelivered: false` with the refusal as `reason`. (2026-10-08)
+- sentinel-swarm's mod against a real ledger server, Haiku `--bg --agent` sessions
+  from `--plugin-dir`, launched with the inherited `CLAUDE*` variables cleared: the
+  mod's `pre_send_message` denied a `SendMessage` to a name outside the run;
+  `session_start` context reached each session; 0.7 s after a Lead's `message_post`,
+  the mod sent the owed wake-up to the Manager by session id and the ledger marked it
+  sent; the Lead made no `SendMessage` call and its Stop did not block; the Manager
+  woke with the pointer and the elapsed time, its `session.receive` hook appended the
+  unread message after `message_inbox() returned:`, and the ledger marked it read.
+  (2026-10-08)
+- A plugin whose `dependencies` entry is not installed is not loaded, mod included: the
+  debug log says `Plugin not available for MCP: <plugin>@inline - error type:
+  dependency-unsatisfied`. (2026-10-08)
+- `claude --bg` ignores `--session-id`: it prints "--bg manages the session id;
+  ignoring --session-id". `claude --resume <id> --bg "<prompt>"` on a stopped
+  background session started a session under a new session id on 2.1.294. (2026-10-08)

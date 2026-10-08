@@ -58,6 +58,8 @@ _ADDED_COLUMNS = (
     ("deferrals", "issue_ids_json", "TEXT"),
     ("deferrals", "directive_id", "INTEGER"),
     ("drive_requests", "map_test_at", "TEXT"),
+    ("messages", "claim_id", "TEXT"),
+    ("messages", "claimed_at", "TEXT"),
 )
 # Renamed to snake_case; an older ledger may still hold either the code's old
 # spelling or a value directive_submit stored before this alias table existed.
@@ -84,6 +86,7 @@ _ADDED_TABLES = (
     "module_deps",
     "file_deps",
     "graph_gaps",
+    "mod_sessions",
 )
 
 

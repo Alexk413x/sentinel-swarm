@@ -33,6 +33,14 @@ def os_notifications(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     return shown
 
 
+@pytest.fixture(autouse=True)
+def claude_version(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int, int] | None]:
+    # Setup reads `claude --version` to pick the hook transport; no test runs the real CLI.
+    version: list[tuple[int, int, int] | None] = [None]
+    monkeypatch.setattr(sessions, "claude_version", lambda: version[0])
+    return version
+
+
 @pytest.fixture
 def claude_sessions(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
     listing: list[dict] = []

@@ -47,8 +47,5 @@
 
 Each item below is marked **(needs implementation)** in its document.
 
-- **Mod wake-up delivery** ([05-sessions.md](05-sessions.md), "Wake-up delivery"). The
-  sender's mod calling `$.session.send`. Waits on step 0 of
-  `plans/messaging-and-tooling.md`.
 - **The device-queue broker** ([05-sessions.md](05-sessions.md)). Needs a new plan on
   the mod's delivery path.

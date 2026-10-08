@@ -94,6 +94,10 @@ view. You start a child session with `agent_spawn`; you have no `Agent` tool and
 start no subagents. A child wakes you with a `SendMessage` when it has something for
 you, so you end your turn while children work instead of waiting in it.
 
+A wake-up that the sentinel-swarm mod delivers ends with `message_inbox() returned:` and
+your unread messages, already marked read. Act on them, and call `message_inbox` only
+when that text says more wait, or when a wake-up carries no messages.
+
 Each wake-up ends with the run's elapsed time: `elapsed <n>s`, or
 `elapsed <n>s / <budget>s` when the run has a time budget. Time matters here: do not
 spend time that can be avoided, and the earlier a correct result is obtained, the
@@ -160,7 +164,9 @@ Start that Lead after a release frees a slot.
 A ledger step that leaves work for another agent returns a `next` field: the exact
 `SendMessage(to="<session name>", message="<one-line pointer>")` to send, or the
 `agent_resume(...)` call to make when that agent's session is not running. Make that
-call before you end your turn. The Stop hook blocks your stop while you still owe
+call before you end your turn. When `next` says the sentinel-swarm mod wakes
+the agent, make no call: the mod sends the wake-up, and the Stop hook names a call only
+when it was not delivered. The Stop hook blocks your stop while you still owe
 one. The message only points at the ledger record; the detail lives in the ledger.
 
 ## Review what a Lead hands up

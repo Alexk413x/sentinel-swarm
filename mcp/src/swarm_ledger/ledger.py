@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -36,6 +37,12 @@ _ISSUE_OPEN_ROUND = {"manager": 2, "oracle": 3}
 _LIVE_RUN = "state IN ('active', 'paused')"
 MESSAGE_BODY_MAX = 32_000
 INBOX_BODY_BUDGET = 40_000
+INBOX_CLAIM_SECONDS = 120
+_MESSAGE_COLUMNS = "message_id, run_id, from_name, to_name, body, read_at, created_at"
+_UNCLAIMED = (
+    f"(claim_id IS NULL OR claimed_at < strftime('%Y-%m-%dT%H:%M:%fZ','now',"
+    f"'-{INBOX_CLAIM_SECONDS} seconds'))"
+)
 SLUG_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 # A build command that serves or watches reloads on edits, and the Driver must test the build
 # it made at the start of an exploration. profile_set refuses any of these words.
@@ -1546,7 +1553,23 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
         )
 
     def next_step(self, wakeup: dict | None) -> str | None:
-        return None if wakeup is None else self.wake_step(wakeup)
+        if wakeup is None:
+            return None
+        if self.is_mod_session(wakeup["from_agent_id"]):
+            return wake.mod_step(wakeup)
+        return self.wake_step(wakeup)
+
+    def mod_session(self, session_id: str) -> None:
+        with write_tx(self.conn) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO mod_sessions (session_id) VALUES (?)", (session_id,)
+            )
+
+    def is_mod_session(self, session_id: str | None) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM mod_sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        return row is not None
 
     def wake_step(self, wakeup: dict) -> str:
         return wake.route_wakeup(
@@ -1577,6 +1600,20 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                 f"UPDATE wakeups SET sent_at = {_NOW} WHERE from_agent_id = ? "
                 "AND to_session_name = ? AND sent_at IS NULL",
                 (agent_id, to_session_name),
+            )
+        if cur.rowcount:
+            self.release_closed_driver(agent_id)
+        return cur.rowcount
+
+    def wakeups_paid(self, agent_id: str, wakeup_ids: list[int]) -> int:
+        if not wakeup_ids:
+            return 0
+        placeholders = ",".join("?" for _ in wakeup_ids)
+        with write_tx(self.conn) as conn:
+            cur = conn.execute(
+                f"UPDATE wakeups SET sent_at = {_NOW} WHERE from_agent_id = ? "
+                f"AND sent_at IS NULL AND wakeup_id IN ({placeholders})",
+                (agent_id, *wakeup_ids),
             )
         if cur.rowcount:
             self.release_closed_driver(agent_id)
@@ -1753,39 +1790,80 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
             ),
         ).fetchall()
 
+    @staticmethod
+    def _inbox_batch(
+        conn: sqlite3.Connection, run_id: int | None, name: str
+    ) -> tuple[list[int], int]:
+        rows = conn.execute(
+            "SELECT message_id, LENGTH(body) AS size FROM messages "
+            f"WHERE run_id = ? AND to_name = ? AND read_at IS NULL AND {_UNCLAIMED} "
+            "ORDER BY message_id",
+            (run_id, name),
+        ).fetchall()
+        ids: list[int] = []
+        used = 0
+        for row in rows:
+            # The first message always goes out, so one that the ledger wrote over the
+            # budget cannot block the inbox.
+            if ids and used + row["size"] > INBOX_BODY_BUDGET:
+                break
+            ids.append(row["message_id"])
+            used += row["size"]
+        return ids, len(rows) - len(ids)
+
+    @staticmethod
+    def _messages(conn: sqlite3.Connection, ids: list[int]) -> list[dict]:
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        return _rows(
+            conn.execute(
+                f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE message_id IN ({placeholders}) "
+                "ORDER BY message_id",
+                ids,
+            )
+        )
+
     def message_inbox(self, caller: str, agent_id: str) -> dict:
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
-            rows = conn.execute(
-                "SELECT message_id, LENGTH(body) AS size FROM messages "
-                "WHERE run_id = ? AND to_name = ? AND read_at IS NULL ORDER BY message_id",
-                (c.run_id, c.name),
-            ).fetchall()
-            ids: list[int] = []
-            used = 0
-            for row in rows:
-                # The first message always goes out, so one that the ledger wrote over the
-                # budget cannot block the inbox.
-                if ids and used + row["size"] > INBOX_BODY_BUDGET:
-                    break
-                ids.append(row["message_id"])
-                used += row["size"]
+            ids, remaining = self._inbox_batch(conn, c.run_id, c.name)
             if ids:
                 placeholders = ",".join("?" for _ in ids)
                 conn.execute(
                     f"UPDATE messages SET read_at = {_NOW} WHERE message_id IN ({placeholders})",
                     ids,
                 )
-            messages = [
-                dict(
-                    conn.execute(
-                        "SELECT * FROM messages WHERE message_id = ?", (message_id,)
-                    ).fetchone()
-                )
-                for message_id in ids
-            ]
+            messages = self._messages(conn, ids)
 
-        return {"messages": messages, "remaining": len(rows) - len(ids)}
+        return {"messages": messages, "remaining": remaining}
+
+    def inbox_take(self, c: Caller) -> dict:
+        with write_tx(self.conn) as conn:
+            ids, remaining = self._inbox_batch(conn, c.run_id, c.name)
+            if not ids:
+                return {"claim": None, "messages": [], "remaining": remaining}
+            claim = secrets.token_hex(8)
+            placeholders = ",".join("?" for _ in ids)
+            conn.execute(
+                f"UPDATE messages SET claim_id = ?, claimed_at = {_NOW} "
+                f"WHERE message_id IN ({placeholders})",
+                (claim, *ids),
+            )
+            messages = self._messages(conn, ids)
+        for message in messages:
+            del message["read_at"]
+        return {"claim": claim, "messages": messages, "remaining": remaining}
+
+    def inbox_settle(self, c: Caller, claim: str, *, read: bool) -> int:
+        with write_tx(self.conn) as conn:
+            change = f"read_at = {_NOW}" if read else "claim_id = NULL, claimed_at = NULL"
+            cur = conn.execute(
+                f"UPDATE messages SET {change} WHERE claim_id = ? AND run_id = ? "
+                "AND to_name = ? AND read_at IS NULL",
+                (claim, c.run_id, c.name),
+            )
+        return cur.rowcount
 
     # -- Directives -------------------------------------------------------------
 
