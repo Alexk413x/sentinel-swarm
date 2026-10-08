@@ -843,6 +843,41 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
         effort: str | None = None,
         contract: str | None = None,
     ) -> dict:
+        if child_role == "driver":
+            raise LedgerError(
+                "a Driver starts only through drive_request(focus), which opens the "
+                "exploration its findings belong to"
+            )
+        return self._write_brief(
+            caller,
+            agent_id,
+            child_name,
+            child_role,
+            model,
+            body,
+            phase_id,
+            module_id,
+            file_id,
+            finding_ids,
+            effort,
+            contract,
+        )
+
+    def _write_brief(
+        self,
+        caller: str,
+        agent_id: str,
+        child_name: str,
+        child_role: str,
+        model: str,
+        body: str,
+        phase_id: int | None = None,
+        module_id: int | None = None,
+        file_id: int | None = None,
+        finding_ids: list[int] | None = None,
+        effort: str | None = None,
+        contract: str | None = None,
+    ) -> dict:
         if effort is not None and effort not in EFFORT_LEVELS:
             raise LedgerError(f"unknown effort {effort!r}; use one of {list(EFFORT_LEVELS)}")
         with write_tx(self.conn) as conn:
@@ -880,6 +915,8 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
                 finding_ids = self._inherited_finding_ids(conn, c.agent_id)
             if c.run_id is not None:
                 self._block_fix_for_stops(conn, c.run_id, finding_ids)
+                if child_role == "coder":
+                    self._require_fix_claim(conn, c.run_id, file_id, finding_ids)
 
             cur = conn.execute(
                 "INSERT INTO briefs "
@@ -1040,7 +1077,9 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
         if row is None:
             raise LedgerError(f"no brief found for {child_name!r}")
         brief = dict(row)
-        brief["findings"] = findings_named(self.conn, json.loads(brief["finding_ids_json"] or "[]"))
+        brief["findings"] = findings_named(
+            self.conn, json.loads(brief["finding_ids_json"] or "[]"), evidence=True
+        )
         brief["depends_on_contracts"] = [
             {"id": dep["id"], "name": dep["label"], "contract": dep["contract"]}
             for dep in self._dependencies(
@@ -1914,12 +1953,15 @@ class Ledger(AgreementsMixin, ReviewMixin, RepoMixin, OversightMixin, DriveMixin
             ).fetchone()
         )
 
-    def override_consume(self, rule: str, agent_name: str, target: str) -> bool:
+    def override_consume(self, run_id: int | None, rule: str, agent_name: str, target: str) -> bool:
+        if run_id is None:
+            return False
         with write_tx(self.conn) as conn:
             row = conn.execute(
-                "SELECT override_id FROM overrides WHERE rule = ? AND target_agent_name = ? "
-                "AND target = ? AND used_at IS NULL ORDER BY created_at ASC LIMIT 1",
-                (rule, agent_name, target),
+                "SELECT override_id FROM overrides WHERE run_id = ? AND rule = ? "
+                "AND target_agent_name = ? AND target = ? AND used_at IS NULL "
+                "ORDER BY created_at ASC LIMIT 1",
+                (run_id, rule, agent_name, target),
             ).fetchone()
             if row is None:
                 return False

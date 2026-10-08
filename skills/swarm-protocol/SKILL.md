@@ -291,7 +291,8 @@ on a regression.
 Every role queries the codebase-kg code graph first. Grep and Glob are the fallback
 for when the graph does not have the answer or returns the wrong thing. The ledger
 records each Grep and Glob a role runs as a graph gap, and the report lists them. Only the
-Coder writes to the graph, and only through the ledger's `graph_upsert`.
+Coder and the Lead write to the graph, and only through the ledger's `graph_upsert`: a
+Coder for nodes on its own file, a Lead for nodes that span files of its module.
 
 ## Steering a live run from an ordinary session
 

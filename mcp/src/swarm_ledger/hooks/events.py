@@ -203,7 +203,7 @@ def handle_pre_write(ledger: Ledger, data: dict) -> dict | None:
     target = rel if rel is not None else raw_path
 
     def _deny_or_override(reason: str) -> dict | None:
-        if ledger.override_consume("write", caller["name"], target):
+        if ledger.override_consume(caller["run_id"], "write", caller["name"], target):
             return None
         return _deny(reason)
 
@@ -272,7 +272,7 @@ def handle_pre_shell(ledger: Ledger, data: dict) -> dict | None:
     command = str((data.get("tool_input") or {}).get("command") or "")
 
     def _deny_or_override(reason: str) -> dict | None:
-        if ledger.override_consume("shell", caller["name"], command):
+        if ledger.override_consume(caller["run_id"], "shell", caller["name"], command):
             return None
         return _deny(reason)
 

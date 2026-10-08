@@ -116,6 +116,7 @@ ROLE_TOOLS: dict[str, frozenset[str]] = {
             "issue_list",
             "issue_close",
             "tests_run",
+            "graph_upsert",
             "score_record",
             "review_compare",
             "approve",

@@ -4,7 +4,7 @@ description: Runs only inside a sentinel-swarm run. A Manager starts one Lead se
 model: sonnet
 color: purple
 permissionMode: default
-tools: Read, Grep, Glob, ToolSearch, SendMessage, WebSearch, WebFetch, mcp__swarm-ledger__run_status, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__brief_create, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__brief_ack, mcp__swarm-ledger__agent_release, mcp__swarm-ledger__agent_spawn, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__claim_file, mcp__swarm-ledger__release_file, mcp__swarm-ledger__message_post, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__issue_list, mcp__swarm-ledger__issue_close, mcp__swarm-ledger__tests_run, mcp__swarm-ledger__score_record, mcp__swarm-ledger__review_compare, mcp__swarm-ledger__approve, mcp__swarm-ledger__return_work, mcp__swarm-ledger__attempt_record, mcp__swarm-ledger__accept_incomplete, mcp__swarm-ledger__deferral_propose, mcp__swarm-ledger__agreement_decide, mcp__swarm-ledger__cr_open, mcp__swarm-ledger__cr_accept, mcp__swarm-ledger__cr_complete, mcp__swarm-ledger__cr_verify, mcp__swarm-ledger__cr_list, mcp__swarm-ledger__departure_record, mcp__swarm-ledger__departure_decide, mcp__swarm-ledger__shortfall_record, mcp__swarm-ledger__status_tree, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__test_run_get, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference
+tools: Read, Grep, Glob, ToolSearch, SendMessage, WebSearch, WebFetch, mcp__swarm-ledger__run_status, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__brief_create, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__brief_ack, mcp__swarm-ledger__agent_release, mcp__swarm-ledger__agent_spawn, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__claim_file, mcp__swarm-ledger__release_file, mcp__swarm-ledger__message_post, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__issue_list, mcp__swarm-ledger__issue_close, mcp__swarm-ledger__tests_run, mcp__swarm-ledger__graph_upsert, mcp__swarm-ledger__score_record, mcp__swarm-ledger__review_compare, mcp__swarm-ledger__approve, mcp__swarm-ledger__return_work, mcp__swarm-ledger__attempt_record, mcp__swarm-ledger__accept_incomplete, mcp__swarm-ledger__deferral_propose, mcp__swarm-ledger__agreement_decide, mcp__swarm-ledger__cr_open, mcp__swarm-ledger__cr_accept, mcp__swarm-ledger__cr_complete, mcp__swarm-ledger__cr_verify, mcp__swarm-ledger__cr_list, mcp__swarm-ledger__departure_record, mcp__swarm-ledger__departure_decide, mcp__swarm-ledger__shortfall_record, mcp__swarm-ledger__status_tree, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__test_run_get, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference
 mcpServers:
   - codebase-kg:
       command: python
@@ -107,6 +107,9 @@ you, so you end your turn while children work instead of waiting in it.
    call succeeds.
 4. `guidelines_get()` and `run_status()`.
 5. `message_inbox()`.
+6. Search the code graph at the file level: `kg_search` and `kg_find_by_path` for the
+   files of your module and the helpers that already exist, so each task names a file
+   and reuses what is there.
 
 ## Plan the module
 
@@ -308,6 +311,11 @@ child_name=<coder>)`, and review against that record.
 Query the code graph first with the codebase-kg tools whenever you look for code in
 the host repo. Use Grep or Glob only when the graph does not have what you need, or
 returns the wrong thing. The ledger records each such search as a graph gap.
+
+A node that anchors on several files of your module is yours to write: a Coder's
+`graph_upsert` refuses any anchor outside its own file. Once the Coders of those files
+have handed up, call `graph_upsert(nodes=[...])` with the node shape the Coder uses.
+The ledger refuses an anchor outside your module's files.
 
 ## Records
 

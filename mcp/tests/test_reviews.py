@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from swarm_ledger import sessions
-from swarm_ledger.db import connect, write_tx
+from swarm_ledger.db import write_tx
 from swarm_ledger.identity import LedgerError
 from swarm_ledger.ledger import Ledger
 from swarm_ledger.rubric import DIMENSIONS
@@ -226,39 +226,9 @@ def _review_scores() -> list[dict]:
     ]
 
 
-# -- schema migration ---------------------------------------------------------------------
-
-
 def _untimed(text: str) -> str:
     assert re.search(r" elapsed \d+s(?: / \d+s)?", text), text
     return re.sub(r" elapsed \d+s(?: / \d+s)?", "", text)
-
-
-def test_connect_adds_the_floor_pass_column_to_an_older_handoffs_table(tmp_path: Path) -> None:
-    db_path = tmp_path / "ledger.db"
-    old = sqlite3.connect(str(db_path))
-    old.executescript(
-        "CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
-        "version INTEGER NOT NULL);"
-        "INSERT INTO schema_version (id, version) VALUES (1, 1);"
-        "CREATE TABLE files (file_id INTEGER PRIMARY KEY, path TEXT, released_at TEXT);"
-        "CREATE TABLE handoffs (handoff_id INTEGER PRIMARY KEY, file_id INTEGER NOT NULL, "
-        "state TEXT NOT NULL);"
-        "INSERT INTO files (file_id, path) VALUES (1, 'pkg/good.py');"
-        "INSERT INTO handoffs (handoff_id, file_id, state) VALUES (1, 1, 'approved');"
-    )
-    old.close()
-
-    conn = connect(db_path)
-    try:
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(handoffs)")}
-        assert "floor_pass_json" in columns
-        row = conn.execute("SELECT * FROM handoffs WHERE handoff_id = 1").fetchone()
-        assert (row["state"], row["floor_pass_json"]) == ("approved", None)
-    finally:
-        conn.close()
-
-    connect(db_path).close()
 
 
 # -- item 1: floor pass -----------------------------------------------------------------------

@@ -41,8 +41,10 @@ claude "You are <name>. Read your brief from the swarm ledger and follow it." --
   See "Wake-up delivery" below.
 - The Oracle starts a Driver with `drive_request(focus)` instead of `brief_create` and
   `agent_spawn`: the tool performs both steps itself, under the child name
-  `driver-e<ordinal>`, and returns the loop's status alongside the spawned agent. See
-  "Explorations" in [02-run-lifecycle.md](02-run-lifecycle.md).
+  `driver-e<ordinal>`, and returns the loop's status alongside the spawned agent. It is
+  the only path that starts a Driver: `brief_create` refuses `child_role="driver"`, so
+  every Driver has the request row its findings need. See "Explorations" in
+  [02-run-lifecycle.md](02-run-lifecycle.md).
 
 ## Identity
 

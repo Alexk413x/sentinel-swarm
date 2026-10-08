@@ -505,6 +505,10 @@ Checked against the code on 2026-10-08. None of these checks exist today.
 
 ### Step 2c. Build the items marked (needs implementation)
 
+Items 2, 3, 4, 6 and 7 built on 2026-10-08, with their tests in `mcp/tests/test_spec_items.py`;
+not run live yet. Item 2's re-claim gate compares the file's `claimed_at` with each finding's
+`created_at`, so a Coder brief needs a claim made after every finding it fixes.
+
 Each item is listed in `knowledge/prd/16-open-items.md`. Remove its mark from the PRD when it
 ships, and delete its line from `16-open-items.md`.
 

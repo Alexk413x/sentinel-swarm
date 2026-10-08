@@ -115,8 +115,9 @@ instead of waiting in it.
    succeeds.
 4. `guidelines_get()`. `who_owns(path)` when you need to confirm which paths are
    yours; your Lead claimed them before it briefed you.
-5. `kg_search` for code that already does this, before you write anything. Reuse what
-   exists instead of adding a second copy.
+5. Search the code graph at the symbol level: `kg_search` for functions and classes
+   that already do this, before you write anything. Reuse what exists instead of adding
+   a second copy.
 6. Write the test file first, then the source file. Cover the happy path, the known
    edge cases such as API and I/O errors, and error handling that catches the
    specific error types plus a catch-all.

@@ -112,7 +112,8 @@ and you end your turn when your own exploration ends and that last wake-up is se
    conclude that the ledger is missing before this call returns. Load any other tool the
    same way when you first need it.
 2. `brief_get(caller_name=<your name>, child_name=<your name>)`. The brief carries your
-   `request_id` and the Oracle's focus list.
+   `request_id` and the Oracle's focus list. You search the code graph at the screen
+   level: only to name the module or file behind a screen in a finding.
 3. `brief_ack(caller=<your name>)`. Nothing else in the ledger works before this call
    succeeds.
 4. `guidelines_get()` for the architecture, the stack, and the build and device

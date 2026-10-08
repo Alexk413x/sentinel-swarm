@@ -418,15 +418,32 @@ class ReviewMixin:
 
     def graph_upsert(self, caller: str, agent_id: str, nodes: list[dict]) -> dict:
         c = resolve(self.conn, caller, agent_id)
-        require_role(c, "coder")
-        if c.file_id is None:
-            raise LedgerError(f"{caller!r} has no claimed file")
-        file_row = self.conn.execute(
-            "SELECT * FROM files WHERE file_id = ?", (c.file_id,)
-        ).fetchone()
-        if file_row is None:
-            raise LedgerError(f"{caller!r} has no claimed file")
-        allowed_paths = {file_row["path"], file_row["test_path"]}
+        require_role(c, "coder", "lead")
+        if c.role == "lead":
+            allowed_paths = {
+                p
+                for row in self.conn.execute(
+                    "SELECT path, test_path FROM files WHERE module_id = ? "
+                    "AND state NOT IN ('released', 'superseded')",
+                    (c.module_id,),
+                )
+                for p in (row["path"], row["test_path"])
+                if p
+            }
+            refusal = "a Lead updates only nodes that anchor on its own module's files"
+        else:
+            if c.file_id is None:
+                raise LedgerError(f"{caller!r} has no claimed file")
+            file_row = self.conn.execute(
+                "SELECT * FROM files WHERE file_id = ?", (c.file_id,)
+            ).fetchone()
+            if file_row is None:
+                raise LedgerError(f"{caller!r} has no claimed file")
+            allowed_paths = {file_row["path"], file_row["test_path"]}
+            refusal = (
+                "a Coder updates only the nodes that anchor on its own file; ask your Lead "
+                "to update a node that spans files"
+            )
 
         for node in nodes:
             for anchor in node.get("anchors") or []:
@@ -437,7 +454,7 @@ class ReviewMixin:
                 else:
                     raise LedgerError(f"anchor {anchor!r} must be a string or an object")
                 if anchor_path not in allowed_paths:
-                    raise LedgerError("a Coder updates only the nodes that anchor on its own file")
+                    raise LedgerError(refusal)
 
         result = graph.graph_upsert(self.repo_root, nodes)
 

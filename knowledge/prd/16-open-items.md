@@ -48,9 +48,6 @@
     setting can allowlist a plugin. The retest repeats the 2026-09-25 probe and checks
     the debug log for `Channel notifications skipped`. See the channel facts in
     [13-platform-facts.md](13-platform-facts.md).
-- **Overrides across runs.** `override_consume` matches the rule, the agent name, and
-  the target, but not the run. An unused override from an earlier run can be used up
-  by an agent with the same name in a later run.
 - **`pre_skill`, live.** Built and unit-tested from the hooks reference and the `Skill`
   tool's input schema. No live Driver session has shown a `PreToolUse` hook firing on
   `Skill` with the skill name in `tool_input.skill`.
@@ -63,23 +60,10 @@
   live agent of its run that is not working, because its Stop hook names such agents.
   The text of that `SendMessage` is not checked, so it can carry direction past a
   Manager.
-- **A Driver outside `drive_request`.** `brief_create` accepts `child_role="driver"`
-  from the Oracle, and `agent_spawn` then starts that Driver. It has no request row, so
-  `drive_issue` refuses its findings. Only `drive_request` should start a Driver.
 
 ## Needs implementation
 
 Each item below is marked **(needs implementation)** in its document.
 
-- **A fix Coder's brief** ([02-run-lifecycle.md](02-run-lifecycle.md)). The brief body
-  does not carry the finding's evidence, and the fix does not re-claim the file.
-- **Narrow overrides** ([04-agreements.md](04-agreements.md)). `override_consume` does
-  not match the run. See "Overrides across runs" above.
 - **The device-queue broker** ([05-sessions.md](05-sessions.md)). The event `kind` and
   the `ping` on `swarm-events` are built; the broker is not.
-- **Graph search at each role's level**
-  ([09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md)). The role
-  templates do not say which level each role searches at.
-- **Multi-file graph nodes through the Lead**
-  ([09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md)). `graph_upsert`
-  refuses any anchor outside the Coder's own file, and the Lead has no graph write tool.

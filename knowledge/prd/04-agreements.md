@@ -119,9 +119,10 @@ The responsible level:
 
 - `override_grant(rule, target_agent_name, target, reason)` is the Oracle's alone. The
   `pre_ledger` hook denies it to any other caller.
-- An override is narrow: one rule, one agent, one target, one use. The ledger
-  consumes it on first use. **(needs implementation: `override_consume` does not match
-  the run)**
+- An override is narrow: one run, one rule, one agent, one target, one use. The
+  ledger consumes it on first use. `override_consume` matches the caller's run, so an
+  unused override from an earlier run never applies to an agent of the same name in a
+  later one.
 - Two rules take overrides: `write` (the target is the repo-relative path, or the path
   as given for a file outside the repo) in the write gate, and `shell` (the target is
   the exact command) in the shell gate. `override_grant` accepts any rule name; a grant

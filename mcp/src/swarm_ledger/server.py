@@ -411,7 +411,8 @@ def brief_create(
     A Manager brief needs an unlocked phase_id of the run; a Lead brief a module_id of the
     caller's phase; a Coder brief the file_id claimed for child_name. A refusal for missing
     `finding_ids` lists the open ids and titles. Refuses an unknown finding, one that hit a
-    stop rule, or one whose area has an open pattern stop directive."""
+    stop rule, or one whose area has an open pattern stop directive. Refuses a Driver: only
+    drive_request starts one."""
     return _call(
         _ledger().brief_create,
         caller=caller,
@@ -432,8 +433,9 @@ def brief_create(
 @mcp.tool(annotations=_READ_ONLY)
 def brief_get(caller_name: CallerName, child_name: str) -> dict[str, Any]:
     """Returns the latest brief for a child name; a new agent calls it before it has an agent_id.
-    `findings` lists the id, fingerprint, title, severity, and area of each finding it fixes;
-    `depends_on_contracts` the contract of each file or module it depends on."""
+    `findings` lists the id, fingerprint, title, severity, area, steps, expected and actual
+    result, and evidence paths of each finding it fixes; `depends_on_contracts` the contract
+    of each file or module it depends on."""
     return _call(_ledger().brief_get, caller_name=caller_name, child_name=child_name)
 
 
@@ -752,7 +754,8 @@ def test_run_get(
 def graph_upsert(
     caller: CallerName, nodes: list[dict[str, Any]], agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
-    """Upserts code graph nodes anchored on the caller's own claimed file; a Coder calls this."""
+    """Upserts code graph nodes. A Coder's nodes anchor only on its own claimed file; a Lead's
+    may span the files of its module."""
     return _call(_ledger().graph_upsert, caller=caller, agent_id=agent_id, nodes=nodes)
 
 

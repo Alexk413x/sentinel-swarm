@@ -372,3 +372,46 @@ def test_versions_match(repo_root: Path):
     plugin = json.loads((repo_root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
     assert _pyproject_version(repo_root) == __version__
     assert plugin["version"] == __version__
+
+
+def test_user_config_test_command_schema(repo_root: Path) -> None:
+    data = json.loads((repo_root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    option = data["userConfig"]["test_command"]
+    allowed = {
+        "type",
+        "title",
+        "description",
+        "required",
+        "default",
+        "options",
+        "multiple",
+        "sensitive",
+        "min",
+        "max",
+    }
+    assert set(option) <= allowed
+    assert option["type"] == "string"
+    assert str(option["title"]).strip()
+    assert str(option["description"]).strip()
+
+
+def test_setup_skill_reads_the_user_config_option(repo_root: Path) -> None:
+    text = (repo_root / "skills" / "setup" / "SKILL.md").read_text(encoding="utf-8")
+    assert "${user_config.test_command}" in text
+
+
+@pytest.mark.parametrize(
+    ("role", "rule"),
+    [
+        ("driver", "Fixes start while you explore"),
+        ("oracle", "Fixes start while the Driver explores"),
+    ],
+)
+def test_the_role_prompts_let_fixes_run_while_the_driver_explores(
+    repo_root: Path, role: str, rule: str
+) -> None:
+    text = (repo_root / "templates" / "agents" / f"{role}.md").read_text(encoding="utf-8")
+    flat = " ".join(text.split())
+    assert "while no Coder is editing" not in flat
+    assert "never during yours" not in flat
+    assert rule in flat

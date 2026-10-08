@@ -169,7 +169,8 @@
   its unit test file, owned by one Coder. Claims each file, briefs one Coder per file,
   and starts it. Scores each handoff blind, compares, and approves, returns, or accepts
   it as incomplete. Classifies each fix attempt. Decides departures first. Runs the
-  module's tests when every file is settled, and reports to its Manager.
+  module's tests when every file is settled, and reports to its Manager. Writes the
+  graph nodes that anchor on several files of its module with `graph_upsert`.
 - **Owns:** the module, the file assignments inside it, the contracts between its files,
   and the approval of each Coder's work.
 - **Arbitrates:** disputes between its Coders about contracts and about where a shared
@@ -177,7 +178,8 @@
 - **Must not:** write a project file, or read a Coder's scores before it records its
   own.
 - **Done when:** its Manager accepts the module with `module_review` and releases it.
-- **Tools:** the same as the Manager.
+- **Tools:** the same as the Manager. Of the graph write tools, it holds only
+  `graph_upsert`, for nodes that span its module's files.
 
 ### Coder
 

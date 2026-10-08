@@ -818,3 +818,67 @@ def test_another_sessions_brief_get_does_not_count_as_a_reread(tree: dict, ledge
     lead = tree["lead"]
     assert not ledger.brief_read(lead["agent_id"], coder["name"])
     assert ledger.brief_read(coder["agent_id"], coder["name"])
+
+
+def _as_session(ledger: Ledger, agent_id: str, session_name: str) -> None:
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET session_name = ? WHERE agent_id = ?", (session_name, agent_id)
+        )
+
+
+def _bootstrap(ledger: Ledger) -> dict:
+    started = ledger.run_start(prd="Build X", session_id="sess-1")
+    oracle_id = started["oracle"]["agent_id"]
+
+    phase_a = ledger.phase_add("oracle", oracle_id, "phase-a")
+    phase_b = ledger.phase_add("oracle", oracle_id, "phase-b")
+    ledger.phase_update("oracle", oracle_id, phase_a["phase_id"], "unlocked")
+    ledger.phase_update("oracle", oracle_id, phase_b["phase_id"], "unlocked")
+
+    ledger.brief_create(
+        "oracle",
+        oracle_id,
+        "mgr-p1-phase-a",
+        "manager",
+        "opus",
+        "Own phase-a.",
+        phase_id=phase_a["phase_id"],
+    )
+    ledger.agent_register_start("mgr-agent", "manager", parent_agent_id=oracle_id)
+    manager = ledger.brief_ack("mgr-p1-phase-a", "mgr-agent")
+    _as_session(ledger, oracle_id, "host-r1-oracle")
+    _as_session(ledger, "mgr-agent", "host-r1-manager-1")
+    manager = dict(manager) | {"session_name": "host-r1-manager-1"}
+
+    return {
+        "run_id": started["run"]["run_id"],
+        "oracle_id": oracle_id,
+        "phase_a": phase_a["phase_id"],
+        "phase_b": phase_b["phase_id"],
+        "manager": manager,
+    }
+
+
+def test_pre_send_message_allows_a_valid_target(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    data = {
+        "agent_id": ctx["oracle_id"],
+        "tool_input": {"to": ctx["manager"]["session_name"]},
+    }
+    assert events.handle_pre_send_message(ledger, data) is None
+
+
+def test_pre_send_message_denies_a_target_outside_the_run(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    data = {"agent_id": ctx["oracle_id"], "tool_input": {"to": "some-other-repo-r9-coder-a"}}
+    result = events.handle_pre_send_message(ledger, data)
+    assert result is not None
+    reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "SendMessage may target only a session of this run" in reason
+    assert ctx["manager"]["session_name"] in reason
+
+
+def test_pre_send_message_ignores_a_non_swarm_caller(ledger: Ledger) -> None:
+    _bootstrap(ledger)
+    assert events.handle_pre_send_message(ledger, {"session_id": "not-a-swarm-agent"}) is None

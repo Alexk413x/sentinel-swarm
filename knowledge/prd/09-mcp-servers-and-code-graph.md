@@ -81,27 +81,32 @@ first release whose relay shares one server per machine and runs on Windows (the
 find what exists while many agents change the code at once. The graph file,
 `knowledge/code_graph.db`, belongs to the host repo and is committed with its code.
 
-- Every role searches the graph first, at its own level **(needs implementation: the
-  role templates do not say which level each role searches at)**, and uses Grep or
-  Glob only when the graph lacks the answer. codebase-kg's own search gate hook
+- Every role searches the graph first, at its own level, and uses Grep or Glob only
+  when the graph lacks the answer. Each role template's start sequence names the
+  level: the Oracle searches at the system level (components and their dependencies),
+  a Manager at the component level (the components and folders of its phase), a Lead
+  at the file level (the files of its module and the helpers that exist), a Coder at
+  the symbol level (functions and classes it can reuse), and the Driver at the screen
+  level (the module or file behind a screen in a finding). codebase-kg's own search gate hook
   enforces this order.
 - The ledger records each Grep and Glob a role runs, with its pattern and the paths it
   found, as a graph gap: the `post_activity` hook writes a `graph_gaps` row. The report
   lists them. Why the graph fell short is not recorded in words; the pattern and the
   paths found are the structural record. A search scoped to a file the graph anchors is
   recorded too, and the report marks it.
-- Only the Coder writes to the graph, and only through `graph_upsert(nodes)`. It takes
-  codebase-kg's `kg_upsert_node` node shape (`id`, `kind`, `section`, `description`,
-  `anchors`, `edges`). The ledger refuses an anchor outside the Coder's file and test
-  file, and an edge to a node that does not exist. It applies the upsert under a lock
+- Only the Coder and the Lead write to the graph, and only through
+  `graph_upsert(nodes)`. It takes codebase-kg's `kg_upsert_node` node shape (`id`,
+  `kind`, `section`, `description`, `anchors`, `edges`). The ledger refuses a Coder's
+  anchor outside its file and test file, a Lead's anchor outside the files and test
+  files its module claimed (released and superseded claims excluded), and an edge to a
+  node that does not exist. It applies the upsert under a lock
   in the ledger process, through `uv run` in the `mcp` folder of the highest numbered
   version under `~/.claude/plugins/cache/codebase-kg/codebase-kg/`, or in
   `SENTINEL_SWARM_KG_ROOT`.
 - Setup sets `post_edit_nudge: false` in the host's `.claude/codebase-kg.local.md`, so
   codebase-kg's edit hook does not send a Coder to `/codebase-kg:refresh`.
-- A node that anchors on several files is updated through the Lead. **(needs implementation:
-  `graph_upsert` refuses any anchor outside the Coder's own file, and the Lead has no
-  graph write tool)**
+- A node that anchors on several files is updated through the Lead, once the Coders
+  of those files have handed up.
 - Anchors are `"<path>#<Symbol>"` for every top-level function and class. A file with no
   functions or classes is anchored by its path alone: `"anchors": ["<path>"]`. A Coder
   never adds code only to have an anchor.

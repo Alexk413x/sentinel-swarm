@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
+
+from swarm_ledger import sessions
 
 
 @pytest.fixture(scope="session")
@@ -28,3 +31,30 @@ def os_notifications(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     shown: list[list[str]] = []
     monkeypatch.setattr(notify, "runner", shown.append)
     return shown
+
+
+@pytest.fixture
+def claude_sessions(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    listing: list[dict] = []
+
+    def fake_run(args: list[str], cwd: Path | None = None) -> str:
+        del cwd
+        assert args[:2] == ["agents", "--json"], args
+        return json.dumps(listing)
+
+    monkeypatch.setattr(sessions, "_run", fake_run)
+    return listing
+
+
+@pytest.fixture
+def host(tmp_path: Path, repo_root: Path) -> Path:
+    root = tmp_path / "host"
+    (root / ".git").mkdir(parents=True)
+    claude_dir = root / ".claude"
+    claude_dir.mkdir()
+    template = (repo_root / "templates" / "sentinel-swarm.local.md.example").read_text(
+        encoding="utf-8"
+    )
+    text = template.replace("test_command:\n", "test_command: pytest -q {target}\n")
+    (claude_dir / "sentinel-swarm.local.md").write_text(text, encoding="utf-8")
+    return root

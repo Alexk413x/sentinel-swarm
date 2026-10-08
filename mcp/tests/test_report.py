@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
 
 from swarm_ledger import sessions
-from swarm_ledger.db import connect, write_tx
-from swarm_ledger.identity import LedgerError
+from swarm_ledger.db import write_tx
 from swarm_ledger.ledger import Ledger
 
 
@@ -128,104 +126,6 @@ def _insert_agent(
             values.append(ended_at)
         placeholders = ", ".join("?" for _ in columns)
         conn.execute(f"INSERT INTO agents ({', '.join(columns)}) VALUES ({placeholders})", values)
-
-
-# -- item 7: reply_to resolves every open directive, not only needs_user -----------
-
-
-def test_directive_reply_to_resolves_an_open_directive_with_no_outcome_yet(ledger: Ledger) -> None:
-    _bootstrap(ledger)
-    asked = ledger.directive_submit("user_chat", "alex", "Rename the CLI flag?")
-    assert (asked["state"], asked["outcome"]) == ("open", None)
-
-    reply = ledger.directive_submit(
-        "user_chat", "alex", "Yes, rename it.", reply_to=asked["directive_id"]
-    )
-
-    parent = ledger.conn.execute(
-        "SELECT * FROM directives WHERE directive_id = ?", (asked["directive_id"],)
-    ).fetchone()
-    assert parent["state"] == "resolved"
-    assert parent["outcome"] is None
-    assert parent["resolved_at"] is not None
-    assert reply["reply_to"] == asked["directive_id"]
-
-
-def test_directive_reply_to_leaves_a_resolved_directive_alone(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
-    asked = ledger.directive_submit("user_chat", "alex", "Add a CLI?")
-    ledger.directive_resolve("oracle", ctx["oracle_id"], asked["directive_id"], "declined", "No.")
-
-    # A reply naming an already-resolved directive touches nothing on that row; state
-    # = 'open' is required, so the UPDATE is a no-op and the reply is just recorded.
-    ledger.directive_submit("user_chat", "alex", "Are you sure?", reply_to=asked["directive_id"])
-    parent = ledger.conn.execute(
-        "SELECT * FROM directives WHERE directive_id = ?", (asked["directive_id"],)
-    ).fetchone()
-    assert (parent["state"], parent["outcome"]) == ("resolved", "declined")
-
-
-# -- item 23: snake_case directive sources ------------------------------------------
-
-
-def test_directive_submit_normalizes_old_source_spellings(ledger: Ledger) -> None:
-    _bootstrap(ledger)
-    old_chat = ledger.directive_submit("user-chat", "alex", "Old spelling.")
-    old_outside = ledger.directive_submit("outside-session", "ci", "Also old.")
-    assert old_chat["source"] == "user_chat"
-    assert old_outside["source"] == "outside_session"
-
-
-def test_directive_submit_accepts_the_new_snake_case_sources(ledger: Ledger) -> None:
-    _bootstrap(ledger)
-    submitted = ledger.directive_submit("outside_session", "ci", "New spelling.")
-    assert submitted["source"] == "outside_session"
-
-
-def test_migrate_normalizes_stored_directive_source_spellings(tmp_path: Path) -> None:
-    db_path = tmp_path / "ledger.db"
-    old = sqlite3.connect(str(db_path))
-    old.executescript(
-        "CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
-        "version INTEGER NOT NULL);"
-        "INSERT INTO schema_version (id, version) VALUES (1, 1);"
-        "CREATE TABLE directives (directive_id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL, "
-        "source TEXT NOT NULL, sender_name TEXT, body TEXT NOT NULL, reply_to INTEGER, "
-        "state TEXT NOT NULL DEFAULT 'open', outcome TEXT, resolved_at TEXT, resolution TEXT, "
-        "created_at TEXT);"
-        "INSERT INTO directives (directive_id, run_id, source, body, state) VALUES "
-        "(1, 1, 'user-chat', 'Old row.', 'open'), (2, 1, 'outside-session', 'Also old.', "
-        "'resolved');"
-    )
-    old.close()
-
-    conn = connect(db_path)
-    try:
-        rows = {r["directive_id"]: r["source"] for r in conn.execute("SELECT * FROM directives")}
-        assert rows == {1: "user_chat", 2: "outside_session"}
-        columns = {r["name"] for r in conn.execute("PRAGMA table_info(directives)")}
-        assert "question" in columns
-    finally:
-        conn.close()
-
-
-# -- item 10: the Oracle never grants itself an override ----------------------------
-
-
-def test_override_grant_refuses_a_target_that_names_the_oracle(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
-    with pytest.raises(LedgerError, match="must not grant itself"):
-        ledger.override_grant(
-            "oracle", ctx["oracle_id"], "write", "oracle", "src/a.py", "self-serve"
-        )
-
-
-def test_override_grant_still_allows_a_non_oracle_target(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
-    granted = ledger.override_grant(
-        "oracle", ctx["oracle_id"], "write", "coder-1", "src/a.py", "urgent fix"
-    )
-    assert granted["target_agent_name"] == "coder-1"
 
 
 # -- item 15: a report per run, report.md as the latest copy ------------------------

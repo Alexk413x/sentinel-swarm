@@ -9,25 +9,14 @@ from pathlib import Path
 import pytest
 import yaml
 
-from swarm_ledger import sessions, wake
+from swarm_ledger import wake
 from swarm_ledger.clock import stamp, utcnow
 from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import HANDLERS as _HANDLERS
 from swarm_ledger.hooks import events, run_event
 from swarm_ledger.ledger import Ledger
 
-
-@pytest.fixture(autouse=True)
-def claude_sessions(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
-    listing: list[dict] = []
-
-    def fake_run(args: list[str], cwd: Path | None = None) -> str:
-        del cwd
-        assert args[:2] == ["agents", "--json"], args
-        return json.dumps(listing)
-
-    monkeypatch.setattr(sessions, "_run", fake_run)
-    return listing
+pytestmark = pytest.mark.usefixtures("claude_sessions")
 
 
 @pytest.fixture
@@ -1138,3 +1127,43 @@ def test_stop_blocks_the_oracle_when_a_new_child_is_not_running_or_is_late(
     blocked = events.handle_stop(ledger, {"session_id": ctx["oracle_id"]})
     assert blocked is not None
     assert "none working" in blocked["reason"]
+
+
+def test_session_start_reports_codebase_kg_not_installed(host: Path, ledger: Ledger) -> None:
+    result = events.handle_session_start(ledger, {})
+    assert result is not None
+    context = result["hookSpecificOutput"]["additionalContext"]
+    assert "codebase-kg is not installed" in context
+
+
+def test_session_start_reports_a_missing_graph_once_the_plugin_is_installed(
+    host: Path, ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "swarm_ledger.hooks.events.plugin_installed", lambda repo_root, plugin_id: True
+    )
+    result = events.handle_session_start(ledger, {})
+    assert result is not None
+    context = result["hookSpecificOutput"]["additionalContext"]
+    assert "codebase-kg is not installed" not in context
+    assert "knowledge/code_graph.db is missing" in context
+
+
+def test_session_start_reports_neither_once_the_graph_exists(
+    host: Path, ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "swarm_ledger.hooks.events.plugin_installed", lambda repo_root, plugin_id: True
+    )
+    (host / "knowledge").mkdir()
+    (host / "knowledge" / "code_graph.db").write_text("", encoding="utf-8")
+    result = events.handle_session_start(ledger, {})
+    if result is not None:
+        context = result["hookSpecificOutput"]["additionalContext"]
+        assert "codebase-kg" not in context
+
+
+def test_pre_send_message_is_registered_and_a_gating_event(repo_root: Path) -> None:
+    assert _HANDLERS["pre_send_message"] is events.handle_pre_send_message
+    shim_text = (repo_root / "templates" / "hook_shim.py").read_text(encoding="utf-8")
+    assert '"pre_send_message"' in shim_text

@@ -262,12 +262,15 @@ when" in [05-sessions.md](05-sessions.md).
     empty list is stored as no list. The Driver's own brief from `drive_request` passes
     an empty list.
   - The ids are visible to every role: `brief_get` returns `findings`,
-    the id, fingerprint, title, severity, and area of each finding the brief names;
+    the id, fingerprint, title, severity, area, steps, expected and actual result, and
+    evidence paths of each finding the brief names;
     `status_tree` returns `open_findings` and `fixes`, each brief that names findings
     with their ids and titles; and the report's Explorations section shows each
     finding's id and a "Fixes" list.
-  - The Coder's brief body carries the finding's evidence, and the fix re-claims the
-    file. **(needs implementation)**
+  - A fix Coder reads each finding's evidence from `brief_get`, not from its parent's
+    retelling. The fix works on a fresh claim: `brief_create` refuses a Coder brief
+    whose findings, named or inherited, were recorded after the file's claim, so the
+    Lead runs `release_file` and `claim_file` for the fix Coder.
 - Each request carries a focus list the Oracle writes. The first exploration covers
   every PRD feature; each later one covers the features the last wave touched, every
   open issue to recheck, and a quick smoke pass over everything else; the final clean

@@ -898,8 +898,13 @@ def test_override_consume_marks_the_first_match_used_once(ledger: Ledger) -> Non
     ledger.override_grant(
         "oracle", ctx["oracle_id"], "hook-4", "coder-p1-module-1-c1", "src/a.py", "urgent fix"
     )
-    assert ledger.override_consume("hook-4", "coder-p1-module-1-c1", "src/a.py") is True
-    assert ledger.override_consume("hook-4", "coder-p1-module-1-c1", "src/a.py") is False
+    assert (
+        ledger.override_consume(ctx["run_id"], "hook-4", "coder-p1-module-1-c1", "src/a.py") is True
+    )
+    assert (
+        ledger.override_consume(ctx["run_id"], "hook-4", "coder-p1-module-1-c1", "src/a.py")
+        is False
+    )
 
 
 # -- issues -----------------------------------------------------------------------
@@ -1196,3 +1201,65 @@ def test_directive_command_fails_without_a_live_run(
 def test_run_start_records_the_oracles_effort(ledger: Ledger) -> None:
     started = ledger.run_start(prd="Build X", session_id="sess-1")
     assert started["oracle"]["effort"] == ledger.settings.effort["oracle"]
+
+
+def test_directive_reply_to_resolves_an_open_directive_with_no_outcome_yet(ledger: Ledger) -> None:
+    _bootstrap(ledger)
+    asked = ledger.directive_submit("user_chat", "alex", "Rename the CLI flag?")
+    assert (asked["state"], asked["outcome"]) == ("open", None)
+
+    reply = ledger.directive_submit(
+        "user_chat", "alex", "Yes, rename it.", reply_to=asked["directive_id"]
+    )
+
+    parent = ledger.conn.execute(
+        "SELECT * FROM directives WHERE directive_id = ?", (asked["directive_id"],)
+    ).fetchone()
+    assert parent["state"] == "resolved"
+    assert parent["outcome"] is None
+    assert parent["resolved_at"] is not None
+    assert reply["reply_to"] == asked["directive_id"]
+
+
+def test_directive_reply_to_leaves_a_resolved_directive_alone(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    asked = ledger.directive_submit("user_chat", "alex", "Add a CLI?")
+    ledger.directive_resolve("oracle", ctx["oracle_id"], asked["directive_id"], "declined", "No.")
+
+    # A reply naming an already-resolved directive touches nothing on that row; state
+    # = 'open' is required, so the UPDATE is a no-op and the reply is just recorded.
+    ledger.directive_submit("user_chat", "alex", "Are you sure?", reply_to=asked["directive_id"])
+    parent = ledger.conn.execute(
+        "SELECT * FROM directives WHERE directive_id = ?", (asked["directive_id"],)
+    ).fetchone()
+    assert (parent["state"], parent["outcome"]) == ("resolved", "declined")
+
+
+def test_directive_submit_normalizes_old_source_spellings(ledger: Ledger) -> None:
+    _bootstrap(ledger)
+    old_chat = ledger.directive_submit("user-chat", "alex", "Old spelling.")
+    old_outside = ledger.directive_submit("outside-session", "ci", "Also old.")
+    assert old_chat["source"] == "user_chat"
+    assert old_outside["source"] == "outside_session"
+
+
+def test_directive_submit_accepts_the_new_snake_case_sources(ledger: Ledger) -> None:
+    _bootstrap(ledger)
+    submitted = ledger.directive_submit("outside_session", "ci", "New spelling.")
+    assert submitted["source"] == "outside_session"
+
+
+def test_override_grant_refuses_a_target_that_names_the_oracle(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    with pytest.raises(LedgerError, match="must not grant itself"):
+        ledger.override_grant(
+            "oracle", ctx["oracle_id"], "write", "oracle", "src/a.py", "self-serve"
+        )
+
+
+def test_override_grant_still_allows_a_non_oracle_target(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    granted = ledger.override_grant(
+        "oracle", ctx["oracle_id"], "write", "coder-1", "src/a.py", "urgent fix"
+    )
+    assert granted["target_agent_name"] == "coder-1"

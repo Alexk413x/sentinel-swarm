@@ -179,6 +179,9 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 | A stuck Driver's exploration can be closed | `agent_release` of the Driver abandons its open exploration, which never counts as clean |
 | The Oracle is woken directly when the Driver ends an exploration or cannot load | `drive_done` and the Driver's `drive_unavailable` owe the Oracle a wake-up and do not release the Driver; the Driver's `stop` blocks until it is sent; `post_any`, `agent_resume`, or the Driver's `stop` releases the Driver once it is sent; a Driver that ignores the block twice goes idle without sending, which the watchdog reports as `driver_unsent` |
 | Fixes always name their finding ids | `brief_create` refuses an Oracle brief without `finding_ids` while the run has an open finding, and an unknown finding id from any role; `brief_get`, `status_tree`, and the report show the ids and titles |
+| A fix Coder works on a fresh claim | `brief_create` refuses a Coder brief whose findings were recorded after the file's claim; `brief_get` returns each finding's steps, results, and evidence |
+| A Driver starts only through `drive_request` | `brief_create` refuses `child_role="driver"` |
+| A node that spans files is written through the Lead | `graph_upsert` refuses a Coder's anchor outside its own file and a Lead's anchor outside its module's files |
 | A stopped bug gets no more fixes, and its evidence reaches the user | `brief_create` and `agent_spawn` refuse a brief whose `finding_ids` name it; `drive_done` puts the evidence in the directive and the notification |
 | A pattern of bugs pauses fixes in that area | `brief_create` and `agent_spawn` refuse a finding in the area while the pattern's directive is open |
 | After 3 waves that fix nothing, the Oracle reports what is left | `drive_done` records the directive and the notification that list what is left; the report shows both |
@@ -191,6 +194,7 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 | No approval without a handoff and two sets of scores | `approve` |
 | The Lead scores before it sees the Coder's scores | `score_record` refuses a Lead review after `review_compare` |
 | A rule gives way only to the Oracle | `override_grant`, consumed by `pre_write` and `pre_shell` |
+| An override holds for one run only | `override_consume` matches the caller's run as well as the rule, the agent name, and the target |
 | The Oracle never grants itself a write or shell override | `override_grant` refuses a `target_agent_name` that names the Oracle |
 | Look in the graph before writing | codebase-kg's own search gate hook |
 | A message goes to an agent of the run | `message_post`; `pre_send_message` for `SendMessage` itself |

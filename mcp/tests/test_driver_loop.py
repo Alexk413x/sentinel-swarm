@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 from pathlib import Path
 
 import pytest
 
 from swarm_ledger import notify, sessions
-from swarm_ledger.db import connect, write_tx
+from swarm_ledger.db import write_tx
 from swarm_ledger.drive import compute_loop_status, open_findings
 from swarm_ledger.identity import LedgerError
 from swarm_ledger.ledger import Ledger
@@ -659,26 +658,6 @@ def test_a_stalled_loop_records_what_is_left_and_the_report_shows_it(
     assert notice["message"] in notifications
 
 
-# -- 7. Role prompts match "fixes start while the Driver explores" ------------------------------
-
-
-@pytest.mark.parametrize(
-    ("role", "rule"),
-    [
-        ("driver", "Fixes start while you explore"),
-        ("oracle", "Fixes start while the Driver explores"),
-    ],
-)
-def test_the_role_prompts_let_fixes_run_while_the_driver_explores(
-    repo_root: Path, role: str, rule: str
-) -> None:
-    text = (repo_root / "templates" / "agents" / f"{role}.md").read_text(encoding="utf-8")
-    flat = " ".join(text.split())
-    assert "while no Coder is editing" not in flat
-    assert "never during yours" not in flat
-    assert rule in flat
-
-
 # -- 8. An issue that ends its last round below the floor notifies the user ----------------------
 
 
@@ -765,60 +744,3 @@ def test_no_floor_notification_before_the_last_round_or_above_the_floor(
 
     assert result["notifications"] == []
     assert _notifications(ledger) == []
-
-
-# -- Schema migration ---------------------------------------------------------------------------
-
-
-def test_connect_adds_the_finding_ids_column_and_the_drive_stops_table(tmp_path: Path) -> None:
-    db_path = tmp_path / "ledger.db"
-    old = sqlite3.connect(str(db_path))
-    old.executescript(
-        "CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
-        "version INTEGER NOT NULL);"
-        "INSERT INTO schema_version (id, version) VALUES (1, 1);"
-        "CREATE TABLE runs (run_id INTEGER PRIMARY KEY, state TEXT NOT NULL);"
-        "CREATE TABLE briefs (brief_id INTEGER PRIMARY KEY, child_name TEXT NOT NULL);"
-        "INSERT INTO runs (run_id, state) VALUES (1, 'active');"
-    )
-    old.close()
-
-    conn = connect(db_path)
-    try:
-        runs = {r["name"] for r in conn.execute("PRAGMA table_info(runs)")}
-        assert "driver_unavailable_at" not in runs
-        briefs = {r["name"] for r in conn.execute("PRAGMA table_info(briefs)")}
-        assert "finding_ids_json" in briefs
-        stops = {r["name"] for r in conn.execute("PRAGMA table_info(drive_stops)")}
-        assert {"directive_id", "kind", "reason", "fingerprint", "area"} <= stops
-    finally:
-        conn.close()
-
-
-def test_connect_turns_a_driver_unavailable_run_into_a_declined_directive(
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / "ledger.db"
-    connect(db_path).close()
-    old = sqlite3.connect(str(db_path))
-    old.executescript(
-        "ALTER TABLE runs ADD COLUMN driver_unavailable_at TEXT;"
-        "ALTER TABLE runs ADD COLUMN driver_unavailable_reason TEXT;"
-        "INSERT INTO runs (run_id, state, driver_unavailable_at, driver_unavailable_reason) "
-        "VALUES (1, 'active', '2026-09-27T10:00:00.000Z', 'cartographer failed');"
-        "INSERT INTO runs (run_id, state) VALUES (2, 'finished');"
-    )
-    old.close()
-
-    for _ in range(2):
-        conn = connect(db_path)
-        try:
-            [row] = conn.execute("SELECT * FROM directives").fetchall()
-            assert row["run_id"] == 1
-            assert row["source"] == "driver"
-            assert row["body"] == "[driver-unavailable] cartographer failed"
-            assert (row["state"], row["outcome"]) == ("resolved", "declined")
-            runs = {r["name"] for r in conn.execute("PRAGMA table_info(runs)")}
-            assert "driver_unavailable_at" not in runs
-        finally:
-            conn.close()

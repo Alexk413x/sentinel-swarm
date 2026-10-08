@@ -126,3 +126,8 @@
 - 2026-10-08: `deferral_propose` takes a required `kind` (`file`, `module`, `cross_module`, `phase`, `plan`, `prd`), and `agreement_decide` needs a caller at or above both the proposer's parent and the kind's level; a `prd` decision needs a later `user_chat` directive. With `parties`, a deferral is a dispute that only the parties' closest shared ancestor decides.
 - 2026-10-08: A dependent file or module is briefed only after each dependency's latest brief records its contract; `claim_file` and `module_add` take `depends_on`, and `brief_get` returns the contracts.
 - 2026-10-08: `handoff_submit` refuses when the Coder has not read its brief since the file's last return; the `pre_ledger` hook records the read.
+- 2026-10-08: A fix Coder's brief needs a claim made after each finding it fixes, so the Lead releases and re-claims the file; `brief_get` returns each finding's steps, expected and actual result, and evidence paths.
+- 2026-10-08: `override_consume` matches the run, so an override never carries into a later run.
+- 2026-10-08: Only `drive_request` starts a Driver; `brief_create` refuses `child_role="driver"`.
+- 2026-10-08: Each role template's start sequence names its graph search level: system (Oracle), component (Manager), file (Lead), symbol (Coder), screen (Driver).
+- 2026-10-08: The Lead holds `graph_upsert` for nodes whose anchors lie on its module's files; a Coder's stay on its own file.

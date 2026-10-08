@@ -113,6 +113,8 @@ still holds.
    call succeeds. It binds your name to your session.
 4. `guidelines_get()` and `run_status()`.
 5. `message_inbox()`.
+6. Search the code graph at the component level: `kg_search` for the components and
+   folders your phase touches, so the modules follow the existing boundaries.
 
 ## Plan the phase
 
