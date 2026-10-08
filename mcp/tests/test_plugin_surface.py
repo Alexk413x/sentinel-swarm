@@ -19,10 +19,8 @@ KG_TOOLS = (
     "kg_find_by_path",
     "kg_find_by_link",
     "kg_find_by_reference",
-    "kg_parity_gaps",
-    "kg_stats",
-    "kg_validate",
 )
+KG_CLI_TOOLS = ("kg_parity_gaps", "kg_stats", "kg_validate")
 LEDGER_PREFIX = "mcp__swarm-ledger__"
 LEDGER_MODULES = ("ledger", "review", "agreements", "oversight", "drive", "repo")
 ALL_ROLES = frozenset(ROLES)
@@ -149,6 +147,8 @@ def test_template_tools(repo_root: Path, role: str):
     assert "mcp__swarm-ledger" not in tools
     for tool in KG_TOOLS:
         assert f"mcp__codebase-kg__{tool}" in tools
+    for tool in KG_CLI_TOOLS:
+        assert f"mcp__codebase-kg__{tool}" not in tools
     assert not any(t.startswith("mcp__plugin_") for t in tools)
     assert not any("a11y" in t or "driver" in t for t in tools)
 
