@@ -419,17 +419,17 @@ class ReviewMixin:
     def graph_upsert(self, caller: str, agent_id: str, nodes: list[dict]) -> dict:
         c = resolve(self.conn, caller, agent_id)
         require_role(c, "coder", "lead")
+        file_of: dict[str, int] = {}
         if c.role == "lead":
-            allowed_paths = {
-                p
-                for row in self.conn.execute(
-                    "SELECT path, test_path FROM files WHERE module_id = ? "
-                    "AND state NOT IN ('released', 'superseded')",
-                    (c.module_id,),
-                )
-                for p in (row["path"], row["test_path"])
-                if p
-            }
+            for row in self.conn.execute(
+                "SELECT file_id, path, test_path FROM files WHERE module_id = ? "
+                "AND state NOT IN ('released', 'superseded')",
+                (c.module_id,),
+            ):
+                for p in (row["path"], row["test_path"]):
+                    if p:
+                        file_of[p] = row["file_id"]
+            allowed_paths = set(file_of)
             refusal = "a Lead updates only nodes that anchor on its own module's files"
         else:
             if c.file_id is None:
@@ -446,6 +446,7 @@ class ReviewMixin:
             )
 
         for node in nodes:
+            anchored_files: set[int] = set()
             for anchor in node.get("anchors") or []:
                 if isinstance(anchor, str):
                     anchor_path = anchor.split("#", 1)[0].strip()
@@ -455,6 +456,13 @@ class ReviewMixin:
                     raise LedgerError(f"anchor {anchor!r} must be a string or an object")
                 if anchor_path not in allowed_paths:
                     raise LedgerError(refusal)
+                if anchor_path in file_of:
+                    anchored_files.add(file_of[anchor_path])
+            if c.role == "lead" and len(anchored_files) < 2:
+                raise LedgerError(
+                    "a Lead updates only nodes that span two or more of its module's files; "
+                    "a single-file node belongs to that file's Coder"
+                )
 
         result = graph.graph_upsert(self.repo_root, nodes)
 

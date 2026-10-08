@@ -107,14 +107,14 @@ find what exists while many agents change the code at once. The graph file,
   `kind`, `section`, `description`, `anchors`, `edges`). The ledger refuses a Coder's
   anchor outside its file and test file, a Lead's anchor outside the files and test
   files its module claimed (released and superseded claims excluded), and an edge to a
-  node that does not exist. It applies the upsert under a lock
-  in the ledger process, through `uv run` in the `mcp` folder of the highest numbered
-  version under `~/.claude/plugins/cache/codebase-kg/codebase-kg/`, or in
-  `SENTINEL_SWARM_KG_ROOT`.
+  node that does not exist. It applies the upsert under a lock, with the
+  highest numbered version under `~/.claude/plugins/cache/codebase-kg/codebase-kg/`, or
+  `SENTINEL_SWARM_KG_ROOT`, run as described above.
 - Setup sets `post_edit_nudge: false` in the host's `.claude/codebase-kg.local.md`, so
   codebase-kg's edit hook does not send a Coder to `/codebase-kg:refresh`.
 - A node that anchors on several files is updated through the Lead, once the Coders
-  of those files have handed up.
+  of those files have handed up. A node on one file, with or without its test file,
+  belongs to that file's Coder, and the ledger refuses it from the Lead.
 - Anchors are `"<path>#<Symbol>"` for every top-level function and class. A file with no
   functions or classes is anchored by its path alone: `"anchors": ["<path>"]`. A Coder
   never adds code only to have an anchor.

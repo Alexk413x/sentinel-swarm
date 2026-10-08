@@ -220,6 +220,19 @@ def test_a_lead_upserts_a_node_that_spans_its_modules_files(
     assert len(calls) == 1
 
 
+def test_a_lead_leaves_a_single_file_node_to_its_coder(
+    tree: dict, ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(graph_module, "graph_upsert", lambda repo_root, nodes: {"ok": True})
+    _claim(ledger, tree, "login", "src/login.py")
+    _claim(ledger, tree, "token", "src/token.py")
+
+    with pytest.raises(LedgerError, match="belongs to that file's Coder"):
+        ledger.graph_upsert(
+            tree["lead"], "lead-agent", _node("src/token.py#issue", "tests/test_token.py")
+        )
+
+
 def test_a_coder_still_upserts_only_its_own_file(
     tree: dict, ledger: Ledger, monkeypatch: pytest.MonkeyPatch
 ) -> None:

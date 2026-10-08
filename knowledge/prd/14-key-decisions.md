@@ -138,3 +138,5 @@
 - 2026-10-08: Enforcement may live in the plugin's mod, which loads in every session in the host repo, once the live check passes.
 - 2026-10-08: The device-queue broker needs a new plan on the mod's delivery path; it stays (needs implementation) until then.
 - 2026-10-08: The ledger server refuses a `registered` session every tool but `brief_ack` and the five identity-free tools, for any client. The `pre_ledger` rule stays as the fast path.
+- 2026-10-08: A fix Coder's brief is refused while any of its findings is newer than the file's claim; the Lead releases and claims the file again first.
+- 2026-10-08: A Coder updates its own file's graph node; the Lead updates only nodes that span two or more of its module's files.
