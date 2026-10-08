@@ -13,7 +13,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import IO, Any
 
-from . import __version__, env, serve, wake
+from . import __version__, auth, env, serve, wake
 
 SESSION_VAR = "CLAUDE_CODE_SESSION_ID"
 PROTOCOL_VERSION = "2025-06-18"
@@ -44,12 +44,14 @@ class Bridge:
         url: Callable[[], str | None],
         *,
         opener: Opener = urllib.request.urlopen,
+        headers: Callable[[], dict[str, str]] = dict,
         retry_s: float = RETRY_S,
         log: Callable[[str], None] | None = None,
     ) -> None:
         self._out = out
         self._url = url
         self._opener = opener
+        self._headers = headers
         self._retry_s = retry_s
         self._log = log or (lambda text: print(f"swarm-events: {text}", file=sys.stderr))
         self._write_lock = threading.Lock()
@@ -116,7 +118,8 @@ class Bridge:
         if url is None:
             raise ConnectionError("no ledger server is recorded for this repo")
         delivered = 0
-        with self._opener(url, timeout=READ_TIMEOUT_S) as response:
+        request = urllib.request.Request(url, headers=self._headers())
+        with self._opener(request, timeout=READ_TIMEOUT_S) as response:
             self._report(None)
             for raw in response:
                 if self._stop.is_set():
@@ -183,7 +186,11 @@ def main(argv: list[str] | None = None) -> int:
     session_id = os.environ.get(SESSION_VAR) or ""
     if not session_id:
         print(f"swarm-events: {SESSION_VAR} is not set; no events will arrive", file=sys.stderr)
-    bridge = Bridge(sys.stdout.buffer, lambda: events_url(root, session_id) if session_id else None)
+    bridge = Bridge(
+        sys.stdout.buffer,
+        lambda: events_url(root, session_id) if session_id else None,
+        headers=lambda: auth.auth_headers(root),
+    )
     return serve_stdio(bridge, sys.stdin.buffer)
 
 

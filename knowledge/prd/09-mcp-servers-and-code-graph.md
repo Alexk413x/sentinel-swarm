@@ -4,6 +4,9 @@
 
 - Every role has `swarm-ledger` and `codebase-kg`. Every session starts with
   `--strict-mcp-config`, so no server loads that its config does not list.
+- `swarm-ledger` is an HTTP entry with the repo's ledger token as a static
+  `Authorization: Bearer` header. See "Access" and "The token" in
+  [06-ledger-server.md](06-ledger-server.md).
 - A role also gets the a11y plugin's servers, `a11y-tools` and `a11y-kg`, when the host
   has `a11y@accessibility-tools` installed at user scope or for the host's path.
   `agent_spawn` and the launcher check the installed-plugins registry and add the
@@ -72,6 +75,14 @@
 - Graph writes go through `graph_upsert`, which calls codebase-kg's
   `edits.upsert_node` with the host graph's explicit path under the ledger's lock, so
   the shared codebase-kg server only ever serves reads.
+- `graph_upsert` runs `edits.upsert_node` in a child process on the base interpreter
+  (`sys._base_executable`, the one the ledger's venv was made from) with `-I -S` and
+  `<codebase-kg>/mcp/src` on `sys.path`, as codebase-kg's own workers run. It needs no
+  venv in the plugin cache. It falls back to `uv run --project <codebase-kg>/mcp
+  --frozen --no-dev python` when the running Python is older than the floor in
+  codebase-kg's `pyproject.toml` (`requires-python = ">=3.10"` in 0.14.0), when that
+  file declares any dependency (codebase-kg is standard library only since 0.12.0), or
+  when `mcp/src/codebase_kg/edits.py` is missing.
 
 ## The code graph
 

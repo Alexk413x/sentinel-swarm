@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from swarm_ledger import agentfiles, sessions, setup
+from swarm_ledger import agentfiles, auth, sessions, setup
 from swarm_ledger.clock import stamp
 from swarm_ledger.db import connect, write_tx
 from swarm_ledger.drive import (
@@ -117,6 +117,7 @@ def host(tmp_path: Path, repo_root: Path) -> Path:
     (records / "server.json").write_text(
         json.dumps({"url": "http://127.0.0.1:4321/mcp", "port": 4321, "pid": 1}), "utf-8"
     )
+    auth.ensure_token(root)
     _register_plugins(["cartographer@cartographer", "web-driver@accessibility-tools"])
     return root
 

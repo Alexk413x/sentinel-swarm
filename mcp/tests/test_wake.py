@@ -23,6 +23,7 @@ import pytest
 
 from swarm_ledger import (
     agentfiles,
+    auth,
     bridge,
     launch,
     serve,
@@ -835,6 +836,7 @@ def test_the_bridge_turns_one_ledger_event_into_one_notification() -> None:
 
 class _Ledger(BaseHTTPRequestHandler):
     connections: list[str] = []
+    authorizations: list[str | None] = []
     batches = [
         [{"kind": "ping"}, {"kind": "wakeup", "content": "first", "meta": {"wakeup_id": "1"}}],
         [{"kind": "wakeup", "content": "second", "meta": {"wakeup_id": "2"}}],
@@ -843,6 +845,7 @@ class _Ledger(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         index = len(self.connections)
         self.connections.append(self.path)
+        self.authorizations.append(self.headers.get("Authorization"))
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson")
         self.end_headers()
@@ -872,6 +875,23 @@ def test_the_bridge_reconnects_after_the_ledger_drops_the_stream() -> None:
         server.server_close()
     assert [m["params"]["content"] for m in _sent(out)] == ["first", "second"]
     assert _Ledger.connections[:2] == ["/events?session=sess-1"] * 2
+
+
+def test_the_bridge_sends_the_ledger_token(tmp_path: Path) -> None:
+    (tmp_path / ".git").mkdir()
+    token = auth.ensure_token(tmp_path)
+    _Ledger.connections, _Ledger.authorizations = [], []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Ledger)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_address[1]}/events?session=sess-1"
+    link = _bridge(io.BytesIO(), url, headers=lambda: auth.auth_headers(tmp_path))
+    try:
+        link.listen_once()
+    finally:
+        link.stop()
+        server.shutdown()
+        server.server_close()
+    assert _Ledger.authorizations == [f"Bearer {token}"]
 
 
 def test_the_bridge_starts_listening_only_after_initialized() -> None:
@@ -922,9 +942,11 @@ def test_dev_channel_args_merge_into_one_flag(monkeypatch: pytest.MonkeyPatch) -
 def test_session_options_add_the_bridge_only_when_asked(tmp_path: Path) -> None:
     (tmp_path / ".git").mkdir()
     setup.run_setup(tmp_path)
+    auth.ensure_token(tmp_path)
 
     def servers(**kwargs: Any) -> dict:
-        options = agentfiles.session_options(tmp_path, "oracle", None, "http://x/mcp", **kwargs)
+        url = "http://127.0.0.1:5123/mcp"
+        options = agentfiles.session_options(tmp_path, "oracle", None, url, **kwargs)
         return json.loads(options[options.index("--mcp-config") + 1])["mcpServers"]
 
     assert "swarm-events" not in servers()
@@ -958,7 +980,12 @@ def launch_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         json.dumps({"projects": {repo.resolve().as_posix(): {"hasTrustDialogAccepted": True}}}),
         encoding="utf-8",
     )
-    monkeypatch.setattr(launch, "_ensure_server", lambda root: "http://127.0.0.1:5123/mcp")
+
+    def ensure_server(root: Path) -> str:
+        auth.ensure_token(root)
+        return "http://127.0.0.1:5123/mcp"
+
+    monkeypatch.setattr(launch, "_ensure_server", ensure_server)
     recorder = _Recorder()
     monkeypatch.setattr(launch.subprocess, "run", recorder)
     return {"repo": repo, "run": recorder}
@@ -1002,7 +1029,9 @@ def test_the_sendmessage_setting_launches_without_the_channel(
 
 def test_a_spawned_role_never_carries_the_channel(ledger: Ledger) -> None:
     setup.run_setup(ledger.repo_root)
-    options = agentfiles.session_options(ledger.repo_root, "coder", None, "http://x/mcp")
+    auth.ensure_token(ledger.repo_root)
+    url = "http://127.0.0.1:5123/mcp"
+    options = agentfiles.session_options(ledger.repo_root, "coder", None, url)
     assert "swarm-events" not in options[options.index("--mcp-config") + 1]
     assert "--dangerously-load-development-channels" not in options
 
@@ -1089,17 +1118,22 @@ def served(host: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Itera
 def test_the_server_streams_events_and_records_a_registered_oracle(served: Path) -> None:
     url = serve.ensure_server(served)
     base = url.removesuffix(serve.MCP_PATH)
+    headers = auth.auth_headers(served)
     with pytest.raises(urllib.error.HTTPError) as refused:
-        urllib.request.urlopen(f"{base}/events", timeout=10)
+        urllib.request.urlopen(
+            urllib.request.Request(f"{base}/events", headers=headers), timeout=10
+        )
     assert refused.value.code == 400
 
     async def start_run() -> None:
         from fastmcp import Client
+        from fastmcp.client.transports import StreamableHttpTransport
 
-        async with Client(url) as client:
+        async with Client(StreamableHttpTransport(url, headers=headers)) as client:
             await client.call_tool("run_start", {"prd": "Build X", "session_id": ORACLE})
 
-    with urllib.request.urlopen(f"{base}/events?session={ORACLE}", timeout=30) as stream:
+    events = urllib.request.Request(f"{base}/events?session={ORACLE}", headers=headers)
+    with urllib.request.urlopen(events, timeout=30) as stream:
         assert stream.status == 200
         assert stream.headers["Content-Type"].startswith("application/x-ndjson")
         asyncio.run(start_run())

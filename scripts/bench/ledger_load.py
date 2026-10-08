@@ -41,7 +41,7 @@ from fastmcp.client.transports import StreamableHttpTransport
 
 PLUGIN = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PLUGIN / "mcp" / "src"))
-from swarm_ledger import lock, sessions  # noqa: E402
+from swarm_ledger import auth, lock, sessions  # noqa: E402
 from swarm_ledger.ledger import Ledger  # noqa: E402
 from swarm_ledger.serve import REPO_HEADER, server_info_path  # noqa: E402
 
@@ -288,6 +288,7 @@ def post_hook(root: Path, port: int, event: str, data: dict[str, Any]) -> float:
             headers={
                 "Content-Type": "application/json",
                 REPO_HEADER: urllib.parse.quote(str(root)),
+                **auth.auth_headers(root),
             },
         )
         response = conn.getresponse()
@@ -319,8 +320,9 @@ class MemorySampler:
         self._thread.join()
 
 
-def _client(port: int) -> Client:
-    return Client(StreamableHttpTransport(f"http://127.0.0.1:{port}/mcp"))
+def _client(root: Path, port: int) -> Client:
+    url = f"http://127.0.0.1:{port}/mcp"
+    return Client(StreamableHttpTransport(url, headers=auth.auth_headers(root)))
 
 
 async def load(root: Path, server: dict[str, Any], coders: list[dict[str, str]], rounds: int):
@@ -329,7 +331,7 @@ async def load(root: Path, server: dict[str, Any], coders: list[dict[str, str]],
     hook_ms: list[float] = []
     post_to_inbox_ms: list[float] = []
     errors: list[str] = []
-    clients = [_client(port) for _ in coders]
+    clients = [_client(root, port) for _ in coders]
     for client in clients:
         await client.__aenter__()
 
@@ -453,8 +455,8 @@ def _select_tools(text: str) -> list[str]:
     return [n[len(TOOL_PREFIX) :] for n in names if n.startswith(TOOL_PREFIX)]
 
 
-async def select_bytes(port: int) -> dict[str, Any]:
-    async with _client(port) as client:
+async def select_bytes(root: Path, port: int) -> dict[str, Any]:
+    async with _client(root, port) as client:
         tools = await client.list_tools()
     dumps = [tool.model_dump(by_alias=True, exclude_none=True) for tool in tools]
     full = sum(len(json.dumps(dump).encode()) for dump in dumps)
@@ -512,7 +514,7 @@ def main() -> int:
                 "start_to_health_ms": server["start_to_health_ms"],
                 "idle_mb": process_mb(server["pid"]),
             }
-            report["select"] = asyncio.run(select_bytes(server["port"]))
+            report["select"] = asyncio.run(select_bytes(root, server["port"]))
             report["load"] = {}
             for n in agents:
                 report["load"][n] = asyncio.run(load(root, server, coders[:n], args.rounds))

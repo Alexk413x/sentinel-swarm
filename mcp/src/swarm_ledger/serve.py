@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import os
 import socket
@@ -15,13 +16,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from . import lock, sessions, wake
+from . import auth, lock, sessions, wake
 from .db import ledger_path
 from .identity import LedgerError
 
 if TYPE_CHECKING:
     from starlette.requests import Request
     from starlette.responses import Response
+    from starlette.types import ASGIApp, Receive, Scope, Send
 
 HOST = "127.0.0.1"
 MCP_PATH = "/mcp"
@@ -213,6 +215,67 @@ async def answer_hook(request: Request, root: Path) -> Response:
     )
 
 
+def _is_own_address(netloc: str, port: int) -> bool:
+    try:
+        parsed = urllib.parse.urlsplit(f"//{netloc}")
+        return parsed.hostname in _LOOPBACK_HOSTS and parsed.port == port
+    except ValueError:
+        return False
+
+
+def _is_own_origin(origin: str, port: int) -> bool:
+    try:
+        parsed = urllib.parse.urlsplit(origin)
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "http"
+        and parsed.path in ("", "/")
+        and not parsed.query
+        and _is_own_address(parsed.netloc, port)
+    )
+
+
+def refusal(scope: Scope, token: str, port: int) -> str | None:
+    client = scope.get("client")
+    if not client or client[0] not in _LOOPBACK_CLIENTS:
+        return "the ledger answers only local callers"
+    headers = {
+        name.decode("latin-1").lower(): value.decode("latin-1")
+        for name, value in scope.get("headers") or []
+    }
+    if not _is_own_address(headers.get("host", ""), port):
+        return f"the ledger answers only requests addressed to {HOST}:{port}"
+    origin = headers.get("origin")
+    if origin is not None and not _is_own_origin(origin, port):
+        return "the ledger refuses requests from a web page"
+    if scope.get("path") == HEALTH_PATH:
+        return None
+    presented = headers.get(auth.AUTHORIZATION.lower(), "").encode("latin-1")
+    if not hmac.compare_digest(presented, auth.bearer(token).encode("ascii")):
+        return "the ledger needs the bearer token in .sentinel-swarm/http-token"
+    return None
+
+
+class Guard:
+    # 403, never 401: a 401 makes an MCP client start the OAuth flow of the MCP authorization
+    # spec against the ledger.
+    def __init__(self, app: ASGIApp, token: str, port: int) -> None:
+        self.app = app
+        self.token = token
+        self.port = port
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            reason = refusal(scope, self.token, self.port)
+            if reason is not None:
+                from starlette.responses import PlainTextResponse
+
+                await PlainTextResponse(reason, status_code=403)(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
 def _remove_if_ours(path: Path) -> None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -287,12 +350,14 @@ def finish_later(
 
 def serve(repo_root: Path) -> None:
     from starlette.concurrency import run_in_threadpool
+    from starlette.middleware import Middleware
     from starlette.responses import JSONResponse, StreamingResponse
 
     # Imported here, not at the top: server imports ledger, which imports this module.
     from . import server
 
     root = repo_root.resolve()
+    token = auth.ensure_token(root)
     sock = bind_socket(root)
     port = sock.getsockname()[1]
     path = server_info_path(root)
@@ -334,6 +399,7 @@ def serve(repo_root: Path) -> None:
             path=MCP_PATH,
             show_banner=False,
             sockets=[sock],
+            middleware=[Middleware(Guard, token=token, port=port)],
         )
     finally:
         _shut_down(path, root)

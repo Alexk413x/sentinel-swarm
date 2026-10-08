@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from swarm_ledger import launch, setup
+from swarm_ledger import auth, launch, setup
 
 URL = "http://127.0.0.1:5123/mcp"
 
@@ -37,6 +37,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     def ensure_server(root: Path) -> str:
         servers.append(root)
+        auth.ensure_token(root)
         return URL
 
     monkeypatch.setattr(launch, "_ensure_server", ensure_server)
@@ -69,7 +70,11 @@ def test_interactive_puts_the_prompt_first_and_builds_the_flags(env):
     assert _option(command, "--permission-mode") == "default"
     assert "--strict-mcp-config" in command
     config = json.loads(_option(command, "--mcp-config"))
-    assert config["mcpServers"]["swarm-ledger"] == {"type": "http", "url": URL}
+    assert config["mcpServers"]["swarm-ledger"] == {
+        "type": "http",
+        "url": URL,
+        "headers": {"Authorization": f"Bearer {auth.read_token(env['repo'])}"},
+    }
     assert config["mcpServers"]["codebase-kg"] == {
         "command": "python",
         "args": [".sentinel-swarm/hook.py", "mcp", "codebase-kg@codebase-kg", "codebase-kg"],

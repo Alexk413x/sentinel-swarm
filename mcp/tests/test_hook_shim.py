@@ -77,9 +77,14 @@ def fake_server() -> Iterator[FakeServer]:
     server.close()
 
 
-def _record_port(repo: Path, port: int) -> None:
+TOKEN = "t0ken-" + "x" * 40
+
+
+def _record_port(repo: Path, port: int, token: str | None = TOKEN) -> None:
     info = {"url": f"http://127.0.0.1:{port}/mcp", "port": port, "pid": 1}
     (repo / ".sentinel-swarm" / "server.json").write_text(json.dumps(info), encoding="utf-8")
+    if token is not None:
+        (repo / ".sentinel-swarm" / "http-token").write_text(token + "\n", encoding="utf-8")
 
 
 def _fallback(shim: Any, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, bytes]]:
@@ -105,7 +110,23 @@ def test_the_fast_path_answers_from_the_running_server(
     [(path, headers, body)] = fake_server.requests
     assert path == "/hook/pre_ledger"
     assert urllib.parse.unquote(headers["X-Sentinel-Swarm-Repo"]) == str(repo)
+    assert headers["Authorization"] == f"Bearer {TOKEN}"
     assert body == b'{"tool_name": "x"}'
+
+
+@pytest.mark.parametrize("token", [None, "short", "two words " + "x" * 40])
+def test_the_shim_falls_back_without_a_valid_token(
+    shim: Any,
+    repo: Path,
+    fake_server: FakeServer,
+    monkeypatch: pytest.MonkeyPatch,
+    token: str | None,
+) -> None:
+    _record_port(repo, fake_server.port, token)
+    calls = _fallback(shim, monkeypatch)
+    assert shim.run_hook("pre_write", b"{}") == b"fallback"
+    assert calls == [("pre_write", b"{}")]
+    assert fake_server.requests == []
 
 
 def test_the_shim_falls_back_without_a_server_record(
@@ -128,7 +149,9 @@ def test_the_shim_falls_back_when_the_recorded_server_is_down(
     assert calls == [("pre_write", b"{}")]
 
 
-@pytest.mark.parametrize(("status", "echo_repo"), [(409, True), (404, True), (200, False)])
+@pytest.mark.parametrize(
+    ("status", "echo_repo"), [(403, False), (409, True), (404, True), (200, False)]
+)
 def test_the_shim_falls_back_when_the_server_is_not_this_repos_ledger(
     shim: Any,
     repo: Path,

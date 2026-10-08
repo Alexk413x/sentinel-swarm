@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -19,6 +20,13 @@ _UPSERT_SCRIPT = (
     "import json,sys; from codebase_kg import edits; "
     "print(json.dumps(edits.upsert_node(sys.argv[1], json.loads(sys.stdin.read()))))"
 )
+_BASE_UPSERT_SCRIPT = (
+    "import json,sys; sys.path.insert(0, sys.argv[1]); from codebase_kg import edits; "
+    "print(json.dumps(edits.upsert_node(sys.argv[2], json.loads(sys.stdin.read()))))"
+)
+_DEFAULT_FLOOR = (3, 10)
+_FLOOR_RE = re.compile(r'requires-python\s*=\s*"\s*>=\s*(\d+)\.(\d+)')
+_NO_DEPENDENCIES = re.compile(r"^dependencies\s*=\s*\[\s*\]", re.MULTILINE)
 _WORD_RE = re.compile(r"\w+")
 
 
@@ -78,6 +86,54 @@ def _check_edges(graph_path: Path, nodes: list[dict]) -> None:
                 )
 
 
+def _pyproject(kg_root: Path) -> str:
+    try:
+        return (kg_root / "pyproject.toml").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def python_floor(kg_root: Path) -> tuple[int, int]:
+    match = _FLOOR_RE.search(_pyproject(kg_root))
+    return (int(match.group(1)), int(match.group(2))) if match else _DEFAULT_FLOOR
+
+
+def runs_on_base(kg_root: Path) -> bool:
+    return (
+        sys.version_info[:2] >= python_floor(kg_root)
+        and _NO_DEPENDENCIES.search(_pyproject(kg_root)) is not None
+        and (kg_root / "src" / "codebase_kg" / "edits.py").is_file()
+    )
+
+
+def upsert_command(kg_root: Path, graph_path: Path, base: bool) -> list[str]:
+    if base:
+        # The base interpreter, as codebase-kg's own workers run: a Windows venv's python.exe
+        # is a launcher that starts the base interpreter as a second process.
+        python = getattr(sys, "_base_executable", None) or sys.executable
+        return [
+            python,
+            "-I",
+            "-S",
+            "-c",
+            _BASE_UPSERT_SCRIPT,
+            str(kg_root / "src"),
+            str(graph_path),
+        ]
+    return [
+        "uv",
+        "run",
+        "--project",
+        str(kg_root),
+        "--frozen",
+        "--no-dev",
+        "python",
+        "-c",
+        _UPSERT_SCRIPT,
+        str(graph_path),
+    ]
+
+
 def _tail(text: str, lines: int = 20) -> str:
     return "\n".join(text.splitlines()[-lines:])
 
@@ -89,21 +145,11 @@ def graph_upsert(repo_root: Path, nodes: list[dict]) -> dict:
     # The ledger's own venv leaks through VIRTUAL_ENV and makes uv refuse the kg project.
     env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
 
+    base = runs_on_base(kg_root)
     with KG_LOCK:
         try:
             completed = subprocess.run(
-                [
-                    "uv",
-                    "run",
-                    "--project",
-                    str(kg_root),
-                    "--frozen",
-                    "--no-dev",
-                    "python",
-                    "-c",
-                    _UPSERT_SCRIPT,
-                    str(graph_path),
-                ],
+                upsert_command(kg_root, graph_path, base),
                 cwd=repo_root,
                 env=env,
                 input=json.dumps(nodes),
@@ -112,7 +158,8 @@ def graph_upsert(repo_root: Path, nodes: list[dict]) -> dict:
                 timeout=120,
             )
         except OSError as exc:
-            raise LedgerError(f"failed to launch uv for graph_upsert: {exc}") from exc
+            launcher = "Python" if base else "uv"
+            raise LedgerError(f"failed to launch {launcher} for graph_upsert: {exc}") from exc
 
     if completed.returncode != 0:
         raise LedgerError(f"graph_upsert failed: {_tail(completed.stderr)}")
