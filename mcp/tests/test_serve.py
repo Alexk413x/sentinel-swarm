@@ -8,17 +8,21 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 from fastmcp import Client
+from fastmcp.client.transports import StreamableHttpTransport
 from starlette.requests import Request
+from starlette.types import Message
 
+from swarm_ledger import auth, serve, wake
 from swarm_ledger import hooks as hooks_package
-from swarm_ledger import serve, wake
 from swarm_ledger.hooks import run_event
 from swarm_ledger.identity import LedgerError
 
@@ -53,8 +57,12 @@ def _wait_for(condition, timeout: float = 20.0) -> bool:
     return False
 
 
-async def _start_and_finish(url: str) -> dict[str, Any]:
-    async with Client(url) as client:
+def _client(url: str, root: Path) -> Client:
+    return Client(StreamableHttpTransport(url, headers=auth.auth_headers(root)))
+
+
+async def _start_and_finish(url: str, root: Path) -> dict[str, Any]:
+    async with _client(url, root) as client:
         await client.call_tool("run_start", {"prd": "Build X", "session_id": "sess-1"})
         return (
             await client.call_tool(
@@ -101,7 +109,7 @@ def test_ensure_server_starts_one_server_per_repo_and_it_exits_after_run_finish(
     assert second.returncode == 0
     assert second.stdout.strip() == url
 
-    finished = asyncio.run(_start_and_finish(url))
+    finished = asyncio.run(_start_and_finish(url, host))
     assert finished["state"] == "finished"
     assert _wait_for(lambda: not serve.server_info_path(host).exists())
     assert _wait_for(lambda: not serve.is_answering(info, host))
@@ -335,3 +343,161 @@ def test_the_shim_answers_a_hook_through_the_running_server(
     monkeypatch.setattr(shim, "run_ledger_hook", no_fallback)
     expected, _ = run_event("pre_ledger", _LEDGER_INFO.decode(), host)
     assert shim.run_hook("pre_ledger", _LEDGER_INFO) == expected.encode()
+
+
+_TOKEN = "k" * 43
+_PORT = 8123
+
+
+def _guard_call(
+    path: str = "/mcp",
+    headers: dict[str, str | None] | None = None,
+    client: tuple[str, int] = ("127.0.0.1", 50000),
+) -> tuple[int, bytes, bool]:
+    reached: list[str] = []
+
+    async def app(scope: Any, receive: Any, send: Any) -> None:
+        reached.append(scope["path"])
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    merged: dict[str, str | None] = {
+        "host": f"127.0.0.1:{_PORT}",
+        "authorization": f"Bearer {_TOKEN}",
+        **(headers or {}),
+    }
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": path,
+        "headers": [
+            (name.encode(), value.encode()) for name, value in merged.items() if value is not None
+        ],
+        "client": client,
+        "server": ("127.0.0.1", _PORT),
+        "scheme": "http",
+        "query_string": b"",
+        "root_path": "",
+    }
+    sent: list[Message] = []
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    asyncio.run(serve.Guard(app, _TOKEN, _PORT)(scope, receive, send))
+    body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+    return sent[0]["status"], body, bool(reached)
+
+
+_GUARDED = ["/mcp", "/hook/pre_ledger", "/events"]
+_ALL_PATHS = [*_GUARDED, "/health"]
+
+
+@pytest.mark.parametrize("path", _ALL_PATHS)
+def test_the_guard_passes_a_local_caller_with_the_token(path: str) -> None:
+    assert _guard_call(path) == (200, b"ok", True)
+
+
+@pytest.mark.parametrize("path", _GUARDED)
+@pytest.mark.parametrize("authorization", [None, "", f"Bearer {_TOKEN}x", _TOKEN, "Bearer "])
+def test_the_guard_refuses_a_missing_or_wrong_token_with_403(
+    path: str, authorization: str | None
+) -> None:
+    status, body, reached = _guard_call(path, {"authorization": authorization})
+    assert (status, reached) == (403, False)
+    assert b"bearer token" in body
+
+
+def test_the_health_check_needs_no_token() -> None:
+    assert _guard_call("/health", {"authorization": None})[0] == 200
+
+
+@pytest.mark.parametrize("path", _ALL_PATHS)
+@pytest.mark.parametrize(
+    "host_header", ["evil.example", f"evil.example:{_PORT}", "127.0.0.1:9", "127.0.0.2:8123", ""]
+)
+def test_the_guard_refuses_a_wrong_host_with_403(path: str, host_header: str) -> None:
+    status, body, reached = _guard_call(path, {"host": host_header})
+    assert (status, reached) == (403, False)
+    assert body == f"the ledger answers only requests addressed to 127.0.0.1:{_PORT}".encode()
+
+
+def test_the_guard_takes_localhost_as_the_host() -> None:
+    assert _guard_call("/mcp", {"host": f"localhost:{_PORT}"})[0] == 200
+
+
+@pytest.mark.parametrize("path", _ALL_PATHS)
+@pytest.mark.parametrize(
+    "origin", ["http://evil.example", "http://localhost:3000", f"https://127.0.0.1:{_PORT}", "null"]
+)
+def test_the_guard_refuses_a_foreign_origin_with_403(path: str, origin: str) -> None:
+    status, body, reached = _guard_call(path, {"origin": origin})
+    assert (status, reached) == (403, False)
+    assert body == b"the ledger refuses requests from a web page"
+
+
+def test_the_guard_takes_the_ledgers_own_origin() -> None:
+    assert _guard_call("/mcp", {"origin": f"http://127.0.0.1:{_PORT}"})[0] == 200
+
+
+def test_the_guard_refuses_a_remote_caller_with_403() -> None:
+    status, body, reached = _guard_call("/mcp", client=("10.0.0.2", 50000))
+    assert (status, reached) == (403, False)
+    assert body == b"the ledger answers only local callers"
+
+
+def test_ensure_token_creates_one_token_and_keeps_it(tmp_path: Path) -> None:
+    (tmp_path / ".git").mkdir()
+    token = auth.ensure_token(tmp_path)
+    path = auth.token_path(tmp_path)
+    assert path == tmp_path / ".sentinel-swarm" / "http-token"
+    assert auth.ensure_token(tmp_path) == token == auth.read_token(tmp_path)
+    if sys.platform != "win32":
+        assert path.stat().st_mode & 0o777 == 0o600
+    path.write_text("not a token", "utf-8")
+    replaced = auth.ensure_token(tmp_path)
+    assert replaced != token
+    assert auth.read_token(tmp_path) == replaced
+
+
+def _status(url: str, headers: dict[str, str] | None = None, data: bytes | None = None) -> int:
+    request = urllib.request.Request(url, data=data, headers=headers or {})
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+
+
+async def _ledger_info(url: str, root: Path) -> dict[str, Any]:
+    async with _client(url, root) as client:
+        return (await client.call_tool("ledger_info", {})).data
+
+
+@pytest.mark.integration
+def test_the_live_ledger_refuses_callers_without_the_token_and_keeps_it_across_a_restart(
+    host: Path,
+) -> None:
+    url = serve.ensure_server(host, timeout=60)
+    token = auth.read_token(host)
+    info = serve.read_server_info(host)
+    assert info is not None
+    base = f"http://127.0.0.1:{info['port']}"
+    repo_header = {serve.REPO_HEADER: urllib.parse.quote(str(host))}
+    assert _status(f"{base}/health") == 200
+    assert _status(f"{base}/mcp") == 403
+    assert _status(f"{base}/mcp", {"Authorization": "Bearer wrong"}) == 403
+    assert _status(f"{base}/events?session=s") == 403
+    assert _status(f"{base}/hook/pre_ledger", repo_header, b"{}") == 403
+    assert _status(f"{base}/health", {"Host": "evil.example"}) == 403
+    assert _status(f"{base}/health", {"Origin": "http://evil.example"}) == 403
+    assert asyncio.run(_ledger_info(url, host))["name"] == "swarm-ledger"
+
+    os.kill(int(info["pid"]), signal.SIGTERM)
+    assert _wait_for(lambda: not serve.is_answering(info, host))
+    assert serve.ensure_server(host, timeout=60) == url
+    assert auth.read_token(host) == token
+    assert asyncio.run(_ledger_info(url, host))["name"] == "swarm-ledger"

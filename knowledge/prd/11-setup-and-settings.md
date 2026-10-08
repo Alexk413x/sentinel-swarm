@@ -35,7 +35,7 @@ SHA-256 of `mcp/uv.lock`. `uv` gets it as `UV_PROJECT_ENVIRONMENT`.
   Neither reads `CLAUDE_PLUGIN_DATA`, which is not reliable inside an agent-file hook.
 - The `swarm_ledger` package removes `UV_PROJECT_ENVIRONMENT` from its own environment
   at import when it names the package's own venv, so no child process inherits it. A
-  child `uv run`, such as codebase-kg's `graph_upsert` or the host's test command, would
+  child `uv run`, such as `graph_upsert`'s fallback or the host's test command, would
   otherwise sync its own project into the ledger's venv.
 - `scripts/smoke.sh` uses the same venv for its `uv sync` and `uv run` calls.
 
@@ -96,7 +96,9 @@ or the `/sentinel-swarm:run` skill.
   `claude -p` session does not count as accepting the trust prompt, so a headless
   Oracle in an untrusted folder would run without its role file's hooks.
 - It starts the ledger server, or reuses one that answers, then the Oracle with its
-  agent file's model and the same flags as `agent_spawn`. If the file has no `model`, it uses the first entry of the
+  agent file's model and the same flags as `agent_spawn`, including the ledger token
+  header. It stops with the reason when the URL in `server.json` or the token fails
+  `session_options`' checks; see [06-ledger-server.md](06-ledger-server.md). If the file has no `model`, it uses the first entry of the
   Oracle's approved list.
 - Interactive by default. `--bg` starts a background session. `--headless` runs
   `claude -p` with a stream-json transcript and the prompt on stdin. Nobody answers

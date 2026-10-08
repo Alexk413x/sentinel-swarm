@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from swarm_ledger import sessions
+from swarm_ledger import auth, sessions
 from swarm_ledger.identity import LedgerError
 from swarm_ledger.ledger import Ledger
 from swarm_ledger.repo import check_repo
@@ -331,6 +331,7 @@ def test_agent_spawn_starts_a_manager_after_a_repo_check_even_when_not_obvious(
     server_json.write_text(
         json.dumps({"url": "http://127.0.0.1:4321/mcp", "port": 4321, "pid": 1}), encoding="utf-8"
     )
+    auth.ensure_token(host)
 
     ledger = _make_ledger(host)
     oracle_id = _bootstrap_oracle(ledger)

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from swarm_ledger import sessions
+from swarm_ledger import auth, sessions
 from swarm_ledger.db import write_tx
 from swarm_ledger.identity import LedgerError
 from swarm_ledger.ledger import Ledger, repo_slug, run_stamp, session_name_for
@@ -111,6 +111,7 @@ def host(tmp_path: Path, repo_root: Path) -> Path:
     (records / "server.json").write_text(
         json.dumps({"url": "http://127.0.0.1:4321/mcp", "port": 4321, "pid": 1}), encoding="utf-8"
     )
+    auth.ensure_token(root)
     return root
 
 
@@ -341,6 +342,7 @@ def test_agent_spawn_starts_the_session_with_the_role_files_flags(
     assert config["mcpServers"]["swarm-ledger"] == {
         "type": "http",
         "url": "http://127.0.0.1:4321/mcp",
+        "headers": {"Authorization": f"Bearer {auth.read_token(host)}"},
     }
     assert config["mcpServers"]["codebase-kg"]["command"] == "python"
     assert options[11:] == [
@@ -442,6 +444,30 @@ def test_agent_spawn_needs_the_server_url(ledger: Ledger, claude: FakeClaude, ho
     (host / ".sentinel-swarm" / "server.json").unlink()
     _brief_second_lead(ledger, ctx)
     with pytest.raises(LedgerError, match="no ledger server"):
+        ledger.agent_spawn(*ctx.manager, "lead-p1-module-2")
+
+
+def test_agent_spawn_refuses_a_recorded_url_off_loopback(
+    ledger: Ledger, claude: FakeClaude, host: Path
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    (host / ".sentinel-swarm" / "server.json").write_text(
+        json.dumps({"url": "http://10.0.0.5:4321/mcp", "port": 4321, "pid": 1}), encoding="utf-8"
+    )
+    _brief_second_lead(ledger, ctx)
+    calls = len(claude.calls)
+    with pytest.raises(LedgerError, match=r"is not http://127\.0\.0\.1:<port>/mcp"):
+        ledger.agent_spawn(*ctx.manager, "lead-p1-module-2")
+    assert not any("--bg" in args for args, _ in claude.calls[calls:])
+
+
+def test_agent_spawn_refuses_without_the_ledger_token(
+    ledger: Ledger, claude: FakeClaude, host: Path
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    auth.token_path(host).unlink()
+    _brief_second_lead(ledger, ctx)
+    with pytest.raises(LedgerError, match="no ledger token"):
         ledger.agent_spawn(*ctx.manager, "lead-p1-module-2")
 
 

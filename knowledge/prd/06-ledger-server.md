@@ -13,6 +13,40 @@
   waits until it answers, and returns its URL. On Windows it starts with a hidden
   console (`CREATE_NO_WINDOW`).
 - Errors go to `.sentinel-swarm/server.log`.
+- Access: every request must come from `127.0.0.1` or `::1`, carry a `Host` header of
+  `127.0.0.1:<port>` or `localhost:<port>` with the server's own port, and carry no
+  `Origin` header other than `http://127.0.0.1:<port>` or `http://localhost:<port>`.
+  Every route except `/health` also needs `Authorization: Bearer <token>`, with the
+  token from `.sentinel-swarm/http-token`. A request that fails a check gets 403 and a
+  one-line reason, never 401: a 401 makes an MCP client start the OAuth flow of the MCP
+  authorization spec. The checks run in `serve.Guard`, an ASGI middleware in front of
+  every route. FastMCP 4.0.5 validates `Host` only when its `host_origin_protection`
+  setting is on, which it is not by default, and then answers 421, so the ledger does
+  not use it.
+- The token: the server creates `.sentinel-swarm/http-token` on its first start, mode
+  0600, from 32 random bytes in URL-safe base64, and reuses it on every later start.
+  Claude Code keeps the headers a session got at connect and sends them to a restarted
+  server, so a new token per process would refuse every live session after a restart. A
+  file that does not match `[A-Za-z0-9_-]{32,128}` is replaced at the next server start.
+- `session_options` writes the `swarm-ledger` entry of every role's `--mcp-config` as
+  `{"type": "http", "url": <url>, "headers": {"Authorization": "Bearer <token>"}}`.
+  The token exists before any role starts, so no `headersHelper` and no start race
+  apply. `server.json` and the token live in the host repo's working tree, so before
+  either reaches a `--mcp-config`, `session_options` checks that the URL is exactly
+  `http://127.0.0.1:<port>/mcp` and that the token matches `[A-Za-z0-9_-]{32,128}`. A
+  failed check raises an error: `agent_spawn` refuses, and the launcher prints the
+  reason and exits 1.
+- `ensure_server` probes `/health`, which needs no token, and `python -m
+  swarm_ledger.directive` opens the ledger database directly, so neither sends the
+  token. The hook shim and the `swarm-events` bridge read it from `http-token`.
+- After a 403, Claude Code records the server in `~/.claude/mcp-needs-auth-cache.json`,
+  a JSON object keyed by server name with a `timestamp` per entry, and stops connecting
+  to it, in later sessions too. A live session gets a 403 only when someone deletes or
+  replaces `http-token` while the run is live. To recover, stop the role sessions,
+  remove the `swarm-ledger` key from that file (or delete the file when it holds nothing
+  else you need), and resume the sessions. Not verified live: the key Claude Code uses
+  for a `--mcp-config` server, and whether a resumed session reconnects once the key is
+  gone. See [16-open-items.md](16-open-items.md).
 - The ledger server runs no other MCP server. Each plugin shares its own servers
   through its own relay. See "Plugin servers" in
   [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
@@ -29,8 +63,9 @@
   closes it after the handler. It runs on a worker thread, off the event loop, and
   never takes the tool-call lock. It uses an empty wake-up hub, as the subprocess does,
   so a hook never pushes a wake-up through a channel. The handler's stderr goes to the
-  server log. The route answers 403 unless the caller is `127.0.0.1` or `::1` and the
-  `Host` header names `127.0.0.1` or `localhost`, 404 for an unknown event, and 409
+  server log. Besides the access checks above, the route answers 403 unless the caller
+  is `127.0.0.1` or `::1` and the `Host` header names `127.0.0.1` or `localhost`, 404
+  for an unknown event, and 409
   unless the `X-Sentinel-Swarm-Repo` header names this server's repo root. A 200
   answer carries the header back. See "The shim" in
   [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md).
@@ -38,7 +73,8 @@
   open: newline-delimited JSON, one event per line, and a `{"kind": "ping"}` line after
   15 seconds without an event. The request records `launched` on that session's agent
   row, and the stream registers the session until the connection closes. A request
-  without `session` gets 400. See "Wake-up delivery" in
+  without `session` gets 400. The `swarm-events` bridge sends the token. See
+  "Wake-up delivery" in
   [05-sessions.md](05-sessions.md).
 - Lifetime: the launcher starts the server before the Oracle. It exits after
   `run_finish`, and after `idle_exit_minutes` with no active run, or a paused run, and
@@ -55,7 +91,7 @@
 
 `.sentinel-swarm/` at the root of the main checkout holds `ledger.db`, `versions/`,
 `report.md` (the latest run's report), `report-<run_id>.md` for each run, `server.json`,
-`server.port`, `server.log`, and the hook shim `hook.py`.
+`server.port`, `http-token`, `server.log`, and the hook shim `hook.py`.
 A worktree's `.git` file resolves to the main checkout, so every worktree shares one
 ledger. The folder is excluded through `.git/info/exclude`, never the host's
 `.gitignore`. One ledger holds every run in the repo. The swarm writes

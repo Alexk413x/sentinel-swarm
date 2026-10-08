@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from swarm_ledger import sessions
+from swarm_ledger import auth, sessions
 from swarm_ledger.agentfiles import session_options
 from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import events
@@ -138,6 +138,7 @@ def spawn_host(tmp_path: Path, repo_root: Path) -> Path:
     (records / "server.json").write_text(
         json.dumps({"url": "http://127.0.0.1:4321/mcp", "port": 4321, "pid": 1}), encoding="utf-8"
     )
+    auth.ensure_token(root)
     return root
 
 

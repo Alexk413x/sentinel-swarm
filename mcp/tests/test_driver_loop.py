@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from swarm_ledger import notify, sessions
+from swarm_ledger import auth, notify, sessions
 from swarm_ledger.db import write_tx
 from swarm_ledger.drive import compute_loop_status, open_findings
 from swarm_ledger.identity import LedgerError
@@ -83,6 +83,7 @@ def host(tmp_path: Path, repo_root: Path) -> Path:
     (records / "server.json").write_text(
         json.dumps({"url": "http://127.0.0.1:4321/mcp", "port": 4321, "pid": 1}), "utf-8"
     )
+    auth.ensure_token(root)
     registry = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "plugins" / "installed_plugins.json"
     registry.parent.mkdir(parents=True, exist_ok=True)
     plugins = ("cartographer@cartographer", "web-driver@accessibility-tools")

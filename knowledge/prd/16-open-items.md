@@ -8,6 +8,11 @@
   run whose Oracle API call dropped mid-response. It has not caught one in a live run.
 - **PreCompact.** Whether `PreCompact` fires in a long session. It needs a session that
   fills its context.
+- **Ledger token, live.** The token checks are built and tested against a live ledger
+  process, never against a Claude Code session. A live check must force a 403 for a role
+  session, confirm which key `~/.claude/mcp-needs-auth-cache.json` gets (expected
+  `swarm-ledger`), and confirm that removing it and resuming the session reconnects.
+  Record the result in "The ledger server" in [06-ledger-server.md](06-ledger-server.md).
 - **Ledger server early exit.** Once, the server exited about a minute after it started,
   with no error in its log. It has not recurred.
 - **Plugin relays in a live run.** No live run has confirmed that role sessions reach a

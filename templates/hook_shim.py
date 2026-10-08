@@ -33,6 +33,7 @@ GATING_EVENTS = frozenset(
 HOOK_TIMEOUT_SECONDS = 50
 SERVER_HOST = "127.0.0.1"
 SERVER_FILE = "server.json"
+TOKEN_FILE = "http-token"
 HOOK_PATH = "/hook"
 REPO_HEADER = "X-Sentinel-Swarm-Repo"
 # Windows takes about 2 s to refuse a connection to a closed local port; a live local
@@ -47,6 +48,7 @@ USAGE = (
     "usage: hook.py hook <event> | hook.py mcp <plugin_id> <server> | hook.py watch "
     "| hook.py channel\n"
 )
+_TOKEN = re.compile(r"[A-Za-z0-9_-]{32,128}")
 _VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 
@@ -189,9 +191,18 @@ def server_port(repo: Path) -> int | None:
     return port if 0 < port < 65536 else None
 
 
+def server_token(repo: Path) -> str | None:
+    try:
+        token = (repo / ".sentinel-swarm" / TOKEN_FILE).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return token if _TOKEN.fullmatch(token) else None
+
+
 def fast_hook(event: str, payload: bytes, repo: Path, timeout: float) -> bytes | None:
     port = server_port(repo)
-    if port is None:
+    token = server_token(repo)
+    if port is None or token is None:
         return None
     project = os.environ.get("CLAUDE_PROJECT_DIR") or str(repo)
     # A plain HTTP/1.0 request, not http.client: its email imports add about 180 ms to
@@ -201,6 +212,7 @@ def fast_hook(event: str, payload: bytes, repo: Path, timeout: float) -> bytes |
         f"Host: {SERVER_HOST}:{port}\r\n"
         "Content-Type: application/json\r\n"
         f"Content-Length: {len(payload)}\r\n"
+        f"Authorization: Bearer {token}\r\n"
         f"{REPO_HEADER}: {urllib.parse.quote(project)}\r\n\r\n"
     )
     try:

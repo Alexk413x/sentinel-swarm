@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from .auth import ledger_entry
 from .identity import ROLES, LedgerError
 
 LEDGER_SERVER = "swarm-ledger"
@@ -283,7 +284,7 @@ def session_options(
     agent_file = read_agent_file(repo_root, role)
     extra = optional_servers(repo_root, role)
     servers = {
-        LEDGER_SERVER: {"type": "http", "url": ledger_url},
+        LEDGER_SERVER: ledger_entry(repo_root, ledger_url),
         **{
             name: _direct(repo_root, entry)
             for name, entry in {**mcp_servers(agent_file), **extra}.items()

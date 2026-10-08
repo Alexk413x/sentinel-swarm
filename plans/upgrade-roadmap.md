@@ -1,6 +1,7 @@
 # Upgrade roadmap: efficiency, messaging, other platforms
 
-Status: part 1 is a build plan; steps 0, 1, 2 and 2b are done, the rest is not started. Part 2 is an exploration
+Status: part 1 is a build plan; steps 0, 1, 2, 2b, 2c, 5 and 6 are done (step 5's live check
+is still owed), the rest is not started. Part 2 is an exploration
 **(proposed)**, not a build plan. Written 2026-10-07 on branch `feat/kg-start-end-cli`. It replaces
 the root `cli-plan.md`.
 
@@ -557,6 +558,30 @@ Tests: `test_plugin_surface.py` checks each template's `select:` line against an
 
 ### Step 5. Secure the ledger's `/mcp`
 
+Built on 2026-10-08, with the tests below; the live check is still owed. FastMCP 4.0.5 does not
+validate `Host` by default: its `HostOriginGuardMiddleware` runs only when
+`host_origin_protection` is on (default off), and it answers a wrong `Host` with 421. So the
+ledger has its own pure ASGI middleware, `serve.Guard`, in front of every route. It answers 403
+to a remote client, a `Host` other than `127.0.0.1:<port>` or `localhost:<port>`, an `Origin`
+other than the ledger's own, and, on every route but `/health`, a missing or wrong bearer token.
+`/health` stays open to the token-less probe in `ensure_server`, behind the same address
+checks. The token lives in `mcp/src/swarm_ledger/auth.py`; `session_options` calls
+`auth.ledger_entry`, which checks the URL and the token. The launcher reaches the ledger only
+through `/health` and `session_options`, and `python -m swarm_ledger.directive` writes the
+database directly, so both work unchanged. `scripts/bench/ledger_load.py` sends the token too.
+
+Tests: `test_serve.py` (each refusal at the middleware, the token file, and a live ledger that
+refuses token-less `/mcp`, `/events` and `/hook` calls and keeps the token across a kill and
+restart, where the next call with the old header succeeds); `test_agentfiles.py` (the header,
+and each refused URL and token); `test_sessions.py` (a `server.json` naming `10.0.0.5` and a
+missing token each refuse `agent_spawn`); `test_hook_shim.py` and `test_wake.py` (the shim and
+the bridge send the token; the shim falls back without one or on a 403).
+
+Live check, still owed: force a 403 for a role session, read the `swarm-ledger` key in
+`~/.claude/mcp-needs-auth-cache.json`, and confirm the recovery recorded in PRD 06. The file
+on this machine is a JSON object keyed by server name, each entry a `timestamp`; plugin servers
+appear as `plugin:<plugin>:<server>`. PRD 16 lists the check.
+
 Today any local process can call `/mcp` and pass any `agent_id`.
 
 1. The ledger keeps one random token per host repo in `.sentinel-swarm/http-token`, mode 0600,
@@ -578,6 +603,27 @@ naming a non-loopback host refuses the spawn. Live check: after a forced 403, lo
 `~/.claude/mcp-needs-auth-cache.json` for `swarm-ledger`, and record how to clear it.
 
 ### Step 6. `graph_upsert` on the base Python
+
+Built on 2026-10-08. The installed codebase-kg 0.14.0 states `requires-python = ">=3.10"` and
+`dependencies = []` in `mcp/pyproject.toml`, and its `pool.worker_command` runs
+`[sys._base_executable or sys.executable, "-I", "-S", "-c", <entry>, <mcp/src>]`.
+`graph_upsert` now runs the same way: `-I -S`, `<kg>/mcp/src` inserted on `sys.path`. It falls
+back to `uv run` when the running Python is below that floor, when the `pyproject.toml` declares
+a dependency, or when `src/codebase_kg/edits.py` is missing. Tests in `mcp/tests/test_graph.py`,
+including an integration test that both paths return equal results.
+
+Time per call, 2026-10-08: Windows 11, Python 3.10.20, codebase-kg 0.14.0, 10 calls after one
+warm-up, each an update of one node in a copy of this repo's `knowledge/code_graph.db`. Most of
+a call is codebase-kg's own validation before and after the write.
+
+| Run | Machine CPU | `uv run` (before) median / max | Base Python (after) median / max | Process start and `import edits` alone, before / after |
+|---|---|---|---|---|
+| 1 | busy | 880 / 1,844 ms | 749 / 939 ms | not measured |
+| 2 | 100% | 3,264 / 5,464 ms | 1,248 / 2,015 ms | 1,255 / 479 ms |
+| 3 | 63-77% | 579 / 867 ms | 369 / 528 ms | 428 / 304 ms |
+
+Run 3 is the least loaded: the base path saves about 210 ms per call, and the first call of a
+burst drops from 631 to 395 ms.
 
 `graph.py` runs codebase-kg's `edits` through `uv run --project <kg>/mcp --frozen --no-dev`, which
 starts `uv` and needs a venv in the plugin cache. codebase-kg's tool code is stdlib only since 0.12.0.
@@ -638,7 +684,7 @@ share is re-sent as cached input on every turn, and the 39 fewer tool turns save
 | Tool call median, 1 agent | 15 ms (step 1) | No slower than step 1 |
 | Tool call and hook median, 16 agents | 273 ms and 52 ms (step 1) | Below 150 ms; build step 7 if missed |
 | Calls that fail at 16 agents | 0 (step 1) | 0 |
-| Unauthenticated `/mcp`, `/hook`, `/events` calls accepted | All | 0 |
+| Unauthenticated `/mcp`, `/hook`, `/events` calls accepted | 0 by test (step 5) | 0 |
 | Ledger idle memory and start (step 7 only) | 79.3 MB; 3.1 s to `server.json` (step 1) | Below 35 MB; below 0.3 s |
 
 Every step runs the repo's checks before commit: `uv run pytest`, `uv run pyright`,

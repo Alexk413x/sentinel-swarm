@@ -36,9 +36,11 @@ Every hook command is
 
 - `hook <event>` posts the hook input to the running ledger server at
   `POST /hook/<event>`, on the port in `.sentinel-swarm/server.json`, with the repo
-  root in the `X-Sentinel-Swarm-Repo` header, and prints the answer. See "The hook
-  route" in [06-ledger-server.md](06-ledger-server.md). It falls back when there is
-  no `server.json`, the connection is not accepted within 0.25 seconds, no answer comes
+  root in the `X-Sentinel-Swarm-Repo` header and the token from
+  `.sentinel-swarm/http-token` as `Authorization: Bearer <token>`, and prints the
+  answer. See "The hook route" in [06-ledger-server.md](06-ledger-server.md). It falls
+  back when there is no `server.json`, no token that matches `[A-Za-z0-9_-]{32,128}`,
+  the connection is not accepted within 0.25 seconds, no answer comes
   within 10 seconds (40 for `stop` and `session_end`), or the answer is not a 200 that
   carries the repo header. The fallback finds the sentinel-swarm install for this repo in
   `~/.claude/plugins/installed_plugins.json` (scope `local`, then `project`, each with a
@@ -189,6 +191,7 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 | A model comes from the approved list | `brief_create` |
 | No agent starts without a brief | `agent_spawn` and `brief_ack` |
 | No agent fakes its identity | `pre_ledger` stamps `agent_id`; the server's middleware takes it out of the arguments; every tool matches `caller` to it |
+| Only the run's own sessions reach the ledger | `serve.Guard` answers 403 to a remote caller, a wrong `Host`, a foreign `Origin`, and a missing or wrong token on `/mcp`, `/hook`, and `/events`; `session_options` sends the token only to a checked `http://127.0.0.1:<port>/mcp` URL |
 | A role calls only its own ledger tools | The role file's `tools` allowlist, which names each `mcp__swarm-ledger__<tool>` in `identity.ROLE_TOOLS`; `server._call` refuses a live agent's call outside its set |
 | A handoff needs passing tests and a current graph | `handoff_submit` |
 | No approval without a handoff and two sets of scores | `approve` |
