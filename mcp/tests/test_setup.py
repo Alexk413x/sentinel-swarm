@@ -60,9 +60,7 @@ def test_fresh_repo_gets_every_file(repo: Path):
 
     for role in setup.CORE_ROLES:
         path = setup.role_file(repo, role)
-        assert path.read_text(encoding="utf-8") == setup.template_file(role).read_text(
-            encoding="utf-8"
-        )
+        assert path.read_text(encoding="utf-8") == setup.render_default(setup.role_template(role))
         assert f"wrote .claude/agents/swarm-{role}.md" in report.lines
     assert any(line.startswith("skipped .claude/agents/swarm-driver.md") for line in report.lines)
     assert (repo / ".sentinel-swarm" / "hook.py").read_text(
@@ -375,6 +373,15 @@ def test_enabled_project_plugins_do_not_join_new_role_files(
         template = setup.template_file(role).read_text(encoding="utf-8")
         assert written == setup.render_default(template)
     assert not any("MCP servers" in line for line in report.lines)
+
+
+@pytest.mark.parametrize("found", [True, False])
+def test_the_mcp_command_fits_the_platform(monkeypatch: pytest.MonkeyPatch, found: bool):
+    monkeypatch.setattr(setup.shutil, "which", lambda name: f"/usr/bin/{name}" if found else None)
+    expected = "python" if os.name == "nt" or not found else "python3"
+    assert setup.python_command() == expected
+    rendered = setup.render_default(setup.role_template("oracle"))
+    assert f"      command: {expected}\n" in rendered
 
 
 def test_trust_is_read_from_claude_json(repo: Path, config_dir: Path):

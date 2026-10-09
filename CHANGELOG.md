@@ -2,6 +2,17 @@
 
 All notable changes to the `sentinel-swarm` plugin.
 
+## [0.2.1] — 2026-10-08
+
+### Fixed
+
+- The ledger's tool catalog lists an optional argument's description at the argument's
+  top level, the same on every Python version. `module_add`, `brief_create`, `claim_file`,
+  `deferral_propose` and `agreement_decide` showed it inside a nested `anyOf`.
+- The test suite passes on Linux and macOS: the tests expect `python3` as the MCP
+  command and POSIX quoting for a test target there, and supply a stand-in `notify-send`
+  on Linux.
+
 ## [0.2.0] — 2026-10-08 — public release
 
 ### Changed

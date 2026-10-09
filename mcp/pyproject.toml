@@ -1,6 +1,6 @@
 [project]
 name = "swarm-ledger"
-version = "0.2.0"
+version = "0.2.1"
 description = "Per-repo HTTP MCP server for the sentinel-swarm plugin: a SQLite ledger of runs, phases, briefs, file claims, reviews, scores, and agent activity."
 readme = "README.md"
 # The ledger runs on the base interpreter, Python 3.9 or newer, through launch/ledger.py.

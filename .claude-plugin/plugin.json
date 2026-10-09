@@ -1,6 +1,6 @@
 {
   "name": "sentinel-swarm",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "An agent swarm, Oracle, Manager, Lead, Coder, and an optional Driver, that takes a PRD to built, tested, reviewed code. Enforced reviews, a shared ledger, and a scoring rubric hold every role accountable.",
   "author": {
     "name": "Alexk413x",

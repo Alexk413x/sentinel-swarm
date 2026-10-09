@@ -43,11 +43,37 @@ _STAMPED_AGENT_ID: str | None = Depends(_stamped_agent_id)
 _READ_ONLY: dict[str, Any] = {"readOnlyHint": True}
 
 CallerName = Annotated[str, Field(description="Your own agent name, as the ledger registered it.")]
+# An optional argument with a description takes a Field default, never Annotated[X | None, Field]
+# = None: Python 3.10 nests that schema, and catalog.json would then differ by Python version.
 _FINDING_IDS = Field(
     default=None,
     description="The Driver finding ids the child fixes; [] when it fixes none. The Oracle must "
     "pass it while the run has an open finding. Omitted by a Manager or Lead, the child "
     "inherits the caller's own brief's list.",
+)
+_MODULE_ADD_DEPENDS_ON = Field(
+    default=None, description="Module ids of this phase that this module uses; brief those first."
+)
+_BRIEF_CREATE_EFFORT = Field(
+    default=None,
+    description="The child's effort level; leave unset for the role's default. "
+    "Raise it for a fresh Coder in escalation round 2 or 3.",
+)
+_BRIEF_CREATE_CONTRACT = Field(
+    default=None,
+    description="The public contract of the child's file or module. Required before "
+    "a file or module that depends on it can be briefed.",
+)
+_CLAIM_FILE_DEPENDS_ON = Field(
+    default=None, description="File ids of this module that this file uses; brief those first."
+)
+_DEFERRAL_PROPOSE_PARTIES = Field(
+    default=None,
+    description="For a dispute: the agent names on the other side. Their closest "
+    "shared ancestor decides it.",
+)
+_AGREEMENT_DECIDE_DIRECTIVE_ID = Field(
+    default=None, description="For a prd deferral: the user_chat directive with the user's answer."
 )
 
 
@@ -298,10 +324,7 @@ def module_add(
     caller: CallerName,
     phase_id: int,
     name: str,
-    depends_on: Annotated[
-        list[int] | None,
-        Field(description="Module ids of this phase that this module uses; brief those first."),
-    ] = None,
+    depends_on: list[int] | None = _MODULE_ADD_DEPENDS_ON,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Adds a module to the caller's own phase; a Manager calls this. The name is a slug, and
@@ -330,20 +353,8 @@ def brief_create(
     module_id: int | None = None,
     file_id: int | None = None,
     finding_ids: list[int] | None = _FINDING_IDS,
-    effort: Annotated[
-        Literal["low", "medium", "high", "xhigh", "max"] | None,
-        Field(
-            description="The child's effort level; leave unset for the role's default. "
-            "Raise it for a fresh Coder in escalation round 2 or 3."
-        ),
-    ] = None,
-    contract: Annotated[
-        str | None,
-        Field(
-            description="The public contract of the child's file or module. Required before "
-            "a file or module that depends on it can be briefed."
-        ),
-    ] = None,
+    effort: Literal["low", "medium", "high", "xhigh", "max"] | None = _BRIEF_CREATE_EFFORT,
+    contract: str | None = _BRIEF_CREATE_CONTRACT,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Creates a brief for the caller's child role (Oracle->Manager, Manager->Lead, Lead->Coder).
@@ -427,10 +438,7 @@ def claim_file(
     path: str,
     test_path: str | None,
     for_name: str,
-    depends_on: Annotated[
-        list[int] | None,
-        Field(description="File ids of this module that this file uses; brief those first."),
-    ] = None,
+    depends_on: list[int] | None = _CLAIM_FILE_DEPENDS_ON,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Claims a file path for a coder under the caller's module; a Lead calls this. for_name is
@@ -883,13 +891,7 @@ def deferral_propose(
     body: str,
     kind: Literal["file", "module", "cross_module", "phase", "plan", "prd"],
     file_id: int | None = None,
-    parties: Annotated[
-        list[str] | None,
-        Field(
-            description="For a dispute: the agent names on the other side. Their closest "
-            "shared ancestor decides it."
-        ),
-    ] = None,
+    parties: list[str] | None = _DEFERRAL_PROPOSE_PARTIES,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Proposes a deferral or scope change, or with parties a dispute; any registered agent
@@ -912,10 +914,7 @@ def agreement_decide(
     deferral_id: int,
     decision: Literal["agreed", "denied"],
     reason: str,
-    directive_id: Annotated[
-        int | None,
-        Field(description="For a prd deferral: the user_chat directive with the user's answer."),
-    ] = None,
+    directive_id: int | None = _AGREEMENT_DECIDE_DIRECTIVE_ID,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Decides an open deferral as agreed or denied: a dispute by its arbiter, any other by a

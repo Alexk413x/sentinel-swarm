@@ -4,6 +4,7 @@ import json
 import os
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -31,7 +32,15 @@ def os_notifications(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     # The default settings turn OS notifications on; no test may pop a real one.
     from swarm_ledger import notify
 
+    # A Linux host without notify-send skips the OS path, so tests assume one is installed.
+    real_command = notify.os_command
+
+    def os_command(message: str, **kwargs: Any) -> list[str] | None:
+        kwargs.setdefault("which", lambda name: f"/usr/bin/{name}")
+        return real_command(message, **kwargs)
+
     shown: list[list[str]] = []
+    monkeypatch.setattr(notify, "os_command", os_command)
     monkeypatch.setattr(notify, "runner", shown.append)
     return shown
 

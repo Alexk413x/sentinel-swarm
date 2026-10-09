@@ -505,24 +505,17 @@
      "depends_on": {
       "anyOf": [
        {
-        "anyOf": [
-         {
-          "items": {
-           "type": "integer"
-          },
-          "type": "array"
-         },
-         {
-          "type": "null"
-         }
-        ],
-        "description": "Module ids of this phase that this module uses; brief those first."
+        "items": {
+         "type": "integer"
+        },
+        "type": "array"
        },
        {
         "type": "null"
        }
       ],
-      "default": null
+      "default": null,
+      "description": "Module ids of this phase that this module uses; brief those first."
      }
     },
     "required": [
@@ -616,47 +609,33 @@
      "effort": {
       "anyOf": [
        {
-        "anyOf": [
-         {
-          "enum": [
-           "low",
-           "medium",
-           "high",
-           "xhigh",
-           "max"
-          ],
-          "type": "string"
-         },
-         {
-          "type": "null"
-         }
+        "enum": [
+         "low",
+         "medium",
+         "high",
+         "xhigh",
+         "max"
         ],
-        "description": "The child's effort level; leave unset for the role's default. Raise it for a fresh Coder in escalation round 2 or 3."
+        "type": "string"
        },
        {
         "type": "null"
        }
       ],
-      "default": null
+      "default": null,
+      "description": "The child's effort level; leave unset for the role's default. Raise it for a fresh Coder in escalation round 2 or 3."
      },
      "contract": {
       "anyOf": [
        {
-        "anyOf": [
-         {
-          "type": "string"
-         },
-         {
-          "type": "null"
-         }
-        ],
-        "description": "The public contract of the child's file or module. Required before a file or module that depends on it can be briefed."
+        "type": "string"
        },
        {
         "type": "null"
        }
       ],
-      "default": null
+      "default": null,
+      "description": "The public contract of the child's file or module. Required before a file or module that depends on it can be briefed."
      }
     },
     "required": [
@@ -873,24 +852,17 @@
      "depends_on": {
       "anyOf": [
        {
-        "anyOf": [
-         {
-          "items": {
-           "type": "integer"
-          },
-          "type": "array"
-         },
-         {
-          "type": "null"
-         }
-        ],
-        "description": "File ids of this module that this file uses; brief those first."
+        "items": {
+         "type": "integer"
+        },
+        "type": "array"
        },
        {
         "type": "null"
        }
       ],
-      "default": null
+      "default": null,
+      "description": "File ids of this module that this file uses; brief those first."
      }
     },
     "required": [
@@ -2315,24 +2287,17 @@
      "parties": {
       "anyOf": [
        {
-        "anyOf": [
-         {
-          "items": {
-           "type": "string"
-          },
-          "type": "array"
-         },
-         {
-          "type": "null"
-         }
-        ],
-        "description": "For a dispute: the agent names on the other side. Their closest shared ancestor decides it."
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
        },
        {
         "type": "null"
        }
       ],
-      "default": null
+      "default": null,
+      "description": "For a dispute: the agent names on the other side. Their closest shared ancestor decides it."
      }
     },
     "required": [
@@ -2379,21 +2344,14 @@
      "directive_id": {
       "anyOf": [
        {
-        "anyOf": [
-         {
-          "type": "integer"
-         },
-         {
-          "type": "null"
-         }
-        ],
-        "description": "For a prd deferral: the user_chat directive with the user's answer."
+        "type": "integer"
        },
        {
         "type": "null"
        }
       ],
-      "default": null
+      "default": null,
+      "description": "For a prd deferral: the user_chat directive with the user's answer."
      }
     },
     "required": [

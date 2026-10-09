@@ -35,6 +35,17 @@ def _fake_claude(folder: Path) -> Path:
     return path
 
 
+def _fake_notifier(folder: Path) -> Path:
+    # A worker process builds the OS notification command itself, and on Linux it needs
+    # notify-send on PATH; the front's test runner records the command without running it.
+    bin_dir = folder / "notifier-bin"
+    bin_dir.mkdir()
+    path = bin_dir / "notify-send"
+    path.write_text("#!/bin/sh\n", encoding="ascii")
+    path.chmod(0o755)
+    return bin_dir
+
+
 @pytest.fixture
 def workers(
     host: Path,
@@ -45,6 +56,7 @@ def workers(
 ) -> Iterator[Pool]:
     del claude_sessions
     monkeypatch.setenv(sessions.CLAUDE_VAR, str(_fake_claude(tmp_path)))
+    monkeypatch.setenv("PATH", f"{_fake_notifier(tmp_path)}{os.pathsep}{os.environ['PATH']}")
     check_in(host, "sess-1", MANAGER["agent_id"])
     pool = _pool(host)
     configure(host)

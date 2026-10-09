@@ -333,7 +333,7 @@ def test_setup_writes_the_driver_file_with_cartographer_and_a_driver_plugin(
     report = setup.run_setup(bare_repo)
     path = setup.role_file(bare_repo, "driver")
     assert path.is_file()
-    assert path.read_text("utf-8") == setup.template_file("driver").read_text("utf-8")
+    assert path.read_text("utf-8") == setup.render_default(setup.role_template("driver"))
     assert "wrote .claude/agents/swarm-driver.md" in report.lines
 
 

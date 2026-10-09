@@ -106,7 +106,8 @@
   registrations in `server.py` list it, plus the argument schema pydantic checks where
   a tool shows a richer one (`ratings`, `applicable`, `targeted`), and the tools that
   take the stamped `agent_id`. `mcp/launch/ledger.py catalog` writes it, and a test
-  fails when it differs from `server.py`. Arguments are checked the way pydantic's lax
+  fails when it differs from `server.py`. Every supported Python writes the same
+  catalog, so the test passes on each of them. Arguments are checked the way pydantic's lax
   mode does: a numeric string or an integral float is an integer, an unknown argument
   is refused, a missing one takes its default. A tool result has the shape fastmcp
   gives it: the JSON as text content and as `structuredContent`, a list wrapped as

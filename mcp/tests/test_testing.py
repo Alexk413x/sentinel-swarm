@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -129,12 +130,13 @@ def test_run_tests_substitutes_target_placeholder(tmp_path: Path) -> None:
     assert result.ok is True
 
 
-def test_run_tests_quotes_a_target_containing_a_space_on_windows(tmp_path: Path) -> None:
+def test_run_tests_quotes_a_target_containing_a_space(tmp_path: Path) -> None:
     command_template = (
         _python_command("import sys; print(sys.argv[1]); print('1 passed')") + " {target}"
     )
     result = run_tests(command_template, "my target.py", tmp_path)
-    assert '"my target.py"' in result.command
+    quoted = '"my target.py"' if os.name == "nt" else "'my target.py'"
+    assert quoted in result.command
     assert "my target.py" in result.output
     assert result.ok is True
 

@@ -97,7 +97,7 @@ def test_interactive_puts_the_prompt_first_and_builds_the_flags(env):
         "headers": {"Authorization": f"Bearer {auth.read_token(env['repo'])}"},
     }
     assert config["mcpServers"]["codebase-kg"] == {
-        "command": "python",
+        "command": setup.python_command(),
         "args": [".sentinel-swarm/hook.py", "mcp", "codebase-kg@alexk413x", "codebase-kg"],
     }
     tools = _option(command, "--allowedTools").split(",")
