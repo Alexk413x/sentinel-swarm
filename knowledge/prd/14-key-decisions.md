@@ -148,3 +148,4 @@
 - 2026-10-08: A wake-up to a target with no recorded session fails visibly instead of resuming: the watchdog records the failed Oracle wake, and `agent_resume` refuses the target.
 - 2026-10-08: sentinel-swarm ships no marketplace of its own. The `alexk413x` marketplace (`Alexk413x/marketplace`) is the only one that lists it, as `sentinel-swarm@alexk413x`, from the `release` branch. The smoke test writes its own one-plugin marketplace into its temp copy.
 - 2026-10-08: For public release the plugin follows the Plugins repo rules: the no-resale licence from `the-index/LICENSE`, distribution from the `release` branch that a workflow builds from `main`, and the launch rule. The ledger is standard library only, runs on the base interpreter with `-I -S` on Python 3.9 or newer, and uses no venv, which retires the 2026-09-28 venv decision above.
+- 2026-10-08: sentinel-swarm requires codebase-kg `>=0.14.0`, the release it is built against; it supports no earlier release.

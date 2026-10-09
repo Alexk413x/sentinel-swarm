@@ -73,6 +73,8 @@ teardown() {
   if [ -d "$host/.claude" ]; then
     (cd "$host" && "$claude_bin" plugin uninstall sentinel-swarm@sentinel-swarm \
       --scope project) >/dev/null 2>&1 || true
+    (cd "$host" && "$claude_bin" plugin uninstall codebase-kg@alexk413x \
+      --scope project --keep-data) >/dev/null 2>&1 || true
   fi
   local state
   state="$(marketplace_state)"

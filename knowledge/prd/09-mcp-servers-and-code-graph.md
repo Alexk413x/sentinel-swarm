@@ -83,12 +83,12 @@
 
 ## The code graph
 
-codebase-kg is a required dependency (`>=0.8.2`). It is the plugin
+codebase-kg is a required dependency (`>=0.14.0`). It is the plugin
 `codebase-kg@alexk413x`, from the `alexk413x` marketplace (`Alexk413x/marketplace`),
 installed per project. sentinel-swarm's `plugin.json` depends on it, and Claude Code
-refuses to load sentinel-swarm in a project where it is not installed. 0.8.2 is the
-floor because it is the first release whose relay shares one server per machine and
-runs on Windows (the `.cmd` fix). An up-to-date graph lets each agent
+refuses to load sentinel-swarm in a project where it is not installed. 0.14.0 is the
+floor: role sessions connect to its shared HTTP server directly, and its stats, validate
+and parity tools run only through its CLI. An up-to-date graph lets each agent
 find what exists while many agents change the code at once. The graph file,
 `knowledge/code_graph.db`, belongs to the host repo and is committed with its code.
 

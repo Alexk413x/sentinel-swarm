@@ -210,9 +210,18 @@ class Handler(BaseHTTPRequestHandler):
         headers = {name.lower(): value for name, value in self.headers.items()}
         reason = self.srv.refusal(self.client_address[0], headers, self._path())
         if reason is not None:
+            self._discard_body()
             self._text(403, reason)
             return False
         return True
+
+    def _discard_body(self) -> None:
+        # Windows resets a socket closed with unread request bytes, so the client sees
+        # ConnectionAbortedError instead of the refusal it was sent.
+        try:
+            self._body()
+        except (BodyError, OSError):
+            pass
 
     def do_GET(self) -> None:
         if not self._gate():
@@ -274,6 +283,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         path = self._path()
         if path != MCP_PATH and not path.startswith(HOOK_PREFIX):
+            self._discard_body()
             self._text(404, "Not Found")
             return
         try:
