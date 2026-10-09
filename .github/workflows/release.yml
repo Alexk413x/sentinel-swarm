@@ -36,7 +36,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B release
-          git rm -r -q .claude .gitattributes .githooks .github .gitignore evals knowledge plans scripts \
+          git rm -r -q .claude AGENTS.md .gitattributes .githooks .github .gitignore evals knowledge plans scripts \
             hooks/register.test.ts mcp/tests
           git commit -q -m "Release build of ${GITHUB_SHA::7}"
           git push -f origin release
