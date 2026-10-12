@@ -13,7 +13,7 @@ Sources: codebase-kg branch `feat/push-refresh` (PR #32, not merged): `http-serv
 1. **Part 1: upgrade sentinel-swarm inside Claude Code.** Fix the messaging gaps the ide-agent-tabs
    mailbox design exposes, then the remaining efficiency steps. Each step ships alone.
 2. **Part 2: explore other platforms (proposed).** Use ide-agent-tabs to bring in agents such as
-   Codex, Gemini CLI, Copilot CLI and Antigravity, if Alex chooses to. Part 2 starts only after
+   Codex, Copilot CLI and Antigravity, if Alex chooses to. Part 2 starts only after
    part 1.
 
 When a step ships a design change, update the matching `knowledge/prd/` document in the same
@@ -805,10 +805,10 @@ CLIs other than Claude Code, through ide-agent-tabs, and what it would cost in g
 ### What ide-agent-tabs offers
 
 - Agent profiles (`mcp/src/profiles.ts`): Claude Code, Codex, Codex (local), Antigravity CLI,
-  Copilot CLI, Gemini CLI, Grok Build, Pi, Hermes, OpenCode, Qwen Code and Goose.
-- Hook registration for Codex, Gemini, Copilot, Antigravity, Grok, Hermes, Qwen and Goose
-  (`hookConfig.ts`). The events differ per CLI (`messaging/hook.ts`, `HOOK_EVENTS`): Gemini has
-  `BeforeTool`, Copilot `preToolUse`, Grok and Qwen `PreToolUse`, Codex only
+  Copilot CLI, Grok Build, Pi, Hermes, OpenCode, Qwen Code and Goose.
+- Hook registration for Codex, Copilot, Antigravity, Grok, Hermes, Qwen and Goose
+  (`hookConfig.ts`). The events differ per CLI (`messaging/hook.ts`, `HOOK_EVENTS`): Copilot has
+  `preToolUse`, Grok and Qwen `PreToolUse`, Codex only
   `UserPromptSubmit`, `PermissionRequest`, `PostToolUse`, `Stop` and `Interrupt`.
 - A machine-wide SQLite mailbox (`plans/messaging-db.md`) that every CLI's MCP server reads and
   writes, presence per session, a Stop-hook nudge to read mail before stopping, and a wake that
@@ -833,7 +833,7 @@ agent, issued at spawn and sent as that session's bearer header, which the ledge
 
 | Guarantee | Claude Code mechanism | Candidate replacement for another CLI |
 |---|---|---|
-| Only the Coder writes, and only its own files | `pre_write` | The CLI's own pre-tool hook where it can deny (Gemini, Copilot, Grok, Qwen; unverified); else the CLI's sandbox or writable-roots setting; plus a ledger check of `git status` against claims at `handoff_submit` (detects, does not prevent) |
+| Only the Coder writes, and only its own files | `pre_write` | The CLI's own pre-tool hook where it can deny (Copilot, Grok, Qwen; unverified); else the CLI's sandbox or writable-roots setting; plus a ledger check of `git status` against claims at `handoff_submit` (detects, does not prevent) |
 | Shell limits | `pre_shell`, `post_shell` | The CLI's approval or sandbox mode; the same handoff-time diff check |
 | No subagents | `pre_agent`, no `Agent` in `tools` | The CLI's config, if it has one; else accept and detect |
 | Role tool allowlist | Frontmatter `tools` | MCP-only: `server._call` refuses out-of-role tools; give the CLI only the ledger and codebase-kg servers |
