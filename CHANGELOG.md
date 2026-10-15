@@ -2,7 +2,7 @@
 
 All notable changes to the `sentinel-swarm` plugin.
 
-## [Unreleased]
+## [0.2.2] — 2026-10-14 — role sessions reach HTTP plugin servers by manifest path
 
 ### Fixed
 
