@@ -9,6 +9,7 @@ from swarm_ledger import auth
 from swarm_ledger.agentfiles import (
     SESSION_SETTINGS,
     agent_file_path,
+    http_entry,
     mcp_servers,
     read_agent_file,
     session_options,
@@ -324,6 +325,303 @@ def test_session_options_keep_the_relay_for_an_unresolved_placeholder(
     _write(host, "coder", _CODER)
 
     assert _servers(host)["codebase-kg"]["args"][:2] == [".sentinel-swarm/hook.py", "mcp"]
+
+
+_HELPER = (
+    'command -v py >/dev/null 2>&1 && py -3 "${CLAUDE_PLUGIN_ROOT}/mcp/launch/@SCRIPT@" '
+    '|| python3 "${CLAUDE_PLUGIN_ROOT}/mcp/launch/@SCRIPT@" '
+    '|| python "${CLAUDE_PLUGIN_ROOT}/mcp/launch/@SCRIPT@"'
+)
+
+
+def _helper(script: str, install: Path | None = None) -> str:
+    text = _HELPER.replace("@SCRIPT@", script)
+    return text if install is None else text.replace("${CLAUDE_PLUGIN_ROOT}", str(install))
+
+
+def _http_server(port_key: str, script: str) -> dict:
+    return {
+        "type": "http",
+        "url": f"http://127.0.0.1:${{user_config.{port_key}}}/mcp",
+        "headersHelper": _helper(script),
+    }
+
+
+def _manifest(
+    name: str, ports: dict[str, int], mcp_servers: object = "./mcp/claude.mcp.json"
+) -> dict:
+    return {
+        "name": name,
+        "mcpServers": mcp_servers,
+        "userConfig": {
+            key: {"type": "number", "default": default} for key, default in ports.items()
+        },
+    }
+
+
+def _plugin(root: Path, name: str, manifest: dict, files: dict[str, object] | None = None) -> Path:
+    install = root / f"{name}-install"
+    (install / ".claude-plugin").mkdir(parents=True)
+    (install / ".claude-plugin" / "plugin.json").write_text(json.dumps(manifest), "utf-8")
+    for rel, content in (files or {}).items():
+        target = install / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(content), "utf-8")
+    return install
+
+
+def _register(config_dir: Path, installs: dict[str, Path]) -> None:
+    path = config_dir / "plugins" / "installed_plugins.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    plugins = {pid: [{"scope": "user", "installPath": str(p)}] for pid, p in installs.items()}
+    path.write_text(json.dumps({"plugins": plugins}), "utf-8")
+
+
+# plugin id, manifest ports, server -> (port key, helper script), server -> expected port
+_LAYOUTS = [
+    (
+        "codebase-kg@alexk413x",
+        {"server_port": 47821, "max_workers": 8},
+        {"codebase-kg": ("server_port", "kg_headers.py")},
+        {"codebase-kg": 47821},
+    ),
+    (
+        "cartographer@cartographer",
+        {"server_port": 47822},
+        {"cartographer": ("server_port", "cartographer_headers.py")},
+        {"cartographer": 47822},
+    ),
+    (
+        "web-driver@accessibility-tools",
+        {"server_port": 47827},
+        {"web-driver-kg": ("server_port", "web_driver_kg_headers.py")},
+        {"web-driver-kg": 47827},
+    ),
+    (
+        "android-driver@accessibility-tools",
+        {"server_port": 47825},
+        {"android-driver-kg": ("server_port", "android_driver_kg_headers.py")},
+        {"android-driver-kg": 47825},
+    ),
+    (
+        "ios-driver@accessibility-tools",
+        {"server_port": 47826},
+        {"ios-driver-kg": ("server_port", "ios_driver_kg_headers.py")},
+        {"ios-driver-kg": 47826},
+    ),
+    (
+        "a11y@accessibility-tools",
+        {"tools_server_port": 47823, "kg_server_port": 47824, "max_workers": 2},
+        {
+            "a11y-tools": ("tools_server_port", "a11y_mcp_headers.py"),
+            "a11y-kg": ("kg_server_port", "a11y_kg_headers.py"),
+        },
+        {"a11y-tools": 47823, "a11y-kg": 47824},
+    ),
+]
+
+
+@pytest.mark.parametrize(("plugin_id", "ports", "servers", "expected"), _LAYOUTS)
+def test_http_entry_follows_the_manifests_mcp_file_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    plugin_id: str,
+    ports: dict[str, int],
+    servers: dict[str, tuple[str, str]],
+    expected: dict[str, int],
+) -> None:
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    name = plugin_id.split("@", 1)[0]
+    mcp_file = {
+        "mcpServers": {n: _http_server(key, script) for n, (key, script) in servers.items()}
+    }
+    install = _plugin(tmp_path, name, _manifest(name, ports), {"mcp/claude.mcp.json": mcp_file})
+    _register(config_dir, {plugin_id: install})
+
+    for server, port in expected.items():
+        assert http_entry(tmp_path, plugin_id, server) == {
+            "type": "http",
+            "url": f"http://127.0.0.1:{port}/mcp",
+            "headersHelper": _helper(servers[server][1], install),
+        }
+
+
+def test_http_entry_resolves_only_the_plugin_root_in_the_headers_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    mcp_file = {"mcpServers": {"web-driver-kg": _http_server("server_port", "h.py")}}
+    install = _plugin(
+        tmp_path,
+        "web-driver",
+        _manifest("web-driver", {"server_port": 47827}),
+        {"mcp/claude.mcp.json": mcp_file},
+    )
+    _register(config_dir, {"web-driver@accessibility-tools": install})
+
+    entry = http_entry(tmp_path, "web-driver@accessibility-tools", "web-driver-kg")
+
+    assert entry is not None
+    assert "${" not in entry["headersHelper"]
+    assert entry["headersHelper"].count(f'"{install}/mcp/launch/h.py"') == 3
+
+
+def test_http_entry_applies_a_users_override_to_the_port_that_names_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    mcp_file = {
+        "mcpServers": {
+            "a11y-tools": _http_server("tools_server_port", "a.py"),
+            "a11y-kg": _http_server("kg_server_port", "b.py"),
+        }
+    }
+    ports = {"tools_server_port": 47823, "kg_server_port": 47824}
+    install = _plugin(tmp_path, "a11y", _manifest("a11y", ports), {"mcp/claude.mcp.json": mcp_file})
+    _register(config_dir, {"a11y@accessibility-tools": install})
+    (config_dir / "settings.json").write_text(
+        json.dumps(
+            {"pluginConfigs": {"a11y@accessibility-tools": {"options": {"kg_server_port": 48000}}}}
+        ),
+        "utf-8",
+    )
+
+    tools = http_entry(tmp_path, "a11y@accessibility-tools", "a11y-tools")
+    kg = http_entry(tmp_path, "a11y@accessibility-tools", "a11y-kg")
+
+    assert tools is not None
+    assert tools["url"] == "http://127.0.0.1:47823/mcp"
+    assert kg is not None
+    assert kg["url"] == "http://127.0.0.1:48000/mcp"
+
+
+def test_http_entry_reads_an_inline_manifest_object_and_a_list_of_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    inline = {"inline-kg": _http_server("server_port", "i.py")}
+    listed = {"mcpServers": {"listed-kg": _http_server("server_port", "l.py")}}
+    install = _plugin(
+        tmp_path,
+        "mixed",
+        _manifest("mixed", {"server_port": 47900}, [inline, "./extra.json"]),
+        {"extra.json": listed},
+    )
+    _register(config_dir, {"mixed@m": install})
+
+    for server in ("inline-kg", "listed-kg"):
+        entry = http_entry(tmp_path, "mixed@m", server)
+        assert entry is not None
+        assert entry["url"] == "http://127.0.0.1:47900/mcp"
+
+
+@pytest.mark.parametrize(
+    "path", ["../outside.json", "./../outside.json", "./sub/../../outside.json", "ABSOLUTE", ""]
+)
+def test_http_entry_rejects_a_manifest_path_that_leaves_the_plugin_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    outside = {"mcpServers": {"kg": _http_server("server_port", "k.py")}}
+    (tmp_path / "outside.json").write_text(json.dumps(outside), "utf-8")
+    if path == "ABSOLUTE":
+        path = str(tmp_path / "outside.json")
+    install = _plugin(tmp_path, "kg", _manifest("kg", {"server_port": 47821}, path))
+    (install / "sub").mkdir()
+    _register(config_dir, {"kg@m": install})
+
+    assert http_entry(tmp_path, "kg@m", "kg") is None
+
+
+def test_http_entry_is_none_when_the_manifests_file_is_missing_or_not_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    install = _plugin(tmp_path, "kg", _manifest("kg", {"server_port": 47821}))
+    _register(config_dir, {"kg@m": install})
+    assert http_entry(tmp_path, "kg@m", "kg") is None
+
+    (install / "mcp").mkdir()
+    (install / "mcp" / "claude.mcp.json").write_text("{not json", "utf-8")
+    assert http_entry(tmp_path, "kg@m", "kg") is None
+
+
+def test_http_entry_is_none_for_a_stdio_entry_or_an_unknown_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    mcp_file = {
+        "mcpServers": {
+            "kg": {"command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/relay.py"]},
+            "other": _http_server("server_port", "o.py"),
+        }
+    }
+    install = _plugin(
+        tmp_path, "kg", _manifest("kg", {"server_port": 47821}), {"mcp/claude.mcp.json": mcp_file}
+    )
+    _register(config_dir, {"kg@m": install})
+
+    assert http_entry(tmp_path, "kg@m", "kg") is None
+    assert http_entry(tmp_path, "kg@m", "missing") is None
+    assert http_entry(tmp_path, "kg@m", "other") is not None
+
+
+def test_http_entry_is_none_for_an_unresolved_placeholder_in_the_url_or_the_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    mcp_file = {
+        "mcpServers": {
+            "url-var": {"type": "http", "url": "http://127.0.0.1:${SOME_PORT}/mcp"},
+            "unknown-key": _http_server("no_such_key", "k.py"),
+            "helper-option": {
+                "type": "http",
+                "url": "http://127.0.0.1:${user_config.server_port}/mcp",
+                "headersHelper": 'py -3 "${user_config.server_port}"',
+            },
+        }
+    }
+    install = _plugin(
+        tmp_path, "kg", _manifest("kg", {"server_port": 47821}), {"mcp/claude.mcp.json": mcp_file}
+    )
+    _register(config_dir, {"kg@m": install})
+
+    for server in mcp_file["mcpServers"]:
+        assert http_entry(tmp_path, "kg@m", server) is None
+
+
+def test_session_options_connect_every_server_of_a_manifest_path_plugin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = tmp_path / "host"
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    mcp_file = {
+        "mcpServers": {
+            "a11y-tools": _http_server("tools_server_port", "a.py"),
+            "a11y-kg": _http_server("kg_server_port", "b.py"),
+        }
+    }
+    ports = {"tools_server_port": 47823, "kg_server_port": 47824}
+    install = _plugin(tmp_path, "a11y", _manifest("a11y", ports), {"mcp/claude.mcp.json": mcp_file})
+    _register(config_dir, {"a11y@accessibility-tools": install})
+    _write(host, "coder", _CODER)
+
+    servers = _servers(host)
+
+    assert servers["a11y-tools"]["url"] == "http://127.0.0.1:47823/mcp"
+    assert servers["a11y-kg"]["url"] == "http://127.0.0.1:47824/mcp"
+    for name in ("a11y-tools", "a11y-kg"):
+        assert servers[name]["type"] == "http"
+        assert str(install) in servers[name]["headersHelper"]
 
 
 def test_session_options_send_the_repos_token_as_a_static_header(tmp_path: Path) -> None:
