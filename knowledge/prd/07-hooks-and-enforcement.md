@@ -61,7 +61,9 @@ it as a command hook. It has these commands:
 - For `post_activity`, the shim adds `sentinel_swarm_fired_at`, the time the hook
   fired, to the hook input.
 - `mcp <plugin_id> <server>` starts another plugin's MCP server the same way, from its
-  `.mcp.json`, or its manifest's `mcpServers` when it has no `.mcp.json`, with
+  `.mcp.json`, then its manifest's `mcpServers` (an inline object, a path inside the plugin
+  to a file such as `mcp/claude.mcp.json`, or a list of either; the first source that names
+  the server wins, and a path outside the plugin is an error), with
   `${CLAUDE_PLUGIN_ROOT}` and `${VAR:-default}` expanded in the command, the arguments,
   and the `env` values. When it cannot find the server or its command, it writes the
   reason to stderr and exits 1. A plugin that names its own relay there shares its
