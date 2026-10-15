@@ -106,20 +106,51 @@ def find_install(plugin_id: str, repo: Path, registry: Path | None = None) -> Pa
     raise ShimError(f"{plugin_id} is not installed for {repo}")
 
 
+def _read_servers(path: Path) -> dict:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    servers = data.get("mcpServers") if isinstance(data, dict) else None
+    return servers if isinstance(servers, dict) else {}
+
+
+def _manifest_servers(install: Path, declared: object) -> dict:
+    if isinstance(declared, dict):
+        return declared
+    if not isinstance(declared, str):
+        return {}
+    root = install.resolve()
+    target = (root / declared).resolve()
+    if not declared or Path(declared).is_absolute() or not target.is_relative_to(root):
+        raise ShimError(f"the manifest names {declared!r}, which is outside {install}")
+    return _read_servers(target)
+
+
+# Duplicates swarm_ledger.agentfiles._declared_servers: this template runs before it finds
+# the plugin install and imports only the standard library, so it cannot share that module.
 def plugin_servers(install: Path) -> dict[str, dict]:
+    """The servers in the root `.mcp.json`, then the manifest's `mcpServers`.
+
+    The manifest value is an inline object, a path inside the plugin to a file holding
+    `{"mcpServers": {...}}`, or a list of either. The first source naming a server wins.
+    """
     mcp_json = install / ".mcp.json"
     manifest = install / ".claude-plugin" / "plugin.json"
+    servers: dict = {}
+    failure: Exception | None = None
     try:
         if mcp_json.is_file():
-            servers = json.loads(mcp_json.read_text(encoding="utf-8")).get("mcpServers")
-        elif manifest.is_file():
-            servers = json.loads(manifest.read_text(encoding="utf-8")).get("mcpServers")
-        else:
-            servers = None
+            servers.update(_read_servers(mcp_json))
+        if manifest.is_file():
+            declared = json.loads(manifest.read_text(encoding="utf-8")).get("mcpServers")
+            for item in declared if isinstance(declared, list) else [declared]:
+                try:
+                    for name, entry in _manifest_servers(install, item).items():
+                        servers.setdefault(name, entry)
+                except (OSError, ValueError, ShimError) as exc:
+                    failure = failure or exc
     except (OSError, ValueError, AttributeError) as exc:
         raise ShimError(f"cannot read the MCP servers of {install}: {exc}") from None
-    if not isinstance(servers, dict):
-        return {}
+    if not servers and failure is not None:
+        raise ShimError(f"cannot read the MCP servers of {install}: {failure}") from None
     return {name: entry for name, entry in servers.items() if isinstance(entry, dict)}
 
 

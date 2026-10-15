@@ -38,6 +38,9 @@ SCOPES = ("local", "project", "user")
 CODEBASE_KG_PLUGIN = "codebase-kg@alexk413x"
 _PLACEHOLDER = re.compile(r"\$\{([^}]*)\}")
 _OPTION_VALUE = re.compile(r"[0-9A-Za-z._-]{1,64}")
+# headersHelper runs in a shell with the plugin root inside double quotes; a root holding one of
+# these would split or expand there, so such an install gets no direct entry.
+_UNQUOTABLE = re.compile(r'["$`\r\n]')
 
 
 def _config_dir() -> Path:
@@ -123,16 +126,47 @@ def _plugin_option(plugin_id: str, install: Path, key: str) -> str | None:
     return text if _OPTION_VALUE.fullmatch(text) else None
 
 
+def _mcp_file(install: Path, raw: str) -> dict[str, Any] | None:
+    """The `mcpServers` map of a manifest's path, None if the path leaves the plugin folder."""
+    if not raw or Path(raw).is_absolute():
+        return None
+    root = install.resolve()
+    try:
+        target = (root / raw).resolve()
+        if not target.is_relative_to(root):
+            return None
+    except (OSError, ValueError):
+        return None
+    data = _read_json(target)
+    servers = data.get("mcpServers") if isinstance(data, dict) else None
+    return servers if isinstance(servers, dict) else None
+
+
+def _declared_servers(install: Path) -> list[dict[str, Any]]:
+    """Each `mcpServers` map the plugin declares: the root `.mcp.json`, then the manifest's.
+
+    The manifest's `mcpServers` is an inline object, a path to a JSON file inside the
+    plugin, or a list of either.
+    """
+    maps: list[dict[str, Any]] = []
+    data = _read_json(install / ".mcp.json")
+    if isinstance(data, dict) and isinstance(data.get("mcpServers"), dict):
+        maps.append(data["mcpServers"])
+    manifest = _read_json(install / ".claude-plugin" / "plugin.json")
+    declared = manifest.get("mcpServers") if isinstance(manifest, dict) else None
+    for item in declared if isinstance(declared, list) else [declared]:
+        found = _mcp_file(install, item) if isinstance(item, str) else item
+        if isinstance(found, dict):
+            maps.append(found)
+    return maps
+
+
 def http_entry(repo_root: Path, plugin_id: str, server: str) -> dict[str, Any] | None:
     """The plugin's HTTP entry for `server`, expanded for `--mcp-config`; None if it has none."""
     install = install_path(repo_root, plugin_id)
     if install is None:
         return None
-    data = _read_json(install / ".mcp.json")
-    if not isinstance(data, dict):
-        data = _read_json(install / ".claude-plugin" / "plugin.json")
-    servers = data.get("mcpServers") if isinstance(data, dict) else None
-    entry = servers.get(server) if isinstance(servers, dict) else None
+    entry = next((m[server] for m in _declared_servers(install) if server in m), None)
     if not isinstance(entry, dict) or entry.get("type") != "http":
         return None
 
@@ -142,7 +176,7 @@ def http_entry(repo_root: Path, plugin_id: str, server: str) -> dict[str, Any] |
         def substitute(match: re.Match[str]) -> str:
             nonlocal missing
             name = match.group(1)
-            if name == "CLAUDE_PLUGIN_ROOT":
+            if name == "CLAUDE_PLUGIN_ROOT" and not _UNQUOTABLE.search(str(install)):
                 return str(install)
             if options and name.startswith("user_config."):
                 value = _plugin_option(plugin_id, install, name[len("user_config.") :])

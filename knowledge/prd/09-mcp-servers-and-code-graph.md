@@ -47,9 +47,21 @@
   `headersHelper` with `${CLAUDE_PLUGIN_ROOT}` set to the install folder and each
   `${user_config.<key>}` in `url` set to the option in the user's own `settings.json`
   `pluginConfigs`, else the manifest's `userConfig` default. A host repo's settings never
-  count. A value must be a plain token (letters, digits, `.`, `_`, `-`; an integer for a
+  count. `http_entry` looks for the server in the plugin's root `.mcp.json`, then in the
+  manifest's `mcpServers`, which is an inline object, a path to a JSON file, or a list of
+  either. A path is relative to the plugin folder, and one that resolves outside the
+  folder, is absolute, or names a missing or unreadable file yields no entry. The file
+  holds `{"mcpServers": {...}}`. The first source that names the server decides: a stdio
+  entry there keeps the shim. A plugin with several servers, such as a11y's `a11y-tools`
+  and `a11y-kg`, gets one entry per server, each with its own port option. A value must be a plain token (letters, digits, `.`, `_`, `-`; an integer for a
   `number` option), and the URL's host must stay the template's. `headersHelper` takes
-  only `${CLAUDE_PLUGIN_ROOT}`. No relay process starts. Any entry that fails a check
+  only `${CLAUDE_PLUGIN_ROOT}`, and an entry whose helper holds any other placeholder
+  keeps the shim, and so does an install path that holds `"`, `$`, a backtick or a newline,
+  because the helper wraps the path in double quotes in a shell command. Claude Code itself runs the helper on each connect, in the role
+  session's environment, so the helper finds the session's owner id and variables the
+  way it does in a session the plugin starts: a driver plugin's helper sends the owner
+  id, and without it the server refuses every `driver_*` call with `no_owner`. No relay
+  process starts. Any entry that fails a check
   keeps the shim. codebase-kg 0.12.0 and later serves HTTP on one server per machine
   and resolves each session's graph from its roots. Verified live on 2026-10-07: a
   `--strict-mcp-config` session with codebase-kg's `headersHelper` called `kg_search`.

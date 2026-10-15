@@ -617,6 +617,89 @@ def test_shim_mcp_reports_a_command_it_cannot_start(tmp_path: Path, repo: Path, 
     assert "no-such-binary-sentinel is not on PATH" in missing_binary.stderr
 
 
+def _manifest_plugin(tmp_path: Path, mcp_servers: object, files: dict[str, object]) -> Path:
+    install = tmp_path / "cache" / "manifest-plugin"
+    (install / ".claude-plugin").mkdir(parents=True)
+    (install / ".claude-plugin" / "plugin.json").write_text(
+        json.dumps({"name": "m", "mcpServers": mcp_servers}), encoding="utf-8"
+    )
+    for rel, content in files.items():
+        (install / rel).parent.mkdir(parents=True, exist_ok=True)
+        (install / rel).write_text(json.dumps(content), encoding="utf-8")
+    return install
+
+
+_STDIO = {"command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/relay.py"]}
+
+
+def test_shim_reads_servers_from_a_manifest_path(tmp_path: Path, shim):
+    install = _manifest_plugin(
+        tmp_path,
+        "./mcp/claude.mcp.json",
+        {"mcp/claude.mcp.json": {"mcpServers": {"a": _STDIO, "b": _STDIO}}},
+    )
+
+    assert set(shim.plugin_servers(install)) == {"a", "b"}
+
+
+def test_shim_reads_servers_from_a_manifest_list_and_an_inline_object(tmp_path: Path, shim):
+    install = _manifest_plugin(
+        tmp_path,
+        [{"inline": _STDIO}, "./extra.json"],
+        {"extra.json": {"mcpServers": {"listed": _STDIO}}},
+    )
+    inline = _manifest_plugin(tmp_path / "second", {"inline": _STDIO}, {})
+
+    assert set(shim.plugin_servers(install)) == {"inline", "listed"}
+    assert set(shim.plugin_servers(inline)) == {"inline"}
+
+
+def test_shim_prefers_the_root_mcp_json_over_the_manifest_for_one_server(tmp_path: Path, shim):
+    install = _manifest_plugin(
+        tmp_path,
+        {"srv": {"command": "from-manifest"}},
+        {".mcp.json": {"mcpServers": {"srv": _STDIO}}},
+    )
+
+    assert shim.plugin_servers(install)["srv"] == _STDIO
+
+
+@pytest.mark.parametrize("path", ["../outside.json", "./sub/../../outside.json", "ABSOLUTE", ""])
+def test_shim_rejects_a_manifest_path_outside_the_plugin(tmp_path: Path, shim, path: str):
+    (tmp_path / "outside.json").write_text(json.dumps({"mcpServers": {"a": _STDIO}}), "utf-8")
+    if path == "ABSOLUTE":
+        path = str(tmp_path / "outside.json")
+    install = _manifest_plugin(tmp_path / "plugin", path, {})
+    (install / "sub").mkdir()
+
+    with pytest.raises(shim.ShimError, match="cannot read the MCP servers"):
+        shim.plugin_servers(install)
+
+
+def test_shim_reports_a_missing_manifest_file(tmp_path: Path, shim):
+    install = _manifest_plugin(tmp_path, "./mcp/claude.mcp.json", {})
+
+    with pytest.raises(shim.ShimError, match="cannot read the MCP servers"):
+        shim.plugin_servers(install)
+
+
+def test_shim_mcp_runs_a_server_named_by_a_manifest_path(
+    tmp_path: Path, repo: Path, config_dir: Path
+):
+    setup.run_setup(repo)
+    script = "import sys; print(sys.argv[1]); sys.exit(4)"
+    server = {"command": sys.executable, "args": ["-c", script, "${CLAUDE_PLUGIN_ROOT}/x"]}
+    install = _manifest_plugin(
+        tmp_path, "./mcp/claude.mcp.json", {"mcp/claude.mcp.json": {"mcpServers": {"srv": server}}}
+    )
+    _register(config_dir, "srv@m", [{"scope": "user", "installPath": str(install)}])
+
+    result = _run_shim(repo, config_dir, "mcp", "srv@m", "srv")
+
+    assert result.returncode == 4
+    assert result.stdout.splitlines() == [f"{install}/x"]
+
+
 def test_shim_answers_an_unknown_mode_with_its_usage(repo: Path, config_dir: Path):
     setup.run_setup(repo)
 

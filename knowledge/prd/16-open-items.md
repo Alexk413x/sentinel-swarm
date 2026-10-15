@@ -24,6 +24,11 @@
   0.8.2 or later should confirm that every role reaches the shared a11y servers through
   the a11y relay, and that no role starts a private a11y server while they answer. The
   plan is `plans/a11y-relay-smoke-test.md`.
+- **Driver headers helper, live.** `http_entry` carries a driver plugin's `headersHelper` into the
+  role's `--mcp-config`, and the unit tests cover the text. Only codebase-kg's helper has run in a
+  `--strict-mcp-config` session. A live Driver run should confirm that the helper runs there as a
+  descendant of the Claude Code process, so the server receives the owner id and a `driver_*` call
+  does not return `no_owner`.
 - **The Driver, live.** Built and unit-tested, never run: no host here has cartographer and a driver plugin installed yet. The first live run needs an Android app host, and must confirm the shim starts cartographer's and the driver plugins' servers.
 - **Driver notifications, live.** Built and unit-tested; no test shows a real
   notification. On Windows, a dry run loaded the WinRT toast types, parsed the toast

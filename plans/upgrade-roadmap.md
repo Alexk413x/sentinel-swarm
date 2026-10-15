@@ -26,7 +26,7 @@ change, per `.claude/CLAUDE.md`. Delete this plan once part 1 ships and part 2 i
 | Commit | Change |
 |---|---|
 | a7727cb | Role templates no longer list `kg_stats`, `kg_validate` or `kg_parity_gaps`. `test_plugin_surface.py` guards it. |
-| 98f42d9, 23718fe | **Step 0, done.** `session_options` (`mcp/src/swarm_ledger/agentfiles.py`, `http_entry`) writes a plugin's own HTTP `.mcp.json` entry into the role's `--mcp-config` in place of the `hook.py mcp` stdio relay. Options come only from the user's `~/.claude/settings.json` `pluginConfigs` or the manifest default. They must be plain tokens (integers for number options), cannot change the URL's host, and never expand inside `headersHelper`. Any entry that fails a check keeps the relay. Verified live: a `--strict-mcp-config` session with codebase-kg's `headersHelper` called `kg_search`. PRD 09 and `14-key-decisions.md` record it. |
+| 98f42d9, 23718fe | **Step 0, done.** `session_options` (`mcp/src/swarm_ledger/agentfiles.py`, `http_entry`) writes a plugin's own HTTP `.mcp.json` entry into the role's `--mcp-config` in place of the `hook.py mcp` stdio relay. Options come only from the user's `~/.claude/settings.json` `pluginConfigs` or the manifest default. They must be plain tokens (integers for number options), cannot change the URL's host, and never expand inside `headersHelper`. Any entry that fails a check keeps the relay. Verified live: a `--strict-mcp-config` session with codebase-kg's `headersHelper` called `kg_search`. PRD 09 and `14-key-decisions.md` record it. A later change makes `http_entry` follow a manifest's `mcpServers` path (`./mcp/claude.mcp.json`), where the plugins now declare their HTTP entries. |
 
 ### codebase-kg results this plan builds on
 
