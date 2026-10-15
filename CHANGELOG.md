@@ -2,6 +2,18 @@
 
 All notable changes to the `sentinel-swarm` plugin.
 
+## [Unreleased]
+
+### Fixed
+
+- A role session connects to a plugin's HTTP MCP server directly when the plugin's
+  `plugin.json` names its servers by path (`"mcpServers": "./mcp/claude.mcp.json"`), as
+  codebase-kg, cartographer, a11y and the three driver plugins do. Before, only a root
+  `.mcp.json` or an inline `mcpServers` object counted, so those roles fell back to the
+  stdio shim. A path that leaves the plugin folder is ignored. The entry keeps its
+  `headersHelper`, so Claude Code runs it in the role session and a driver server gets the
+  session's owner id.
+
 ## [0.2.1] — 2026-10-08
 
 ### Fixed
