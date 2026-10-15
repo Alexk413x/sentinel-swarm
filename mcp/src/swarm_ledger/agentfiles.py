@@ -38,6 +38,9 @@ SCOPES = ("local", "project", "user")
 CODEBASE_KG_PLUGIN = "codebase-kg@alexk413x"
 _PLACEHOLDER = re.compile(r"\$\{([^}]*)\}")
 _OPTION_VALUE = re.compile(r"[0-9A-Za-z._-]{1,64}")
+# headersHelper runs in a shell with the plugin root inside double quotes; a root holding one of
+# these would split or expand there, so such an install gets no direct entry.
+_UNQUOTABLE = re.compile(r'["$`\r\n]')
 
 
 def _config_dir() -> Path:
@@ -173,7 +176,7 @@ def http_entry(repo_root: Path, plugin_id: str, server: str) -> dict[str, Any] |
         def substitute(match: re.Match[str]) -> str:
             nonlocal missing
             name = match.group(1)
-            if name == "CLAUDE_PLUGIN_ROOT":
+            if name == "CLAUDE_PLUGIN_ROOT" and not _UNQUOTABLE.search(str(install)):
                 return str(install)
             if options and name.startswith("user_config."):
                 value = _plugin_option(plugin_id, install, name[len("user_config.") :])

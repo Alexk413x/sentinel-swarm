@@ -12,7 +12,10 @@ All notable changes to the `sentinel-swarm` plugin.
   `.mcp.json` or an inline `mcpServers` object counted, so those roles fell back to the
   stdio shim. A path that leaves the plugin folder is ignored. The entry keeps its
   `headersHelper`, so Claude Code runs it in the role session and a driver server gets the
-  session's owner id.
+  session's owner id. A plugin installed in a folder whose path holds `"`, `$`, a backtick
+  or a newline keeps the stdio shim, so no broken helper command is written.
+- The `.sentinel-swarm/hook.py mcp` shim reads a plugin's servers from a manifest path or
+  list too, so the stdio fallback works for those plugins.
 
 ## [0.2.1] — 2026-10-08
 

@@ -56,7 +56,8 @@
   and `a11y-kg`, gets one entry per server, each with its own port option. A value must be a plain token (letters, digits, `.`, `_`, `-`; an integer for a
   `number` option), and the URL's host must stay the template's. `headersHelper` takes
   only `${CLAUDE_PLUGIN_ROOT}`, and an entry whose helper holds any other placeholder
-  keeps the shim. Claude Code itself runs the helper on each connect, in the role
+  keeps the shim, and so does an install path that holds `"`, `$`, a backtick or a newline,
+  because the helper wraps the path in double quotes in a shell command. Claude Code itself runs the helper on each connect, in the role
   session's environment, so the helper finds the session's owner id and variables the
   way it does in a session the plugin starts: a driver plugin's helper sends the owner
   id, and without it the server refuses every `driver_*` call with `no_owner`. No relay

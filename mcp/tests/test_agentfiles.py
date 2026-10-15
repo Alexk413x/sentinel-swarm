@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -622,6 +623,34 @@ def test_session_options_connect_every_server_of_a_manifest_path_plugin(
     for name in ("a11y-tools", "a11y-kg"):
         assert servers[name]["type"] == "http"
         assert str(install) in servers[name]["headersHelper"]
+
+
+@pytest.mark.parametrize(
+    "folder",
+    [
+        "with$dollar",
+        "with`tick",
+        pytest.param(
+            'with"quote',
+            marks=pytest.mark.skipif(os.name == "nt", reason="Windows folders cannot hold a quote"),
+        ),
+    ],
+)
+def test_http_entry_is_none_when_the_install_path_cannot_sit_inside_shell_quotes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, folder: str
+) -> None:
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    mcp_file = {"mcpServers": {"kg": _http_server("server_port", "k.py")}}
+    install = _plugin(
+        tmp_path / folder,
+        "kg",
+        _manifest("kg", {"server_port": 47821}),
+        {"mcp/claude.mcp.json": mcp_file},
+    )
+    _register(config_dir, {"kg@m": install})
+
+    assert http_entry(tmp_path, "kg@m", "kg") is None
 
 
 def test_session_options_send_the_repos_token_as_a_static_header(tmp_path: Path) -> None:
