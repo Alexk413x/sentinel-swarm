@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .db import ledger_path
+from .db import ledger_path, open_readonly
 from .identity import LedgerError
 from .metrics import run_metrics
 from .serve import is_answering, read_server_info
@@ -26,13 +26,13 @@ class Check:
 
 def _connect(db_path: Path) -> sqlite3.Connection:
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn = open_readonly(db_path)
         conn.execute("SELECT 1")
     except sqlite3.OperationalError:
         # The running server holds the WAL and its shared-memory file, which a read-only
         # open cannot see on every platform. A plain connect still issues SELECTs only.
         conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+        conn.row_factory = sqlite3.Row
     return conn
 
 
@@ -40,8 +40,7 @@ def _latest_run(conn: sqlite3.Connection) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM runs ORDER BY run_id DESC LIMIT 1").fetchone()
 
 
-# The Oracle writes the outcome as free text; runs have ended "success", "succeeded",
-# and "completed".
+# The Oracle writes the outcome as free text, so the check matches by prefix.
 _SUCCESS_WORDS = ("success", "succeeded", "complete")
 
 
@@ -55,11 +54,15 @@ def _outcome_check(run: sqlite3.Row) -> Check:
     )
 
 
+def _all_in_state(name: str, rows: list[sqlite3.Row], label: str, wanted: str, noun: str) -> Check:
+    bad = [f"{r[label]} ({r['state']})" for r in rows if r["state"] != wanted]
+    detail = "; ".join(bad) if bad else f"{len(rows)} {noun}(s) {wanted}"
+    return Check(name, not bad, detail)
+
+
 def _phases_check(conn: sqlite3.Connection, run_id: int) -> Check:
     rows = conn.execute("SELECT name, state FROM phases WHERE run_id = ?", (run_id,)).fetchall()
-    bad = [f"{r['name']} ({r['state']})" for r in rows if r["state"] != "approved"]
-    detail = "; ".join(bad) if bad else f"{len(rows)} phase(s) approved"
-    return Check("every phase is approved", not bad, detail)
+    return _all_in_state("every phase is approved", rows, "name", "approved", "phase")
 
 
 def _files_check(conn: sqlite3.Connection, run_id: int) -> Check:
@@ -70,16 +73,14 @@ def _files_check(conn: sqlite3.Connection, run_id: int) -> Check:
         "WHERE p.run_id = ? AND f.state != 'superseded'",
         (run_id,),
     ).fetchall()
-    bad = [f"{r['path']} ({r['state']})" for r in rows if r["state"] != "approved"]
-    detail = "; ".join(bad) if bad else f"{len(rows)} file(s) approved"
-    return Check("every file is approved (superseded rows ignored)", not bad, detail)
+    return _all_in_state(
+        "every file is approved (superseded rows ignored)", rows, "path", "approved", "file"
+    )
 
 
 def _agents_check(conn: sqlite3.Connection, run_id: int) -> Check:
     rows = conn.execute("SELECT name, state FROM agents WHERE run_id = ?", (run_id,)).fetchall()
-    bad = [f"{r['name']} ({r['state']})" for r in rows if r["state"] != "released"]
-    detail = "; ".join(bad) if bad else f"{len(rows)} agent(s) released"
-    return Check("every agent is released", not bad, detail)
+    return _all_in_state("every agent is released", rows, "name", "released", "agent")
 
 
 def _full_test_check(conn: sqlite3.Connection, run_id: int) -> Check:
@@ -127,14 +128,18 @@ def _report_check(db_path: Path) -> Check:
     return Check("a report file exists", path.is_file(), str(path))
 
 
+_SESSIONS_CHECK = "no swarm session of the run is still running"
+_SERVER_CHECK = "no ledger server process is left"
+
+
 def _sessions_and_server_checks(
     conn: sqlite3.Connection, run_id: int, repo_root: Path
 ) -> list[Check]:
     if shutil.which(claude_binary()) is None:
         note = "claude is not on PATH: skipped"
         return [
-            Check("no swarm session of the run is still running", True, note, warning=True),
-            Check("no ledger server process is left", True, note, warning=True),
+            Check(_SESSIONS_CHECK, True, note, warning=True),
+            Check(_SERVER_CHECK, True, note, warning=True),
         ]
 
     names = {
@@ -147,9 +152,7 @@ def _sessions_and_server_checks(
     try:
         listing = list_sessions()
     except LedgerError as exc:
-        session_check = Check(
-            "no swarm session of the run is still running", False, f"could not list sessions: {exc}"
-        )
+        session_check = Check(_SESSIONS_CHECK, False, f"could not list sessions: {exc}")
     else:
         running = sorted(
             name
@@ -157,14 +160,14 @@ def _sessions_and_server_checks(
             if any(str(s.get("name")) == name and is_running(s) for s in listing)
         )
         detail = ", ".join(running) if running else "none running"
-        session_check = Check("no swarm session of the run is still running", not running, detail)
+        session_check = Check(_SESSIONS_CHECK, not running, detail)
     checks = [session_check]
 
     info = read_server_info(repo_root)
     server_up = info is not None and is_answering(info, repo_root)
     checks.append(
         Check(
-            "no ledger server process is left",
+            _SERVER_CHECK,
             not server_up,
             "still answering" if server_up else "not running",
         )

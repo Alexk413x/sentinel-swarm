@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import suppress
 from datetime import date, datetime
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any
@@ -68,6 +69,15 @@ def base_python() -> str:
     return getattr(sys, "_base_executable", None) or sys.executable
 
 
+def hidden_console_flags(new_process_group: bool = False) -> int:
+    if sys.platform != "win32":
+        return 0
+    # A hidden console, not DETACHED_PROCESS: a process with no console opens a new window for
+    # every console program it runs, such as the watchdog's claude calls.
+    flags = subprocess.CREATE_NO_WINDOW
+    return flags | subprocess.CREATE_NEW_PROCESS_GROUP if new_process_group else flags
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, (datetime, date)):
         return value.isoformat()
@@ -104,9 +114,11 @@ def error_text(exc: Exception) -> str:
 
 class _Worker:
     def __init__(self, command: list[str]) -> None:
-        flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         self.proc = subprocess.Popen(
-            command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, creationflags=flags
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            creationflags=hidden_console_flags(),
         )
         assert self.proc.stdin is not None and self.proc.stdout is not None
         self.stdin: IO[bytes] = self.proc.stdin
@@ -123,10 +135,9 @@ class _Worker:
 
     def _read(self) -> None:
         try:
-            for line in self.stdout:
-                self.replies.put(line)
-        except (OSError, ValueError):
-            pass
+            with suppress(OSError, ValueError):
+                for line in self.stdout:
+                    self.replies.put(line)
         finally:
             self.replies.put(None)
 
@@ -155,30 +166,22 @@ class _Worker:
         return reply
 
     def stop(self) -> None:
-        try:
+        with suppress(OSError):
             self.stdin.close()
-        except OSError:
-            pass
         try:
             self.proc.wait(timeout=STOP_WAIT_S)
         except subprocess.TimeoutExpired:
             self.kill()
 
     def kill(self) -> None:
-        try:
+        with suppress(OSError):
             self.proc.kill()
-        except OSError:
-            pass
-        try:
+        with suppress(subprocess.TimeoutExpired):
             self.proc.wait(timeout=STOP_WAIT_S)
-        except subprocess.TimeoutExpired:
-            pass
         for stream in (self.proc.stdin, self.proc.stdout):
-            try:
+            with suppress(OSError):
                 if stream is not None:
                     stream.close()
-            except OSError:
-                pass
 
 
 class Pool:

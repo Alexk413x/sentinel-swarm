@@ -4,42 +4,15 @@ import json
 from pathlib import Path
 
 import pytest
+from helpers import bootstrap_two_phases, register_agent, review_scores
 
 from swarm_ledger import graph as graph_module
-from swarm_ledger import sessions
 from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import events
 from swarm_ledger.identity import LedgerError
 from swarm_ledger.ledger import Ledger
 
-
-@pytest.fixture(autouse=True)
-def no_claude_sessions(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(args: list[str], cwd: Path | None = None) -> str:
-        del cwd
-        assert args[:2] == ["agents", "--json"], args
-        return "[]"
-
-    monkeypatch.setattr(sessions, "_run", fake_run)
-
-
-@pytest.fixture
-def fake_repo(tmp_path: Path, repo_root: Path) -> Path:
-    host = tmp_path / "host"
-    (host / ".git").mkdir(parents=True)
-    claude_dir = host / ".claude"
-    claude_dir.mkdir()
-    template = (repo_root / "templates" / "sentinel-swarm.local.md.example").read_text(
-        encoding="utf-8"
-    )
-    text = template.replace("test_command:\n", "test_command: pytest -q {target}\n")
-    (claude_dir / "sentinel-swarm.local.md").write_text(text, encoding="utf-8")
-    return host
-
-
-@pytest.fixture
-def ledger(fake_repo: Path) -> Ledger:
-    return Ledger(fake_repo, db_path=fake_repo / ".sentinel-swarm" / "ledger.db")
+pytestmark = pytest.mark.usefixtures("claude_sessions")
 
 
 def _oracle(ledger: Ledger) -> dict:
@@ -54,7 +27,7 @@ def _manager(ledger: Ledger, ctx: dict, phase_name: str, agent_id: str) -> dict:
     ledger.brief_create(
         "oracle", ctx["oracle_id"], name, "manager", "opus", "Own it.", phase_id=phase["phase_id"]
     )
-    ledger.agent_register_start(agent_id, "manager", parent_agent_id=ctx["oracle_id"])
+    register_agent(ledger, agent_id, "manager", parent_agent_id=ctx["oracle_id"])
     ledger.brief_ack(name, agent_id)
     return {"name": name, "agent_id": agent_id, "phase": phase}
 
@@ -72,7 +45,7 @@ def _lead(ledger: Ledger, manager: dict, module_name: str, agent_id: str) -> dic
         "Own it.",
         module_id=module["module_id"],
     )
-    ledger.agent_register_start(agent_id, "lead", parent_agent_id=manager["agent_id"])
+    register_agent(ledger, agent_id, "lead", parent_agent_id=manager["agent_id"])
     ledger.brief_ack(name, agent_id)
     return {"name": name, "agent_id": agent_id, "module": module, "phase": phase}
 
@@ -101,7 +74,7 @@ def _coder(
     )
     agent_id = f"{name}-agent"
     if bind:
-        ledger.agent_register_start(agent_id, "coder", parent_agent_id=lead["agent_id"])
+        register_agent(ledger, agent_id, "coder", parent_agent_id=lead["agent_id"])
         ledger.brief_ack(name, agent_id)
     return {"name": name, "agent_id": agent_id, "file_id": claimed["file_id"], "path": path}
 
@@ -403,19 +376,13 @@ def _insert_full_run(ledger: Ledger, ctx: dict) -> None:
         )
 
 
-def _scores() -> list[dict]:
-    return [
-        {"dimension": "completeness", "value": 10},
-        {"dimension": "integration", "value": 10},
-        {"dimension": "open_items", "value": 10},
-    ]
-
-
 def _approve_empty_phase(ledger: Ledger, ctx: dict, manager: dict) -> None:
     phase_id = manager["phase"]["phase_id"]
     ledger.phase_update(manager["name"], manager["agent_id"], phase_id, "handed_up")
     _insert_full_run(ledger, ctx)
-    ledger.phase_review("oracle", ctx["oracle_id"], phase_id, "accepted", "ok", scores=_scores())
+    ledger.phase_review(
+        "oracle", ctx["oracle_id"], phase_id, "accepted", "ok", scores=review_scores()
+    )
     ledger.phase_update("oracle", ctx["oracle_id"], phase_id, "approved")
 
 
@@ -737,7 +704,7 @@ def test_a_non_driver_skill_call_passes(tree: dict, ledger: Ledger) -> None:
 # -- 10. Graph gaps ----------------------------------------------------------------------------
 
 
-def test_a_coders_grep_records_one_graph_gap(tree: dict, ledger: Ledger, fake_repo: Path):
+def test_a_coders_grep_records_one_graph_gap(tree: dict, ledger: Ledger, host: Path):
     coder = _coder(ledger, tree["lead"], "login", "src/login.py")
     data = {
         "session_id": coder["agent_id"],
@@ -745,7 +712,7 @@ def test_a_coders_grep_records_one_graph_gap(tree: dict, ledger: Ledger, fake_re
         "tool_input": {"pattern": "def hash", "path": "src"},
         "tool_response": {
             "mode": "files_with_matches",
-            "filenames": [str(fake_repo / "src" / "a.py"), str(fake_repo / "src" / "b.py")],
+            "filenames": [str(host / "src" / "a.py"), str(host / "src" / "b.py")],
         },
     }
     events.handle_post_activity(ledger, data)
@@ -756,7 +723,8 @@ def test_a_coders_grep_records_one_graph_gap(tree: dict, ledger: Ledger, fake_re
     assert json.loads(rows[0]["results_json"]) == ["src/a.py", "src/b.py"]
 
 
-def test_a_non_swarm_grep_records_no_gap(tree: dict, ledger: Ledger) -> None:
+@pytest.mark.usefixtures("tree")
+def test_a_non_swarm_grep_records_no_gap(ledger: Ledger) -> None:
     data = {
         "session_id": "someone-else",
         "tool_name": "Glob",
@@ -779,11 +747,11 @@ def test_the_report_lists_graph_gaps(tree: dict, ledger: Ledger) -> None:
 
 
 def test_a_handoff_after_a_return_needs_a_brief_reread(
-    tree: dict, ledger: Ledger, fake_repo: Path, monkeypatch: pytest.MonkeyPatch
+    tree: dict, ledger: Ledger, host: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(graph_module, "graph_current_for", lambda root, path: (True, []))
-    (fake_repo / "src").mkdir()
-    (fake_repo / "src" / "login.py").write_text("x = 1\n", encoding="utf-8")
+    (host / "src").mkdir()
+    (host / "src" / "login.py").write_text("x = 1\n", encoding="utf-8")
     coder = _coder(ledger, tree["lead"], "login", "src/login.py")
     with write_tx(ledger.conn) as conn:
         conn.execute(
@@ -820,48 +788,8 @@ def test_another_sessions_brief_get_does_not_count_as_a_reread(tree: dict, ledge
     assert ledger.brief_read(coder["agent_id"], coder["name"])
 
 
-def _as_session(ledger: Ledger, agent_id: str, session_name: str) -> None:
-    with write_tx(ledger.conn) as conn:
-        conn.execute(
-            "UPDATE agents SET session_name = ? WHERE agent_id = ?", (session_name, agent_id)
-        )
-
-
-def _bootstrap(ledger: Ledger) -> dict:
-    started = ledger.run_start(prd="Build X", session_id="sess-1")
-    oracle_id = started["oracle"]["agent_id"]
-
-    phase_a = ledger.phase_add("oracle", oracle_id, "phase-a")
-    phase_b = ledger.phase_add("oracle", oracle_id, "phase-b")
-    ledger.phase_update("oracle", oracle_id, phase_a["phase_id"], "unlocked")
-    ledger.phase_update("oracle", oracle_id, phase_b["phase_id"], "unlocked")
-
-    ledger.brief_create(
-        "oracle",
-        oracle_id,
-        "mgr-p1-phase-a",
-        "manager",
-        "opus",
-        "Own phase-a.",
-        phase_id=phase_a["phase_id"],
-    )
-    ledger.agent_register_start("mgr-agent", "manager", parent_agent_id=oracle_id)
-    manager = ledger.brief_ack("mgr-p1-phase-a", "mgr-agent")
-    _as_session(ledger, oracle_id, "host-r1-oracle")
-    _as_session(ledger, "mgr-agent", "host-r1-manager-1")
-    manager = dict(manager) | {"session_name": "host-r1-manager-1"}
-
-    return {
-        "run_id": started["run"]["run_id"],
-        "oracle_id": oracle_id,
-        "phase_a": phase_a["phase_id"],
-        "phase_b": phase_b["phase_id"],
-        "manager": manager,
-    }
-
-
 def test_pre_send_message_allows_a_valid_target(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_two_phases(ledger)
     data = {
         "agent_id": ctx["oracle_id"],
         "tool_input": {"to": ctx["manager"]["session_name"]},
@@ -870,7 +798,7 @@ def test_pre_send_message_allows_a_valid_target(ledger: Ledger) -> None:
 
 
 def test_pre_send_message_denies_a_target_outside_the_run(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_two_phases(ledger)
     data = {"agent_id": ctx["oracle_id"], "tool_input": {"to": "some-other-repo-r9-coder-a"}}
     result = events.handle_pre_send_message(ledger, data)
     assert result is not None
@@ -880,5 +808,5 @@ def test_pre_send_message_denies_a_target_outside_the_run(ledger: Ledger) -> Non
 
 
 def test_pre_send_message_ignores_a_non_swarm_caller(ledger: Ledger) -> None:
-    _bootstrap(ledger)
+    bootstrap_two_phases(ledger)
     assert events.handle_pre_send_message(ledger, {"session_id": "not-a-swarm-agent"}) is None

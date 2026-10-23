@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import pytest
-from test_hooks import _as_session, _bootstrap, host, ledger
+from helpers import as_session
+from test_hooks import _bootstrap, host
 
 from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import HANDLERS, events
 from swarm_ledger.ledger import Ledger
 
 pytestmark = pytest.mark.usefixtures("claude_sessions")
-__all__ = ["host", "ledger"]
+__all__ = ["host"]
 
 
 def test_the_mod_events_are_registered() -> None:
@@ -27,7 +28,7 @@ def test_session_start_from_the_mod_records_the_session(ledger: Ledger) -> None:
 
 def test_next_tells_a_mod_session_to_make_no_call(ledger: Ledger) -> None:
     _bootstrap(ledger)
-    _as_session(ledger, "mgr-agent", "host-r1-manager-1")
+    as_session(ledger, "mgr-agent", "host-r1-manager-1")
     ledger.mod_session("lead-agent")
     posted = ledger.message_post("lead-p1-module-1", "lead-agent", "mgr-p1-phase-1", "done")
     assert posted["next"] == (
@@ -40,7 +41,7 @@ def test_owed_lists_the_callers_unsent_wake_ups_per_target_with_the_time_signal(
     ledger: Ledger,
 ) -> None:
     ctx = _bootstrap(ledger)
-    _as_session(ledger, "mgr-agent", "host-r1-manager-1")
+    as_session(ledger, "mgr-agent", "host-r1-manager-1")
     first = ledger.message_post("lead-p1-module-1", "lead-agent", "mgr-p1-phase-1", "one")
     second = ledger.message_post("lead-p1-module-1", "lead-agent", "mgr-p1-phase-1", "two")
     ledger.message_post("mgr-p1-phase-1", "mgr-agent", "lead-p1-module-1", "not mine")
@@ -60,7 +61,7 @@ def test_owed_lists_the_callers_unsent_wake_ups_per_target_with_the_time_signal(
 
 def test_owed_gives_a_lead_target_no_time_signal(ledger: Ledger) -> None:
     _bootstrap(ledger)
-    _as_session(ledger, "lead-agent", "host-r1-lead-1")
+    as_session(ledger, "lead-agent", "host-r1-lead-1")
     ledger.message_post("mgr-p1-phase-1", "mgr-agent", "lead-p1-module-1", "go")
     answer = events.handle_owed(ledger, {"session_id": "mgr-agent"})
     assert answer is not None
@@ -74,8 +75,8 @@ def test_owed_ignores_an_unknown_caller(ledger: Ledger) -> None:
 
 def test_wake_sent_marks_only_the_callers_rows(ledger: Ledger) -> None:
     _bootstrap(ledger)
-    _as_session(ledger, "mgr-agent", "host-r1-manager-1")
-    _as_session(ledger, "lead-agent", "host-r1-lead-1")
+    as_session(ledger, "mgr-agent", "host-r1-manager-1")
+    as_session(ledger, "lead-agent", "host-r1-lead-1")
     ledger.message_post("lead-p1-module-1", "lead-agent", "mgr-p1-phase-1", "up")
     ledger.message_post("mgr-p1-phase-1", "mgr-agent", "lead-p1-module-1", "down")
     mine = [w["wakeup_id"] for w in ledger.owed_wakeups("lead-agent")]
@@ -92,7 +93,7 @@ def test_wake_sent_marks_only_the_callers_rows(ledger: Ledger) -> None:
 
 def test_a_failed_mod_send_leaves_the_row_owed_and_stop_names_the_call(ledger: Ledger) -> None:
     _bootstrap(ledger)
-    _as_session(ledger, "mgr-agent", "host-r1-manager-1")
+    as_session(ledger, "mgr-agent", "host-r1-manager-1")
     ledger.mod_session("lead-agent")
     ledger.message_post("lead-p1-module-1", "lead-agent", "mgr-p1-phase-1", "up")
 

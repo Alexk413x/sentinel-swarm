@@ -17,7 +17,7 @@ All notable changes to the `sentinel-swarm` plugin.
 - The `.sentinel-swarm/hook.py mcp` shim reads a plugin's servers from a manifest path or
   list too, so the stdio fallback works for those plugins.
 
-## [0.2.1] — 2026-10-08
+## [0.2.1] — 2026-10-08 — tool catalog argument descriptions and Linux and macOS tests
 
 ### Fixed
 

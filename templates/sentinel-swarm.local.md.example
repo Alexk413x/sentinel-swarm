@@ -1,8 +1,4 @@
 ---
-# Tracking backend for the ledger. `local` is the only value for now; other
-# trackers (GitHub issues, Jira) may become values later.
-tracking: local
-
 runtime:
   # Every role runs as its own Claude Code session in the one working tree. A parent
   # starts a child with the ledger's agent_spawn tool. The Oracle starts a Driver with

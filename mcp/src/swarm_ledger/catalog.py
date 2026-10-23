@@ -16,6 +16,8 @@ import copy
 import json
 import re
 import sys
+import types
+import typing
 from pathlib import Path
 from typing import Any, cast
 
@@ -156,8 +158,6 @@ def validate(name: str, args: Any) -> dict[str, Any]:
 def generate() -> dict[str, Any]:
     import asyncio
     import inspect
-    import types
-    import typing
 
     from fastmcp import Client
     from pydantic import TypeAdapter, WithJsonSchema
@@ -181,7 +181,7 @@ def generate() -> dict[str, Any]:
         for key, hint in typing.get_type_hints(fn, include_extras=True).items():
             if key in ("return", "agent_id"):
                 continue
-            validated = _strip(hint, WithJsonSchema, types, typing)
+            validated = _strip(hint, WithJsonSchema)
             if validated is not hint:
                 checks.setdefault(tool["name"], {})[key] = TypeAdapter(validated).json_schema()
     return {
@@ -192,18 +192,18 @@ def generate() -> dict[str, Any]:
     }
 
 
-def _strip(hint: Any, display: type, types: Any, typing: Any) -> Any:
+def _strip(hint: Any, display: type) -> Any:
     origin = typing.get_origin(hint)
     if origin is typing.Annotated:
         base, *metadata = typing.get_args(hint)
         kept = [m for m in metadata if not isinstance(m, display)]
-        inner = _strip(base, display, types, typing)
+        inner = _strip(base, display)
         if len(kept) == len(metadata) and inner is base:
             return hint
         return typing.Annotated[(inner, *kept)] if kept else inner
     if origin in (typing.Union, types.UnionType):
         members = typing.get_args(hint)
-        stripped = tuple(_strip(m, display, types, typing) for m in members)
+        stripped = tuple(_strip(m, display) for m in members)
         if all(a is b for a, b in zip(stripped, members)):
             return hint
         return typing.Union[stripped]

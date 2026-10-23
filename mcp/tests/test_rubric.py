@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import pytest
+from helpers import all_applicable
 
 from swarm_ledger.rubric import (
     DIMENSION_KEYS,
     DIMENSIONS,
     Rating,
     Thresholds,
-    below_floor,
     classify,
     dimension_scores,
     disagreements,
@@ -62,16 +62,12 @@ def _all_applicable_ratings(value: int = 10, reason: str | None = None) -> list[
     return ratings
 
 
-def _all_applicable() -> dict[str, str | None]:
-    return {key: None for key, _, _ in DIMENSIONS}
-
-
 def _only(dimension: str) -> dict[str, str | None]:
     return {key: None if key == dimension else "not under test" for key in DIMENSION_KEYS}
 
 
 def test_validate_ratings_accepts_a_complete_valid_set() -> None:
-    validate_ratings(_all_applicable_ratings(), _all_applicable())
+    assert validate_ratings(_all_applicable_ratings(), all_applicable()) is None
 
 
 def test_validate_ratings_rejects_value_below_range() -> None:
@@ -91,7 +87,7 @@ def test_validate_ratings_accepts_boundary_values_one_and_ten() -> None:
         Rating("meets_the_brief", "does_what_was_asked", 1, "wrong", "pkg/good.py:1"),
         Rating("meets_the_brief", "nothing_extra", 10, None, None),
     ]
-    validate_ratings(ratings, _only("meets_the_brief"))
+    assert validate_ratings(ratings, _only("meets_the_brief")) is None
 
 
 def test_validate_ratings_rejects_low_rating_with_no_reason() -> None:
@@ -117,7 +113,7 @@ def test_validate_ratings_allows_rating_of_nine_with_no_reason() -> None:
         Rating("meets_the_brief", "does_what_was_asked", 9, None, None),
         Rating("meets_the_brief", "nothing_extra", 9, None, None),
     ]
-    validate_ratings(ratings, _only("meets_the_brief"))
+    assert validate_ratings(ratings, _only("meets_the_brief")) is None
 
 
 def test_validate_ratings_rejects_missing_criterion_for_applicable_dimension() -> None:
@@ -134,18 +130,22 @@ def test_validate_ratings_rejects_rating_for_not_applicable_dimension() -> None:
 
 def test_validate_ratings_allows_not_applicable_dimension_with_no_ratings() -> None:
     ratings = _full_ratings("meets_the_brief")
-    validate_ratings(ratings, _only("meets_the_brief") | {"accessibility": "back-end file"})
+    assert (
+        validate_ratings(ratings, _only("meets_the_brief") | {"accessibility": "back-end file"})
+        is None
+    )
 
 
 def test_validate_ratings_rejects_unknown_dimension() -> None:
     ratings = [Rating("not_a_real_dimension", "x", 10, None, None)]
     with pytest.raises(ValueError):
-        validate_ratings(ratings, _all_applicable() | {"not_a_real_dimension": None})
+        validate_ratings(ratings, all_applicable() | {"not_a_real_dimension": None})
 
 
 def test_validate_ratings_rejects_unknown_criterion() -> None:
-    ratings = _full_ratings("meets_the_brief") + [
-        Rating("meets_the_brief", "not_a_real_criterion", 10, None, None)
+    ratings = [
+        *_full_ratings("meets_the_brief"),
+        Rating("meets_the_brief", "not_a_real_criterion", 10, None, None),
     ]
     with pytest.raises(ValueError):
         validate_ratings(ratings, _only("meets_the_brief"))
@@ -392,21 +392,3 @@ def test_classify_ignores_dimensions_missing_from_before() -> None:
     before: dict[str, float] = {}
     after = {"meets_the_brief": 50.0}
     assert classify(before, after, {"meets_the_brief"}, t) == "plateau"
-
-
-def test_below_floor_returns_dimensions_under_the_floor() -> None:
-    t = Thresholds()
-    scores = {"meets_the_brief": 60.0, "testing": 90.0}
-    assert below_floor(scores, t) == ["meets_the_brief"]
-
-
-def test_below_floor_boundary_exactly_at_floor_is_not_included() -> None:
-    t = Thresholds()
-    scores = {"meets_the_brief": 70.0}
-    assert below_floor(scores, t) == []
-
-
-def test_below_floor_empty_when_nothing_is_below() -> None:
-    t = Thresholds()
-    scores = {"meets_the_brief": 90.0}
-    assert below_floor(scores, t) == []

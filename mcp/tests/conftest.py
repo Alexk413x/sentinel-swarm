@@ -7,9 +7,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from helpers import FakeClaude, ledger_for, make_host, settings_text
 
 from swarm_ledger import graph, sessions
 from swarm_ledger.identity import LedgerError
+from swarm_ledger.ledger import Ledger
 
 
 @pytest.fixture(scope="session")
@@ -92,14 +94,22 @@ def claude_sessions(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
 
 
 @pytest.fixture
-def host(tmp_path: Path, repo_root: Path) -> Path:
-    root = tmp_path / "host"
-    (root / ".git").mkdir(parents=True)
-    claude_dir = root / ".claude"
-    claude_dir.mkdir()
-    template = (repo_root / "templates" / "sentinel-swarm.local.md.example").read_text(
-        encoding="utf-8"
-    )
-    text = template.replace("test_command:\n", "test_command: pytest -q {target}\n")
-    (claude_dir / "sentinel-swarm.local.md").write_text(text, encoding="utf-8")
-    return root
+def host(tmp_path: Path) -> Path:
+    return make_host(tmp_path / "host", settings_text(test_command="pytest -q {target}"))
+
+
+@pytest.fixture
+def ledger(host: Path) -> Ledger:
+    return ledger_for(host)
+
+
+@pytest.fixture
+def claude(monkeypatch: pytest.MonkeyPatch) -> FakeClaude:
+    fake = FakeClaude()
+    monkeypatch.setattr(sessions, "_run", fake)
+    return fake
+
+
+@pytest.fixture
+def no_claude_binary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("SENTINEL_SWARM_CLAUDE", str(tmp_path / "no-claude-here"))

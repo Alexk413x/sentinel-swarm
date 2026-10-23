@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from pathlib import Path
 from typing import Any
@@ -10,6 +9,7 @@ from urllib.parse import urlsplit
 from . import frontmatter
 from .auth import ledger_entry
 from .identity import ROLES, LedgerError
+from .paths import config_dir, same_path
 
 LEDGER_SERVER = "swarm-ledger"
 SESSION_SETTINGS = '{"worktree":{"bgIsolation":"none"}}'
@@ -43,13 +43,8 @@ _OPTION_VALUE = re.compile(r"[0-9A-Za-z._-]{1,64}")
 _UNQUOTABLE = re.compile(r'["$`\r\n]')
 
 
-def _config_dir() -> Path:
-    raw = os.environ.get("CLAUDE_CONFIG_DIR")
-    return Path(raw) if raw else Path.home() / ".claude"
-
-
 def _registry_path() -> Path:
-    return _config_dir() / "plugins" / "installed_plugins.json"
+    return config_dir() / "plugins" / "installed_plugins.json"
 
 
 def _read_json(path: Path) -> Any:
@@ -57,17 +52,6 @@ def _read_json(path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-
-
-def _same_path(raw: object, repo_root: Path) -> bool:
-    if not isinstance(raw, str) or not raw:
-        return False
-    try:
-        return os.path.normcase(str(Path(raw).resolve())) == os.path.normcase(
-            str(repo_root.resolve())
-        )
-    except OSError:
-        return False
 
 
 def _installs(repo_root: Path, plugin_id: str) -> list[dict[str, Any]]:
@@ -78,7 +62,7 @@ def _installs(repo_root: Path, plugin_id: str) -> list[dict[str, Any]]:
         entry
         for entry in entries or []
         if isinstance(entry, dict)
-        and (entry.get("scope") == "user" or _same_path(entry.get("projectPath"), repo_root))
+        and (entry.get("scope") == "user" or same_path(entry.get("projectPath"), repo_root))
     ]
 
 
@@ -107,7 +91,7 @@ def _plugin_option(plugin_id: str, install: Path, key: str) -> str | None:
     option = user_config.get(key) if isinstance(user_config, dict) else None
     if not isinstance(option, dict):
         return None
-    data = _read_json(_config_dir() / "settings.json")
+    data = _read_json(config_dir() / "settings.json")
     configs = data.get("pluginConfigs") if isinstance(data, dict) else None
     config = configs.get(plugin_id) if isinstance(configs, dict) else None
     options = config.get("options") if isinstance(config, dict) else None
@@ -259,19 +243,21 @@ def read_agent_file(repo_root: Path, role: str) -> dict[str, Any]:
     path = agent_file_path(repo_root, role)
     if not path.is_file():
         raise LedgerError(f"the role file {path} is missing; {_SETUP_HINT}")
-    lines = path.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0].strip() != "---":
-        raise LedgerError(f"the role file {path} has no frontmatter; {_SETUP_HINT}")
-    end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
-    if end is None:
-        raise LedgerError(f"the role file {path} has an unclosed frontmatter block; {_SETUP_HINT}")
     try:
-        data = frontmatter.parse("\n".join(lines[1:end]))
+        head, rest = frontmatter.split_document(path.read_text(encoding="utf-8"))
+    except frontmatter.MissingFrontmatter:
+        raise LedgerError(f"the role file {path} has no frontmatter; {_SETUP_HINT}") from None
+    except frontmatter.UnclosedFrontmatter:
+        raise LedgerError(
+            f"the role file {path} has an unclosed frontmatter block; {_SETUP_HINT}"
+        ) from None
+    try:
+        data = frontmatter.parse(head)
     except frontmatter.FrontmatterError as exc:
         raise LedgerError(f"the role file {path} has invalid YAML: {exc}; {_SETUP_HINT}") from exc
     if not isinstance(data, dict):
         raise LedgerError(f"the role file {path} frontmatter is not a mapping; {_SETUP_HINT}")
-    body = "\n".join(lines[end + 1 :]).lstrip("\n")
+    body = "\n".join(rest.splitlines()).lstrip("\n")
     return {**data, "body": body}
 
 

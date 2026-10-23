@@ -296,9 +296,7 @@ def run_ledger_hook(event: str, payload: bytes, timeout: float = HOOK_TIMEOUT_SE
             cwd=str(repo),
         )
     except subprocess.TimeoutExpired:
-        raise ShimError(
-            f"the ledger hook {event} timed out after {HOOK_TIMEOUT_SECONDS} s"
-        ) from None
+        raise ShimError(f"the ledger hook {event} timed out after {timeout:.0f} s") from None
     except OSError as exc:
         raise ShimError(f"cannot start Python: {exc}") from None
     if done.stderr:

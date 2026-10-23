@@ -95,12 +95,7 @@ def _build_ledger(
     return tmp_path, run_id
 
 
-@pytest.fixture(autouse=True)
-def _no_claude(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    # The default fixture keeps every test deterministic on a machine that happens to
-    # have claude on PATH; tests that want the "claude is available" path monkeypatch
-    # checklist.claude_binary themselves.
-    monkeypatch.setenv("SENTINEL_SWARM_CLAUDE", str(tmp_path / "no-claude-here"))
+pytestmark = pytest.mark.usefixtures("no_claude_binary")
 
 
 def test_missing_ledger_fails(tmp_path: Path) -> None:

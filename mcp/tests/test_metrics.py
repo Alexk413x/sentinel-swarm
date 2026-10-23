@@ -138,9 +138,7 @@ def _ledger(tmp_path: Path, transcript: Path | None) -> Path:
     return tmp_path
 
 
-@pytest.fixture(autouse=True)
-def _no_claude(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("SENTINEL_SWARM_CLAUDE", str(tmp_path / "no-claude-here"))
+pytestmark = pytest.mark.usefixtures("no_claude_binary")
 
 
 def test_run_metrics_counts_ledger_and_transcripts(tmp_path: Path) -> None:

@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import json
-import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from helpers import (
+    ROLE_FILE,
+    insert_passing_test_run,
+    make_swarm_host,
+    review_scores,
+    settings_text,
+    untimed,
+    write_server_info,
+)
+from helpers import FakeClaude as BaseFakeClaude
 
 from swarm_ledger import auth, sessions
 from swarm_ledger.db import write_tx
@@ -16,13 +25,11 @@ from swarm_ledger.ledger import Ledger, repo_slug, run_stamp, session_name_for
 _ORACLE_SESSION = "sess-oracle-0000"
 
 
-class FakeClaude:
+class FakeClaude(BaseFakeClaude):
     def __init__(self) -> None:
-        self.calls: list[tuple[list[str], Path | None]] = []
-        self.listing: list[dict] = []
+        super().__init__()
         self.fail: dict[str, str] = {}
         self.appear = True
-        self._count = 0
 
     def __call__(self, args: list[str], cwd: Path | None = None) -> str:
         self.calls.append((list(args), cwd))
@@ -42,20 +49,7 @@ class FakeClaude:
             if entry is not None:
                 entry["status"] = "busy"
             return f"\x1b[2mbackgrounded · {args[1][:8]} · resumed\x1b[0m\n"
-        name = args[args.index("--name") + 1]
-        self._count += 1
-        session_id = f"{self._count:08x}-aaaa-bbbb-cccc-dddddddddddd"
-        if self.appear:
-            self.add(session_id, name, bg_id=session_id[:8])
-        return f"backgrounded · {session_id[:8]} · {name}\n"
-
-    def add(self, session_id: str, name: str, bg_id: str | None = None) -> dict:
-        entry = {"pid": 100 + len(self.listing), "sessionId": session_id, "name": name}
-        entry |= {"status": "busy", "state": "working"}
-        if bg_id:
-            entry["id"] = bg_id
-        self.listing.append(entry)
-        return entry
+        return self.spawn(args, register=self.appear)
 
     def entry(self, session_id: str) -> dict | None:
         return next((e for e in self.listing if e["sessionId"] == session_id), None)
@@ -76,48 +70,9 @@ def claude(monkeypatch: pytest.MonkeyPatch) -> FakeClaude:
     return fake
 
 
-_ROLE_FILE = """---
-name: swarm-{role}
-description: The {role}.
-model: sonnet
-permissionMode: acceptEdits
-tools: Read, SendMessage, mcp__swarm-ledger
-mcpServers:
-  - codebase-kg:
-      command: python
-      args: [".sentinel-swarm/hook.py", "mcp", "codebase-kg@alexk413x", "codebase-kg"]
----
-
-You are a {role}.
-"""
-
-
 @pytest.fixture
-def host(tmp_path: Path, repo_root: Path) -> Path:
-    root = tmp_path / "My Host"
-    (root / ".git").mkdir(parents=True)
-    claude_dir = root / ".claude"
-    (claude_dir / "agents").mkdir(parents=True)
-    template = (repo_root / "templates" / "sentinel-swarm.local.md.example").read_text(
-        encoding="utf-8"
-    )
-    (claude_dir / "sentinel-swarm.local.md").write_text(template, encoding="utf-8")
-    for role in ("oracle", "manager", "lead", "coder"):
-        (claude_dir / "agents" / f"swarm-{role}.md").write_text(
-            _ROLE_FILE.format(role=role), encoding="utf-8"
-        )
-    records = root / ".sentinel-swarm"
-    records.mkdir()
-    (records / "server.json").write_text(
-        json.dumps({"url": "http://127.0.0.1:4321/mcp", "port": 4321, "pid": 1}), encoding="utf-8"
-    )
-    auth.ensure_token(root)
-    return root
-
-
-@pytest.fixture
-def ledger(host: Path) -> Ledger:
-    return Ledger(host, db_path=host / ".sentinel-swarm" / "ledger.db")
+def host(tmp_path: Path) -> Path:
+    return make_swarm_host(tmp_path / "My Host", settings_text(), ROLE_FILE)
 
 
 def _spawn(ledger: Ledger, parent: tuple[str, str], name: str, role: str, model: str, **ids):
@@ -194,44 +149,22 @@ def _row(ledger: Ledger, agent_id: str) -> dict:
     )
 
 
-def _insert_passing_test_run(ledger: Ledger, run_id: int, agent_id: str, scope: str) -> None:
-    with write_tx(ledger.conn) as conn:
-        conn.execute(
-            "INSERT INTO test_runs (run_id, agent_id, scope, target, command, exit_code, "
-            "passed, failed, skipped, output) VALUES (?, ?, ?, 'x', 'x', 0, 1, 0, 0, '')",
-            (run_id, agent_id, scope),
-        )
-
-
-def _review_scores() -> list[dict]:
-    return [
-        {"dimension": "completeness", "value": 10},
-        {"dimension": "integration", "value": 10},
-        {"dimension": "open_items", "value": 10},
-    ]
-
-
 def _accept_module(ledger: Ledger, ctx: Ctx) -> dict:
-    _insert_passing_test_run(ledger, ctx.run_id, ctx.manager[1], "phase")
+    insert_passing_test_run(ledger, ctx.run_id, ctx.manager[1], "phase")
     return ledger.module_review(
-        *ctx.manager, ctx.module_id, "accepted", "looks good", scores=_review_scores()
+        *ctx.manager, ctx.module_id, "accepted", "looks good", scores=review_scores()
     )
 
 
 def _hand_up_and_accept_phase(ledger: Ledger, ctx: Ctx) -> dict:
     ledger.phase_update(*ctx.manager, ctx.phase_id, "handed_up")
-    _insert_passing_test_run(ledger, ctx.run_id, ctx.oracle[1], "full")
+    insert_passing_test_run(ledger, ctx.run_id, ctx.oracle[1], "full")
     return ledger.phase_review(
-        *ctx.oracle, ctx.phase_id, "accepted", "ship it", scores=_review_scores()
+        *ctx.oracle, ctx.phase_id, "accepted", "ship it", scores=review_scores()
     )
 
 
 # -- the CLI wrapper ------------------------------------------------------------------------
-
-
-def _untimed(text: str) -> str:
-    assert re.search(r" elapsed \d+s(?: / \d+s)?", text), text
-    return re.sub(r" elapsed \d+s(?: / \d+s)?", "", text)
 
 
 def test_the_binary_comes_from_sentinel_swarm_claude(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -517,9 +450,7 @@ def test_agent_spawn_refuses_a_recorded_url_off_loopback(
     ledger: Ledger, claude: FakeClaude, host: Path
 ) -> None:
     ctx = _bootstrap(ledger, claude)
-    (host / ".sentinel-swarm" / "server.json").write_text(
-        json.dumps({"url": "http://10.0.0.5:4321/mcp", "port": 4321, "pid": 1}), encoding="utf-8"
-    )
+    write_server_info(host, {"url": "http://10.0.0.5:4321/mcp", "port": 4321, "pid": 1})
     _brief_second_lead(ledger, ctx)
     calls = len(claude.calls)
     with pytest.raises(LedgerError, match=r"is not http://127\.0\.0\.1:<port>/mcp"):
@@ -568,7 +499,7 @@ def test_agent_resume_continues_a_stopped_session_with_the_owed_pointer(
     pointer = f"Message {posted['message_id']} from lead-p1-module-1 is waiting in the ledger; "
     assert resumed["message"].startswith(pointer)
     assert resumed["wakeups_sent"] == 1
-    args, cwd = [(a, c) for a, c in claude.calls if a[0] == "--resume"][0]
+    args, cwd = next((a, c) for a, c in claude.calls if a[0] == "--resume")
     assert args[:5] == ["--resume", ctx.manager[1], "--bg", resumed["message"], "--name"]
     assert args[5] == ledger.session_name(ctx.run_id, "mgr-p1-phase-1")
     assert cwd == host
@@ -615,7 +546,7 @@ def test_message_post_returns_a_send_message_to_a_running_recipient(
         f"Message {posted['message_id']} from lead-p1-module-1 is waiting in the ledger; "
         "read it with message_inbox."
     )
-    assert _untimed(posted["next"]) == f'SendMessage(to="{session}", message="{pointer}")'
+    assert untimed(posted["next"]) == f'SendMessage(to="{session}", message="{pointer}")'
     owed = ledger.owed_wakeups(ctx.lead[1])
     assert [(w["to_name"], w["to_session_name"], w["reason"]) for w in owed] == [
         ("mgr-p1-phase-1", session, "message_post")
@@ -642,7 +573,7 @@ def test_phase_update_handed_up_owes_the_oracle_a_wake_up(
     ledger.agent_release(*ctx.manager, ctx.lead[1])
     _accept_module(ledger, ctx)
     phase = ledger.phase_update(*ctx.manager, ctx.phase_id, "handed_up")
-    assert _untimed(phase["next"]) == (
+    assert untimed(phase["next"]) == (
         'SendMessage(to="my-host-oracle", '
         f'message="Phase {ctx.phase_id} (p1-phase-1) is handed up and waiting in the ledger.")'
     )

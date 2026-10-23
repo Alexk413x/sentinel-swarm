@@ -8,31 +8,17 @@ from typing import Any
 import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
+from helpers import make_host, register_agent
 
-from swarm_ledger import __version__, front, rubric, sessions
+from swarm_ledger import __version__, front, rubric
 from swarm_ledger.server import _TOOL_NAMES, configure, mcp
 
-
-@pytest.fixture(autouse=True)
-def no_claude_sessions(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(args: list[str], cwd: Path | None = None) -> str:
-        del cwd
-        assert args[:2] == ["agents", "--json"], args
-        return "[]"
-
-    monkeypatch.setattr(sessions, "_run", fake_run)
+pytestmark = pytest.mark.usefixtures("claude_sessions")
 
 
 @pytest.fixture
-def host(tmp_path: Path, repo_root: Path, check_in) -> Path:
-    root = tmp_path / "host"
-    (root / ".git").mkdir(parents=True)
-    claude_dir = root / ".claude"
-    claude_dir.mkdir()
-    template = (repo_root / "templates" / "sentinel-swarm.local.md.example").read_text(
-        encoding="utf-8"
-    )
-    (claude_dir / "sentinel-swarm.local.md").write_text(template, encoding="utf-8")
+def host(tmp_path: Path, check_in) -> Path:
+    root = make_host(tmp_path / "host")
     configure(root)
     check_in(root, "sess-1", "stamped-1", "mgr-1")
     return root
@@ -119,7 +105,8 @@ async def _call_with_agent_id() -> dict[str, Any]:
         ).data
 
 
-def test_a_stamped_agent_id_reaches_the_handler(host: Path):
+@pytest.mark.usefixtures("host")
+def test_a_stamped_agent_id_reaches_the_handler():
     assert asyncio.run(_call_with_agent_id())["oracle"]["agent_id"] == "stamped-1"
 
 
@@ -143,7 +130,8 @@ async def _score_with_an_unknown_criterion() -> str:
         raise AssertionError("expected score_record to raise a ToolError")
 
 
-def test_score_record_arguments_pass_the_schema_to_the_ledger(host: Path):
+@pytest.mark.usefixtures("host")
+def test_score_record_arguments_pass_the_schema_to_the_ledger():
     message = asyncio.run(_score_with_an_unknown_criterion())
     assert message == "the oracle role may not call score_record"
 
@@ -182,7 +170,8 @@ async def _manager_calls(tools: list[str]) -> list[str]:
     return results
 
 
-def test_a_role_calls_only_its_own_ledger_tools(host: Path):
+@pytest.mark.usefixtures("host")
+def test_a_role_calls_only_its_own_ledger_tools():
     assert asyncio.run(_manager_calls(["plan_unlocked", "guidelines_get"])) == [
         "the manager role may not call plan_unlocked",
         "allowed",
@@ -204,7 +193,7 @@ async def _registered_manager_calls() -> list[str]:
     results: list[str] = []
     async with Client(mcp) as client:
         await _brief_manager(client)
-        front._ledger().agent_register_start("mgr-1", "manager", parent_agent_id="sess-1")
+        register_agent(front._ledger(), "mgr-1", "manager", parent_agent_id="sess-1")
         for tool, arguments in calls:
             try:
                 await client.call_tool(tool, arguments)
@@ -214,7 +203,8 @@ async def _registered_manager_calls() -> list[str]:
     return results
 
 
-def test_a_registered_session_reaches_only_brief_ack_and_the_identity_free_tools(host: Path):
+@pytest.mark.usefixtures("host")
+def test_a_registered_session_reaches_only_brief_ack_and_the_identity_free_tools():
     assert asyncio.run(_registered_manager_calls()) == [
         "you are not bound to the ledger yet: call brief_ack(caller='mgr-1'). "
         "No other ledger tool works until it succeeds",
@@ -235,7 +225,8 @@ async def _events_for(targets: list[str]) -> list[list[dict[str, Any]]]:
         ]
 
 
-def test_events_filters_on_target_agent_id(host: Path):
+@pytest.mark.usefixtures("host")
+def test_events_filters_on_target_agent_id():
     nobody, oracle = asyncio.run(_events_for(["nobody", "sess-1"]))
     assert nobody == []
     assert oracle and all(event["agent_id"] == "sess-1" for event in oracle)
@@ -261,7 +252,8 @@ async def _run_start_as(session_id: str) -> str:
     raise AssertionError("expected run_start to raise a ToolError")
 
 
-def test_run_start_refuses_a_session_the_mod_never_checked_in_for(host: Path):
+@pytest.mark.usefixtures("host")
+def test_run_start_refuses_a_session_the_mod_never_checked_in_for():
     message = asyncio.run(_run_start_as("main"))
     assert message.startswith(
         "run_start refuses session 'main': the sentinel-swarm mod never checked in for it"
@@ -279,7 +271,8 @@ async def _run_start_then_status() -> tuple[dict, dict]:
         return started, status
 
 
-def test_run_start_then_run_status_round_trip(host: Path):
+@pytest.mark.usefixtures("host")
+def test_run_start_then_run_status_round_trip():
     started, status = asyncio.run(_run_start_then_status())
     assert started["run"]["prd"] == "Build X"
     assert started["oracle"]["agent_id"] == "sess-1"
@@ -306,7 +299,8 @@ async def _brief_create_with_wrong_model() -> str:
         raise AssertionError("expected brief_create to raise a ToolError")
 
 
-def test_brief_create_refuses_an_unapproved_model(host: Path):
+@pytest.mark.usefixtures("host")
+def test_brief_create_refuses_an_unapproved_model():
     message = asyncio.run(_brief_create_with_wrong_model())
     assert "not-a-model" in message
     assert "is not approved for" in message
@@ -326,7 +320,8 @@ async def _brief_get_and_ack_flow() -> dict[str, Any]:
         return {"brief": brief, "acked": acked}
 
 
-def test_brief_get_and_brief_ack_flow(host: Path):
+@pytest.mark.usefixtures("host")
+def test_brief_get_and_brief_ack_flow():
     result = asyncio.run(_brief_get_and_ack_flow())
     assert result["brief"]["child_name"] == "mgr-p1-phase-1"
     assert result["brief"]["model"] == "opus"
@@ -345,7 +340,8 @@ async def _analytics_query() -> dict[str, Any]:
         ).data
 
 
-def test_analytics_query_with_a_select_returns_rows(host: Path):
+@pytest.mark.usefixtures("host")
+def test_analytics_query_with_a_select_returns_rows():
     data = asyncio.run(_analytics_query())
     assert data["rows"] == [{"prd": "Build X"}]
 
@@ -366,7 +362,8 @@ async def _spawn_without_a_brief() -> str:
         raise AssertionError("expected agent_spawn to raise a ToolError")
 
 
-def test_agent_spawn_reports_a_missing_brief_as_a_tool_error(host: Path) -> None:
+@pytest.mark.usefixtures("host")
+def test_agent_spawn_reports_a_missing_brief_as_a_tool_error() -> None:
     assert "no unacknowledged brief for 'mgr-9'" in asyncio.run(_spawn_without_a_brief())
 
 
@@ -380,9 +377,8 @@ async def _start_and_finish() -> dict[str, Any]:
         ).data
 
 
-def test_run_finish_calls_the_on_run_finish_hook(
-    host: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+@pytest.mark.usefixtures("host")
+def test_run_finish_calls_the_on_run_finish_hook(monkeypatch: pytest.MonkeyPatch) -> None:
     finished: list[str | None] = []
     monkeypatch.setattr(front, "on_run_finish", finished.append)
     assert asyncio.run(_start_and_finish())["state"] == "finished"

@@ -7,59 +7,42 @@ import sys
 from pathlib import Path
 
 import pytest
+from helpers import (
+    all_applicable,
+    all_ratings,
+    as_session,
+    bootstrap_module,
+    file_id_for,
+    go_idle,
+    insert_passing_test_run,
+    make_host,
+    register_agent,
+    settings_text,
+    spawn_coder,
+    write_module,
+)
 
-from swarm_ledger import sessions
-from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import events
 from swarm_ledger.identity import LedgerError
 from swarm_ledger.ledger import Ledger
-from swarm_ledger.rubric import DIMENSIONS
 
 _PYTHON = f'"{sys.executable}"' if " " in sys.executable else sys.executable
 _TEST_COMMAND = f"{_PYTHON} -m pytest -q -p no:cacheprovider {{target}}"
 _GRAPH_MODULES = {"good": "add", "disagree": "sub", "low": "mul"}
 
 
-def _write_module(host: Path, name: str, symbol: str) -> None:
-    (host / "pkg" / f"{name}.py").write_text(
-        f"def {symbol}(a, b):\n    return a + b\n", encoding="utf-8", newline="\n"
-    )
-    (host / "tests" / f"test_{name}.py").write_text(
-        f"from pkg.{name} import {symbol}\n\n\n"
-        f"def test_{symbol}():\n    assert {symbol}(1, 2) == 3\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-
-
-@pytest.fixture(autouse=True)
-def no_claude_sessions(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(args: list[str], cwd: Path | None = None) -> str:
-        del cwd
-        assert args[:2] == ["agents", "--json"], args
-        return "[]"
-
-    monkeypatch.setattr(sessions, "_run", fake_run)
+pytestmark = pytest.mark.usefixtures("claude_sessions")
 
 
 @pytest.fixture
 def host(tmp_path: Path, repo_root: Path) -> Path:
-    root = tmp_path / "host"
-    (root / ".git").mkdir(parents=True)
+    root = make_host(tmp_path / "host", settings_text(test_command=_TEST_COMMAND))
     (root / "pkg").mkdir()
     (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
     (root / "tests").mkdir()
 
-    claude_dir = root / ".claude"
-    claude_dir.mkdir()
-    template = (repo_root / "templates" / "sentinel-swarm.local.md.example").read_text(
-        encoding="utf-8"
-    )
-    text = template.replace("test_command:\n", f"test_command: {_TEST_COMMAND}\n")
-    (claude_dir / "sentinel-swarm.local.md").write_text(text, encoding="utf-8")
-
     for name, symbol in _GRAPH_MODULES.items():
-        _write_module(root, name, symbol)
+        write_module(root, name, symbol)
 
     knowledge_dir = root / "knowledge"
     knowledge_dir.mkdir()
@@ -85,35 +68,6 @@ def host(tmp_path: Path, repo_root: Path) -> Path:
     return root
 
 
-@pytest.fixture
-def ledger(host: Path) -> Ledger:
-    return Ledger(host, db_path=host / ".sentinel-swarm" / "ledger.db")
-
-
-def _all_ratings(
-    value: int = 10, reason: str = "needs work", overrides: dict[str, int] | None = None
-) -> list[dict]:
-    overrides = overrides or {}
-    ratings = []
-    for dim_key, _, criteria in DIMENSIONS:
-        dim_value = overrides.get(dim_key, value)
-        for criterion_key, _ in criteria:
-            ratings.append(
-                {
-                    "dimension": dim_key,
-                    "criterion": criterion_key,
-                    "value": dim_value,
-                    "reason": reason if dim_value < 9 else None,
-                    "ref": "pkg/good.py:1" if dim_value < 9 else None,
-                }
-            )
-    return ratings
-
-
-def _all_applicable() -> dict[str, str | None]:
-    return {dim_key: None for dim_key, _, _ in DIMENSIONS}
-
-
 def _review_scores() -> list[dict]:
     return [
         {"dimension": "completeness", "value": 10, "reason": None},
@@ -122,82 +76,8 @@ def _review_scores() -> list[dict]:
     ]
 
 
-def _bootstrap(ledger: Ledger) -> dict:
-    started = ledger.run_start(prd="Build X", session_id="sess-1")
-    oracle_id = started["oracle"]["agent_id"]
-
-    phase = ledger.phase_add("oracle", oracle_id, "phase-1")
-    phase_id = phase["phase_id"]
-    ledger.phase_update("oracle", oracle_id, phase_id, "unlocked")
-
-    ledger.brief_create(
-        "oracle",
-        oracle_id,
-        "mgr-p1-phase-1",
-        "manager",
-        "opus",
-        "Own p1-phase-1.",
-        phase_id=phase_id,
-    )
-    ledger.agent_register_start("mgr-agent", "manager", parent_agent_id=oracle_id)
-    manager = ledger.brief_ack("mgr-p1-phase-1", "mgr-agent")
-
-    module = ledger.module_add("mgr-p1-phase-1", "mgr-agent", phase_id, "module-1")
-    module_id = module["module_id"]
-
-    ledger.brief_create(
-        "mgr-p1-phase-1",
-        "mgr-agent",
-        "lead-p1-module-1",
-        "lead",
-        "sonnet",
-        "Own module-1.",
-        module_id=module_id,
-    )
-    ledger.agent_register_start("lead-agent", "lead", parent_agent_id="mgr-agent")
-    lead = ledger.brief_ack("lead-p1-module-1", "lead-agent")
-
-    return {
-        "run_id": started["run"]["run_id"],
-        "oracle_id": oracle_id,
-        "phase_id": phase_id,
-        "module_id": module_id,
-        "manager": manager,
-        "lead": lead,
-    }
-
-
 def _spawn_coder(ledger: Ledger, ctx: dict, slug: str, path: str, test_path: str | None) -> dict:
-    coder_name = f"coder-p1-module-1-{slug}"
-    claimed = ledger.claim_file(
-        "lead-p1-module-1", ctx["lead"]["agent_id"], path, test_path, coder_name
-    )
-    ledger.brief_create(
-        "lead-p1-module-1",
-        ctx["lead"]["agent_id"],
-        coder_name,
-        "coder",
-        "sonnet",
-        "Implement it.",
-        module_id=ctx["module_id"],
-        file_id=claimed["file_id"],
-    )
-    agent_id = f"{coder_name}-agent"
-    ledger.agent_register_start(agent_id, "coder", parent_agent_id=ctx["lead"]["agent_id"])
-    return ledger.brief_ack(coder_name, agent_id)
-
-
-def _file_id_for(ledger: Ledger, path: str) -> int:
-    return ledger.who_owns(path)["file"]["file_id"]
-
-
-def _insert_passing_test_run(ledger: Ledger, run_id: int, agent_id: str, scope: str) -> None:
-    with write_tx(ledger.conn) as conn:
-        conn.execute(
-            "INSERT INTO test_runs (run_id, agent_id, scope, target, command, exit_code, "
-            "passed, failed, skipped, output) VALUES (?, ?, ?, 'x', 'x', 0, 1, 0, 0, '')",
-            (run_id, agent_id, scope),
-        )
+    return spawn_coder(ledger, ctx, f"coder-p1-module-1-{slug}", path, test_path)
 
 
 def _approve_file(
@@ -210,33 +90,22 @@ def _approve_file(
 ) -> int:
     coder = _spawn_coder(ledger, ctx, slug, path, test_path)
     coder_name = coder["name"]
-    file_id = _file_id_for(ledger, path)
+    file_id = file_id_for(ledger, path)
     ledger.score_record(
-        coder_name, coder["agent_id"], file_id, _all_ratings(10), _all_applicable(), "self"
+        coder_name, coder["agent_id"], file_id, all_ratings(10), all_applicable(), "self"
     )
     handoff = ledger.handoff_submit(coder_name, coder["agent_id"], file_id, [], [])
     ledger.score_record(
         "lead-p1-module-1",
         ctx["lead"]["agent_id"],
         file_id,
-        _all_ratings(10, overrides=lead_overrides),
-        _all_applicable(),
+        all_ratings(10, overrides=lead_overrides),
+        all_applicable(),
         "lead",
     )
     ledger.review_compare("lead-p1-module-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
     ledger.approve("lead-p1-module-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
     return file_id
-
-
-def _go_idle(ledger: Ledger, agent_id: str) -> None:
-    events.handle_stop(ledger, {"session_id": agent_id, "stop_hook_active": True})
-
-
-def _as_session(ledger: Ledger, agent_id: str, session_name: str) -> None:
-    with write_tx(ledger.conn) as conn:
-        conn.execute(
-            "UPDATE agents SET session_name = ? WHERE agent_id = ?", (session_name, agent_id)
-        )
 
 
 def _release_lead(ledger: Ledger, ctx: dict) -> None:
@@ -253,7 +122,7 @@ def _hand_up_phase(ledger: Ledger, ctx: dict) -> dict:
 
 
 def test_module_review_refuses_a_caller_that_is_not_the_module_s_manager(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     other = ledger.phase_add("oracle", ctx["oracle_id"], "phase-2")
     ledger.phase_update("oracle", ctx["oracle_id"], other["phase_id"], "unlocked")
     ledger.brief_create(
@@ -265,7 +134,7 @@ def test_module_review_refuses_a_caller_that_is_not_the_module_s_manager(ledger:
         "Own p2-phase-2.",
         phase_id=other["phase_id"],
     )
-    ledger.agent_register_start("mgr-2-agent", "manager", parent_agent_id=ctx["oracle_id"])
+    register_agent(ledger, "mgr-2-agent", "manager", parent_agent_id=ctx["oracle_id"])
     manager_2 = ledger.brief_ack("mgr-p2-phase-2", "mgr-2-agent")
 
     with pytest.raises(LedgerError, match="not the Manager"):
@@ -275,7 +144,7 @@ def test_module_review_refuses_a_caller_that_is_not_the_module_s_manager(ledger:
 
 
 def test_module_review_refuses_a_file_that_is_not_approved_or_incomplete(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     ledger.claim_file(
         "lead-p1-module-1",
         ctx["lead"]["agent_id"],
@@ -283,7 +152,7 @@ def test_module_review_refuses_a_file_that_is_not_approved_or_incomplete(ledger:
         "tests/test_good.py",
         "coder-p1-module-1-c1",
     )
-    _insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
 
     with pytest.raises(LedgerError, match="not approved or incomplete"):
         ledger.module_review(
@@ -292,7 +161,7 @@ def test_module_review_refuses_a_file_that_is_not_approved_or_incomplete(ledger:
 
 
 def test_module_review_refuses_without_a_passing_test_run(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     _approve_file(ledger, ctx, "good", "pkg/good.py", "tests/test_good.py")
 
     with pytest.raises(LedgerError, match="no passing test run"):
@@ -302,9 +171,9 @@ def test_module_review_refuses_without_a_passing_test_run(ledger: Ledger) -> Non
 
 
 def test_module_review_accepted_succeeds_with_an_agreeing_file(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     _approve_file(ledger, ctx, "good", "pkg/good.py", "tests/test_good.py")
-    _insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
 
     result = ledger.module_review(
         "mgr-p1-phase-1",
@@ -321,14 +190,14 @@ def test_module_review_accepted_succeeds_with_an_agreeing_file(ledger: Ledger) -
 def test_a_released_claim_that_was_claimed_again_does_not_block_module_review(
     ledger: Ledger,
 ) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     lead = ctx["lead"]["agent_id"]
     first = ledger.claim_file(
         "lead-p1-module-1", lead, "pkg/good.py", "tests/test_good.py", "coder-p1-module-1-old"
     )
     ledger.release_file("lead-p1-module-1", lead, "pkg/good.py")
     _approve_file(ledger, ctx, "new", "pkg/good.py", "tests/test_good.py")
-    _insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
 
     state = ledger.conn.execute(
         "SELECT state FROM files WHERE file_id = ?", (first["file_id"],)
@@ -346,7 +215,7 @@ def test_a_released_claim_that_was_claimed_again_does_not_block_module_review(
 
 
 def test_module_review_refuses_missing_disagreement_notes(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     file_id = _approve_file(
         ledger,
         ctx,
@@ -355,7 +224,7 @@ def test_module_review_refuses_missing_disagreement_notes(ledger: Ledger) -> Non
         "tests/test_disagree.py",
         lead_overrides={"testing": 9},
     )
-    _insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
 
     with pytest.raises(LedgerError, match=f"disagreement_notes needs a non-empty note.*{file_id}"):
         ledger.module_review(
@@ -375,8 +244,8 @@ def test_module_review_refuses_missing_disagreement_notes(ledger: Ledger) -> Non
 
 
 def test_module_review_returned_owes_the_live_lead_a_wake_up(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
-    _as_session(ledger, ctx["lead"]["agent_id"], "host-r1-lead-p1-module-1")
+    ctx = bootstrap_module(ledger)
+    as_session(ledger, ctx["lead"]["agent_id"], "host-r1-lead-p1-module-1")
     result = ledger.module_review(
         "mgr-p1-phase-1",
         ctx["manager"]["agent_id"],
@@ -395,7 +264,7 @@ def test_module_review_returned_owes_the_live_lead_a_wake_up(ledger: Ledger) -> 
 
 
 def test_module_review_returned_reports_when_the_lead_has_ended(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     _release_lead(ledger, ctx)
 
     result = ledger.module_review(
@@ -413,7 +282,7 @@ def test_module_review_returned_reports_when_the_lead_has_ended(ledger: Ledger) 
 
 
 def test_phase_update_handed_up_refuses_without_an_accepted_module_review(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     _release_lead(ledger, ctx)
 
     with pytest.raises(LedgerError, match="module_review"):
@@ -423,9 +292,9 @@ def test_phase_update_handed_up_refuses_without_an_accepted_module_review(ledger
 
 
 def test_phase_update_handed_up_succeeds_after_an_accepted_module_review(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     _release_lead(ledger, ctx)
-    _insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
     ledger.module_review(
         "mgr-p1-phase-1",
         ctx["manager"]["agent_id"],
@@ -444,7 +313,7 @@ def test_phase_update_handed_up_succeeds_after_an_accepted_module_review(ledger:
 
 def _accept_module_and_hand_up(ledger: Ledger, ctx: dict) -> None:
     _release_lead(ledger, ctx)
-    _insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
     ledger.module_review(
         "mgr-p1-phase-1",
         ctx["manager"]["agent_id"],
@@ -457,13 +326,13 @@ def _accept_module_and_hand_up(ledger: Ledger, ctx: dict) -> None:
 
 
 def test_phase_review_refuses_when_the_phase_is_not_handed_up(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     with pytest.raises(LedgerError, match="not handed_up"):
         ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok")
 
 
 def test_phase_review_refuses_without_a_passing_full_test_run(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     _accept_module_and_hand_up(ledger, ctx)
 
     with pytest.raises(LedgerError, match="scope 'full'"):
@@ -471,9 +340,9 @@ def test_phase_review_refuses_without_a_passing_full_test_run(ledger: Ledger) ->
 
 
 def test_phase_review_accepted_succeeds(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     _accept_module_and_hand_up(ledger, ctx)
-    _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
 
     result = ledger.phase_review(
         "oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ship it", scores=_review_scores()
@@ -483,10 +352,10 @@ def test_phase_review_accepted_succeeds(ledger: Ledger) -> None:
 
 
 def test_phase_review_refuses_code_the_graph_maps_without_a_test_file(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     _approve_file(ledger, ctx, "good", "pkg/good.py", None)
     _accept_module_and_hand_up(ledger, ctx)
-    _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
 
     with pytest.raises(LedgerError, match=r"\(pkg/good.py\) contain functions .* no test_path"):
         ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok")
@@ -495,11 +364,11 @@ def test_phase_review_refuses_code_the_graph_maps_without_a_test_file(ledger: Le
 def test_re_claiming_an_approved_untested_file_with_a_test_clears_the_gate(
     ledger: Ledger,
 ) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     first = _approve_file(ledger, ctx, "good", "pkg/good.py", None)
     second = _approve_file(ledger, ctx, "good-r2", "pkg/good.py", "tests/test_good.py")
     _accept_module_and_hand_up(ledger, ctx)
-    _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
 
     states = dict(ledger.conn.execute("SELECT file_id, state FROM files").fetchall())
     assert states[first] == "superseded"
@@ -522,10 +391,10 @@ def test_a_file_without_code_in_the_graph_needs_no_test_file(ledger: Ledger, hos
         conn.commit()
     finally:
         conn.close()
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     _approve_file(ledger, ctx, "notes", "pkg/notes.txt", None)
     _accept_module_and_hand_up(ledger, ctx)
-    _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
 
     result = ledger.phase_review(
         "oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok", scores=_review_scores()
@@ -534,19 +403,19 @@ def test_a_file_without_code_in_the_graph_needs_no_test_file(ledger: Ledger, hos
 
 
 def test_phase_review_refuses_missing_low_score_notes(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     coder = _spawn_coder(ledger, ctx, "low", "pkg/low.py", "tests/test_low.py")
-    file_id = _file_id_for(ledger, "pkg/low.py")
+    file_id = file_id_for(ledger, "pkg/low.py")
     ledger.score_record(
-        coder["name"], coder["agent_id"], file_id, _all_ratings(10), _all_applicable(), "self"
+        coder["name"], coder["agent_id"], file_id, all_ratings(10), all_applicable(), "self"
     )
     handoff = ledger.handoff_submit(coder["name"], coder["agent_id"], file_id, ["blocked"], [])
     ledger.score_record(
         "lead-p1-module-1",
         ctx["lead"]["agent_id"],
         file_id,
-        _all_ratings(10, overrides={"testing": 5}),
-        _all_applicable(),
+        all_ratings(10, overrides={"testing": 5}),
+        all_applicable(),
         "lead",
     )
     ledger.review_compare("lead-p1-module-1", ctx["lead"]["agent_id"], handoff["handoff_id"])
@@ -555,7 +424,7 @@ def test_phase_review_refuses_missing_low_score_notes(ledger: Ledger) -> None:
     )
 
     _release_lead(ledger, ctx)
-    _insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
     ledger.module_review(
         "mgr-p1-phase-1",
         ctx["manager"]["agent_id"],
@@ -565,7 +434,7 @@ def test_phase_review_refuses_missing_low_score_notes(ledger: Ledger) -> None:
         scores=_review_scores(),
     )
     _hand_up_phase(ledger, ctx)
-    _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
 
     with pytest.raises(LedgerError, match=f"low_score_notes needs a non-empty note.*{file_id}"):
         ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok")
@@ -583,13 +452,13 @@ def test_phase_review_refuses_missing_low_score_notes(ledger: Ledger) -> None:
 
 
 def test_a_lead_recorded_departure_gates_module_review_and_phase_review(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     manager_id = ctx["manager"]["agent_id"]
     departure = ledger.departure_record(
         "lead-p1-module-1", ctx["lead"]["agent_id"], "skipped the lint rule for speed"
     )
     departure_id = departure["departure_id"]
-    _insert_passing_test_run(ledger, ctx["run_id"], manager_id, "phase")
+    insert_passing_test_run(ledger, ctx["run_id"], manager_id, "phase")
 
     with pytest.raises(
         LedgerError, match=rf"\[{departure_id}\] in the module.*waits on the Manager"
@@ -604,7 +473,7 @@ def test_a_lead_recorded_departure_gates_module_review_and_phase_review(ledger: 
         "mgr-p1-phase-1", manager_id, ctx["module_id"], "accepted", "ok", scores=_review_scores()
     )
     _hand_up_phase(ledger, ctx)
-    _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
 
     with pytest.raises(LedgerError, match=rf"\[{departure_id}\] in the phase are not signed off"):
         ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok")
@@ -621,9 +490,9 @@ def test_a_lead_recorded_departure_gates_module_review_and_phase_review(ledger: 
 
 
 def test_phase_review_returned_owes_the_live_manager_a_wake_up(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     _accept_module_and_hand_up(ledger, ctx)
-    _as_session(ledger, ctx["manager"]["agent_id"], "host-r1-mgr-p1-phase-1")
+    as_session(ledger, ctx["manager"]["agent_id"], "host-r1-mgr-p1-phase-1")
 
     result = ledger.phase_review(
         "oracle", ctx["oracle_id"], ctx["phase_id"], "returned", "not ready"
@@ -639,7 +508,7 @@ def test_phase_review_returned_owes_the_live_manager_a_wake_up(ledger: Ledger) -
 
 
 def test_phase_review_returned_reports_when_the_manager_has_ended(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     _accept_module_and_hand_up(ledger, ctx)
     ledger.agent_release("oracle", ctx["oracle_id"], ctx["manager"]["agent_id"])
 
@@ -654,7 +523,7 @@ def test_phase_review_returned_reports_when_the_manager_has_ended(ledger: Ledger
 
 
 def test_phase_update_approved_refuses_without_an_accepted_phase_review(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     _accept_module_and_hand_up(ledger, ctx)
 
     with pytest.raises(LedgerError, match="phase_review"):
@@ -662,9 +531,9 @@ def test_phase_update_approved_refuses_without_an_accepted_phase_review(ledger: 
 
 
 def test_phase_update_approved_succeeds_after_an_accepted_phase_review(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     _accept_module_and_hand_up(ledger, ctx)
-    _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
     ledger.phase_review(
         "oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ship it", scores=_review_scores()
     )
@@ -677,10 +546,10 @@ def test_phase_update_approved_succeeds_after_an_accepted_phase_review(ledger: L
 
 
 def test_write_report_lists_manager_and_oracle_reviews_and_the_repo_check(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     ledger.repo_check("oracle", ctx["oracle_id"])
     _accept_module_and_hand_up(ledger, ctx)
-    _insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
     ledger.phase_review(
         "oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ship it", scores=_review_scores()
     )
@@ -700,9 +569,9 @@ def test_write_report_lists_manager_and_oracle_reviews_and_the_repo_check(ledger
 def test_stop_blocks_the_oracle_while_a_handed_up_phase_has_no_oracle_review(
     ledger: Ledger,
 ) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     _accept_module_and_hand_up(ledger, ctx)
-    _go_idle(ledger, ctx["manager"]["agent_id"])
+    go_idle(ledger, ctx["manager"]["agent_id"])
 
     result = events.handle_stop(ledger, {"agent_id": ctx["oracle_id"]})
     assert result is not None

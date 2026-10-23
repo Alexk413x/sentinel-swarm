@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 import pytest
+from helpers import write_registry
 
 from swarm_ledger import auth
 from swarm_ledger.agentfiles import (
@@ -153,9 +154,7 @@ def test_session_options_leaves_out_what_the_file_does_not_set(tmp_path: Path) -
 
 
 def _registry(config_dir: Path, entries: list[dict]) -> None:
-    path = config_dir / "plugins" / "installed_plugins.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"plugins": {"a11y@accessibility-tools": entries}}), "utf-8")
+    write_registry({"a11y@accessibility-tools": entries}, config_dir)
 
 
 def test_session_options_add_a11y_only_when_the_host_has_it(
@@ -238,14 +237,8 @@ def _kg_install(root: Path, port_default: int = 47821) -> Path:
 
 
 def _kg_registry(config_dir: Path, install: Path) -> None:
-    path = config_dir / "plugins" / "installed_plugins.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {"plugins": {"codebase-kg@alexk413x": [{"scope": "user", "installPath": str(install)}]}}
-        ),
-        "utf-8",
-    )
+    entry = {"scope": "user", "installPath": str(install)}
+    write_registry({"codebase-kg@alexk413x": [entry]}, config_dir)
 
 
 def _servers(host: Path) -> dict:
@@ -372,10 +365,8 @@ def _plugin(root: Path, name: str, manifest: dict, files: dict[str, object] | No
 
 
 def _register(config_dir: Path, installs: dict[str, Path]) -> None:
-    path = config_dir / "plugins" / "installed_plugins.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
     plugins = {pid: [{"scope": "user", "installPath": str(p)}] for pid, p in installs.items()}
-    path.write_text(json.dumps({"plugins": plugins}), "utf-8")
+    write_registry(plugins, config_dir)
 
 
 # plugin id, manifest ports, server -> (port key, helper script), server -> expected port

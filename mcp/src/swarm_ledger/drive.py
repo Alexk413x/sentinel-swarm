@@ -2,19 +2,16 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from contextlib import AbstractContextManager
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from . import agentfiles, notify
 from .clock import parse_stamp, stamp, utcnow
-from .db import write_tx
-from .identity import Caller, LedgerError, require_role, resolve
-from .settings import Settings
+from .db import NOW, dict_rows, in_clause, row_dict, write_tx
+from .host import LedgerHost
+from .identity import Caller, LedgerError, require_run, resolve
 from .watchdog import DRIVER_CHECKIN_INTERVAL
 
-_NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 SEVERITIES = ("blocker", "major", "minor")
 UNAVAILABLE_TAG = "[driver-unavailable]"
 
@@ -25,13 +22,6 @@ STOP_ATTEMPTS_IN_A_ROW = 3
 STOP_ATTEMPTS_TOTAL = 5
 STOP_WAVES_IN_A_ROW = 3
 _PING_PONG_WINDOW = 4
-
-
-def _rows(cursor: sqlite3.Cursor) -> list[dict]:
-    return [dict(row) for row in cursor.fetchall()]
-
-
-# -- Pure loop-status computation, over plain dicts so it is cheap to unit test -----------
 
 
 def _streak(ordinals: list[int]) -> int:
@@ -46,16 +36,31 @@ def _streak(ordinals: list[int]) -> int:
     return streak
 
 
+def _attempt_stops(in_a_row: int, total: int) -> list[tuple[str, str]]:
+    stops: list[tuple[str, str]] = []
+    if in_a_row >= STOP_ATTEMPTS_IN_A_ROW:
+        stops.append(
+            (
+                f"{in_a_row} fix attempts in a row have not fixed it",
+                f"{in_a_row} attempts in a row with no progress on",
+            )
+        )
+    if total >= STOP_ATTEMPTS_TOTAL:
+        stops.append(
+            (
+                f"{total} fix attempts in all have not fixed it",
+                f"{total} attempts in all with no fix for",
+            )
+        )
+    return stops
+
+
 def fingerprint_status(occurrences: list[int]) -> dict[str, Any]:
     occurrences = sorted(occurrences)
     streak = _streak(occurrences)
     attempts_in_a_row = streak - 1
     total_attempts = len(occurrences) - 1
-    reasons: list[str] = []
-    if attempts_in_a_row >= STOP_ATTEMPTS_IN_A_ROW:
-        reasons.append(f"{attempts_in_a_row} fix attempts in a row have not fixed it")
-    if total_attempts >= STOP_ATTEMPTS_TOTAL:
-        reasons.append(f"{total_attempts} fix attempts in all have not fixed it")
+    reasons = [reason for reason, _ in _attempt_stops(attempts_in_a_row, total_attempts)]
     span = occurrences[-1] - occurrences[0] + 1 if occurrences else 0
     regressed = len(occurrences) >= 2 and span > len(occurrences)
     return {
@@ -93,6 +98,42 @@ def _finding_line(f: dict) -> str:
         f"- {f.get('title') or f['fingerprint']} ({f['fingerprint']}), "
         f"{f.get('severity') or 'unknown severity'}, area {f.get('area') or 'unknown'}"
     )
+
+
+def _wave_effects(
+    done_ordinals: list[int], findings_at: dict[int, list[dict]]
+) -> tuple[dict[int, bool], list[int], list[dict]]:
+    wave_fixed_nothing: dict[int, bool] = {}
+    fixes_causing_bugs: list[int] = []
+    caused: list[dict] = []
+    for prior_ord, cur_ord in zip(done_ordinals, done_ordinals[1:]):
+        prior_area = {f["fingerprint"]: f.get("area") for f in findings_at.get(prior_ord, [])}
+        current = findings_at.get(cur_ord, [])
+        current_fps = {f["fingerprint"] for f in current}
+        wave_fixed_nothing[cur_ord] = bool(prior_area) and not (set(prior_area) - current_fps)
+        fixed = [area for fp, area in prior_area.items() if fp not in current_fps and area]
+        if not fixed:
+            continue
+        fixed_areas = set(fixed)
+        new_in_area = [
+            f
+            for f in current
+            if f["fingerprint"] not in prior_area and f.get("area") in fixed_areas
+        ]
+        if len(new_in_area) >= len(fixed):
+            fixes_causing_bugs.append(cur_ord)
+            caused.extend(new_in_area)
+    return wave_fixed_nothing, fixes_causing_bugs, caused
+
+
+def _distinct_findings(findings: list[dict]) -> list[dict]:
+    seen: set[str] = set()
+    distinct: list[dict] = []
+    for f in findings:
+        if f["fingerprint"] not in seen:
+            seen.add(f["fingerprint"])
+            distinct.append(f)
+    return distinct
 
 
 def compute_loop_status(requests: list[dict], findings: list[dict]) -> dict[str, Any]:
@@ -161,21 +202,15 @@ def compute_loop_status(requests: list[dict], findings: list[dict]) -> dict[str,
 
     for fp, status in fingerprints.items():
         title = title_of[fp]
-        in_a_row, total = status["attempts_in_a_row"], status["total_attempts"]
         seen = _ordinal_list(sorted(set(status["occurrences"])))
-        summaries = []
-        if in_a_row >= STOP_ATTEMPTS_IN_A_ROW:
-            summaries.append(
-                f"{in_a_row} attempts in a row with no progress on {title} [{fp}], "
-                f"seen in explorations {seen}"
+        for reason, lead in _attempt_stops(status["attempts_in_a_row"], status["total_attempts"]):
+            stop(
+                f"finding {fp}: {reason}",
+                f"{lead} {title} [{fp}], seen in explorations {seen}",
+                "finding",
+                [target(fp)],
+                evidence_lines(fp),
             )
-        if total >= STOP_ATTEMPTS_TOTAL:
-            summaries.append(
-                f"{total} attempts in all with no fix for {title} [{fp}], "
-                f"seen in explorations {seen}"
-            )
-        for reason, summary in zip(status["reasons"], summaries):
-            stop(f"finding {fp}: {reason}", summary, "finding", [target(fp)], evidence_lines(fp))
         if status["regressed"]:
             stop(
                 f"finding {fp} is a regression: it was fixed, then came back",
@@ -185,19 +220,9 @@ def compute_loop_status(requests: list[dict], findings: list[dict]) -> dict[str,
                 evidence_lines(fp),
             )
 
-    wave_fixed_nothing: dict[int, bool] = {}
-    for i in range(1, len(done_ordinals)):
-        prior_ord, cur_ord = done_ordinals[i - 1], done_ordinals[i]
-        prior_fps = {f["fingerprint"] for f in findings_at.get(prior_ord, [])}
-        cur_fps = {f["fingerprint"] for f in findings_at.get(cur_ord, [])}
-        wave_fixed_nothing[cur_ord] = bool(prior_fps) and not (prior_fps - cur_fps)
-
+    wave_fixed_nothing, fixes_causing_bugs, caused = _wave_effects(done_ordinals, findings_at)
     latest_done = done_ordinals[-1] if done_ordinals else None
-    left: list[dict] = []
-    if latest_done is not None:
-        for f in findings_at.get(latest_done, []):
-            if all(f["fingerprint"] != kept["fingerprint"] for kept in left):
-                left.append(f)
+    left = _distinct_findings(findings_at.get(latest_done, [])) if latest_done is not None else []
 
     if len(done_ordinals) >= STOP_WAVES_IN_A_ROW + 1:
         tail = done_ordinals[-STOP_WAVES_IN_A_ROW:]
@@ -212,25 +237,6 @@ def compute_loop_status(requests: list[dict], findings: list[dict]) -> dict[str,
                 [f"Left after exploration {latest_done}:", *(_finding_line(f) for f in left)],
             )
 
-    fixes_causing_bugs: list[int] = []
-    caused: list[dict] = []
-    for i in range(1, len(done_ordinals)):
-        prior_ord, cur_ord = done_ordinals[i - 1], done_ordinals[i]
-        prior_area = {f["fingerprint"]: f.get("area") for f in findings_at.get(prior_ord, [])}
-        current = findings_at.get(cur_ord, [])
-        current_fps = {f["fingerprint"] for f in current}
-        fixed_areas = {area for fp, area in prior_area.items() if fp not in current_fps and area}
-        if not fixed_areas:
-            continue
-        new_in_area = [
-            f
-            for f in current
-            if f["fingerprint"] not in prior_area and f.get("area") in fixed_areas
-        ]
-        fixed_count = sum(1 for fp, area in prior_area.items() if fp not in current_fps and area)
-        if len(new_in_area) >= fixed_count:
-            fixes_causing_bugs.append(cur_ord)
-            caused.extend(new_in_area)
     if fixes_causing_bugs:
         caused_fps = list(dict.fromkeys(f["fingerprint"] for f in caused))
         areas = sorted({f["area"] for f in caused if f.get("area")})
@@ -275,12 +281,12 @@ def compute_loop_status(requests: list[dict], findings: list[dict]) -> dict[str,
 
 
 def loop_status(conn: sqlite3.Connection, run_id: int) -> dict[str, Any]:
-    requests = _rows(
+    requests = dict_rows(
         conn.execute(
             "SELECT request_id, ordinal, state FROM drive_requests WHERE run_id = ?", (run_id,)
         )
     )
-    findings = _rows(
+    findings = dict_rows(
         conn.execute(
             "SELECT request_id, fingerprint, area, severity, title, evidence_json "
             "FROM drive_findings WHERE run_id = ? ORDER BY finding_id",
@@ -302,7 +308,7 @@ def open_findings(conn: sqlite3.Connection, run_id: int) -> list[dict]:
         if r["state"] == "done":
             done.append(r["ordinal"])
     latest: dict[str, dict] = {}
-    for f in _rows(
+    for f in dict_rows(
         conn.execute(
             "SELECT finding_id, request_id, fingerprint, title, severity, area "
             "FROM drive_findings WHERE run_id = ? ORDER BY finding_id",
@@ -332,7 +338,7 @@ def findings_named(
 ) -> list[dict]:
     if not finding_ids:
         return []
-    marks = ", ".join("?" for _ in finding_ids)
+    marks = in_clause(finding_ids)
     columns = "finding_id, fingerprint, title, severity, area"
     if evidence:
         columns += ", steps, expected, actual, evidence_json"
@@ -399,55 +405,7 @@ _SETTLED_DRIVER = (
 )
 
 
-class DriveMixin:
-    """The Driver's request queue and its stop-rule loop status. See
-    "Explorations" in knowledge/prd/02-run-lifecycle.md for the decisions this implements.
-
-    Split out of `ledger.py`; every method here still assumes it is mixed into
-    `Ledger` and relies on `self.conn`, `self.settings`, `self.repo_root`,
-    `self._release_tx`, `self._release_agent`, `self._owe_wakeup`, `self.next_step`,
-    `self._write_brief`, and `self.agent_spawn`.
-    """
-
-    # Declared, not assigned: Ledger.__init__ sets these. The declarations let
-    # pyright check this file as if it were part of Ledger, which it always is.
-    conn: sqlite3.Connection
-    settings: Settings
-    repo_root: Path
-
-    def _release_tx(self) -> AbstractContextManager[sqlite3.Connection]: ...
-
-    def _release_agent(
-        self, conn: sqlite3.Connection, target_agent_id: str, reason: str
-    ) -> None: ...
-
-    def _owe_wakeup(
-        self,
-        conn: sqlite3.Connection,
-        c: Caller,
-        to_agent_id: str | None,
-        reason: str,
-        pointer: str,
-    ) -> dict | None: ...
-
-    def next_step(self, wakeup: dict | None) -> str | None: ...
-
-    def _write_brief(
-        self,
-        caller: str,
-        agent_id: str,
-        child_name: str,
-        child_role: str,
-        model: str,
-        body: str,
-        phase_id: int | None = None,
-        module_id: int | None = None,
-        file_id: int | None = None,
-        finding_ids: list[int] | None = None,
-    ) -> dict: ...
-
-    def agent_spawn(self, caller: str, agent_id: str, child_name: str) -> dict: ...
-
+class DriveMixin(LedgerHost):
     def _drive_loop_status(self, run_id: int) -> dict[str, Any]:
         return loop_status(self.conn, run_id)
 
@@ -479,7 +437,7 @@ class DriveMixin:
                 return None
             if name == "map-test":
                 conn.execute(
-                    f"UPDATE drive_requests SET map_test_at = {_NOW} WHERE request_id = ?",
+                    f"UPDATE drive_requests SET map_test_at = {NOW} WHERE request_id = ?",
                     (request["request_id"],),
                 )
                 return None
@@ -689,13 +647,9 @@ class DriveMixin:
                     "release_file the path and claim_file it again for the fix Coder"
                 )
 
-    # -- Tools ----------------------------------------------------------------------
-
     def drive_request(self, caller: str, agent_id: str, focus: str) -> dict:
         c = resolve(self.conn, caller, agent_id)
-        require_role(c, "oracle")
-        if c.run_id is None:
-            raise LedgerError(f"{caller!r} has no run")
+        run_id = require_run(c, "oracle")
         if not focus.strip():
             raise LedgerError("drive_request needs a focus list")
         if not agentfiles.driver_available(self.repo_root):
@@ -704,7 +658,7 @@ class DriveMixin:
                 "one driver plugin (android-driver, ios-driver, or web-driver) from "
                 "accessibility-tools; skip exploration for this run"
             )
-        unavailable = self._unavailable_directive(self.conn, c.run_id)
+        unavailable = self._unavailable_directive(self.conn, run_id)
         if unavailable is not None and unavailable["state"] == "open":
             raise LedgerError(
                 f"the Driver is unavailable: directive {unavailable['directive_id']} is open "
@@ -712,7 +666,7 @@ class DriveMixin:
                 "and resolve it applied, or resolve it declined once the user decides to go "
                 "without the Driver"
             )
-        skipped = self._explorations_skipped(self.conn, c.run_id)
+        skipped = self._explorations_skipped(self.conn, run_id)
         if skipped is not None:
             raise LedgerError(
                 f"the user decided to go without the Driver (directive "
@@ -720,18 +674,18 @@ class DriveMixin:
             )
         open_row = self.conn.execute(
             "SELECT request_id FROM drive_requests WHERE run_id = ? AND state = 'open'",
-            (c.run_id,),
+            (run_id,),
         ).fetchone()
         if open_row is not None:
             raise LedgerError(
                 f"exploration {open_row['request_id']} is still open; its Driver ends it with "
                 "drive_done, or agent_release on a stuck Driver abandons it"
             )
-        fixing = _rows(
+        fixing = dict_rows(
             self.conn.execute(
                 "SELECT name FROM agents WHERE run_id = ? "
                 "AND role IN ('manager', 'lead', 'coder') AND ended_at IS NULL",
-                (c.run_id,),
+                (run_id,),
             )
         )
         if fixing:
@@ -741,25 +695,25 @@ class DriveMixin:
                 "has finished"
             )
 
-        status = self._drive_loop_status(c.run_id)
+        status = self._drive_loop_status(run_id)
 
         with self._release_tx() as conn:
             for row in conn.execute(
                 "SELECT agent_id FROM agents WHERE run_id = ? AND role = 'driver' "
                 "AND ended_at IS NULL",
-                (c.run_id,),
+                (run_id,),
             ).fetchall():
                 self._release_agent(conn, row["agent_id"], "drive_request: its exploration ended")
 
         with write_tx(self.conn) as conn:
             ordinal = conn.execute(
                 "SELECT COALESCE(MAX(ordinal), 0) + 1 AS n FROM drive_requests WHERE run_id = ?",
-                (c.run_id,),
+                (run_id,),
             ).fetchone()["n"]
             cur = conn.execute(
                 "INSERT INTO drive_requests (run_id, ordinal, opened_by, focus, state) "
                 "VALUES (?, ?, ?, ?, 'open')",
-                (c.run_id, ordinal, c.agent_id, focus),
+                (run_id, ordinal, c.agent_id, focus),
             )
             request_id = cur.lastrowid
 
@@ -780,11 +734,7 @@ class DriveMixin:
                 (spawned["agent_id"], request_id),
             )
 
-        result = dict(
-            self.conn.execute(
-                "SELECT * FROM drive_requests WHERE request_id = ?", (request_id,)
-            ).fetchone()
-        )
+        result = row_dict(self.conn, "drive_requests", "request_id", request_id)
         result["driver"] = spawned
         result["loop_status"] = status
         return result
@@ -793,9 +743,7 @@ class DriveMixin:
         self, caller: str, agent_id: str, request_id: int, finding: dict[str, Any]
     ) -> dict:
         c = resolve(self.conn, caller, agent_id)
-        require_role(c, "driver")
-        if c.run_id is None:
-            raise LedgerError(f"{caller!r} has no run")
+        run_id = require_run(c, "driver")
         request = self._own_open_request(c, request_id)
 
         fingerprint = str(finding.get("fingerprint") or "").strip()
@@ -814,7 +762,7 @@ class DriveMixin:
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     request_id,
-                    c.run_id,
+                    run_id,
                     fingerprint,
                     title,
                     finding.get("steps"),
@@ -826,7 +774,7 @@ class DriveMixin:
                 ),
             )
             finding_id = cur.lastrowid
-            oracle_id = self._oracle_agent_id(conn, c.run_id)
+            oracle_id = self._oracle_agent_id(conn, run_id)
             wakeup = self._owe_wakeup(
                 conn,
                 c,
@@ -836,13 +784,9 @@ class DriveMixin:
                 f"ledger for exploration {request_id}.",
             )
 
-        result = dict(
-            self.conn.execute(
-                "SELECT * FROM drive_findings WHERE finding_id = ?", (finding_id,)
-            ).fetchone()
-        )
+        result = row_dict(self.conn, "drive_findings", "finding_id", finding_id)
         result["next"] = self.next_step(wakeup)
-        result["loop_status"] = self._drive_loop_status(c.run_id)
+        result["loop_status"] = self._drive_loop_status(run_id)
         result.update(next_checkin(request))
         return result
 
@@ -856,19 +800,17 @@ class DriveMixin:
         notes: str,
     ) -> dict:
         c = resolve(self.conn, caller, agent_id)
-        require_role(c, "driver")
-        if c.run_id is None:
-            raise LedgerError(f"{caller!r} has no run")
+        run_id = require_run(c, "driver")
         self._own_open_request(c, request_id)
 
         wakeup = None
         with write_tx(self.conn) as conn:
             conn.execute(
-                f"UPDATE drive_requests SET last_checkin_at = {_NOW}, last_covered = ?, "
+                f"UPDATE drive_requests SET last_checkin_at = {NOW}, last_covered = ?, "
                 "last_steps = ?, last_notes = ? WHERE request_id = ?",
                 (covered, steps, notes, request_id),
             )
-            oracle_id = self._oracle_agent_id(conn, c.run_id)
+            oracle_id = self._oracle_agent_id(conn, run_id)
             wakeup = self._owe_wakeup(
                 conn,
                 c,
@@ -877,11 +819,7 @@ class DriveMixin:
                 f"Driver check-in for exploration {request_id} is waiting in the ledger.",
             )
 
-        result = dict(
-            self.conn.execute(
-                "SELECT * FROM drive_requests WHERE request_id = ?", (request_id,)
-            ).fetchone()
-        )
+        result = row_dict(self.conn, "drive_requests", "request_id", request_id)
         result["next"] = self.next_step(wakeup)
         result.update(next_checkin(result))
         return result
@@ -890,9 +828,7 @@ class DriveMixin:
         self, caller: str, agent_id: str, request_id: int, blocked: str | None = None
     ) -> dict:
         c = resolve(self.conn, caller, agent_id)
-        require_role(c, "driver")
-        if c.run_id is None:
-            raise LedgerError(f"{caller!r} has no run")
+        run_id = require_run(c, "driver")
         request = self._own_open_request(c, request_id)
         blocked = (blocked or "").strip()
         recorded = self.conn.execute(
@@ -906,13 +842,13 @@ class DriveMixin:
 
         with self._release_tx() as conn:
             conn.execute(
-                f"UPDATE drive_requests SET state = 'done', done_at = {_NOW} WHERE request_id = ?",
+                f"UPDATE drive_requests SET state = 'done', done_at = {NOW} WHERE request_id = ?",
                 (request_id,),
             )
             # Computed after the state update, in the same transaction, so this exploration
             # counts as done for the wave-stall and fixes-causing-bugs checks.
-            status = self._drive_loop_status(c.run_id)
-            flagged = self._flag_stop_rules(conn, c.run_id, status)
+            status = self._drive_loop_status(run_id)
+            flagged = self._flag_stop_rules(conn, run_id, status)
             notice = self._drive_notice(conn, request, status, flagged, blocked)
             findings = conn.execute(
                 "SELECT COUNT(*) AS n FROM drive_findings WHERE request_id = ?", (request_id,)
@@ -920,7 +856,7 @@ class DriveMixin:
             wakeup = self._owe_wakeup(
                 conn,
                 c,
-                self._oracle_agent_id(conn, c.run_id),
+                self._oracle_agent_id(conn, run_id),
                 "drive_done",
                 _done_pointer(request, status, flagged, blocked, findings),
             )
@@ -930,11 +866,7 @@ class DriveMixin:
                 self._release_agent(conn, c.agent_id, "drive_done")
         notify.deliver(notice, self.settings.notify)
 
-        result = dict(
-            self.conn.execute(
-                "SELECT * FROM drive_requests WHERE request_id = ?", (request_id,)
-            ).fetchone()
-        )
+        result = row_dict(self.conn, "drive_requests", "request_id", request_id)
         result["loop_status"] = status
         result["notification"] = notice
         result["next"] = self.next_step(wakeup)
@@ -942,27 +874,25 @@ class DriveMixin:
 
     def drive_unavailable(self, caller: str, agent_id: str, reason: str) -> dict:
         c = resolve(self.conn, caller, agent_id)
-        require_role(c, "oracle", "driver")
-        if c.run_id is None:
-            raise LedgerError(f"{caller!r} has no run")
+        run_id = require_run(c, "oracle", "driver")
         reason = reason.strip()
         if not reason:
             raise LedgerError("drive_unavailable needs a reason: what failed to load")
-        open_rows = _rows(
+        open_rows = dict_rows(
             self.conn.execute(
-                "SELECT * FROM drive_requests WHERE run_id = ? AND state = 'open'", (c.run_id,)
+                "SELECT * FROM drive_requests WHERE run_id = ? AND state = 'open'", (run_id,)
             )
         )
         if c.role == "driver" and not any(r["agent_id"] == c.agent_id for r in open_rows):
             raise LedgerError(f"{caller!r} has no open exploration")
 
         with self._release_tx() as conn:
-            directive = self._unavailable_directive(conn, c.run_id)
+            directive = self._unavailable_directive(conn, run_id)
             if directive is None or directive["state"] != "open":
                 cur = conn.execute(
                     "INSERT INTO directives (run_id, source, sender_name, body) "
                     "VALUES (?, 'driver', ?, ?)",
-                    (c.run_id, c.name, f"{UNAVAILABLE_TAG} {reason}"),
+                    (run_id, c.name, f"{UNAVAILABLE_TAG} {reason}"),
                 )
                 directive_id = cur.lastrowid
             else:
@@ -972,7 +902,7 @@ class DriveMixin:
                 wakeup = self._owe_wakeup(
                     conn,
                     c,
-                    self._oracle_agent_id(conn, c.run_id),
+                    self._oracle_agent_id(conn, run_id),
                     "drive_unavailable",
                     _one_line(
                         f"Driver unavailable: {reason}. Directive {directive_id} waits in "
@@ -981,7 +911,7 @@ class DriveMixin:
                 )
             for request in open_rows:
                 conn.execute(
-                    f"UPDATE drive_requests SET state = 'abandoned', done_at = {_NOW} "
+                    f"UPDATE drive_requests SET state = 'abandoned', done_at = {NOW} "
                     "WHERE request_id = ?",
                     (request["request_id"],),
                 )
@@ -992,7 +922,7 @@ class DriveMixin:
                 self._release_agent(conn, request["agent_id"], "drive_unavailable")
             notice = notify.record(
                 conn,
-                c.run_id,
+                run_id,
                 kind="error",
                 event_key=f"drive_unavailable:{directive_id}",
                 message=f"Driver unavailable: {reason}. Explorations wait until it is fixed "
@@ -1001,11 +931,7 @@ class DriveMixin:
             )
         notify.deliver(notice, self.settings.notify)
 
-        result = dict(
-            self.conn.execute(
-                "SELECT * FROM directives WHERE directive_id = ?", (directive_id,)
-            ).fetchone()
-        )
+        result = row_dict(self.conn, "directives", "directive_id", directive_id)
         result["abandoned"] = [r["request_id"] for r in open_rows]
         result["notification"] = notice
         result["next"] = self.next_step(wakeup)

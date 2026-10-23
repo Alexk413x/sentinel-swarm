@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import subprocess
 from pathlib import Path
 
-from .db import write_tx
+from .db import NOW, write_tx
+from .host import LedgerHost
 from .identity import LedgerError, require_role, resolve
-from .settings import Settings
 
 _GIT_TIMEOUT_S = 10
-_NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
+_START_ADVICE = "create a run branch for this run with repo_branch_create"
 
 
 def _run_git(args: list[str], cwd: Path) -> tuple[int, str, str]:
@@ -77,7 +76,7 @@ def _advice(
         return f"ask the user: the repo is on a different branch ({branch or 'detached'})"
     if behind_upstream:
         return "ask the user: the branch is behind its remote"
-    return "create a run branch for this run with repo_branch_create"
+    return _START_ADVICE
 
 
 def check_repo(repo_root: Path, base_branch: str | None, fetch: bool) -> dict:
@@ -111,8 +110,8 @@ def check_repo(repo_root: Path, base_branch: str | None, fetch: bool) -> dict:
     base_exists = resolved_base is not None and _branch_exists(repo_root, resolved_base)
 
     ahead_of_base = behind_base = None
-    if base_exists and not detached:
-        counts = _rev_list_counts(repo_root, resolved_base, "HEAD")  # type: ignore[arg-type]
+    if resolved_base is not None and base_exists and not detached:
+        counts = _rev_list_counts(repo_root, resolved_base, "HEAD")
         if counts is not None:
             behind_base, ahead_of_base = counts
 
@@ -137,13 +136,12 @@ def check_repo(repo_root: Path, base_branch: str | None, fetch: bool) -> dict:
             if counts is not None:
                 behind_of_upstream, ahead_of_upstream = counts
 
-    obvious_start = bool(
-        clean
-        and not detached
-        and resolved_base is not None
-        and branch == resolved_base
-        and base_exists
-        and not behind_of_upstream
+    advice = _advice(
+        clean,
+        "detached" if detached else branch,
+        resolved_base,
+        base_exists,
+        behind_of_upstream,
     )
 
     return {
@@ -158,28 +156,12 @@ def check_repo(repo_root: Path, base_branch: str | None, fetch: bool) -> dict:
         "ahead_of_upstream": ahead_of_upstream,
         "behind_of_upstream": behind_of_upstream,
         "fetch_error": fetch_error,
-        "obvious_start": obvious_start,
-        "advice": _advice(
-            clean,
-            "detached" if detached else branch,
-            resolved_base,
-            base_exists,
-            behind_of_upstream,
-        ),
+        "obvious_start": advice == _START_ADVICE and not detached,
+        "advice": advice,
     }
 
 
-class RepoMixin:
-    """Repo tools: `repo_check` and `repo_branch_create`. Oracle only.
-
-    Split out of `ledger.py` like `ReviewMixin`; every method here still assumes
-    it is mixed into `Ledger` and relies on `self.conn` and `self.repo_root`.
-    """
-
-    conn: sqlite3.Connection
-    settings: Settings
-    repo_root: Path
-
+class RepoMixin(LedgerHost):
     def repo_check(self, caller: str, agent_id: str, fetch: bool = False) -> dict:
         c = resolve(self.conn, caller, agent_id)
         require_role(c, "oracle")
@@ -187,7 +169,7 @@ class RepoMixin:
 
         with write_tx(self.conn) as conn:
             conn.execute(
-                f"UPDATE runs SET repo_check_json = ?, repo_checked_at = {_NOW} WHERE run_id = ?",
+                f"UPDATE runs SET repo_check_json = ?, repo_checked_at = {NOW} WHERE run_id = ?",
                 (json.dumps(result), c.run_id),
             )
 

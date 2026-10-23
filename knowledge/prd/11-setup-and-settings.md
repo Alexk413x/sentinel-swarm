@@ -165,7 +165,6 @@ descriptions stay out of every session's context.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `tracking` | `local` | The only value |
 | `runtime.<role>` | `session` | Recorded on each agent row; every role runs as a session |
 | `models.<role>` | See "Models" in [01-roles.md](01-roles.md) | Approved models per role |
 | `rubric.*` | See "Thresholds" in [03-scoring-and-review.md](03-scoring-and-review.md) | `target`, `floor`, `criterion_floor`, `disagreement_gap`, `plateau`, `regression_tolerance` |

@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from pathlib import Path
 
 from .identity import LedgerError
@@ -177,10 +178,8 @@ def spawn(prompt: str, name: str, options: list[str], cwd: Path) -> tuple[str, s
         if time.monotonic() >= deadline:
             break
         time.sleep(_POLL_S)
-    try:
+    with suppress(LedgerError):
         stop(bg_id)
-    except LedgerError:
-        pass
     raise LedgerError(
         f"session {name} ({bg_id}) did not appear in claude agents --json "
         f"within {_SPAWN_WAIT_S:.0f}s, so it was stopped"

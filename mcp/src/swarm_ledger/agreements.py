@@ -2,15 +2,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from contextlib import AbstractContextManager
 from typing import Literal
 
-from .db import write_tx
-from .identity import Caller, LedgerError, caller_of, require_role, resolve
-from .review import _ROLE_RANK
-from .settings import Settings
+from .db import NOW, dict_rows, in_clause, row_dict, write_tx
+from .host import LedgerHost
+from .identity import ROLE_RANK, Caller, LedgerError, caller_of, parent_chain, require_role, resolve
 
-_NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 _CR_BLOCKING_STATES = ("open", "accepted", "completed")
 _PENDING_STATES = ("open", "lead_agreed", "manager_agreed")
 _UNSETTLED_STATES = (*_PENDING_STATES, "pushed_back")
@@ -20,11 +17,7 @@ _NEXT_LEVEL = {"lead": "manager", "manager": "oracle", "oracle": None}
 _ROLE_TITLE = {"lead": "Lead", "manager": "Manager", "oracle": "Oracle"}
 
 
-def _rows(cursor: sqlite3.Cursor) -> list[dict]:
-    return [dict(row) for row in cursor.fetchall()]
-
-
-def _test_run_passed(row: sqlite3.Row) -> bool:
+def test_run_passed(row: sqlite3.Row) -> bool:
     return (
         row["exit_code"] == 0
         and (row["failed"] or 0) == 0
@@ -33,51 +26,32 @@ def _test_run_passed(row: sqlite3.Row) -> bool:
     )
 
 
-class AgreementsMixin:
-    """Change requests, departures, and shortfalls: the agreements a non-owner and
-    an owner reach about work neither can change alone.
+def work_scope(
+    conn: sqlite3.Connection, file_id: int | None, agent_id: str | None
+) -> tuple[int | None, int | None]:
+    if file_id is not None:
+        scope = conn.execute(
+            "SELECT m.module_id, m.phase_id FROM files f "
+            "JOIN modules m ON m.module_id = f.module_id WHERE f.file_id = ?",
+            (file_id,),
+        ).fetchone()
+        if scope is not None:
+            return scope["module_id"], scope["phase_id"]
+    agent = conn.execute(
+        "SELECT module_id, phase_id FROM agents WHERE agent_id = ?", (agent_id,)
+    ).fetchone()
+    if agent is None:
+        return None, None
+    return agent["module_id"], agent["phase_id"]
 
-    Split out of `ledger.py` and `review.py` to keep those files small; every
-    method here still assumes it is mixed into `Ledger` and relies on `self.conn`,
-    `self.settings`, `self._log_event`, `self._owe_wakeup`, and `self.next_step`.
-    """
 
-    conn: sqlite3.Connection
-    settings: Settings
-
-    def _log_event(
-        self,
-        conn: sqlite3.Connection,
-        agent_id: str,
-        from_state: str | None,
-        to_state: str,
-        reason: str | None = None,
-    ) -> None: ...
-
-    def _release_tx(self) -> AbstractContextManager[sqlite3.Connection]: ...
-
-    def _owe_wakeup(
-        self,
-        conn: sqlite3.Connection,
-        c: Caller,
-        to_agent_id: str | None,
-        reason: str,
-        pointer: str,
-    ) -> dict | None: ...
-
-    def next_step(self, wakeup: dict | None) -> str | None: ...
-
+class AgreementsMixin(LedgerHost):
     # -- Shared helpers -----------------------------------------------------
 
     def nearest_live_agent(self, conn: sqlite3.Connection, agent_id: str | None) -> dict | None:
-        while agent_id is not None:
-            row = conn.execute("SELECT * FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
-            if row is None:
-                return None
-            if row["ended_at"] is None:
-                return dict(row)
-            agent_id = row["parent_agent_id"]
-        return None
+        return next(
+            (dict(row) for row in parent_chain(conn, agent_id) if row["ended_at"] is None), None
+        )
 
     def _cr_recipient(
         self, conn: sqlite3.Connection, c: Caller, file_row: sqlite3.Row
@@ -135,9 +109,9 @@ class AgreementsMixin:
             )
 
     def _block_approve_for_cr(self, conn: sqlite3.Connection, file_id: int) -> None:
-        placeholders = ",".join("?" for _ in _CR_BLOCKING_STATES)
         rows = conn.execute(
-            f"SELECT cr_id FROM change_requests WHERE file_id = ? AND state IN ({placeholders})",
+            "SELECT cr_id FROM change_requests WHERE file_id = ? "
+            f"AND state IN ({in_clause(_CR_BLOCKING_STATES)})",
             (file_id, *_CR_BLOCKING_STATES),
         ).fetchall()
         if rows:
@@ -171,7 +145,7 @@ class AgreementsMixin:
         self, conn: sqlite3.Connection, file_id: int, handoff_id: int
     ) -> None:
         conn.execute(
-            f"UPDATE departures SET state = 'reworked', reworked_at = {_NOW}, "
+            f"UPDATE departures SET state = 'reworked', reworked_at = {NOW}, "
             "reworked_by_handoff_id = ? WHERE file_id = ? AND kind = 'departure' "
             "AND state = 'pushed_back'",
             (handoff_id, file_id),
@@ -206,11 +180,10 @@ class AgreementsMixin:
             )
 
     def _block_phase_approval_for_cr(self, conn: sqlite3.Connection, phase_id: int) -> None:
-        placeholders = ",".join("?" for _ in _CR_BLOCKING_STATES)
         rows = conn.execute(
             "SELECT cr.cr_id FROM change_requests cr JOIN files f ON f.file_id = cr.file_id "
             "JOIN modules m ON m.module_id = f.module_id "
-            f"WHERE m.phase_id = ? AND cr.state IN ({placeholders})",
+            f"WHERE m.phase_id = ? AND cr.state IN ({in_clause(_CR_BLOCKING_STATES)})",
             (phase_id, *_CR_BLOCKING_STATES),
         ).fetchall()
         if rows:
@@ -218,9 +191,9 @@ class AgreementsMixin:
             raise LedgerError(f"change request(s) {ids} in the phase are not verified")
 
     def _block_run_finish_for_cr(self, conn: sqlite3.Connection, run_id: int) -> None:
-        placeholders = ",".join("?" for _ in _CR_BLOCKING_STATES)
         rows = conn.execute(
-            f"SELECT cr_id FROM change_requests WHERE run_id = ? AND state IN ({placeholders})",
+            "SELECT cr_id FROM change_requests WHERE run_id = ? "
+            f"AND state IN ({in_clause(_CR_BLOCKING_STATES)})",
             (run_id, *_CR_BLOCKING_STATES),
         ).fetchall()
         if rows:
@@ -259,9 +232,7 @@ class AgreementsMixin:
                 "read it with cr_list.",
             )
 
-        row = dict(
-            self.conn.execute("SELECT * FROM change_requests WHERE cr_id = ?", (cr_id,)).fetchone()
-        )
+        row = row_dict(self.conn, "change_requests", "cr_id", cr_id)
         row["next"] = self.next_step(wakeup)
         return row
 
@@ -282,13 +253,13 @@ class AgreementsMixin:
             if accept:
                 conn.execute(
                     f"UPDATE change_requests SET state = ?, decision_reason = ?, "
-                    f"accepted_at = {_NOW}, decided_at = {_NOW} WHERE cr_id = ?",
+                    f"accepted_at = {NOW}, decided_at = {NOW} WHERE cr_id = ?",
                     (new_state, reason, cr_id),
                 )
             else:
                 conn.execute(
                     f"UPDATE change_requests SET state = ?, decision_reason = ?, "
-                    f"decided_at = {_NOW} WHERE cr_id = ?",
+                    f"decided_at = {NOW} WHERE cr_id = ?",
                     (new_state, reason, cr_id),
                 )
             wakeup = self._owe_wakeup(
@@ -299,9 +270,7 @@ class AgreementsMixin:
                 f"Change request {cr_id} for {row['path']} was {new_state}; read it with cr_list.",
             )
 
-        result = dict(
-            self.conn.execute("SELECT * FROM change_requests WHERE cr_id = ?", (cr_id,)).fetchone()
-        )
+        result = row_dict(self.conn, "change_requests", "cr_id", cr_id)
         result["next"] = self.next_step(wakeup)
         return result
 
@@ -320,7 +289,7 @@ class AgreementsMixin:
         self, conn: sqlite3.Connection, cr_row: sqlite3.Row, recipient_role: str, c: Caller
     ) -> int:
         targets = self._cr_targets(conn, cr_row)
-        placeholders = ",".join("?" for _ in targets)
+        placeholders = in_clause(targets)
 
         if recipient_role == "coder":
             candidates = conn.execute(
@@ -329,7 +298,7 @@ class AgreementsMixin:
                 (*targets, c.agent_id, cr_row["accepted_at"]),
             ).fetchall()
             for candidate in candidates:
-                if _test_run_passed(candidate):
+                if test_run_passed(candidate):
                     return candidate["test_run_id"]
             raise LedgerError(
                 f"no passing test run of {cr_row['path']} by {c.name} since acceptance; "
@@ -342,7 +311,7 @@ class AgreementsMixin:
             (*targets, cr_row["accepted_at"]),
         ).fetchall()
         for candidate in candidates:
-            if _test_run_passed(candidate):
+            if test_run_passed(candidate):
                 return candidate["test_run_id"]
         handoff = conn.execute(
             "SELECT * FROM handoffs WHERE file_id = ? AND state = 'approved' AND decided_at > ? "
@@ -368,7 +337,7 @@ class AgreementsMixin:
 
             evidence_id = self._cr_evidence(conn, row, c.role, c)
             conn.execute(
-                f"UPDATE change_requests SET state = 'completed', completed_at = {_NOW}, "
+                f"UPDATE change_requests SET state = 'completed', completed_at = {NOW}, "
                 "completion_notes = ?, evidence_test_run_id = ? WHERE cr_id = ?",
                 (notes, evidence_id, cr_id),
             )
@@ -380,9 +349,7 @@ class AgreementsMixin:
                 f"Change request {cr_id} for {row['path']} is completed; verify it with cr_verify.",
             )
 
-        result = dict(
-            self.conn.execute("SELECT * FROM change_requests WHERE cr_id = ?", (cr_id,)).fetchone()
-        )
+        result = row_dict(self.conn, "change_requests", "cr_id", cr_id)
         result["next"] = self.next_step(wakeup)
         return result
 
@@ -405,7 +372,7 @@ class AgreementsMixin:
             wakeup = None
             if ok:
                 conn.execute(
-                    f"UPDATE change_requests SET state = 'verified', verified_at = {_NOW}, "
+                    f"UPDATE change_requests SET state = 'verified', verified_at = {NOW}, "
                     "verify_notes = ? WHERE cr_id = ?",
                     (notes, cr_id),
                 )
@@ -424,9 +391,7 @@ class AgreementsMixin:
                     "read the notes with cr_list and fix it.",
                 )
 
-        result = dict(
-            self.conn.execute("SELECT * FROM change_requests WHERE cr_id = ?", (cr_id,)).fetchone()
-        )
+        result = row_dict(self.conn, "change_requests", "cr_id", cr_id)
         result["next"] = self.next_step(wakeup)
         return result
 
@@ -445,27 +410,14 @@ class AgreementsMixin:
             query += " AND state = ?"
             params.append(state)
         query += " ORDER BY cr_id"
-        return _rows(self.conn.execute(query, params))
+        return dict_rows(self.conn.execute(query, params))
 
     # -- Departures and shortfalls --------------------------------------------
 
     def _departure_scope(
         self, conn: sqlite3.Connection, row: sqlite3.Row
     ) -> tuple[int | None, int | None]:
-        if row["file_id"] is not None:
-            scope = conn.execute(
-                "SELECT m.module_id, m.phase_id FROM files f "
-                "JOIN modules m ON m.module_id = f.module_id WHERE f.file_id = ?",
-                (row["file_id"],),
-            ).fetchone()
-            if scope is not None:
-                return scope["module_id"], scope["phase_id"]
-        agent = conn.execute(
-            "SELECT module_id, phase_id FROM agents WHERE agent_id = ?", (row["agent_id"],)
-        ).fetchone()
-        if agent is None:
-            return None, None
-        return agent["module_id"], agent["phase_id"]
+        return work_scope(conn, row["file_id"], row["agent_id"])
 
     def _blocking_departures(
         self,
@@ -476,9 +428,8 @@ class AgreementsMixin:
         module_id: int | None = None,
         phase_id: int | None = None,
     ) -> list[sqlite3.Row]:
-        placeholders = ",".join("?" for _ in states)
         rows = conn.execute(
-            f"SELECT * FROM departures WHERE kind = 'departure' AND state IN ({placeholders}) "
+            f"SELECT * FROM departures WHERE kind = 'departure' AND state IN ({in_clause(states)}) "
             "AND (? IS NULL OR run_id = ?) ORDER BY departure_id",
             (*states, run_id, run_id),
         ).fetchall()
@@ -579,7 +530,7 @@ class AgreementsMixin:
                 cur = conn.execute(
                     "INSERT INTO departures (run_id, agent_id, guideline_id, file_id, handoff_id, "
                     "kind, state, body, signed_off_at) "
-                    f"VALUES (?, ?, ?, ?, ?, 'departure', 'signed_off', ?, {_NOW})",
+                    f"VALUES (?, ?, ?, ?, ?, 'departure', 'signed_off', ?, {NOW})",
                     (c.run_id, c.agent_id, guideline_id, file_id, handoff_id, body),
                 )
             else:
@@ -593,12 +544,8 @@ class AgreementsMixin:
         return self._departure_dict(departure_id)
 
     def _departure_dict(self, departure_id: int | None) -> dict:
-        result = dict(
-            self.conn.execute(
-                "SELECT * FROM departures WHERE departure_id = ?", (departure_id,)
-            ).fetchone()
-        )
-        result["decisions"] = _rows(
+        result = row_dict(self.conn, "departures", "departure_id", departure_id)
+        result["decisions"] = dict_rows(
             self.conn.execute(
                 "SELECT d.*, a.name AS agent_name FROM departure_decisions d "
                 "LEFT JOIN agents a ON a.agent_id = d.agent_id "
@@ -661,15 +608,15 @@ class AgreementsMixin:
                 new_state = _AGREED_STATE[level]
                 conn.execute(
                     "UPDATE departures SET state = ?, level = ?, decided_by = ?, "
-                    f"decision_reason = ?, decided_at = {_NOW}, "
-                    f"signed_off_at = CASE WHEN ? = 'signed_off' THEN {_NOW} END "
+                    f"decision_reason = ?, decided_at = {NOW}, "
+                    f"signed_off_at = CASE WHEN ? = 'signed_off' THEN {NOW} END "
                     "WHERE departure_id = ?",
                     (new_state, _NEXT_LEVEL[level], c.agent_id, reason, new_state, departure_id),
                 )
             else:
                 conn.execute(
                     "UPDATE departures SET state = 'pushed_back', level = NULL, decided_by = ?, "
-                    f"decision_reason = ?, solution = ?, decided_at = {_NOW} "
+                    f"decision_reason = ?, solution = ?, decided_at = {NOW} "
                     "WHERE departure_id = ?",
                     (c.agent_id, reason, solution, departure_id),
                 )
@@ -714,15 +661,10 @@ class AgreementsMixin:
                 start_id = coder["agent_id"]
 
         chain: list[sqlite3.Row] = []
-        agent_id: str | None = start_id
-        while agent_id is not None:
-            agent = conn.execute("SELECT * FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
-            if agent is None or agent["role"] not in _ROLE_RANK:
-                break
-            if _ROLE_RANK[agent["role"]] >= _ROLE_RANK[c.role]:
+        for agent in parent_chain(conn, start_id):
+            if agent["role"] not in ROLE_RANK or ROLE_RANK[agent["role"]] >= ROLE_RANK[c.role]:
                 break
             chain.append(agent)
-            agent_id = agent["parent_agent_id"]
         chain.reverse()
         return chain
 
@@ -779,7 +721,7 @@ class AgreementsMixin:
         if submitted is None:
             return None
         conn.execute(
-            f"UPDATE handoffs SET state = 'returned', decided_at = {_NOW}, decided_by = ? "
+            f"UPDATE handoffs SET state = 'returned', decided_at = {NOW}, decided_by = ? "
             "WHERE file_id = ? AND state = 'submitted'",
             (c.agent_id, file_row["file_id"]),
         )
@@ -885,8 +827,4 @@ class AgreementsMixin:
             )
             shortfall_id = cur.lastrowid
 
-        return dict(
-            self.conn.execute(
-                "SELECT * FROM departures WHERE departure_id = ?", (shortfall_id,)
-            ).fetchone()
-        )
+        return row_dict(self.conn, "departures", "departure_id", shortfall_id)

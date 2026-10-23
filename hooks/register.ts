@@ -25,11 +25,27 @@ const SEND_MS = 15_000
 const SEND_RETRY_MS = [2_000, 4_000, 8_000]
 const NOT_YET_LIVE = /no live session/i
 const WRITE_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']
-const WRITE_TOOL = /^(Write|Edit|MultiEdit|NotebookEdit)$/
+const WRITE_TOOL = new RegExp(`^(${WRITE_TOOLS.join('|')})$`)
 const SHELL_TOOL = /^(Bash|PowerShell)$/
 // Must equal SYNC_POST_TOOLS in mcp/src/swarm_ledger/hooks/events.py.
 const SYNC_POST_TOOLS = ['SendMessage', 'PushNotification', 'Monitor', ...WRITE_TOOLS]
 const RECEIVED_FROM = ['peer', 'peer-send-message', 'coordinator']
+const PRE_TOOL_GATES: readonly {
+  tool: string | RegExp
+  event: string
+  role?: string
+  skip?: (e: object) => boolean
+}[] = [
+  { tool: 'Agent', event: 'pre_agent' },
+  { tool: WRITE_TOOL, event: 'pre_write' },
+  { tool: SHELL_TOOL, event: 'pre_shell' },
+  { tool: 'Monitor', event: 'pre_monitor' },
+  // $.session.send runs as a SendMessage call to the target's pipe address, not its session id;
+  // the ledger checked the recipient before the mod sent, so the mod's own text passes.
+  { tool: 'SendMessage', event: 'pre_send_message', skip: isOwnSend },
+  { tool: 'Skill', event: 'pre_skill', role: 'driver' },
+  { tool: LEDGER_TOOL, event: 'pre_ledger' },
+]
 const sessionRef = { plugin: 'sentinel-swarm', key: 'session' } as const
 
 let session: SentinelSwarmSession | null | undefined
@@ -47,31 +63,11 @@ export const register: Register = on => {
     return text === undefined ? result : { ...result, additionalContext: [...(result.additionalContext ?? []), text] }
   })
 
-  on('tool.call', { tool: 'Agent' }, ($, e, next) => judge($, e, next, 'pre_agent')).catch(($, e, next) =>
-    next.called ? next(e) : { deny: cannotCheck(next.error) },
-  )
-  on('tool.call', { tool: WRITE_TOOL }, ($, e, next) => judge($, e, next, 'pre_write')).catch(($, e, next) =>
-    next.called ? next(e) : { deny: cannotCheck(next.error) },
-  )
-  on('tool.call', { tool: SHELL_TOOL }, ($, e, next) => judge($, e, next, 'pre_shell')).catch(($, e, next) =>
-    next.called ? next(e) : { deny: cannotCheck(next.error) },
-  )
-  on('tool.call', { tool: 'Monitor' }, ($, e, next) => judge($, e, next, 'pre_monitor')).catch(($, e, next) =>
-    next.called ? next(e) : { deny: cannotCheck(next.error) },
-  )
-  // $.session.send runs as a SendMessage call to the target's pipe address, not its session id;
-  // the ledger checked the recipient before the mod sent, so the mod's own text passes.
-  on('tool.call', { tool: 'SendMessage' }, ($, e, next) =>
-    isOwnSend(e) ? next(e) : judge($, e, next, 'pre_send_message'),
-  ).catch(
-    ($, e, next) => (next.called ? next(e) : { deny: cannotCheck(next.error) }),
-  )
-  on('tool.call', { tool: 'Skill' }, ($, e, next) => judge($, e, next, 'pre_skill', 'driver')).catch(
-    ($, e, next) => (next.called ? next(e) : { deny: cannotCheck(next.error) }),
-  )
-  on('tool.call', { tool: LEDGER_TOOL }, ($, e, next) => judge($, e, next, 'pre_ledger')).catch(($, e, next) =>
-    next.called ? next(e) : { deny: cannotCheck(next.error) },
-  )
+  for (const { tool, event, role, skip } of PRE_TOOL_GATES) {
+    on('tool.call', { tool }, ($, e, next) => (skip?.(e) ? next(e) : judge($, e, next, event, role))).catch(($, e, next) =>
+      next.called ? next(e) : { deny: cannotCheck(next.error) },
+    )
+  }
 
   on('classic.PostToolUse', async ($, e, next) => {
     const s = await active($)

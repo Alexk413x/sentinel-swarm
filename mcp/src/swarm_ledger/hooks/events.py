@@ -4,13 +4,16 @@ import json
 import os
 import re
 import shlex
+import sqlite3
 import subprocess
 from collections.abc import Callable
 from datetime import datetime, timedelta
+from functools import partial
 from pathlib import Path
 
-from .. import __version__, pricing, sessions
+from .. import __version__, notify, pricing, sessions, wake
 from ..agentfiles import CODEBASE_KG_PLUGIN, plugin_installed
+from ..clock import parse_stamp, utcnow
 from ..db import ensure_git_exclude, write_tx
 from ..identity import (
     IDENTITY_FREE_TOOLS,
@@ -21,7 +24,8 @@ from ..identity import (
     unbound_reason,
 )
 from ..ledger import Ledger
-from ..watchdog import MONITOR_CALL, REGISTER_GRACE, WATCH_COMMAND, parse_stamp, utcnow
+from ..queries import latest_live_oracle, live_run, submitted_handoffs, unread_count
+from ..watchdog import MONITOR_CALL, REGISTER_GRACE, WATCH_COMMAND
 
 _RECORDS_DIR = ".sentinel-swarm"
 _WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
@@ -36,8 +40,6 @@ _RUN_STATUS_ROLES = frozenset({"manager", "lead"})
 # Claude Code saves additionalContext over 10,000 characters to a file and shows the model
 # only a 2,000-character preview, so the start calls must fit under the cap.
 _START_CONTEXT_CAP = 9_500
-# The Driver is the one role with an Agent tool, and only for cartographer's own
-# subagents: it never runs a subagent of its own or any other plugin's.
 _DRIVER_SUBAGENTS = frozenset(
     {"map-driver", "map-reviewer", "cartographer:map-driver", "cartographer:map-reviewer"}
 )
@@ -45,7 +47,6 @@ _SHELL_OPERATORS = re.compile(r"[;&|<>`\n]|\$\(")
 _SEARCH_TOOLS = frozenset({"Grep", "Glob"})
 _GAP_PATHS = 20
 _CONTENT_LINE = re.compile(r"^((?:[A-Za-z]:)?[^:]+):\d+[:-]")
-_LIVE_RUN = "state IN ('active', 'paused')"
 _PAUSE_HINT = "If the run is blocked on something only the user can fix, call run_pause(reason)."
 _WATCH_STALE = timedelta(seconds=60)
 _WATCH_RENEW = timedelta(seconds=30)
@@ -55,15 +56,16 @@ _ARM_WATCHDOG = (
 )
 
 
-# -- Shared helpers -----------------------------------------------------------
-
-
 def _caller_id(data: dict) -> str | None:
     return data.get("agent_id") or data.get("session_id")
 
 
+def _tool_input(data: dict) -> dict:
+    return data.get("tool_input") or {}
+
+
 def _active_run_row(ledger: Ledger) -> dict | None:
-    row = ledger.conn.execute(f"SELECT * FROM runs WHERE {_LIVE_RUN}").fetchone()
+    row = live_run(ledger.conn)
     return dict(row) if row is not None else None
 
 
@@ -76,6 +78,10 @@ def _swarm_caller(ledger: Ledger, caller_id: str | None) -> dict | None:
     if row is None or row["role"] not in ROLES:
         return None
     return dict(row)
+
+
+def _data_caller(ledger: Ledger, data: dict) -> dict | None:
+    return _swarm_caller(ledger, _caller_id(data))
 
 
 def _repo_relative(ledger: Ledger, raw: str) -> str | None:
@@ -110,7 +116,23 @@ def _deny(reason: str) -> dict:
     }
 
 
-# -- 1. SessionStart ------------------------------------------------------------
+def _deny_unless_overridden(
+    ledger: Ledger, caller: dict, kind: str, target: str, reason: str
+) -> dict | None:
+    if ledger.override_consume(caller["run_id"], kind, caller["name"], target):
+        return None
+    return _deny(reason)
+
+
+def _claim_row(ledger: Ledger, caller: dict) -> sqlite3.Row | None:
+    return ledger.conn.execute(
+        "SELECT path, test_path FROM files WHERE file_id = ? AND released_at IS NULL",
+        (caller["file_id"],),
+    ).fetchone()
+
+
+def _owned_paths(claim: sqlite3.Row | None) -> set[str | None]:
+    return {claim["path"], claim["test_path"]} if claim is not None else set()
 
 
 def _session_context(text: str) -> dict:
@@ -149,7 +171,8 @@ def _start_calls(ledger: Ledger, caller: dict) -> list[tuple[str, Callable[[], o
 
 def _start_context(ledger: Ledger, caller: dict) -> str:
     name, agent_id = caller["name"], caller["agent_id"]
-    names = ", ".join(label.split("(")[0] for label, _ in _start_calls(ledger, caller))
+    start_calls = _start_calls(ledger, caller)
+    names = ", ".join(label.split("(")[0] for label, _ in start_calls)
     if caller["state"] == "registered":
         try:
             ledger.brief_ack(name, agent_id)
@@ -170,7 +193,7 @@ def _start_context(ledger: Ledger, caller: dict) -> str:
     ]
     size = len(parts[0])
     brief_in = False
-    for label, call in _start_calls(ledger, caller):
+    for label, call in start_calls:
         try:
             line = f"{label} returned: {_compact_json(call())}"
             answered = True
@@ -234,28 +257,20 @@ def handle_session_start(ledger: Ledger, data: dict) -> dict | None:
     elif not (ledger.repo_root / "knowledge" / "code_graph.db").is_file():
         parts.append("knowledge/code_graph.db is missing; codebase-kg has not mapped this repo.")
 
-    git_dir = ledger.repo_root / ".git"
-    if git_dir.exists():
-        exclude_path = git_dir / "info" / "exclude"
-        existing = exclude_path.read_text(encoding="utf-8") if exclude_path.is_file() else ""
-        if f"{_RECORDS_DIR}/" not in existing.splitlines():
-            ensure_git_exclude(ledger.repo_root)
-            parts.append(f"Added {_RECORDS_DIR}/ to .git/info/exclude.")
+    if ensure_git_exclude(ledger.repo_root):
+        parts.append(f"Added {_RECORDS_DIR}/ to .git/info/exclude.")
 
     if not parts:
         return None
     return _session_context(" ".join(parts))
 
 
-# -- 2. PreToolUse: Agent ---------------------------------------------------------
-
-
 def handle_pre_agent(ledger: Ledger, data: dict) -> dict | None:
-    caller = _swarm_caller(ledger, _caller_id(data))
+    caller = _data_caller(ledger, data)
     if caller is None:
         return None
     if caller["role"] == "driver":
-        subagent_type = str((data.get("tool_input") or {}).get("subagent_type") or "")
+        subagent_type = str(_tool_input(data).get("subagent_type") or "")
         if subagent_type in _DRIVER_SUBAGENTS:
             return None
         return _deny(
@@ -268,31 +283,22 @@ def handle_pre_agent(ledger: Ledger, data: dict) -> dict | None:
     )
 
 
-# -- 3. PreToolUse: Write, Edit, MultiEdit, NotebookEdit ------------------------
-
-
 def handle_pre_write(ledger: Ledger, data: dict) -> dict | None:
     if _active_run_row(ledger) is None:
         return None
 
-    tool_input = data.get("tool_input") or {}
-    raw_path = str(tool_input.get("file_path") or "")
+    raw_path = str(_tool_input(data).get("file_path") or "")
     rel = _repo_relative(ledger, raw_path)
 
     if rel is not None and (rel == _RECORDS_DIR or rel.startswith(f"{_RECORDS_DIR}/")):
         return _deny("the records folder is written by the ledger only")
 
-    caller_id = _caller_id(data)
-    caller = _swarm_caller(ledger, caller_id)
+    caller = _data_caller(ledger, data)
     if caller is None:
         return None
 
     target = rel if rel is not None else raw_path
-
-    def _deny_or_override(reason: str) -> dict | None:
-        if ledger.override_consume(caller["run_id"], "write", caller["name"], target):
-            return None
-        return _deny(reason)
+    _deny_or_override = partial(_deny_unless_overridden, ledger, caller, "write", target)
 
     if caller["role"] != "coder":
         return _deny_or_override(
@@ -301,12 +307,8 @@ def handle_pre_write(ledger: Ledger, data: dict) -> dict | None:
     if rel is None:
         return _deny_or_override(f"{raw_path} is outside the repo root")
 
-    claim = ledger.conn.execute(
-        "SELECT path, test_path FROM files WHERE file_id = ? AND released_at IS NULL",
-        (caller["file_id"],),
-    ).fetchone()
-    owned = {claim["path"], claim["test_path"]} if claim is not None else set()
-    if rel not in owned:
+    claim = _claim_row(ledger, caller)
+    if rel not in _owned_paths(claim):
         owner = ledger.who_owns(rel)["owner"] or "nobody"
         mine = (
             " and ".join(p for p in (claim["path"], claim["test_path"]) if p)
@@ -316,9 +318,6 @@ def handle_pre_write(ledger: Ledger, data: dict) -> dict | None:
         return _deny_or_override(f"{rel} is owned by {owner}; you own {mine}")
 
     return None
-
-
-# -- 4. PreToolUse: Bash, PowerShell -----------------------------------------------
 
 
 def _allowed_templates(ledger: Ledger, role: str) -> list[str]:
@@ -351,17 +350,12 @@ def _command_allowed(ledger: Ledger, command: str, role: str) -> bool:
 def handle_pre_shell(ledger: Ledger, data: dict) -> dict | None:
     if _active_run_row(ledger) is None:
         return None
-    caller_id = _caller_id(data)
-    caller = _swarm_caller(ledger, caller_id)
+    caller = _data_caller(ledger, data)
     if caller is None:
         return None
 
-    command = str((data.get("tool_input") or {}).get("command") or "")
-
-    def _deny_or_override(reason: str) -> dict | None:
-        if ledger.override_consume(caller["run_id"], "shell", caller["name"], command):
-            return None
-        return _deny(reason)
+    command = str(_tool_input(data).get("command") or "")
+    _deny_or_override = partial(_deny_unless_overridden, ledger, caller, "shell", command)
 
     if caller["role"] not in ("coder", "driver"):
         return _deny_or_override("this role has no shell; use the ledger tools")
@@ -375,7 +369,7 @@ def handle_pre_shell(ledger: Ledger, data: dict) -> dict | None:
 
 
 def _role_of(ledger: Ledger, data: dict) -> str | None:
-    caller = _swarm_caller(ledger, _caller_id(data))
+    caller = _data_caller(ledger, data)
     if caller is not None:
         return caller["role"]
     agent_type = str(data.get("agent_type") or "")
@@ -383,21 +377,21 @@ def _role_of(ledger: Ledger, data: dict) -> str | None:
     return role if agent_type.startswith("swarm-") and role in ROLES else None
 
 
+def _is_watch_call(tool_input: dict) -> bool:
+    return " ".join(str(tool_input.get("command") or "").split()) == WATCH_COMMAND
+
+
 def handle_pre_monitor(ledger: Ledger, data: dict) -> dict | None:
     role = _role_of(ledger, data)
     if role is None:
         return None
-    tool_input = data.get("tool_input") or {}
-    command = " ".join(str(tool_input.get("command") or "").split())
-    if role == "oracle" and tool_input.get("ws") is None and command == WATCH_COMMAND:
+    tool_input = _tool_input(data)
+    if role == "oracle" and tool_input.get("ws") is None and _is_watch_call(tool_input):
         return None
     return _deny(
         "a swarm role runs no Monitor of its own. The one Monitor call allowed is the "
         f"Oracle's watchdog: {MONITOR_CALL}"
     )
-
-
-# -- 4b. PreToolUse: SendMessage ----------------------------------------------------
 
 
 def _send_refusal(ledger: Ledger, caller: dict, to: str) -> str | None:
@@ -445,32 +439,26 @@ def _send_refusal(ledger: Ledger, caller: dict, to: str) -> str | None:
 
 
 def handle_pre_send_message(ledger: Ledger, data: dict) -> dict | None:
-    caller = _swarm_caller(ledger, _caller_id(data))
+    caller = _data_caller(ledger, data)
     if caller is None or caller["run_id"] is None:
         return None
-    reason = _send_refusal(ledger, caller, str((data.get("tool_input") or {}).get("to") or ""))
+    reason = _send_refusal(ledger, caller, str(_tool_input(data).get("to") or ""))
     return _deny(reason) if reason is not None else None
 
 
-# -- 4c. PreToolUse: Skill -----------------------------------------------------------
-
-
 def handle_pre_skill(ledger: Ledger, data: dict) -> dict | None:
-    caller = _swarm_caller(ledger, _caller_id(data))
+    caller = _data_caller(ledger, data)
     if caller is None or caller["role"] != "driver":
         return None
-    tool_input = data.get("tool_input") or {}
+    tool_input = _tool_input(data)
     skill = str(tool_input.get("skill") or tool_input.get("command") or "")
     reason = ledger.drive_skill(caller["agent_id"], skill)
     return _deny(reason) if reason is not None else None
 
 
-# -- 5. PreToolUse: the swarm-ledger MCP tools -------------------------------------
-
-
 def handle_pre_ledger(ledger: Ledger, data: dict) -> dict:
     tool_name = str(data.get("tool_name") or "")
-    method = tool_name.rsplit("__", 1)[-1] if "__" in tool_name else tool_name
+    method = tool_name.rsplit("__", 1)[-1]
     caller_id = _caller_id(data)
 
     caller = _swarm_caller(ledger, caller_id)
@@ -479,7 +467,7 @@ def handle_pre_ledger(ledger: Ledger, data: dict) -> dict:
     if caller is not None and caller["state"] == "registered" and method not in PRE_BIND_TOOLS:
         return _deny(unbound_reason(caller["name"]))
 
-    tool_input = dict(data.get("tool_input") or {})
+    tool_input = dict(_tool_input(data))
     if method == "brief_get" and caller_id:
         ledger.brief_read(caller_id, str(tool_input.get("child_name") or ""))
     if method in IDENTITY_FREE_TOOLS:
@@ -493,9 +481,6 @@ def handle_pre_ledger(ledger: Ledger, data: dict) -> dict:
             "updatedInput": tool_input,
         }
     }
-
-
-# -- 6. PostToolUse: post_any and post_activity ----------------------------------------------------
 
 
 def _idle_since(ledger: Ledger, agent_id: str, fired_at: datetime | None) -> bool:
@@ -526,48 +511,46 @@ def handle_post_any(ledger: Ledger, data: dict) -> None:
     if data.get("tool_name") == "PushNotification":
         run_id = _oracle_run_id(ledger, caller_id)
         if run_id is not None:
-            from .. import notify
-
-            message = str((data.get("tool_input") or {}).get("message") or "")
+            message = str(_tool_input(data).get("message") or "")
             notify.mark_sent(ledger.conn, run_id, message)
     if _active_run_row(ledger) is None:
-        return None
+        return
     caller = _swarm_caller(ledger, caller_id)
     if caller is None:
-        return None
+        return
 
     tool_name = str(data.get("tool_name") or "")
     _record_activity(ledger, caller, data, tool_name)
 
     if tool_name == "Monitor" and caller["role"] == "oracle":
-        tool_input = data.get("tool_input") or {}
-        if " ".join(str(tool_input.get("command") or "").split()) == WATCH_COMMAND:
+        tool_input = _tool_input(data)
+        if _is_watch_call(tool_input):
             timeout_ms = tool_input.get("timeout_ms")
             ledger.watch_armed(timeout_ms if isinstance(timeout_ms, int) else None)
 
     if tool_name == "SendMessage":
-        to = str((data.get("tool_input") or {}).get("to") or "")
+        to = str(_tool_input(data).get("to") or "")
         if to:
             ledger.wakeups_sent(caller["agent_id"], to)
 
     if tool_name in _WRITE_TOOLS and caller["role"] == "coder":
-        raw_path = str((data.get("tool_input") or {}).get("file_path") or "")
+        raw_path = str(_tool_input(data).get("file_path") or "")
         rel = _repo_relative(ledger, raw_path)
         if rel is not None:
             ledger.mark_stale(caller["agent_id"], rel)
-    return None
+    return
 
 
 def handle_post_activity(ledger: Ledger, data: dict) -> None:
     tool_name = str(data.get("tool_name") or "")
     if tool_name in SYNC_POST_TOOLS or _active_run_row(ledger) is None:
-        return None
-    caller = _swarm_caller(ledger, _caller_id(data))
+        return
+    caller = _data_caller(ledger, data)
     if caller is None:
-        return None
+        return
     _record_activity(ledger, caller, data, tool_name, parse_stamp(data.get(FIRED_AT_KEY)))
     if tool_name in _SEARCH_TOOLS:
-        tool_input = data.get("tool_input") or {}
+        tool_input = _tool_input(data)
         raw_path = str(tool_input.get("path") or "")
         ledger.graph_gap(
             caller["agent_id"],
@@ -576,7 +559,7 @@ def handle_post_activity(ledger: Ledger, data: dict) -> None:
             (_repo_relative(ledger, raw_path) or raw_path) if raw_path else None,
             _found_paths(ledger, data.get("tool_response")),
         )
-    return None
+    return
 
 
 def _found_paths(ledger: Ledger, response: object) -> list[str]:
@@ -609,9 +592,6 @@ def _content_paths(text: str) -> list[str]:
     return [p for p in paths if p]
 
 
-# -- 7. PostToolUse: Bash, PowerShell ----------------------------------------------
-
-
 def _parse_porcelain(output: str) -> list[str]:
     paths = []
     for line in output.splitlines():
@@ -626,11 +606,10 @@ def _parse_porcelain(output: str) -> list[str]:
 
 def handle_post_shell(ledger: Ledger, data: dict) -> None:
     if _active_run_row(ledger) is None:
-        return None
-    caller_id = _caller_id(data)
-    caller = _swarm_caller(ledger, caller_id)
+        return
+    caller = _data_caller(ledger, data)
     if caller is None or caller["role"] != "coder":
-        return None
+        return
 
     try:
         result = subprocess.run(
@@ -641,17 +620,13 @@ def handle_post_shell(ledger: Ledger, data: dict) -> None:
             timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
-        return None
+        return
 
     changed = _parse_porcelain(result.stdout)
     if not changed:
-        return None
+        return
 
-    claim = ledger.conn.execute(
-        "SELECT path, test_path FROM files WHERE file_id = ? AND released_at IS NULL",
-        (caller["file_id"],),
-    ).fetchone()
-    owned = {claim["path"], claim["test_path"]} if claim is not None else set()
+    owned = _owned_paths(_claim_row(ledger, caller))
     others = {
         p
         for row in ledger.conn.execute(
@@ -672,7 +647,7 @@ def handle_post_shell(ledger: Ledger, data: dict) -> None:
         and not p.startswith("knowledge/")
     ]
     if not violations:
-        return None
+        return
 
     reason = f"changed files outside its claim: {', '.join(violations)}"
     with write_tx(ledger.conn) as conn:
@@ -689,24 +664,25 @@ def handle_post_shell(ledger: Ledger, data: dict) -> None:
         ledger.message_post(
             caller["name"], caller["agent_id"], parent["name"], f"Violation: {reason}"
         )
-    return None
-
-
-# -- 8. PreCompact ------------------------------------------------------------------
+    return
 
 
 def handle_pre_compact(ledger: Ledger, data: dict) -> None:
     if _active_run_row(ledger) is None:
-        return None
-    caller_id = _caller_id(data)
-    caller = _swarm_caller(ledger, caller_id)
+        return
+    caller = _data_caller(ledger, data)
     if caller is None:
-        return None
+        return
     ledger.agent_compacted(caller["agent_id"])
-    return None
+    return
 
 
-# -- 9. Stop -----------------------------------------------------------------------
+_USAGE_FIELDS = {
+    "input_tokens": "input_tokens",
+    "output_tokens": "output_tokens",
+    "cache_read_tokens": "cache_read_input_tokens",
+    "cache_write_tokens": "cache_creation_input_tokens",
+}
 
 
 def _sum_tokens(transcript_path: str | None) -> dict | None:
@@ -716,13 +692,7 @@ def _sum_tokens(transcript_path: str | None) -> dict | None:
         path = Path(transcript_path)
         if not path.is_file():
             return None
-        totals = {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "cache_read_tokens": 0,
-            "cache_write_tokens": 0,
-            "tool_uses": 0,
-        }
+        totals = {**dict.fromkeys(_USAGE_FIELDS, 0), "tool_uses": 0}
         responses: dict[object, tuple[str | None, dict]] = {}
         with path.open("r", encoding="utf-8") as handle:
             for number, line in enumerate(handle):
@@ -746,25 +716,26 @@ def _sum_tokens(transcript_path: str | None) -> dict | None:
                     )
         cost: float | None = 0.0
         for model, usage in responses.values():
-            totals["input_tokens"] += usage.get("input_tokens") or 0
-            totals["output_tokens"] += usage.get("output_tokens") or 0
-            totals["cache_read_tokens"] += usage.get("cache_read_input_tokens") or 0
-            totals["cache_write_tokens"] += usage.get("cache_creation_input_tokens") or 0
+            for name, key in _USAGE_FIELDS.items():
+                totals[name] += usage.get(key) or 0
             priced = pricing.response_cost(model, usage)
-            if priced is None and not any(
-                usage.get(k)
-                for k in (
-                    "input_tokens",
-                    "output_tokens",
-                    "cache_read_input_tokens",
-                    "cache_creation_input_tokens",
-                )
-            ):
+            if priced is None and not any(usage.get(key) for key in _USAGE_FIELDS.values()):
                 continue
             cost = None if cost is None or priced is None else cost + priced
         return totals | {"cost_usd": cost}
     except (OSError, json.JSONDecodeError, AttributeError, TypeError):
         return None
+
+
+def _agent_stop(
+    ledger: Ledger, agent_id: str, transcript_path: str | None, end_reason: str | None = None
+) -> None:
+    ledger.agent_stop(
+        agent_id,
+        transcript_path=transcript_path,
+        tokens=_sum_tokens(transcript_path),
+        end_reason=end_reason,
+    )
 
 
 def _block_coder_stop_once(ledger: Ledger, caller: dict, data: dict) -> dict | None:
@@ -788,14 +759,11 @@ def _block_coder_stop_once(ledger: Ledger, caller: dict, data: dict) -> dict | N
         "SELECT name FROM agents WHERE agent_id = ?", (caller["parent_agent_id"],)
     ).fetchone()
     lead_name = json.dumps(lead["name"] if lead is not None else "<your Lead>")
-    return {
-        "decision": "block",
-        "reason": (
-            "Your file has no handoff on record. Call handoff_submit. If a blocker stops you, "
-            f"call message_post(to_name={lead_name}, body=<the blocker>) and make the "
-            "SendMessage call its next field names, then stop."
-        ),
-    }
+    return _block(
+        "Your file has no handoff on record. Call handoff_submit. If a blocker stops you, "
+        f"call message_post(to_name={lead_name}, body=<the blocker>) and make the "
+        "SendMessage call its next field names, then stop."
+    )
 
 
 def _live_session_ids() -> set[str] | None:
@@ -809,8 +777,7 @@ def _live_session_ids() -> set[str] | None:
         return None
 
 
-def _wake_hint(ledger: Ledger, agent: dict, live_ids: set[str] | None) -> str:
-    from .. import wake
+def _wake_hint(agent: dict, live_ids: set[str] | None) -> str:
 
     delivery = wake.route_wakeup(
         {
@@ -834,36 +801,22 @@ def _wake_lines(ledger: Ledger, run_id: int, live: list[dict]) -> list[str]:
     lines: list[str] = []
     named: set[str] = set()
 
-    handoffs = ledger.conn.execute(
-        "SELECT h.handoff_id, f.path, coder.parent_agent_id AS reviewer_id FROM handoffs h "
-        "JOIN files f ON f.file_id = h.file_id "
-        "JOIN modules m ON m.module_id = f.module_id "
-        "JOIN phases p ON p.phase_id = m.phase_id "
-        "LEFT JOIN agents coder ON coder.agent_id = h.agent_id "
-        "WHERE p.run_id = ? AND h.state = 'submitted' ORDER BY h.handoff_id",
-        (run_id,),
-    ).fetchall()
-    for handoff in handoffs:
+    for handoff in submitted_handoffs(ledger.conn, run_id):
         reviewer = waiting.get(handoff["reviewer_id"])
         if reviewer is None:
             continue
         lines.append(
             f"handoff {handoff['handoff_id']} for {handoff['path']} waits on "
             f"{reviewer['name']}, which is {reviewer['state']}; "
-            f"{_wake_hint(ledger, reviewer, live_ids)}"
+            f"{_wake_hint(reviewer, live_ids)}"
         )
         named.add(reviewer["agent_id"])
 
     for agent in waiting.values():
-        unread = ledger.conn.execute(
-            "SELECT COUNT(*) AS n FROM messages WHERE run_id = ? AND to_name = ? "
-            "AND read_at IS NULL",
-            (run_id, agent["name"]),
-        ).fetchone()["n"]
+        unread = unread_count(ledger.conn, run_id, agent["name"])
         if unread:
             lines.append(
-                f"{agent['name']} has {unread} unread message(s); "
-                f"{_wake_hint(ledger, agent, live_ids)}"
+                f"{agent['name']} has {unread} unread message(s); {_wake_hint(agent, live_ids)}"
             )
             named.add(agent["agent_id"])
 
@@ -877,7 +830,7 @@ def _wake_lines(ledger: Ledger, run_id: int, live: list[dict]) -> list[str]:
             continue
         lines.append(
             f"change request {cr['cr_id']} for {cr['path']} waits on {recipient['name']}, "
-            f"which is idle; {_wake_hint(ledger, recipient, live_ids)}"
+            f"which is idle; {_wake_hint(recipient, live_ids)}"
         )
         named.add(recipient["agent_id"])
 
@@ -895,7 +848,7 @@ def _wake_lines(ledger: Ledger, run_id: int, live: list[dict]) -> list[str]:
             continue
         lines.append(
             f"change request {cr['cr_id']} for {cr['path']} is completed and waits on "
-            f"{agent['name']} to verify it, which is idle; {_wake_hint(ledger, agent, live_ids)}"
+            f"{agent['name']} to verify it, which is idle; {_wake_hint(agent, live_ids)}"
         )
         named.add(agent["agent_id"])
 
@@ -916,14 +869,13 @@ def _wake_lines(ledger: Ledger, run_id: int, live: list[dict]) -> list[str]:
             continue
         lines.append(
             f"{agent['name']} is idle and none of its children is working; "
-            f"{_wake_hint(ledger, agent, live_ids)}"
+            f"{_wake_hint(agent, live_ids)}"
         )
         covered |= ancestors(agent["agent_id"])
     return lines
 
 
 def _push_reason(ledger: Ledger, run_id: int | None) -> str | None:
-    from .. import notify
 
     owed = notify.owed(ledger.conn, run_id) if run_id is not None else []
     if not owed:
@@ -959,21 +911,13 @@ def handle_stop(ledger: Ledger, data: dict) -> dict | None:
     if data.get("stop_hook_active"):
         return None
 
-    oracle = ledger.conn.execute(
-        "SELECT * FROM agents WHERE run_id = ? AND role = 'oracle' AND ended_at IS NULL "
-        "ORDER BY started_at DESC LIMIT 1",
-        (run["run_id"],),
-    ).fetchone()
+    oracle = latest_live_oracle(ledger.conn, run["run_id"])
     if oracle is None or oracle["agent_id"] != caller_id:
         return None
 
     transcript_path = data.get("transcript_path")
     if transcript_path:
-        ledger.agent_stop(
-            oracle["agent_id"],
-            transcript_path=transcript_path,
-            tokens=_sum_tokens(transcript_path),
-        )
+        _agent_stop(ledger, oracle["agent_id"], transcript_path)
 
     push = _push_reason(ledger, run["run_id"])
     if run["state"] == "paused":
@@ -1031,14 +975,7 @@ def _oracle_work_block(ledger: Ledger, run: dict, oracle: dict) -> dict | None:
         return None
 
     plan_unlocked = ledger.plan_unlocked(oracle["name"], oracle["agent_id"])
-    submitted_handoffs = ledger.conn.execute(
-        "SELECT COUNT(*) AS n FROM handoffs h "
-        "JOIN files f ON f.file_id = h.file_id "
-        "JOIN modules m ON m.module_id = f.module_id "
-        "JOIN phases p ON p.phase_id = m.phase_id "
-        "WHERE p.run_id = ? AND h.state = 'submitted' AND p.paused_at IS NULL",
-        (run["run_id"],),
-    ).fetchone()["n"]
+    awaiting_review = len(submitted_handoffs(ledger.conn, run["run_id"], unpaused_only=True))
     live_claims = ledger.conn.execute(
         "SELECT COUNT(*) AS n FROM files f "
         "JOIN modules m ON m.module_id = f.module_id "
@@ -1057,8 +994,8 @@ def _oracle_work_block(ledger: Ledger, run: dict, oracle: dict) -> dict | None:
     reasons = []
     if plan_unlocked:
         reasons.append(f"{len(plan_unlocked)} unlocked phase(s)")
-    if submitted_handoffs:
-        reasons.append(f"{submitted_handoffs} handoff(s) awaiting review")
+    if awaiting_review:
+        reasons.append(f"{awaiting_review} handoff(s) awaiting review")
     if live_claims:
         reasons.append(f"{live_claims} live file claim(s)")
     if pending_phase_reviews:
@@ -1073,41 +1010,24 @@ def _oracle_work_block(ledger: Ledger, run: dict, oracle: dict) -> dict | None:
         lines.insert(0, "No agent is working, so no child will wake you.")
     elif live:
         live_ids = _live_session_ids()
-        listed = "; ".join(
-            f"{a['name']} ({a['state']}): {_wake_hint(ledger, a, live_ids)}" for a in live
-        )
+        listed = "; ".join(f"{a['name']} ({a['state']}): {_wake_hint(a, live_ids)}" for a in live)
         lines = [f"Live agents: {listed}. Wake the one with pending work, or call run_pause."]
     else:
         lines = ["Continue the plan, or call run_finish."]
 
-    return {
-        "decision": "block",
-        "reason": "\n".join(
-            [f"The run still has work: {', '.join(reasons)}.", *lines, _PAUSE_HINT]
-        ),
-    }
+    return _block(f"The run still has work: {', '.join(reasons)}.", *lines, _PAUSE_HINT)
 
 
 def _owed_steps(ledger: Ledger, agent_id: str) -> list[str]:
     return [ledger.wake_step(w) for w in ledger.owed_wakeups(agent_id)]
 
 
-def _unread_count(ledger: Ledger, caller: dict) -> int:
-    return ledger.conn.execute(
-        "SELECT COUNT(*) AS n FROM messages WHERE run_id = ? AND to_name = ? AND read_at IS NULL",
-        (caller["run_id"], caller["name"]),
-    ).fetchone()["n"]
-
-
 def _member_stop(ledger: Ledger, caller: dict, data: dict) -> dict | None:
-    transcript_path = data.get("transcript_path")
-    ledger.agent_stop(
-        caller["agent_id"], transcript_path=transcript_path, tokens=_sum_tokens(transcript_path)
-    )
+    _agent_stop(ledger, caller["agent_id"], data.get("transcript_path"))
 
     if not data.get("stop_hook_active"):
         steps = [f"- {step}" for step in _owed_steps(ledger, caller["agent_id"])]
-        unread = _unread_count(ledger, caller)
+        unread = unread_count(ledger.conn, caller["run_id"], caller["name"])
         if steps or unread:
             lines = []
             if steps:
@@ -1117,7 +1037,7 @@ def _member_stop(ledger: Ledger, caller: dict, data: dict) -> dict | None:
                     f"You have {unread} unread message(s). Call message_inbox, act on them, "
                     "then stop."
                 )
-            return {"decision": "block", "reason": "\n".join(lines)}
+            return _block(*lines)
 
     if caller["role"] == "driver" and ledger.release_closed_driver(caller["agent_id"]):
         return None
@@ -1130,22 +1050,13 @@ def _member_stop(ledger: Ledger, caller: dict, data: dict) -> dict | None:
     return None
 
 
-# -- 10. SessionEnd ----------------------------------------------------------------
-
-
 def handle_session_end(ledger: Ledger, data: dict) -> None:
     session_id = data.get("session_id")
     if session_id:
-        transcript_path = data.get("transcript_path")
-        ledger.agent_stop(
-            session_id,
-            transcript_path=transcript_path,
-            tokens=_sum_tokens(transcript_path),
-            end_reason=data.get("reason"),
-        )
+        _agent_stop(ledger, session_id, data.get("transcript_path"), data.get("reason"))
         if _active_run_row(ledger) is None:
             _refresh_finished_report(ledger, session_id, None)
-    return None
+    return
 
 
 def _refresh_finished_report(
@@ -1163,19 +1074,13 @@ def _refresh_finished_report(
     if oracle is None:
         return
     if transcript_path:
-        ledger.agent_stop(
-            caller_id, transcript_path=transcript_path, tokens=_sum_tokens(transcript_path)
-        )
+        _agent_stop(ledger, caller_id, transcript_path)
     ledger.write_report(run["run_id"])
 
 
-# -- 11. The mod: owed wake-ups and the inbox --------------------------------------
-
-
 def handle_owed(ledger: Ledger, data: dict) -> dict | None:
-    from .. import wake
 
-    caller = _swarm_caller(ledger, _caller_id(data))
+    caller = _data_caller(ledger, data)
     if caller is None:
         return None
     targets: dict[str, dict] = {}
@@ -1208,7 +1113,7 @@ def handle_owed(ledger: Ledger, data: dict) -> dict | None:
 
 
 def handle_wake_sent(ledger: Ledger, data: dict) -> dict | None:
-    caller = _swarm_caller(ledger, _caller_id(data))
+    caller = _data_caller(ledger, data)
     if caller is None:
         return None
     raw = data.get("wakeup_ids")
@@ -1217,14 +1122,14 @@ def handle_wake_sent(ledger: Ledger, data: dict) -> dict | None:
 
 
 def handle_inbox_take(ledger: Ledger, data: dict) -> dict | None:
-    caller = _swarm_caller(ledger, _caller_id(data))
+    caller = _data_caller(ledger, data)
     if caller is None or caller["run_id"] is None:
         return None
     return ledger.inbox_take(caller_of(caller))
 
 
 def _settle(ledger: Ledger, data: dict, *, read: bool) -> dict | None:
-    caller = _swarm_caller(ledger, _caller_id(data))
+    caller = _data_caller(ledger, data)
     claim = data.get("claim")
     if caller is None or not isinstance(claim, str) or not claim:
         return None

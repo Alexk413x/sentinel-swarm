@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
@@ -16,6 +17,9 @@ jobs:
 
       - name: Install Claude Code
         run: npm install -g @anthropic-ai/claude-code
+
+      - name: Test the mod
+        run: claude plugin test .
 
       - name: Validate the plugin
         run: claude plugin validate --strict .claude-plugin/plugin.json

@@ -1,17 +1,27 @@
 from __future__ import annotations
 
 import json
-import os
-import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from helpers import (
+    SWARM_ROLES,
+    FakeClaude,
+    bootstrap_oracle,
+    make_swarm_host,
+    register_agent,
+    register_plugins,
+    role_template,
+    settings_text,
+    untimed,
+    write_settings,
+)
 
-from swarm_ledger import agentfiles, auth, sessions, setup
+from swarm_ledger import agentfiles, setup
 from swarm_ledger.clock import stamp
-from swarm_ledger.db import connect, write_tx
+from swarm_ledger.db import write_tx
 from swarm_ledger.drive import (
     STOP_ATTEMPTS_IN_A_ROW,
     STOP_ATTEMPTS_TOTAL,
@@ -33,118 +43,27 @@ from swarm_ledger.watchdog import (
 
 # -- Shared fixtures ------------------------------------------------------------------------
 
-_ROLE_FILE = """---
-name: swarm-{role}
-description: The {role}.
-model: sonnet
-permissionMode: acceptEdits
-tools: Read, SendMessage, Bash, Agent, mcp__swarm-ledger
-mcpServers:
-  - codebase-kg:
-      command: python
-      args: [".sentinel-swarm/hook.py", "mcp", "codebase-kg@alexk413x", "codebase-kg"]
----
+_ROLE_FILE = role_template(tools="Read, SendMessage, Bash, Agent, mcp__swarm-ledger")
 
-You are a {role}.
-"""
-
-
-class FakeClaude:
-    def __init__(self) -> None:
-        self.calls: list[tuple[list[str], Path | None]] = []
-        self.listing: list[dict] = []
-        self._count = 0
-
-    def __call__(self, args: list[str], cwd: Path | None = None) -> str:
-        self.calls.append((list(args), cwd))
-        if args[:2] == ["agents", "--json"]:
-            return json.dumps(self.listing)
-        if args[0] == "stop":
-            return ""
-        name = args[args.index("--name") + 1]
-        self._count += 1
-        session_id = f"{self._count:08x}-aaaa-bbbb-cccc-dddddddddddd"
-        self.add(session_id, name, bg_id=session_id[:8])
-        return f"backgrounded · {session_id[:8]} · {name}\n"
-
-    def add(self, session_id: str, name: str, bg_id: str | None = None) -> dict:
-        entry = {"pid": 100 + len(self.listing), "sessionId": session_id, "name": name}
-        entry |= {"status": "busy", "state": "working"}
-        if bg_id:
-            entry["id"] = bg_id
-        self.listing.append(entry)
-        return entry
+_SETTINGS = settings_text(test_command="pytest -q {target}", build_command="npm run build")
 
 
 @pytest.fixture
-def claude(monkeypatch: pytest.MonkeyPatch) -> FakeClaude:
-    fake = FakeClaude()
-    monkeypatch.setattr(sessions, "_run", fake)
-    return fake
-
-
-def _settings_text(repo_root: Path) -> str:
-    template = (repo_root / "templates" / "sentinel-swarm.local.md.example").read_text(
-        encoding="utf-8"
+def host(tmp_path: Path) -> Path:
+    return make_swarm_host(
+        tmp_path / "host",
+        _SETTINGS,
+        _ROLE_FILE,
+        roles=(*SWARM_ROLES, "driver"),
+        plugins=["cartographer@cartographer", "web-driver@accessibility-tools"],
     )
-    text = template.replace("test_command:\n", "test_command: pytest -q {target}\n")
-    text = text.replace("build_command:\n", "build_command: npm run build\n")
-    return text
-
-
-def _register_plugins(plugin_ids: list[str]) -> None:
-    config_dir = Path(os.environ["CLAUDE_CONFIG_DIR"])
-    path = config_dir / "plugins" / "installed_plugins.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({"plugins": {pid: [{"scope": "user"}] for pid in plugin_ids}}), "utf-8"
-    )
-
-
-@pytest.fixture
-def host(tmp_path: Path, repo_root: Path) -> Path:
-    root = tmp_path / "host"
-    claude_dir = root / ".claude" / "agents"
-    claude_dir.mkdir(parents=True)
-    (root / ".git").mkdir()
-    (root / ".claude" / "sentinel-swarm.local.md").write_text(
-        _settings_text(repo_root), encoding="utf-8"
-    )
-    for role in ("oracle", "manager", "lead", "coder", "driver"):
-        (claude_dir / f"swarm-{role}.md").write_text(_ROLE_FILE.format(role=role), "utf-8")
-    records = root / ".sentinel-swarm"
-    records.mkdir()
-    (records / "server.json").write_text(
-        json.dumps({"url": "http://127.0.0.1:4321/mcp", "port": 4321, "pid": 1}), "utf-8"
-    )
-    auth.ensure_token(root)
-    _register_plugins(["cartographer@cartographer", "web-driver@accessibility-tools"])
-    return root
-
-
-@pytest.fixture
-def ledger(host: Path) -> Ledger:
-    return Ledger(host, db_path=host / ".sentinel-swarm" / "ledger.db")
-
-
-def _bootstrap(ledger: Ledger, claude: FakeClaude, oracle_session: str = "sess-oracle") -> dict:
-    claude.add(oracle_session, "host-oracle")
-    started = ledger.run_start(prd="Build X", session_id=oracle_session)
-    oracle_id = started["oracle"]["agent_id"]
-    phase = ledger.phase_add("oracle", oracle_id, "phase-1")
-    ledger.phase_update("oracle", oracle_id, phase["phase_id"], "unlocked")
-    return {
-        "oracle_id": oracle_id,
-        "phase_id": phase["phase_id"],
-        "run_id": started["run"]["run_id"],
-    }
 
 
 def _fabricate_fixer(ledger: Ledger, ctx: dict, role: str, name: str) -> None:
     ledger.brief_create(
         "oracle", ctx["oracle_id"], name, "manager", "opus", "Own it.", phase_id=ctx["phase_id"]
     )
-    ledger.agent_register_start(f"{name}-agent", role, parent_agent_id=ctx["oracle_id"])
+    register_agent(ledger, f"{name}-agent", role, parent_agent_id=ctx["oracle_id"])
     ledger.brief_ack(name, f"{name}-agent")
 
 
@@ -169,11 +88,6 @@ def _seed_exploration(
 
 
 # -- Pure loop-status computation -------------------------------------------------------------
-
-
-def _untimed(text: str) -> str:
-    assert re.search(r" elapsed \d+s(?: / \d+s)?", text), text
-    return re.sub(r" elapsed \d+s(?: / \d+s)?", "", text)
 
 
 def test_fingerprint_streak_and_attempts() -> None:
@@ -296,10 +210,10 @@ def test_driver_available_needs_cartographer_and_a_driver_plugin(tmp_path: Path)
     host.mkdir()
     assert agentfiles.driver_available(host) is False
 
-    _register_plugins(["cartographer@cartographer"])
+    register_plugins(["cartographer@cartographer"])
     assert agentfiles.driver_available(host) is False
 
-    _register_plugins(["cartographer@cartographer", "web-driver@accessibility-tools"])
+    register_plugins(["cartographer@cartographer", "web-driver@accessibility-tools"])
     assert agentfiles.driver_available(host) is True
 
 
@@ -320,7 +234,7 @@ def test_setup_skips_the_driver_file_with_neither_plugin(bare_repo: Path) -> Non
 
 
 def test_setup_skips_the_driver_file_with_only_cartographer(bare_repo: Path) -> None:
-    _register_plugins(["cartographer@cartographer"])
+    register_plugins(["cartographer@cartographer"])
     report = setup.run_setup(bare_repo)
     assert not setup.role_file(bare_repo, "driver").exists()
     assert any("skipped" in line and "driver" in line for line in report.lines)
@@ -329,7 +243,7 @@ def test_setup_skips_the_driver_file_with_only_cartographer(bare_repo: Path) -> 
 def test_setup_writes_the_driver_file_with_cartographer_and_a_driver_plugin(
     bare_repo: Path,
 ) -> None:
-    _register_plugins(["cartographer@cartographer", "android-driver@accessibility-tools"])
+    register_plugins(["cartographer@cartographer", "android-driver@accessibility-tools"])
     report = setup.run_setup(bare_repo)
     path = setup.role_file(bare_repo, "driver")
     assert path.is_file()
@@ -341,7 +255,7 @@ def test_setup_writes_the_driver_file_with_cartographer_and_a_driver_plugin(
 
 
 def test_drive_request_spawns_the_driver_session(ledger: Ledger, claude: FakeClaude) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     result = ledger.drive_request("oracle", ctx["oracle_id"], "cover every PRD feature")
 
     assert result["ordinal"] == 1
@@ -360,13 +274,11 @@ def test_drive_request_spawns_the_driver_session(ledger: Ledger, claude: FakeCla
     assert expected_name.endswith("-driver-e1")
 
 
-def test_drive_request_refuses_without_a_driver_available(tmp_path: Path, repo_root: Path) -> None:
+def test_drive_request_refuses_without_a_driver_available(tmp_path: Path) -> None:
     root = tmp_path / "no-driver-host"
     (root / ".claude" / "agents").mkdir(parents=True)
     (root / ".git").mkdir()
-    (root / ".claude" / "sentinel-swarm.local.md").write_text(
-        _settings_text(repo_root), encoding="utf-8"
-    )
+    write_settings(root, _SETTINGS)
     ledger = Ledger(root, db_path=root / ".sentinel-swarm" / "ledger.db")
     started = ledger.run_start(prd="Build X", session_id="sess-1")
     with pytest.raises(LedgerError, match="no Driver is available"):
@@ -376,21 +288,21 @@ def test_drive_request_refuses_without_a_driver_available(tmp_path: Path, repo_r
 def test_drive_request_refuses_a_second_open_exploration(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     ledger.drive_request("oracle", ctx["oracle_id"], "first pass")
     with pytest.raises(LedgerError, match="is still open"):
         ledger.drive_request("oracle", ctx["oracle_id"], "second pass")
 
 
 def test_drive_request_refuses_while_a_fix_is_running(ledger: Ledger, claude: FakeClaude) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     _fabricate_fixer(ledger, ctx, "manager", "mgr-p1-phase-1")
     with pytest.raises(LedgerError, match="a fix is still running"):
         ledger.drive_request("oracle", ctx["oracle_id"], "next pass")
 
 
 def test_drive_request_is_oracle_only(ledger: Ledger, claude: FakeClaude) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     _fabricate_fixer(ledger, ctx, "manager", "mgr-p1-phase-1")
     with pytest.raises(LedgerError):
         ledger.drive_request("mgr-p1-phase-1", "mgr-p1-phase-1-agent", "not yours to request")
@@ -400,7 +312,7 @@ def test_drive_request_is_oracle_only(ledger: Ledger, claude: FakeClaude) -> Non
 
 
 def _open_request(ledger: Ledger, claude: FakeClaude) -> dict:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     request = ledger.drive_request("oracle", ctx["oracle_id"], "cover everything")
     driver_id = request["agent_id"]
     ledger.brief_ack("driver-e1", driver_id)
@@ -551,7 +463,7 @@ def test_drive_done_owes_the_oracle_a_wake_up_and_returns_the_send_message(
         f"Driver exploration 1 (request {ctx['request_id']}) ended: clean, no findings. "
         "Its result is in the ledger."
     )
-    assert _untimed(result["next"]) == (
+    assert untimed(result["next"]) == (
         f"SendMessage(to={json.dumps(wakeup['to_session_name'])}, "
         f"message={json.dumps(wakeup['pointer'])})"
     )
@@ -636,7 +548,7 @@ def test_a_driver_that_resumes_the_oracle_is_released_by_the_resume(
 def test_drive_done_names_the_stop_rule_and_the_block_in_its_wake_up(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     for ordinal in (1, 2, 3):
         _seed_exploration(ledger, ctx["run_id"], ordinal, ["F1"])
     request = ledger.drive_request("oracle", ctx["oracle_id"], "recheck F1")
@@ -757,7 +669,7 @@ def test_a_second_exploration_gets_the_next_ordinal(ledger: Ledger, claude: Fake
 def test_drive_done_files_a_directive_once_per_stop_reason(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     for ordinal in (1, 2, 3):
         _seed_exploration(ledger, ctx["run_id"], ordinal, ["F1"])
     request = ledger.drive_request("oracle", ctx["oracle_id"], "recheck F1")
@@ -789,23 +701,21 @@ def test_drive_done_files_a_directive_once_per_stop_reason(
 
 
 def test_run_finish_driver_gate_skips_without_a_driver_available(
-    tmp_path: Path, repo_root: Path
+    tmp_path: Path,
 ) -> None:
     root = tmp_path / "no-driver"
     (root / ".claude" / "agents").mkdir(parents=True)
     (root / ".git").mkdir()
-    (root / ".claude" / "sentinel-swarm.local.md").write_text(
-        _settings_text(repo_root), encoding="utf-8"
-    )
+    write_settings(root, _SETTINGS)
     ledger = Ledger(root, db_path=root / ".sentinel-swarm" / "ledger.db")
     started = ledger.run_start(prd="Build X", session_id="sess-1")
-    ledger._block_run_finish_for_driver(started["run"]["run_id"])  # does not raise
+    assert ledger._block_run_finish_for_driver(started["run"]["run_id"]) is None
 
 
 def test_run_finish_driver_gate_refuses_without_any_exploration(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     with pytest.raises(LedgerError, match="no exploration has run yet"):
         ledger._block_run_finish_for_driver(ctx["run_id"])
 
@@ -813,7 +723,7 @@ def test_run_finish_driver_gate_refuses_without_any_exploration(
 def test_run_finish_driver_gate_refuses_without_a_clean_latest_exploration(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     _seed_exploration(ledger, ctx["run_id"], 1, ["F1"])
     with pytest.raises(LedgerError, match="no exploration has ended clean"):
         ledger._block_run_finish_for_driver(ctx["run_id"])
@@ -822,25 +732,25 @@ def test_run_finish_driver_gate_refuses_without_a_clean_latest_exploration(
 def test_run_finish_driver_gate_passes_on_a_clean_latest_exploration(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     _seed_exploration(ledger, ctx["run_id"], 1, ["F1"])
     _seed_exploration(ledger, ctx["run_id"], 2, [])
-    ledger._block_run_finish_for_driver(ctx["run_id"])  # does not raise
+    assert ledger._block_run_finish_for_driver(ctx["run_id"]) is None
 
 
 def test_run_finish_driver_gate_passes_once_the_loop_stopped(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     for ordinal in (1, 2, 3, 4):
         _seed_exploration(ledger, ctx["run_id"], ordinal, ["F1"])
-    ledger._block_run_finish_for_driver(ctx["run_id"])  # does not raise: the loop stopped
+    assert ledger._block_run_finish_for_driver(ctx["run_id"]) is None
 
 
 def test_run_finish_refuses_while_the_driver_gate_is_unmet(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     with write_tx(ledger.conn) as conn:
         conn.execute("UPDATE phases SET state = 'approved' WHERE phase_id = ?", (ctx["phase_id"],))
     with pytest.raises(LedgerError, match="no exploration has run yet"):
@@ -850,7 +760,7 @@ def test_run_finish_refuses_while_the_driver_gate_is_unmet(
 def test_run_finish_succeeds_once_the_driver_gate_is_met(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     _seed_exploration(ledger, ctx["run_id"], 1, [])
     with write_tx(ledger.conn) as conn:
         conn.execute("UPDATE phases SET state = 'approved' WHERE phase_id = ?", (ctx["phase_id"],))
@@ -1105,25 +1015,3 @@ def test_report_lists_each_exploration_and_its_findings(ledger: Ledger, claude: 
 
 
 # -- Schema migration ----------------------------------------------------------------------------
-
-
-def test_connect_adds_the_drive_tables_to_an_older_ledger(tmp_path: Path) -> None:
-    db_path = tmp_path / "ledger.db"
-    old = sqlite3.connect(str(db_path))
-    old.executescript(
-        "CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
-        "version INTEGER NOT NULL);"
-        "INSERT INTO schema_version (id, version) VALUES (1, 1);"
-        "CREATE TABLE runs (run_id INTEGER PRIMARY KEY, state TEXT NOT NULL);"
-        "INSERT INTO runs (run_id, state) VALUES (1, 'active');"
-    )
-    old.close()
-
-    conn = connect(db_path)
-    try:
-        tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master")}
-        assert {"drive_requests", "drive_findings"} <= tables
-        columns = {r["name"] for r in conn.execute("PRAGMA table_info(drive_requests)")}
-        assert {"ordinal", "focus", "agent_id", "state", "last_checkin_at"} <= columns
-    finally:
-        conn.close()

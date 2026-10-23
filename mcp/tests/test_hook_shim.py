@@ -129,8 +129,9 @@ def test_the_shim_falls_back_without_a_valid_token(
     assert fake_server.requests == []
 
 
+@pytest.mark.usefixtures("repo")
 def test_the_shim_falls_back_without_a_server_record(
-    shim: Any, repo: Path, monkeypatch: pytest.MonkeyPatch
+    shim: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls = _fallback(shim, monkeypatch)
     assert shim.run_hook("pre_write", b"{}") == b"fallback"
@@ -221,3 +222,15 @@ def test_the_shim_uses_only_a_complete_200_answer_from_this_repos_ledger(
     shim: Any, response: bytes, expected: bytes | None
 ) -> None:
     assert shim.parse_answer(response) == expected
+
+
+def test_the_shim_resolves_paths_like_the_package(
+    shim: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from swarm_ledger import paths
+
+    assert shim.config_dir() == paths.config_dir()
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    assert shim.config_dir() == paths.config_dir() == Path.home() / ".claude"
+    for raw in (str(tmp_path), str(tmp_path / "x" / ".."), "", None, 5):
+        assert shim._same_path(raw, tmp_path) == paths.same_path(raw, tmp_path)

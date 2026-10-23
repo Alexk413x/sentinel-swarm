@@ -11,8 +11,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .agentfiles import agent_file_path as role_file
 from .agentfiles import driver_available
-from .db import _main_git_dir
+from .db import append_git_excludes, main_git_dir
+from .frontmatter import FrontmatterError
+from .frontmatter import split_document as _split_document
+from .paths import config_override
 
 CORE_ROLES = ("oracle", "manager", "lead", "coder")
 ROLES = (*CORE_ROLES, "driver")
@@ -55,22 +59,15 @@ class SetupReport:
         return "\n".join(lines)
 
 
-def role_file(repo: Path, role: str) -> Path:
-    return repo / ".claude" / "agents" / f"swarm-{role}.md"
-
-
 def template_file(role: str) -> Path:
     return TEMPLATES_DIR / "agents" / f"{role}.md"
 
 
 def split_document(text: str) -> tuple[str, str]:
-    lines = text.splitlines(keepends=True)
-    if not lines or lines[0].strip() != "---":
-        raise SetupError("the file has no frontmatter block")
-    for index in range(1, len(lines)):
-        if lines[index].strip() == "---":
-            return "".join(lines[1:index]), "".join(lines[index + 1 :])
-    raise SetupError("the frontmatter block has no closing ---")
+    try:
+        return _split_document(text)
+    except FrontmatterError as exc:
+        raise SetupError(str(exc)) from None
 
 
 def key_blocks(frontmatter: str) -> dict[str, str]:
@@ -179,7 +176,7 @@ def render_default(template: str) -> str:
     return template.replace("      command: python\n", f"      command: {python_command()}\n")
 
 
-def _write_text(path: Path, text: str) -> None:
+def write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="\n") as out:
         out.write(text)
@@ -198,7 +195,7 @@ def write_role_files(repo: Path, report: SetupReport) -> None:
             continue
         template = role_template(role)
         if not target.is_file():
-            _write_text(target, render_default(template))
+            write_text(target, render_default(template))
             report.add(f"wrote {shown}")
             continue
         existing = target.read_text(encoding="utf-8")
@@ -213,7 +210,7 @@ def write_role_files(repo: Path, report: SetupReport) -> None:
         if merged == existing:
             report.add(f"unchanged {shown}")
             continue
-        _write_text(target, merged)
+        write_text(target, merged)
         changes = []
         if body_changed:
             changes.append("replaced the prompt body")
@@ -231,16 +228,16 @@ def write_shim(repo: Path, report: SetupReport) -> None:
         report.add(f"unchanged {SHIM_PATH.as_posix()}")
         return
     verb = "updated" if target.exists() else "wrote"
-    _write_text(target, text)
+    write_text(target, text)
     report.add(f"{verb} {SHIM_PATH.as_posix()}")
 
 
-def _deep_merge(base: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
+def deep_merge(base: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
     merged = dict(base)
     for key, value in extra.items():
         current = merged.get(key)
         if isinstance(value, dict) and isinstance(current, dict):
-            merged[key] = _deep_merge(current, value)
+            merged[key] = deep_merge(current, value)
         else:
             merged[key] = value
     return merged
@@ -259,7 +256,7 @@ def merge_settings_local(repo: Path, report: SetupReport) -> None:
         if not isinstance(data, dict):
             report.add(f"left {shown} unchanged: it is not a JSON object")
             return
-    merged = _deep_merge(data, WORKTREE_SETTINGS)
+    merged = deep_merge(data, WORKTREE_SETTINGS)
     permissions = merged.get("permissions", {})
     deny = permissions.get("deny", []) if isinstance(permissions, dict) else None
     if not isinstance(deny, list):
@@ -272,7 +269,7 @@ def merge_settings_local(repo: Path, report: SetupReport) -> None:
     if path.is_file() and merged == data:
         report.add(f"unchanged {shown}")
         return
-    _write_text(path, json.dumps(merged, indent=2) + "\n")
+    write_text(path, json.dumps(merged, indent=2) + "\n")
     report.add(f"set worktree.bgIsolation to none and denied swarm roles as subagents in {shown}")
 
 
@@ -282,48 +279,38 @@ def quiet_codebase_kg_nudge(repo: Path, report: SetupReport) -> None:
     block = "---\npost_edit_nudge: false\n---\n"
     text = path.read_text(encoding="utf-8") if path.is_file() else None
     if text is None:
-        _write_text(path, block)
+        write_text(path, block)
     else:
         try:
             head, _ = split_document(text)
         except SetupError:
             head = None
         if head is None:
-            _write_text(path, block + text)
+            write_text(path, block + text)
         elif "post_edit_nudge" in key_blocks(head):
             report.add(f"unchanged {shown}: post_edit_nudge is already set")
             return
         else:
             first = text.index("\n") + 1
-            _write_text(path, text[:first] + "post_edit_nudge: false\n" + text[first:])
+            write_text(path, text[:first] + "post_edit_nudge: false\n" + text[first:])
     report.add(
         f"set post_edit_nudge: false in {shown} (the host's own sessions lose the nudge too)"
     )
 
 
 def ensure_excludes(repo: Path, report: SetupReport) -> None:
-    git_dir = _main_git_dir(repo)
-    if not git_dir.is_dir():
+    if not main_git_dir(repo).is_dir():
         report.add("not a git checkout: nothing added to .git/info/exclude")
         return
-    path = git_dir / "info" / "exclude"
-    existing = path.read_text(encoding="utf-8") if path.is_file() else ""
-    present = {line.strip() for line in existing.splitlines()}
-    missing = [line for line in EXCLUDE_LINES if line not in present]
+    missing = append_git_excludes(repo, EXCLUDE_LINES)
     if not missing:
         report.add("unchanged .git/info/exclude")
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8", newline="\n") as handle:
-        if existing and not existing.endswith("\n"):
-            handle.write("\n")
-        handle.write("".join(line + "\n" for line in missing))
     report.add(f"added to .git/info/exclude: {', '.join(missing)}")
 
 
 def claude_json_path() -> Path:
-    raw = os.environ.get("CLAUDE_CONFIG_DIR")
-    return Path(raw) / ".claude.json" if raw else Path.home() / ".claude.json"
+    return (config_override() or Path.home()) / ".claude.json"
 
 
 def _path_key(raw: str) -> str:

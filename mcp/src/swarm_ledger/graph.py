@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from .agentfiles import CODEBASE_KG_PLUGIN, install_path
-from .db import ledger_path
+from .db import in_clause, ledger_path, open_readonly
 from .identity import LedgerError
 from .lock import file_lock
 
@@ -28,7 +28,6 @@ _BASE_UPSERT_SCRIPT = (
 _DEFAULT_FLOOR = (3, 10)
 _FLOOR_RE = re.compile(r'requires-python\s*=\s*"\s*>=\s*(\d+)\.(\d+)')
 _NO_DEPENDENCIES = re.compile(r"^dependencies\s*=\s*\[\s*\]", re.MULTILINE)
-_WORD_RE = re.compile(r"\w+")
 
 
 def codebase_kg_root(repo_root: Path) -> Path:
@@ -54,7 +53,7 @@ def codebase_kg_root(repo_root: Path) -> Path:
 def _check_edges(graph_path: Path, nodes: list[dict]) -> None:
     known = {str(n.get("id")) for n in nodes}
     if graph_path.is_file():
-        conn = sqlite3.connect(f"file:{graph_path.as_posix()}?mode=ro", uri=True)
+        conn = open_readonly(graph_path)
         try:
             known.update(row[0] for row in conn.execute("SELECT id FROM node"))
         finally:
@@ -162,19 +161,19 @@ def _top_level_py_symbols(source: str) -> list[str]:
         tree = ast.parse(source)
     except SyntaxError:
         return []
-    names = []
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            if not node.name.startswith("_"):
-                names.append(node.name)
-    return names
+    return [
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and not node.name.startswith("_")
+    ]
 
 
 def code_symbols_for(repo_root: Path, rel_path: str) -> list[str]:
     graph_path = repo_root / "knowledge" / "code_graph.db"
     if not graph_path.is_file():
         return []
-    conn = sqlite3.connect(f"file:{graph_path.as_posix()}?mode=ro", uri=True)
+    conn = open_readonly(graph_path)
     try:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(anchor)")}
         if "symbol" not in columns:
@@ -194,13 +193,13 @@ def anchored_paths(repo_root: Path, rel_paths: list[str]) -> set[str]:
     graph_path = repo_root / "knowledge" / "code_graph.db"
     if not rel_paths or not graph_path.is_file():
         return set()
-    conn = sqlite3.connect(f"file:{graph_path.as_posix()}?mode=ro", uri=True)
+    conn = open_readonly(graph_path)
     try:
-        placeholders = ",".join("?" for _ in rel_paths)
         return {
             row[0]
             for row in conn.execute(
-                f"SELECT DISTINCT path FROM anchor WHERE path IN ({placeholders})", rel_paths
+                f"SELECT DISTINCT path FROM anchor WHERE path IN ({in_clause(rel_paths)})",
+                rel_paths,
             )
         }
     except sqlite3.Error:
@@ -214,10 +213,8 @@ def graph_current_for(repo_root: Path, rel_path: str) -> tuple[bool, list[str]]:
     if not graph_path.is_file():
         return False, ["no code graph at knowledge/code_graph.db"]
 
-    uri = f"file:{graph_path.as_posix()}?mode=ro"
-    conn = sqlite3.connect(uri, uri=True)
+    conn = open_readonly(graph_path)
     try:
-        conn.row_factory = sqlite3.Row
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(anchor)")}
         if "path" not in columns:
             raise LedgerError("the code graph's anchor table has no 'path' column")
@@ -240,9 +237,11 @@ def graph_current_for(repo_root: Path, rel_path: str) -> tuple[bool, list[str]]:
                     reasons.append(f"anchor symbol {symbol} not found")
 
         if rel_path.endswith(".py") and full_path.is_file():
-            for name in _top_level_py_symbols(source_text):
-                if name not in mapped_symbols:
-                    reasons.append(f"symbol {name} is unmapped")
+            reasons.extend(
+                f"symbol {name} is unmapped"
+                for name in _top_level_py_symbols(source_text)
+                if name not in mapped_symbols
+            )
 
         return (len(reasons) == 0, reasons)
     finally:

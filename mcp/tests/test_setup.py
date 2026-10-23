@@ -225,7 +225,7 @@ def test_settings_local_merge_keeps_existing_deny_rules_once(repo: Path):
 
     deny = json.loads(path.read_text(encoding="utf-8"))["permissions"]["deny"]
     assert deny[:2] == ["Bash(rm:*)", "Agent(swarm-coder)"]
-    assert sorted(deny[2:] + ["Agent(swarm-coder)"]) == sorted(setup.ROLE_AGENT_DENY)
+    assert sorted([*deny[2:], "Agent(swarm-coder)"]) == sorted(setup.ROLE_AGENT_DENY)
 
 
 def test_settings_local_with_a_non_list_deny_is_left_alone(repo: Path):
@@ -297,7 +297,8 @@ def test_invalid_settings_local_is_left_alone(repo: Path):
     assert any("not valid JSON" in line for line in report.lines)
 
 
-def test_excludes_resolve_a_worktree_git_file(tmp_path: Path, config_dir: Path):
+@pytest.mark.usefixtures("config_dir")
+def test_excludes_resolve_a_worktree_git_file(tmp_path: Path):
     main = tmp_path / "main"
     (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
     worktree = tmp_path / "wt"
@@ -325,7 +326,8 @@ def test_excludes_append_to_an_existing_file(repo: Path):
     ]
 
 
-def test_not_a_git_checkout_is_reported(tmp_path: Path, config_dir: Path):
+@pytest.mark.usefixtures("config_dir")
+def test_not_a_git_checkout_is_reported(tmp_path: Path):
     root = tmp_path / "plain"
     root.mkdir()
 
@@ -488,7 +490,7 @@ def test_shim_watch_reports_a_missing_install_as_one_line(repo: Path, config_dir
 
 
 def test_shim_watch_runs_the_listener_and_passes_each_line_through(
-    tmp_path: Path, shim, monkeypatch: pytest.MonkeyPatch, capfdbinary: pytest.CaptureFixture
+    shim, monkeypatch: pytest.MonkeyPatch, capfdbinary: pytest.CaptureFixture
 ):
     calls: list[tuple] = []
     script = "print('one', flush=True); print('two', flush=True); raise SystemExit(0)"

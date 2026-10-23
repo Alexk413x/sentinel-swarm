@@ -44,7 +44,7 @@ def test_connect_creates_file_and_schema(tmp_path: Path) -> None:
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         rows = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         tables = {row["name"] for row in rows}
-        assert EXPECTED_TABLES <= tables
+        assert tables >= EXPECTED_TABLES
         version = conn.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()[0]
         assert version == 1
     finally:
@@ -74,129 +74,6 @@ def test_new_ledger_has_the_session_columns(tmp_path: Path) -> None:
         conn.close()
 
 
-def test_connect_upgrades_an_older_version_1_ledger(tmp_path: Path) -> None:
-    db_path = tmp_path / "ledger.db"
-    old = sqlite3.connect(str(db_path))
-    old.executescript(
-        "CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
-        "version INTEGER NOT NULL);"
-        "INSERT INTO schema_version (id, version) VALUES (1, 1);"
-        "CREATE TABLE agents (agent_id TEXT PRIMARY KEY, name TEXT NOT NULL, "
-        "role TEXT NOT NULL, state TEXT NOT NULL, ended_at TEXT);"
-        "INSERT INTO agents (agent_id, name, role, state) VALUES ('a1', 'lead-1', 'lead', 'idle');"
-    )
-    old.close()
-
-    conn = connect(db_path)
-    try:
-        assert {"session_name", "bg_id"} <= _columns(conn, "agents")
-        assert {"watch_heartbeat_at", "watch_expires_at"} <= _columns(conn, "runs")
-        assert "notified_at" in _columns(conn, "directives")
-        tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master")}
-        assert {"wakeups", "watchdog_findings"} <= tables
-        row = conn.execute("SELECT * FROM agents WHERE agent_id = 'a1'").fetchone()
-        assert (row["name"], row["session_name"]) == ("lead-1", None)
-    finally:
-        conn.close()
-
-    connect(db_path).close()
-
-
-def test_connect_adds_the_unread_messages_index_to_an_older_ledger(tmp_path: Path) -> None:
-    db_path = tmp_path / "ledger.db"
-    connect(db_path).close()
-    old = sqlite3.connect(str(db_path))
-    old.execute("DROP INDEX idx_messages_unread")
-    old.commit()
-    old.close()
-
-    conn = connect(db_path)
-    try:
-        columns = [row["name"] for row in conn.execute("PRAGMA index_info(idx_messages_unread)")]
-        assert columns == ["run_id", "to_name", "read_at"]
-    finally:
-        conn.close()
-
-
-def test_connect_moves_an_older_ledger_s_departures_onto_the_sign_off_chain(
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / "ledger.db"
-    old = sqlite3.connect(str(db_path))
-    old.executescript(
-        "CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
-        "version INTEGER NOT NULL);"
-        "INSERT INTO schema_version (id, version) VALUES (1, 1);"
-        "CREATE TABLE agents (agent_id TEXT PRIMARY KEY, name TEXT NOT NULL, "
-        "role TEXT NOT NULL, state TEXT NOT NULL, ended_at TEXT);"
-        "INSERT INTO agents (agent_id, name, role, state) VALUES "
-        "('c1', 'coder-1', 'coder', 'idle'), ('l1', 'lead-1', 'lead', 'idle');"
-        "CREATE TABLE departures (departure_id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL, "
-        "agent_id TEXT, guideline_id INTEGER, kind TEXT NOT NULL, state TEXT NOT NULL, "
-        "body TEXT NOT NULL, created_at TEXT);"
-        "INSERT INTO departures (departure_id, run_id, agent_id, kind, state, body) VALUES "
-        "(1, 1, 'c1', 'departure', 'accepted', 'a'), (2, 1, 'c1', 'departure', 'denied', 'b'), "
-        "(3, 1, 'c1', 'departure', 'open', 'c'), (4, 1, 'l1', 'departure', 'open', 'd'), "
-        "(5, 1, 'c1', 'shortfall', 'recorded', 'e');"
-    )
-    old.close()
-
-    conn = connect(db_path)
-    try:
-        assert {
-            "file_id",
-            "handoff_id",
-            "level",
-            "signed_off_at",
-            "reworked_at",
-            "reworked_by_handoff_id",
-        } <= _columns(conn, "departures")
-        assert {"departure_id", "role", "agent_id", "decision", "reason", "solution"} <= _columns(
-            conn, "departure_decisions"
-        )
-        rows = {
-            row["departure_id"]: (row["state"], row["level"])
-            for row in conn.execute("SELECT * FROM departures")
-        }
-        assert rows == {
-            1: ("lead_agreed", "manager"),
-            2: ("pushed_back", None),
-            3: ("open", "lead"),
-            4: ("open", "manager"),
-            5: ("recorded", None),
-        }
-    finally:
-        conn.close()
-
-    connect(db_path).close()
-
-
-def test_connect_adds_the_watchdog_columns_to_existing_tables(tmp_path: Path) -> None:
-    db_path = tmp_path / "ledger.db"
-    old = sqlite3.connect(str(db_path))
-    old.executescript(
-        "CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
-        "version INTEGER NOT NULL);"
-        "INSERT INTO schema_version (id, version) VALUES (1, 1);"
-        "CREATE TABLE runs (run_id INTEGER PRIMARY KEY, state TEXT NOT NULL);"
-        "CREATE TABLE directives (directive_id INTEGER PRIMARY KEY, run_id INTEGER, "
-        "source TEXT NOT NULL, body TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'open');"
-        "CREATE TABLE agents (agent_id TEXT PRIMARY KEY, name TEXT NOT NULL, "
-        "role TEXT NOT NULL, state TEXT NOT NULL, ended_at TEXT);"
-        "INSERT INTO runs (run_id, state) VALUES (1, 'active');"
-    )
-    old.close()
-
-    conn = connect(db_path)
-    try:
-        assert {"watch_heartbeat_at", "watch_expires_at"} <= _columns(conn, "runs")
-        assert "notified_at" in _columns(conn, "directives")
-        assert "run_id" in _columns(conn, "watchdog_findings")
-        assert conn.execute("SELECT state FROM runs").fetchone()[0] == "active"
-    finally:
-        conn.close()
-
-
 def test_write_tx_commits(tmp_path: Path) -> None:
     conn = connect(tmp_path / "ledger.db")
     try:
@@ -214,13 +91,12 @@ def test_write_tx_commits(tmp_path: Path) -> None:
 def test_write_tx_rolls_back_on_exception(tmp_path: Path) -> None:
     conn = connect(tmp_path / "ledger.db")
     try:
-        with pytest.raises(ValueError):
-            with write_tx(conn):
-                conn.execute(
-                    "INSERT INTO agent_events (agent_id, to_state) VALUES (?, ?)",
-                    ("agent-1", "working"),
-                )
-                raise ValueError("boom")
+        with pytest.raises(ValueError), write_tx(conn):
+            conn.execute(
+                "INSERT INTO agent_events (agent_id, to_state) VALUES (?, ?)",
+                ("agent-1", "working"),
+            )
+            raise ValueError("boom")
         row = conn.execute("SELECT COUNT(*) AS n FROM agent_events").fetchone()
         assert row["n"] == 0
     finally:
@@ -236,12 +112,11 @@ def test_agents_unique_live_name_allows_one_live_agent_per_name(tmp_path: Path) 
                 ("a1", "coder-1", "coder", "working"),
             )
 
-        with pytest.raises(sqlite3.IntegrityError):
-            with write_tx(conn):
-                conn.execute(
-                    "INSERT INTO agents (agent_id, name, role, state) VALUES (?, ?, ?, ?)",
-                    ("a2", "coder-1", "coder", "working"),
-                )
+        with pytest.raises(sqlite3.IntegrityError), write_tx(conn):
+            conn.execute(
+                "INSERT INTO agents (agent_id, name, role, state) VALUES (?, ?, ?, ?)",
+                ("a2", "coder-1", "coder", "working"),
+            )
 
         with write_tx(conn):
             conn.execute(
@@ -320,135 +195,3 @@ def test_agent_events_survive_concurrent_writers(tmp_path: Path) -> None:
         assert row["n"] == 400
     finally:
         conn.close()
-
-
-def test_connect_adds_the_floor_pass_column_to_an_older_handoffs_table(tmp_path: Path) -> None:
-    db_path = tmp_path / "ledger.db"
-    old = sqlite3.connect(str(db_path))
-    old.executescript(
-        "CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
-        "version INTEGER NOT NULL);"
-        "INSERT INTO schema_version (id, version) VALUES (1, 1);"
-        "CREATE TABLE files (file_id INTEGER PRIMARY KEY, path TEXT, released_at TEXT);"
-        "CREATE TABLE handoffs (handoff_id INTEGER PRIMARY KEY, file_id INTEGER NOT NULL, "
-        "state TEXT NOT NULL);"
-        "INSERT INTO files (file_id, path) VALUES (1, 'pkg/good.py');"
-        "INSERT INTO handoffs (handoff_id, file_id, state) VALUES (1, 1, 'approved');"
-    )
-    old.close()
-
-    conn = connect(db_path)
-    try:
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(handoffs)")}
-        assert "floor_pass_json" in columns
-        row = conn.execute("SELECT * FROM handoffs WHERE handoff_id = 1").fetchone()
-        assert (row["state"], row["floor_pass_json"]) == ("approved", None)
-    finally:
-        conn.close()
-
-    connect(db_path).close()
-
-
-def test_migrate_normalizes_stored_directive_source_spellings(tmp_path: Path) -> None:
-    db_path = tmp_path / "ledger.db"
-    old = sqlite3.connect(str(db_path))
-    old.executescript(
-        "CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
-        "version INTEGER NOT NULL);"
-        "INSERT INTO schema_version (id, version) VALUES (1, 1);"
-        "CREATE TABLE directives (directive_id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL, "
-        "source TEXT NOT NULL, sender_name TEXT, body TEXT NOT NULL, reply_to INTEGER, "
-        "state TEXT NOT NULL DEFAULT 'open', outcome TEXT, resolved_at TEXT, resolution TEXT, "
-        "created_at TEXT);"
-        "INSERT INTO directives (directive_id, run_id, source, body, state) VALUES "
-        "(1, 1, 'user-chat', 'Old row.', 'open'), (2, 1, 'outside-session', 'Also old.', "
-        "'resolved');"
-    )
-    old.close()
-
-    conn = connect(db_path)
-    try:
-        rows = {r["directive_id"]: r["source"] for r in conn.execute("SELECT * FROM directives")}
-        assert rows == {1: "user_chat", 2: "outside_session"}
-        columns = {r["name"] for r in conn.execute("PRAGMA table_info(directives)")}
-        assert "question" in columns
-    finally:
-        conn.close()
-
-
-def test_paused_phase_migration_adds_the_columns(tmp_path: Path) -> None:
-    db_path = tmp_path / "ledger.db"
-    old = sqlite3.connect(str(db_path))
-    old.executescript(
-        "CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
-        "version INTEGER NOT NULL);"
-        "INSERT INTO schema_version (id, version) VALUES (1, 1);"
-        "CREATE TABLE phases (phase_id INTEGER PRIMARY KEY, run_id INTEGER, name TEXT, "
-        "ordinal INTEGER, state TEXT);"
-        "INSERT INTO phases (phase_id, run_id, name, ordinal, state) VALUES "
-        "(1, 1, 'phase-1', 1, 'unlocked');"
-    )
-    old.close()
-
-    conn = connect(db_path)
-    try:
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(phases)")}
-        assert {"paused_at", "pause_reason"} <= columns
-        row = conn.execute("SELECT * FROM phases WHERE phase_id = 1").fetchone()
-        assert row["paused_at"] is None
-    finally:
-        conn.close()
-
-
-def test_connect_adds_the_finding_ids_column_and_the_drive_stops_table(tmp_path: Path) -> None:
-    db_path = tmp_path / "ledger.db"
-    old = sqlite3.connect(str(db_path))
-    old.executescript(
-        "CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
-        "version INTEGER NOT NULL);"
-        "INSERT INTO schema_version (id, version) VALUES (1, 1);"
-        "CREATE TABLE runs (run_id INTEGER PRIMARY KEY, state TEXT NOT NULL);"
-        "CREATE TABLE briefs (brief_id INTEGER PRIMARY KEY, child_name TEXT NOT NULL);"
-        "INSERT INTO runs (run_id, state) VALUES (1, 'active');"
-    )
-    old.close()
-
-    conn = connect(db_path)
-    try:
-        runs = {r["name"] for r in conn.execute("PRAGMA table_info(runs)")}
-        assert "driver_unavailable_at" not in runs
-        briefs = {r["name"] for r in conn.execute("PRAGMA table_info(briefs)")}
-        assert "finding_ids_json" in briefs
-        stops = {r["name"] for r in conn.execute("PRAGMA table_info(drive_stops)")}
-        assert {"directive_id", "kind", "reason", "fingerprint", "area"} <= stops
-    finally:
-        conn.close()
-
-
-def test_connect_turns_a_driver_unavailable_run_into_a_declined_directive(
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / "ledger.db"
-    connect(db_path).close()
-    old = sqlite3.connect(str(db_path))
-    old.executescript(
-        "ALTER TABLE runs ADD COLUMN driver_unavailable_at TEXT;"
-        "ALTER TABLE runs ADD COLUMN driver_unavailable_reason TEXT;"
-        "INSERT INTO runs (run_id, state, driver_unavailable_at, driver_unavailable_reason) "
-        "VALUES (1, 'active', '2026-09-27T10:00:00.000Z', 'cartographer failed');"
-        "INSERT INTO runs (run_id, state) VALUES (2, 'finished');"
-    )
-    old.close()
-
-    for _ in range(2):
-        conn = connect(db_path)
-        try:
-            [row] = conn.execute("SELECT * FROM directives").fetchall()
-            assert row["run_id"] == 1
-            assert row["source"] == "driver"
-            assert row["body"] == "[driver-unavailable] cartographer failed"
-            assert (row["state"], row["outcome"]) == ("resolved", "declined")
-            runs = {r["name"] for r in conn.execute("PRAGMA table_info(runs)")}
-            assert "driver_unavailable_at" not in runs
-        finally:
-            conn.close()

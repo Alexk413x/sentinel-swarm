@@ -1,7 +1,5 @@
 # Open items
 
-- **CI.** Confirm CI passes on Ubuntu, Windows, and macOS once the GitHub billing block
-  resets. Until then, the four local checks are the only checks.
 - **macOS.** The code has POSIX branches, but no live run has happened on a Mac. Run one
   smoke test there.
 - **Watchdog rescue of a dropped API call.** The idle-stall check is built to catch a
@@ -43,6 +41,17 @@
   web app over HTTP. web-driver navigates to any URL the Driver passes, so a dev server
   someone left running passes every check. See "Explorations" in
   [02-run-lifecycle.md](02-run-lifecycle.md).
+- **Ledger latency goal.** At 16 agents on a machine at 96% to 99% CPU, the median tool
+  call takes 217 ms and the median hook 75 ms, against a goal of 150 ms, and the server
+  takes 1.4 s from spawn to `server.json`, against a goal of 0.3 s. Run
+  `scripts/bench/ledger_load.py` on an idle machine to judge both. See "Measured
+  baselines" in [12-testing.md](12-testing.md).
+- **A stopped wake-up target.** The sender's model calls `agent_resume` for a target
+  that is not running. The ledger could resume it itself. The plan is
+  `plans/resume-stopped-wake-targets.md`; it is optional and waits on a decision about
+  the Oracle.
+- **Other platforms.** An exploration of running a Coder on a non-Claude CLI through
+  ide-agent-tabs, not a build. The plan is `plans/other-platforms.md`.
 - **The Oracle's wake of a waiting agent.** `pre_send_message` lets the Oracle wake any
   live agent of its run that is not working, because its Stop hook names such agents.
   The text of that `SendMessage` is not checked, so it can carry direction past a

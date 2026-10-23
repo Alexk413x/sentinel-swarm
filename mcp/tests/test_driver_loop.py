@@ -1,28 +1,29 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
+from helpers import (
+    SWARM_ROLES,
+    FakeClaude,
+    bootstrap_oracle,
+    make_swarm_host,
+    register_agent,
+    role_template,
+    settings_text,
+)
 
-from swarm_ledger import auth, notify, sessions
+from swarm_ledger import notify
 from swarm_ledger.db import write_tx
 from swarm_ledger.drive import compute_loop_status, open_findings
 from swarm_ledger.identity import LedgerError
 from swarm_ledger.ledger import Ledger
 from swarm_ledger.rubric import DIMENSIONS
 
-_ROLE_FILE = """---
-name: swarm-{role}
-description: The {role}.
-model: sonnet
-permissionMode: acceptEdits
-tools: Read, SendMessage, Bash, Agent, mcp__swarm-ledger
----
-
-You are a {role}.
-"""
+_ROLE_FILE = role_template(
+    tools="Read, SendMessage, Bash, Agent, mcp__swarm-ledger", codebase_kg=False
+)
 
 _FINDING = {
     "title": "Login button fails contrast",
@@ -35,80 +36,15 @@ _FINDING = {
 }
 
 
-class FakeClaude:
-    def __init__(self) -> None:
-        self.calls: list[list[str]] = []
-        self.listing: list[dict] = []
-
-    def __call__(self, args: list[str], cwd: Path | None = None) -> str:
-        del cwd
-        self.calls.append(list(args))
-        if args[:2] == ["agents", "--json"]:
-            return json.dumps(self.listing)
-        if args[0] == "stop":
-            return ""
-        name = args[args.index("--name") + 1]
-        session_id = f"{len(self.calls):08x}-aaaa-bbbb-cccc-dddddddddddd"
-        self.add(session_id, name)
-        return f"backgrounded · {session_id[:8]} · {name}\n"
-
-    def add(self, session_id: str, name: str) -> None:
-        self.listing.append(
-            {"pid": 1, "sessionId": session_id, "name": name, "id": session_id[:8]}
-            | {"status": "busy", "state": "working"}
-        )
-
-
 @pytest.fixture
-def claude(monkeypatch: pytest.MonkeyPatch) -> FakeClaude:
-    fake = FakeClaude()
-    monkeypatch.setattr(sessions, "_run", fake)
-    return fake
-
-
-@pytest.fixture
-def host(tmp_path: Path, repo_root: Path) -> Path:
-    root = tmp_path / "host"
-    agents = root / ".claude" / "agents"
-    agents.mkdir(parents=True)
-    (root / ".git").mkdir()
-    template = (repo_root / "templates" / "sentinel-swarm.local.md.example").read_text("utf-8")
-    settings = template.replace("test_command:\n", "test_command: pytest -q {target}\n")
-    settings = settings.replace("build_command:\n", "build_command: npm run build\n")
-    (root / ".claude" / "sentinel-swarm.local.md").write_text(settings, encoding="utf-8")
-    for role in ("oracle", "manager", "lead", "coder", "driver"):
-        (agents / f"swarm-{role}.md").write_text(_ROLE_FILE.format(role=role), "utf-8")
-    records = root / ".sentinel-swarm"
-    records.mkdir()
-    (records / "server.json").write_text(
-        json.dumps({"url": "http://127.0.0.1:4321/mcp", "port": 4321, "pid": 1}), "utf-8"
+def host(tmp_path: Path) -> Path:
+    return make_swarm_host(
+        tmp_path / "host",
+        settings_text(test_command="pytest -q {target}", build_command="npm run build"),
+        _ROLE_FILE,
+        roles=(*SWARM_ROLES, "driver"),
+        plugins=["cartographer@cartographer", "web-driver@accessibility-tools"],
     )
-    auth.ensure_token(root)
-    registry = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "plugins" / "installed_plugins.json"
-    registry.parent.mkdir(parents=True, exist_ok=True)
-    plugins = ("cartographer@cartographer", "web-driver@accessibility-tools")
-    registry.write_text(
-        json.dumps({"plugins": {pid: [{"scope": "user"}] for pid in plugins}}), "utf-8"
-    )
-    return root
-
-
-@pytest.fixture
-def ledger(host: Path) -> Ledger:
-    return Ledger(host, db_path=host / ".sentinel-swarm" / "ledger.db")
-
-
-def _bootstrap(ledger: Ledger, claude: FakeClaude) -> dict:
-    claude.add("sess-oracle", "host-oracle")
-    started = ledger.run_start(prd="Build X", session_id="sess-oracle")
-    oracle_id = started["oracle"]["agent_id"]
-    phase = ledger.phase_add("oracle", oracle_id, "phase-1")
-    ledger.phase_update("oracle", oracle_id, phase["phase_id"], "unlocked")
-    return {
-        "oracle_id": oracle_id,
-        "phase_id": phase["phase_id"],
-        "run_id": started["run"]["run_id"],
-    }
 
 
 def _seed(ledger: Ledger, run_id: int, ordinal: int, findings: list[tuple[str, str]]) -> None:
@@ -171,7 +107,7 @@ def _start_manager(ledger: Ledger, ctx: dict) -> str:
     ledger.brief_create(
         "oracle", ctx["oracle_id"], name, "manager", "opus", "Own it.", phase_id=ctx["phase_id"]
     )
-    ledger.agent_register_start("mgr-agent", "manager", parent_agent_id=ctx["oracle_id"])
+    register_agent(ledger, "mgr-agent", "manager", parent_agent_id=ctx["oracle_id"])
     ledger.brief_ack(name, "mgr-agent")
     return name
 
@@ -188,7 +124,7 @@ def _start_lead(ledger: Ledger, ctx: dict) -> int:
         "Own it.",
         module_id=module["module_id"],
     )
-    ledger.agent_register_start("lead-agent", "lead", parent_agent_id="mgr-agent")
+    register_agent(ledger, "lead-agent", "lead", parent_agent_id="mgr-agent")
     ledger.brief_ack("lead-p1-mod", "lead-agent")
     claimed = ledger.claim_file(
         "lead-p1-mod", "lead-agent", "pkg/a.py", "tests/test_a.py", "coder-p1-mod-a"
@@ -220,7 +156,7 @@ def _finish(ledger: Ledger, ctx: dict) -> dict:
 def test_a_driver_that_fails_to_load_files_a_blocking_directive(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     explored = _explore(ledger, ctx, [], done=False)
     request = explored["request"]
 
@@ -256,7 +192,7 @@ def test_a_driver_that_fails_to_load_files_a_blocking_directive(
 
 
 def test_a_second_call_keeps_the_one_open_directive(ledger: Ledger, claude: FakeClaude) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     first = _unavailable(ledger, ctx)
     second = _unavailable(ledger, ctx, "still failing")
     assert second["directive_id"] == first["directive_id"]
@@ -266,7 +202,7 @@ def test_a_second_call_keeps_the_one_open_directive(ledger: Ledger, claude: Fake
 def test_a_fixed_driver_resumes_explorations_and_run_finish_needs_one_again(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     directive = _unavailable(ledger, ctx)
     ledger.directive_resolve(
         "oracle", ctx["oracle_id"], directive["directive_id"], "applied", "reinstalled"
@@ -278,7 +214,7 @@ def test_a_fixed_driver_resumes_explorations_and_run_finish_needs_one_again(
 
 
 def test_a_question_to_the_user_keeps_the_run_blocked(ledger: Ledger, claude: FakeClaude) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     directive = _unavailable(ledger, ctx)
     ledger.directive_resolve(
         "oracle", ctx["oracle_id"], directive["directive_id"], "needs_user", "Go without it?"
@@ -293,7 +229,7 @@ def test_a_question_to_the_user_keeps_the_run_blocked(ledger: Ledger, claude: Fa
 def test_going_without_the_driver_skips_explorations_for_the_run(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     directive = _unavailable(ledger, ctx, "the emulator image is missing")
     ledger.directive_resolve(
         "oracle", ctx["oracle_id"], directive["directive_id"], "needs_user", "Go without it?"
@@ -325,7 +261,7 @@ def test_going_without_the_driver_skips_explorations_for_the_run(
 def test_drive_unavailable_needs_a_reason_and_the_oracle_or_the_driver(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     with pytest.raises(LedgerError, match="needs a reason"):
         ledger.drive_unavailable("oracle", ctx["oracle_id"], "  ")
     manager = _start_manager(ledger, ctx)
@@ -337,7 +273,7 @@ def test_drive_unavailable_needs_a_reason_and_the_oracle_or_the_driver(
 
 
 def test_score_record_refuses_a_partial_score_set(ledger: Ledger, claude: FakeClaude) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     file_id = _start_lead(ledger, ctx)
     ledger.brief_create(
         "lead-p1-mod",
@@ -348,7 +284,7 @@ def test_score_record_refuses_a_partial_score_set(ledger: Ledger, claude: FakeCl
         "Write it.",
         file_id=file_id,
     )
-    ledger.agent_register_start("coder-agent", "coder", parent_agent_id="lead-agent")
+    register_agent(ledger, "coder-agent", "coder", parent_agent_id="lead-agent")
     ledger.brief_ack("coder-p1-mod-a", "coder-agent")
 
     ratings = [
@@ -369,7 +305,7 @@ def test_score_record_refuses_a_partial_score_set(ledger: Ledger, claude: FakeCl
 def test_releasing_a_stuck_driver_abandons_its_exploration(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     explored = _explore(ledger, ctx, [], done=False)
     request = explored["request"]
 
@@ -380,7 +316,7 @@ def test_releasing_a_stuck_driver_abandons_its_exploration(
     ).fetchone()
     assert row["state"] == "abandoned"
     assert row["done_at"] is not None
-    assert ["stop", request["agent_id"][:8]] in claude.calls
+    assert ["stop", request["agent_id"][:8]] in [args for args, _ in claude.calls]
     second = ledger.drive_request("oracle", ctx["oracle_id"], "try again")
     assert second["ordinal"] == 2
 
@@ -398,7 +334,7 @@ def test_an_abandoned_exploration_is_never_clean() -> None:
 def test_run_finish_needs_a_clean_exploration_after_an_abandoned_one(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     _seed(ledger, ctx["run_id"], 1, [])
     explored = _explore(ledger, ctx, [], done=False)
     ledger.agent_release("oracle", ctx["oracle_id"], explored["request"]["agent_id"])
@@ -412,7 +348,7 @@ def test_run_finish_needs_a_clean_exploration_after_an_abandoned_one(
 def test_a_regression_pauses_fixes_in_its_area_until_the_directive_is_resolved(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     _seed(ledger, ctx["run_id"], 1, [("F1", "login")])
     _seed(ledger, ctx["run_id"], 2, [("G1", "settings")])
     explored = _explore(
@@ -448,7 +384,7 @@ def test_a_regression_pauses_fixes_in_its_area_until_the_directive_is_resolved(
 def test_a_pattern_stops_a_briefed_fix_at_spawn_and_through_inheritance(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     _seed(ledger, ctx["run_id"], 1, [("F1", "login")])
     _seed(ledger, ctx["run_id"], 2, [("G1", "settings")])
     explored = _explore(ledger, ctx, [{**_FINDING, "fingerprint": "F1"}], done=False)
@@ -461,7 +397,7 @@ def test_a_pattern_stops_a_briefed_fix_at_spawn_and_through_inheritance(
     with pytest.raises(LedgerError, match="paused"):
         ledger.agent_spawn("oracle", ctx["oracle_id"], manager["child_name"])
 
-    ledger.agent_register_start("mgr-agent", "manager", parent_agent_id=ctx["oracle_id"])
+    register_agent(ledger, "mgr-agent", "manager", parent_agent_id=ctx["oracle_id"])
     ledger.brief_ack(manager["child_name"], "mgr-agent")
     module = ledger.module_add(manager["child_name"], "mgr-agent", manager["phase_id"], "m1")
     with pytest.raises(LedgerError, match="paused"):
@@ -495,7 +431,7 @@ def _three_in_a_row(ledger: Ledger, ctx: dict) -> dict:
 def test_a_stopped_finding_gets_no_more_fixes_even_after_its_directive_resolves(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     f1, g4 = _three_in_a_row(ledger, ctx)["finding_ids"]
 
     stop = ledger.conn.execute("SELECT * FROM drive_stops WHERE kind = 'finding'").fetchone()
@@ -509,7 +445,7 @@ def test_a_stopped_finding_gets_no_more_fixes_even_after_its_directive_resolves(
 def test_a_stop_carries_the_evidence_in_its_directive_and_notification(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     _three_in_a_row(ledger, ctx)
 
     [directive] = ledger.conn.execute("SELECT * FROM directives WHERE source = 'driver'").fetchall()
@@ -529,7 +465,7 @@ def test_a_stop_carries_the_evidence_in_its_directive_and_notification(
 def test_a_finding_that_reaches_a_stop_mid_exploration_gets_no_fix(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     for ordinal in (1, 2, 3):
         _seed(ledger, ctx["run_id"], ordinal, [("F1", "login")])
     explored = _explore(ledger, ctx, [{**_FINDING, "fingerprint": "F1"}], done=False)
@@ -538,7 +474,7 @@ def test_a_finding_that_reaches_a_stop_mid_exploration_gets_no_fix(
 
 
 def test_brief_create_refuses_a_finding_of_another_run(ledger: Ledger, claude: FakeClaude) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     with pytest.raises(LedgerError, match="not a Driver finding of this run"):
         _brief_fix(ledger, ctx, "x", [999])
 
@@ -549,7 +485,7 @@ def test_brief_create_refuses_a_finding_of_another_run(ledger: Ledger, claude: F
 def test_the_oracle_must_name_finding_ids_while_a_finding_is_open(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     assert _brief_manager(ledger, ctx, "start", "Build.")
     [f1] = _explore(ledger, ctx, [{**_FINDING, "fingerprint": "F1"}], done=False)["finding_ids"]
 
@@ -566,8 +502,8 @@ def test_the_oracle_must_name_finding_ids_while_a_finding_is_open(
 def test_a_finding_a_later_exploration_cleared_or_a_stop_closed_is_not_open(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
-    ctx = _bootstrap(ledger, claude)
-    f1, g4 = _three_in_a_row(ledger, ctx)["finding_ids"]
+    ctx = bootstrap_oracle(ledger, claude)
+    _, g4 = _three_in_a_row(ledger, ctx)["finding_ids"]
     assert [f["finding_id"] for f in open_findings(ledger.conn, ctx["run_id"])] == [g4]
 
     _explore(ledger, ctx, [])
@@ -576,7 +512,7 @@ def test_a_finding_a_later_exploration_cleared_or_a_stop_closed_is_not_open(
 
 
 def test_every_role_sees_the_finding_ids_a_fix_names(ledger: Ledger, claude: FakeClaude) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     explored = _explore(
         ledger,
         ctx,
@@ -588,7 +524,7 @@ def test_every_role_sees_the_finding_ids_a_fix_names(ledger: Ledger, claude: Fak
     f1, f2 = explored["finding_ids"]
     fix = _brief_fix(ledger, ctx, "f1", [f1])
     manager = fix["child_name"]
-    ledger.agent_register_start("mgr-agent", "manager", parent_agent_id=ctx["oracle_id"])
+    register_agent(ledger, "mgr-agent", "manager", parent_agent_id=ctx["oracle_id"])
     ledger.brief_ack(manager, "mgr-agent")
     module = ledger.module_add(manager, "mgr-agent", fix["phase_id"], "m1")
     lead = "lead-p2-m1"
@@ -625,7 +561,7 @@ def test_every_role_sees_the_finding_ids_a_fix_names(ledger: Ledger, claude: Fak
 def test_a_stalled_loop_records_what_is_left_and_the_report_shows_it(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     for ordinal in (1, 2, 3):
         _seed(ledger, ctx["run_id"], ordinal, [("F1", "login"), ("F9", "cart")])
     _explore(
@@ -663,7 +599,7 @@ def test_a_stalled_loop_records_what_is_left_and_the_report_shows_it(
 
 
 def _lead_setup(ledger: Ledger, claude: FakeClaude) -> dict:
-    ctx = _bootstrap(ledger, claude)
+    ctx = bootstrap_oracle(ledger, claude)
     return {**ctx, "file_id": _start_lead(ledger, ctx)}
 
 

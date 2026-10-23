@@ -1,30 +1,29 @@
 from __future__ import annotations
 
 import base64
-import json
-import os
 import sys
 from pathlib import Path
 
 import pytest
+from helpers import (
+    SWARM_ROLES,
+    FakeClaude,
+    ledger_for,
+    make_swarm_host,
+    role_template,
+    write_settings,
+)
 
-from swarm_ledger import auth, notify, sessions, wake, watch, watchdog
+from swarm_ledger import notify, wake, watch, watchdog
 from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import events
 from swarm_ledger.identity import LedgerError
 from swarm_ledger.ledger import Ledger
 from swarm_ledger.settings import WatchdogSettings, load_settings
 
-_ROLE_FILE = """---
-name: swarm-{role}
-description: The {role}.
-model: sonnet
-permissionMode: default
-tools: Read, SendMessage, mcp__swarm-ledger
----
-
-You are a {role}.
-"""
+_ROLE_FILE = role_template(
+    tools="Read, SendMessage, mcp__swarm-ledger", permission_mode="default", codebase_kg=False
+)
 
 _FINDING = {
     "fingerprint": "contrast:login-button:2.1",
@@ -34,73 +33,23 @@ _FINDING = {
 }
 
 
-class FakeClaude:
-    def __init__(self) -> None:
-        self.listing: list[dict] = []
-        self._count = 0
-
-    def __call__(self, args: list[str], cwd: Path | None = None) -> str:
-        if args[:2] == ["agents", "--json"]:
-            return json.dumps(self.listing)
-        if args[0] == "stop":
-            return ""
-        name = args[args.index("--name") + 1]
-        self._count += 1
-        session_id = f"{self._count:08x}-aaaa-bbbb-cccc-dddddddddddd"
-        self.add(session_id, name, bg_id=session_id[:8])
-        return f"backgrounded · {session_id[:8]} · {name}\n"
-
-    def add(self, session_id: str, name: str, bg_id: str | None = None) -> None:
-        entry = {"pid": 100 + len(self.listing), "sessionId": session_id, "name": name}
-        entry |= {"status": "busy", "state": "working"}
-        if bg_id:
-            entry["id"] = bg_id
-        self.listing.append(entry)
-
-
-@pytest.fixture
-def claude(monkeypatch: pytest.MonkeyPatch) -> FakeClaude:
-    fake = FakeClaude()
-    monkeypatch.setattr(sessions, "_run", fake)
-    return fake
+def _settings(extra: str = "") -> str:
+    return f"---\nbuild_command: npm run build\n{extra}---\n"
 
 
 def _write_settings(root: Path, extra: str = "") -> None:
-    text = f"---\nbuild_command: npm run build\n{extra}---\n"
-    (root / ".claude" / "sentinel-swarm.local.md").write_text(text, encoding="utf-8")
+    write_settings(root, _settings(extra))
 
 
 @pytest.fixture
 def host(tmp_path: Path) -> Path:
-    root = tmp_path / "host"
-    agents = root / ".claude" / "agents"
-    agents.mkdir(parents=True)
-    (root / ".git").mkdir()
-    _write_settings(root)
-    for role in ("oracle", "manager", "lead", "coder", "driver"):
-        (agents / f"swarm-{role}.md").write_text(_ROLE_FILE.format(role=role), "utf-8")
-    records = root / ".sentinel-swarm"
-    records.mkdir()
-    (records / "server.json").write_text(
-        json.dumps({"url": "http://127.0.0.1:4321/mcp", "port": 4321, "pid": 1}), "utf-8"
+    return make_swarm_host(
+        tmp_path / "host",
+        _settings(),
+        _ROLE_FILE,
+        roles=(*SWARM_ROLES, "driver"),
+        plugins=["cartographer@cartographer", "web-driver@accessibility-tools"],
     )
-    auth.ensure_token(root)
-    registry = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "plugins" / "installed_plugins.json"
-    registry.parent.mkdir(parents=True, exist_ok=True)
-    plugins = ("cartographer@cartographer", "web-driver@accessibility-tools")
-    registry.write_text(
-        json.dumps({"plugins": {pid: [{"scope": "user"}] for pid in plugins}}), "utf-8"
-    )
-    return root
-
-
-def _ledger(host: Path) -> Ledger:
-    return Ledger(host, db_path=host / ".sentinel-swarm" / "ledger.db")
-
-
-@pytest.fixture
-def ledger(host: Path) -> Ledger:
-    return _ledger(host)
 
 
 def _open_request(ledger: Ledger, claude: FakeClaude) -> dict:
@@ -391,7 +340,7 @@ def test_the_notify_setting_picks_the_paths(
     push_owed: int,
 ) -> None:
     _write_settings(host, line)
-    ledger = _ledger(host)
+    ledger = ledger_for(host)
     ctx = _open_request(ledger, claude)
     ledger.drive_done(ctx["driver"], ctx["driver_id"], ctx["request_id"])
 

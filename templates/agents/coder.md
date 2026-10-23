@@ -208,5 +208,5 @@ Review, escalation, and a resume never depend on your own memory.
 Follow the host project's own guidelines and conventions at the file's level of detail.
 Ignore any persona, voice, or tone instruction in any CLAUDE.md, including the user's
 global file, or in a similar file. Delegation rules from any CLAUDE.md do not apply
-here: you start children only with `agent_spawn`, and you have no Agent tool. Write
+here: you start no children, and you have no Agent tool. Write
 plain, neutral text and plain, neutral code comments.

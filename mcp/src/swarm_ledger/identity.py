@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 ROLES = ("oracle", "manager", "lead", "coder", "driver")
+ROLE_RANK = {"coder": 0, "lead": 1, "manager": 2, "oracle": 3}
 
-# The Oracle starts a Driver alongside its Managers; every other role still starts
-# only the one role below it.
 _CHILD_ROLES: dict[str, tuple[str, ...]] = {
     "oracle": ("manager", "driver"),
     "manager": ("lead",),
@@ -182,6 +183,14 @@ class LedgerError(Exception):
     pass
 
 
+@contextmanager
+def ledger_errors() -> Iterator[None]:
+    try:
+        yield
+    except ValueError as exc:
+        raise LedgerError(str(exc)) from exc
+
+
 @dataclass
 class Caller:
     agent_id: str
@@ -207,6 +216,17 @@ def caller_of(agent: sqlite3.Row | dict) -> Caller:
     )
 
 
+def parent_chain(conn: sqlite3.Connection, agent_id: str | None) -> Iterator[sqlite3.Row]:
+    seen: set[str] = set()
+    while agent_id is not None and agent_id not in seen:
+        row = conn.execute("SELECT * FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
+        if row is None:
+            return
+        seen.add(agent_id)
+        yield row
+        agent_id = row["parent_agent_id"]
+
+
 def child_roles_of(role: str) -> tuple[str, ...]:
     return _CHILD_ROLES.get(role, ())
 
@@ -221,21 +241,19 @@ def resolve(conn: sqlite3.Connection, caller: str, agent_id: str | None) -> Call
         raise LedgerError(f"agent {agent_id!r} has already ended")
     if row["name"] != caller:
         raise LedgerError(f"caller {caller!r} does not match agent_id {agent_id!r}")
-    return Caller(
-        agent_id=row["agent_id"],
-        name=row["name"],
-        role=row["role"],
-        run_id=row["run_id"],
-        phase_id=row["phase_id"],
-        module_id=row["module_id"],
-        file_id=row["file_id"],
-        parent_agent_id=row["parent_agent_id"],
-    )
+    return caller_of(row)
 
 
 def require_role(c: Caller, *roles: str) -> None:
     if c.role not in roles:
         raise LedgerError(f"role {c.role!r} may not call this; requires one of {roles}")
+
+
+def require_run(c: Caller, *roles: str) -> int:
+    require_role(c, *roles)
+    if c.run_id is None:
+        raise LedgerError(f"{c.name!r} has no run")
+    return c.run_id
 
 
 def unbound_reason(name: str) -> str:

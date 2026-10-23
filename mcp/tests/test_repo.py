@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from helpers import register_agent, settings_text, write_settings
 
 from swarm_ledger import auth, sessions
 from swarm_ledger.identity import LedgerError
@@ -53,25 +54,13 @@ def _dirty(root: Path) -> None:
     (root / "README.md").write_text("changed\n", encoding="utf-8")
 
 
-@pytest.fixture(autouse=True)
-def no_claude_sessions(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(args: list[str], cwd: Path | None = None) -> str:
-        del cwd
-        assert args[:2] == ["agents", "--json"], args
-        return "[]"
-
-    monkeypatch.setattr(sessions, "_run", fake_run)
+pytestmark = pytest.mark.usefixtures("claude_sessions")
 
 
 @pytest.fixture
-def host(tmp_path: Path, repo_root: Path) -> Path:
+def host(tmp_path: Path) -> Path:
     root = tmp_path / "host"
-    claude_dir = root / ".claude"
-    claude_dir.mkdir(parents=True)
-    template = (repo_root / "templates" / "sentinel-swarm.local.md.example").read_text(
-        encoding="utf-8"
-    )
-    (claude_dir / "sentinel-swarm.local.md").write_text(template, encoding="utf-8")
+    write_settings(root, settings_text())
     return root
 
 
@@ -266,7 +255,7 @@ def test_repo_branch_create_refuses_while_a_manager_is_live(host: Path) -> None:
         "Own phase-1.",
         phase_id=phase["phase_id"],
     )
-    ledger.agent_register_start("mgr-agent", "manager", parent_agent_id=oracle_id)
+    register_agent(ledger, "mgr-agent", "manager", parent_agent_id=oracle_id)
     ledger.brief_ack("mgr-p1-phase-1", "mgr-agent")
 
     with pytest.raises(LedgerError, match="still live"):
