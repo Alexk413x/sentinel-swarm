@@ -3,84 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from helpers import bootstrap_module
 
-from swarm_ledger import sessions
 from swarm_ledger.db import write_tx
 from swarm_ledger.ledger import Ledger
 
-
-@pytest.fixture(autouse=True)
-def no_claude_sessions(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(args: list[str], cwd: Path | None = None) -> str:
-        del cwd
-        assert args[:2] == ["agents", "--json"], args
-        return "[]"
-
-    monkeypatch.setattr(sessions, "_run", fake_run)
-
-
-@pytest.fixture
-def fake_repo(tmp_path: Path, repo_root: Path) -> Path:
-    host = tmp_path / "host"
-    (host / ".git").mkdir(parents=True)
-    claude_dir = host / ".claude"
-    claude_dir.mkdir()
-    template = (repo_root / "templates" / "sentinel-swarm.local.md.example").read_text(
-        encoding="utf-8"
-    )
-    text = template.replace("test_command:\n", "test_command: pytest -q {target}\n")
-    (claude_dir / "sentinel-swarm.local.md").write_text(text, encoding="utf-8")
-    return host
-
-
-@pytest.fixture
-def ledger(fake_repo: Path) -> Ledger:
-    return Ledger(fake_repo, db_path=fake_repo / ".sentinel-swarm" / "ledger.db")
-
-
-def _bootstrap(ledger: Ledger) -> dict:
-    started = ledger.run_start(prd="Build X", session_id="sess-1")
-    oracle_id = started["oracle"]["agent_id"]
-
-    phase = ledger.phase_add("oracle", oracle_id, "phase-1")
-    phase_id = phase["phase_id"]
-    ledger.phase_update("oracle", oracle_id, phase_id, "unlocked")
-
-    ledger.brief_create(
-        "oracle",
-        oracle_id,
-        "mgr-p1-phase-1",
-        "manager",
-        "opus",
-        "Own p1-phase-1.",
-        phase_id=phase_id,
-    )
-    ledger.agent_register_start("mgr-agent", "manager", parent_agent_id=oracle_id)
-    manager = ledger.brief_ack("mgr-p1-phase-1", "mgr-agent")
-
-    module = ledger.module_add("mgr-p1-phase-1", "mgr-agent", phase_id, "module-1")
-    module_id = module["module_id"]
-
-    ledger.brief_create(
-        "mgr-p1-phase-1",
-        "mgr-agent",
-        "lead-p1-module-1",
-        "lead",
-        "sonnet",
-        "Own module-1.",
-        module_id=module_id,
-    )
-    ledger.agent_register_start("lead-agent", "lead", parent_agent_id="mgr-agent")
-    lead = ledger.brief_ack("lead-p1-module-1", "lead-agent")
-
-    return {
-        "run_id": started["run"]["run_id"],
-        "oracle_id": oracle_id,
-        "phase_id": phase_id,
-        "module_id": module_id,
-        "manager": manager,
-        "lead": lead,
-    }
+pytestmark = pytest.mark.usefixtures("claude_sessions")
 
 
 def _insert_test_run(
@@ -160,7 +88,7 @@ def test_write_report_keeps_a_report_per_run_and_report_md_as_the_latest(ledger:
 
 
 def test_report_lists_decided_deferrals_with_proposer_decider_and_reason(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     claimed = ledger.claim_file(
         "lead-p1-module-1",
         ctx["lead"]["agent_id"],
@@ -213,7 +141,7 @@ def test_report_lists_decided_deferrals_with_proposer_decider_and_reason(ledger:
 
 
 def test_report_lists_notifications_and_their_replies(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     asked = ledger.directive_submit("user_chat", "alex", "Use Postgres or SQLite?")
     ledger.directive_resolve(
         "oracle", ctx["oracle_id"], asked["directive_id"], "needs_user", "Which database?"
@@ -233,7 +161,7 @@ def test_report_lists_notifications_and_their_replies(ledger: Ledger) -> None:
 def test_report_notifications_section_is_empty_when_no_directive_asked_the_user(
     ledger: Ledger,
 ) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     ledger.directive_submit("skill", "setup", "Detected pytest as the runner.")
     report = ledger.write_report(ctx["run_id"])["text"]
     notifications = report.split("## Notifications to the user", 1)[1].split("## Final test run")[0]
@@ -241,7 +169,7 @@ def test_report_notifications_section_is_empty_when_no_directive_asked_the_user(
 
 
 def test_report_final_test_run_section_shows_the_last_full_scope_run(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     _insert_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full", passed=10, skipped=1)
     _insert_test_run(
         ledger, ctx["run_id"], ctx["oracle_id"], "full", passed=12, failed=1, exit_code=1
@@ -252,7 +180,7 @@ def test_report_final_test_run_section_shows_the_last_full_scope_run(ledger: Led
 
 
 def test_report_final_test_run_section_notes_when_none_recorded(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     report = ledger.write_report(ctx["run_id"])["text"]
     assert "- No full-suite test run is recorded." in report
 
@@ -261,7 +189,7 @@ def test_report_final_test_run_section_notes_when_none_recorded(ledger: Ledger) 
 
 
 def test_report_measures_lists_returns_per_file(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     file_a = ledger.claim_file(
         "lead-p1-module-1",
         ctx["lead"]["agent_id"],
@@ -290,13 +218,13 @@ def test_report_measures_lists_returns_per_file(ledger: Ledger) -> None:
 
 
 def test_report_measures_notes_no_returns_when_no_file_was_returned(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     report = ledger.write_report(ctx["run_id"])["text"]
     assert "- No file was returned." in report
 
 
 def test_report_measures_lists_role_time_totals_and_cost_per_phase(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_module(ledger)
     _insert_agent(
         ledger,
         "coder-agent-1",

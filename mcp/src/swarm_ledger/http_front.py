@@ -15,6 +15,7 @@ on every route but `/health`, a missing or wrong bearer token gets 403.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import socket
 import sys
@@ -25,15 +26,17 @@ from pathlib import Path
 from typing import Any, Optional, cast
 
 from . import __version__, catalog, front
+from .agentfiles import LEDGER_SERVER
+from .paths import same_path
 from .pool import CallError
-from .serve import HEALTH_PATH, HOOK_PATH, MCP_PATH, REPO_HEADER, same_path
+from .serve import HEALTH_PATH, HOOK_PATH, MCP_PATH, REPO_HEADER
 
 MODERN_PROTOCOL = "2026-07-28"
 CLASSIC_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 VERSION_KEY = "io.modelcontextprotocol/protocolVersion"
 CAPABILITIES_KEY = "io.modelcontextprotocol/clientCapabilities"
 SERVER_INFO_KEY = "io.modelcontextprotocol/serverInfo"
-SERVER_INFO = {"name": "swarm-ledger", "version": __version__}
+SERVER_INFO = {"name": LEDGER_SERVER, "version": __version__}
 PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS = -32700, -32600, -32601, -32602
 HEADER_MISMATCH, UNSUPPORTED_VERSION = -32020, -32022
 STATUS = {
@@ -95,13 +98,30 @@ def call_tool(name: Any, raw_args: Any) -> dict[str, Any]:
     return text_result(name, value)
 
 
+def _add_instructions(result: dict[str, Any]) -> None:
+    if catalog.CATALOG.get("instructions"):
+        result["instructions"] = catalog.CATALOG["instructions"]
+
+
+def _shared(method: str, params: dict[str, Any], listed: dict[str, Any]) -> dict[str, Any] | None:
+    if method == "ping":
+        return {}
+    if method == "tools/list":
+        return {"tools": catalog.CATALOG["tools"], **listed}
+    if method in EMPTY_LISTS:
+        return {EMPTY_LISTS[method]: [], **listed}
+    if method == "tools/call":
+        return call_tool(params.get("name"), params.get("arguments"))
+    return None
+
+
 def classic(msg: dict[str, Any]) -> dict[str, Any] | None:
     method = msg.get("method")
     if not isinstance(method, str) or "id" not in msg:
         return None
     raw = msg.get("params")
     params: dict[str, Any] = raw if isinstance(raw, dict) else {}
-    result: dict[str, Any]
+    result: dict[str, Any] | None
     if method == "initialize":
         asked = params.get("protocolVersion")
         result = {
@@ -109,17 +129,10 @@ def classic(msg: dict[str, Any]) -> dict[str, Any] | None:
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": SERVER_INFO,
         }
-        if catalog.CATALOG.get("instructions"):
-            result["instructions"] = catalog.CATALOG["instructions"]
-    elif method == "ping":
-        result = {}
-    elif method == "tools/list":
-        result = {"tools": catalog.CATALOG["tools"]}
-    elif method in EMPTY_LISTS:
-        result = {EMPTY_LISTS[method]: []}
-    elif method == "tools/call":
-        result = call_tool(params.get("name"), params.get("arguments"))
+        _add_instructions(result)
     else:
+        result = _shared(method, params, {})
+    if result is None:
         return {
             "jsonrpc": "2.0",
             "id": msg["id"],
@@ -197,6 +210,10 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = True
         self._send(status, text.encode("utf-8"), "text/plain; charset=utf-8")
 
+    def _refuse(self, status: int, headers: dict[str, str] | None = None) -> None:
+        self.close_connection = True
+        self._send(status, headers=headers)
+
     def _rpc_error(self, request_id: Any, code: int, message: str, data: Any = None) -> None:
         error: dict[str, Any] = {"code": code, "message": message}
         if data is not None:
@@ -218,10 +235,8 @@ class Handler(BaseHTTPRequestHandler):
     def _discard_body(self) -> None:
         # Windows resets a socket closed with unread request bytes, so the client sees
         # ConnectionAbortedError instead of the refusal it was sent.
-        try:
+        with contextlib.suppress(BodyError, OSError):
             self._body()
-        except (BodyError, OSError):
-            pass
 
     def do_GET(self) -> None:
         if not self._gate():
@@ -230,8 +245,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == HEALTH_PATH:
             self._json(200, self.srv.health)
         elif path == MCP_PATH or path.startswith(HOOK_PREFIX):
-            self.close_connection = True
-            self._send(405, headers={"Allow": "POST"})
+            self._refuse(405, {"Allow": "POST"})
         else:
             self._text(404, "Not Found")
 
@@ -289,16 +303,14 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = self._body()
         except BodyError as exc:
-            self.close_connection = True
-            self._send(exc.status)
+            self._refuse(exc.status)
             return
         if path.startswith(HOOK_PREFIX):
             self._hook(urllib.parse.unquote(path[len(HOOK_PREFIX) :]), body)
             return
         accept = self.headers.get("accept", "")
         if accept and "application/json" not in accept and "*/*" not in accept:
-            self.close_connection = True
-            self._send(406)
+            self._refuse(406)
             return
         try:
             msg = json.loads(body)
@@ -421,15 +433,6 @@ class Handler(BaseHTTPRequestHandler):
                 "supportedVersions": [MODERN_PROTOCOL],
                 "capabilities": {"tools": {"listChanged": False}},
             }
-            if catalog.CATALOG.get("instructions"):
-                result["instructions"] = catalog.CATALOG["instructions"]
+            _add_instructions(result)
             return result
-        if method == "ping":
-            return {}
-        if method == "tools/list":
-            return {"tools": catalog.CATALOG["tools"], **LISTED}
-        if method in EMPTY_LISTS:
-            return {EMPTY_LISTS[method]: [], **LISTED}
-        if method == "tools/call":
-            return call_tool(params.get("name"), params.get("arguments"))
-        return None
+        return _shared(method, params, LISTED)

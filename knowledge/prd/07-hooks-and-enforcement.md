@@ -122,6 +122,10 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   session. A session with no row has no mod, so no hook gates it. The ledger refuses
   `run_start` and `brief_ack` from such a session; see "What each hook does" below
   and `identity.require_mod_session`.
+- **Stability.** Claude Code documents the mod API as early access that moves between
+  releases. The mod facts in [13-platform-facts.md](13-platform-facts.md) hold for the
+  Claude Code build and date shown with each. A guard without a `.catch` fails open, so
+  every gate carries one.
 - **Tests.** `hooks/register.test.ts` runs under `claude plugin test .`.
 
 ## Rules every ledger hook follows

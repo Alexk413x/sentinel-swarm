@@ -4,10 +4,16 @@ import json
 from pathlib import Path
 
 import pytest
+from helpers import (
+    ROLE_FILE,
+    FakeClaude,
+    bootstrap_two_phases,
+    ledger_for,
+    make_swarm_host,
+    settings_text,
+)
 
-from swarm_ledger import auth, sessions
 from swarm_ledger.agentfiles import session_options
-from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import events
 from swarm_ledger.identity import ROLES, LedgerError
 from swarm_ledger.ledger import Ledger, looks_like_swarm_session
@@ -19,132 +25,19 @@ from swarm_ledger.settings import load_settings
 pytestmark = pytest.mark.usefixtures("claude_sessions")
 
 
-def _settings_text(repo_root: Path) -> str:
-    template = (repo_root / "templates" / "sentinel-swarm.local.md.example").read_text(
-        encoding="utf-8"
-    )
-    text = template.replace("test_command:\n", "test_command: pytest -q {target}\n")
-    return text
-
-
-@pytest.fixture
-def ledger(host: Path) -> Ledger:
-    return Ledger(host, db_path=host / ".sentinel-swarm" / "ledger.db")
-
-
-def _as_session(ledger: Ledger, agent_id: str, session_name: str) -> None:
-    with write_tx(ledger.conn) as conn:
-        conn.execute(
-            "UPDATE agents SET session_name = ? WHERE agent_id = ?", (session_name, agent_id)
-        )
-
-
-def _bootstrap(ledger: Ledger) -> dict:
-    started = ledger.run_start(prd="Build X", session_id="sess-1")
-    oracle_id = started["oracle"]["agent_id"]
-
-    phase_a = ledger.phase_add("oracle", oracle_id, "phase-a")
-    phase_b = ledger.phase_add("oracle", oracle_id, "phase-b")
-    ledger.phase_update("oracle", oracle_id, phase_a["phase_id"], "unlocked")
-    ledger.phase_update("oracle", oracle_id, phase_b["phase_id"], "unlocked")
-
-    ledger.brief_create(
-        "oracle",
-        oracle_id,
-        "mgr-p1-phase-a",
-        "manager",
-        "opus",
-        "Own phase-a.",
-        phase_id=phase_a["phase_id"],
-    )
-    ledger.agent_register_start("mgr-agent", "manager", parent_agent_id=oracle_id)
-    manager = ledger.brief_ack("mgr-p1-phase-a", "mgr-agent")
-    _as_session(ledger, oracle_id, "host-r1-oracle")
-    _as_session(ledger, "mgr-agent", "host-r1-manager-1")
-    manager = dict(manager) | {"session_name": "host-r1-manager-1"}
-
-    return {
-        "run_id": started["run"]["run_id"],
-        "oracle_id": oracle_id,
-        "phase_a": phase_a["phase_id"],
-        "phase_b": phase_b["phase_id"],
-        "manager": manager,
-    }
-
-
 # -- fixtures for the agent_spawn (session-spawning) tests ------------------------------------
 
-_ROLE_FILE = """---
-name: swarm-{role}
-description: The {role}.
-model: sonnet
-permissionMode: acceptEdits
-tools: Read, SendMessage, mcp__swarm-ledger
-mcpServers:
-  - codebase-kg:
-      command: python
-      args: [".sentinel-swarm/hook.py", "mcp", "codebase-kg@alexk413x", "codebase-kg"]
----
-
-You are a {role}.
-"""
-
-
-class FakeClaude:
-    def __init__(self) -> None:
-        self.calls: list[tuple[list[str], Path | None]] = []
-        self.listing: list[dict] = []
-        self._count = 0
-
-    def __call__(self, args: list[str], cwd: Path | None = None) -> str:
-        self.calls.append((list(args), cwd))
-        if args[:2] == ["agents", "--json"]:
-            return json.dumps(self.listing)
-        name = args[args.index("--name") + 1]
-        self._count += 1
-        session_id = f"{self._count:08x}-aaaa-bbbb-cccc-dddddddddddd"
-        self.add(session_id, name, bg_id=session_id[:8])
-        return f"backgrounded · {session_id[:8]} · {name}\n"
-
-    def add(self, session_id: str, name: str, bg_id: str | None = None) -> dict:
-        entry = {"pid": 100 + len(self.listing), "sessionId": session_id, "name": name}
-        entry |= {"status": "busy", "state": "working"}
-        if bg_id:
-            entry["id"] = bg_id
-        self.listing.append(entry)
-        return entry
-
 
 @pytest.fixture
-def claude(monkeypatch: pytest.MonkeyPatch) -> FakeClaude:
-    fake = FakeClaude()
-    monkeypatch.setattr(sessions, "_run", fake)
-    return fake
-
-
-@pytest.fixture
-def spawn_host(tmp_path: Path, repo_root: Path) -> Path:
-    root = tmp_path / "spawn-host"
-    (root / ".git").mkdir(parents=True)
-    claude_dir = root / ".claude"
-    (claude_dir / "agents").mkdir(parents=True)
-    (claude_dir / "sentinel-swarm.local.md").write_text(_settings_text(repo_root), encoding="utf-8")
-    for role in ("oracle", "manager", "lead", "coder"):
-        (claude_dir / "agents" / f"swarm-{role}.md").write_text(
-            _ROLE_FILE.format(role=role), encoding="utf-8"
-        )
-    records = root / ".sentinel-swarm"
-    records.mkdir()
-    (records / "server.json").write_text(
-        json.dumps({"url": "http://127.0.0.1:4321/mcp", "port": 4321, "pid": 1}), encoding="utf-8"
+def spawn_host(tmp_path: Path) -> Path:
+    return make_swarm_host(
+        tmp_path / "spawn-host", settings_text(test_command="pytest -q {target}"), ROLE_FILE
     )
-    auth.ensure_token(root)
-    return root
 
 
 @pytest.fixture
 def spawn_ledger(spawn_host: Path) -> Ledger:
-    return Ledger(spawn_host, db_path=spawn_host / ".sentinel-swarm" / "ledger.db")
+    return ledger_for(spawn_host)
 
 
 def _spawn_bootstrap(
@@ -176,7 +69,7 @@ def _spawn_bootstrap(
 
 
 def test_run_pause_with_phases_pauses_only_those_phases(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_two_phases(ledger)
     result = ledger.run_pause(
         "oracle", ctx["oracle_id"], "phase-a is blocked", phases=[ctx["phase_a"]]
     )
@@ -192,20 +85,20 @@ def test_run_pause_with_phases_pauses_only_those_phases(ledger: Ledger) -> None:
 
 
 def test_run_pause_with_phases_refuses_an_unknown_phase_id(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_two_phases(ledger)
     with pytest.raises(LedgerError, match="unknown phase_id"):
         ledger.run_pause("oracle", ctx["oracle_id"], "blocked", phases=[9999])
 
 
 def test_phase_resume_clears_the_pause(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_two_phases(ledger)
     ledger.run_pause("oracle", ctx["oracle_id"], "blocked", phases=[ctx["phase_a"]])
     resumed = ledger.phase_resume("oracle", ctx["oracle_id"], [ctx["phase_a"]])
     assert resumed["resumed_phases"][0]["paused_at"] is None
 
 
 def test_plan_unlocked_excludes_a_paused_phase(ledger: Ledger) -> None:
-    ctx = _bootstrap(ledger)
+    ctx = bootstrap_two_phases(ledger)
     before = {p["phase_id"] for p in ledger.plan_unlocked("oracle", ctx["oracle_id"])}
     assert before == {ctx["phase_a"], ctx["phase_b"]}
 
@@ -304,10 +197,10 @@ def test_agent_spawn_applies_a_per_role_cap(claude: FakeClaude, spawn_ledger: Le
 # == Item 16: per-role settings ===================================================================
 
 
-def test_load_settings_parses_the_new_per_role_keys(repo_root: Path, tmp_path: Path) -> None:
+def test_load_settings_parses_the_new_per_role_keys(tmp_path: Path) -> None:
     root = tmp_path / "host"
     (root / ".claude").mkdir(parents=True)
-    text = _settings_text(repo_root)
+    text = settings_text(test_command="pytest -q {target}")
     text = text.replace("effort:\n  oracle: medium\n", "effort:\n  oracle: high\n")
     text = text.replace("  lead: medium\n", "  lead:\n")
     text = text.replace("prompt_cache_ttl:\n  oracle:\n", "prompt_cache_ttl:\n  oracle: 1h\n")

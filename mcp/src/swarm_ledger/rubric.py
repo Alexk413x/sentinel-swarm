@@ -101,16 +101,26 @@ _CRITERIA_BY_DIMENSION: dict[str, tuple[str, ...]] = {
     key: tuple(criterion_key for criterion_key, _ in criteria) for key, _, criteria in DIMENSIONS
 }
 
+RATING_MIN = 1
+RATING_MAX = 10
+RATING_RANGE = f"{RATING_MIN}..{RATING_MAX}"
+REASON_REQUIRED_BELOW = 9
+# Fixed by the PRD, apart from Thresholds.criterion_floor, which the settings can change.
+ISSUE_AT_OR_BELOW = 4
+ISSUE_RESOLVED_AT = ISSUE_AT_OR_BELOW + 1
+
 RATING_SHAPE = (
-    'each rating is {"dimension": <key>, "criterion": <key>, "value": 1..10, '
-    '"reason": <text, required below 9>, "ref": <file:line, required below 9>}; '
+    f'each rating is {{"dimension": <key>, "criterion": <key>, "value": {RATING_RANGE}, '
+    f'"reason": <text, required below {REASON_REQUIRED_BELOW}>, '
+    f'"ref": <file:line, required below {REASON_REQUIRED_BELOW}>}}; '
     "applicable maps every dimension key to null or a one-line reason it does not apply"
 )
 
 REVIEW_DIMENSIONS: tuple[str, ...] = ("completeness", "integration", "open_items")
 
 REVIEW_SCORE_SHAPE = (
-    'each score is {"dimension": <key>, "value": 1..10, "reason": <text, required below 9>}; '
+    f'each score is {{"dimension": <key>, "value": {RATING_RANGE}, '
+    f'"reason": <text, required below {REASON_REQUIRED_BELOW}>}}; '
     f"required dimensions: {list(REVIEW_DIMENSIONS)}"
 )
 
@@ -128,9 +138,15 @@ def ratings_schema() -> dict[str, Any]:
             "properties": {
                 "dimension": {"type": "string", "enum": list(DIMENSION_KEYS)},
                 "criterion": {"type": "string"},
-                "value": {"type": "integer", "minimum": 1, "maximum": 10},
-                "reason": {"type": "string", "description": "Required below 9."},
-                "ref": {"type": "string", "description": "file:line; required below 9."},
+                "value": {"type": "integer", "minimum": RATING_MIN, "maximum": RATING_MAX},
+                "reason": {
+                    "type": "string",
+                    "description": f"Required below {REASON_REQUIRED_BELOW}.",
+                },
+                "ref": {
+                    "type": "string",
+                    "description": f"file:line; required below {REASON_REQUIRED_BELOW}.",
+                },
             },
             "required": ["dimension", "criterion", "value"],
             "oneOf": [
@@ -185,18 +201,32 @@ class ReviewScore:
     reason: str | None
 
 
-def parse_review_score(raw: object) -> ReviewScore:
+def _checked_entry(raw: object, label: str, keys: tuple[str, ...], shape: str) -> dict:
     if not isinstance(raw, dict):
-        raise ValueError(
-            f"a score must be an object, got {type(raw).__name__}. {REVIEW_SCORE_SHAPE}"
-        )
-    missing = [key for key in ("dimension", "value") if key not in raw]
+        raise ValueError(f"a {label} must be an object, got {type(raw).__name__}. {shape}")
+    missing = [key for key in keys if key not in raw]
     if missing:
-        raise ValueError(f"score {sorted(raw.keys())} is missing {missing}. {REVIEW_SCORE_SHAPE}")
+        raise ValueError(f"{label} {sorted(raw.keys())} is missing {missing}. {shape}")
     value = raw["value"]
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"score value must be an integer 1..10, got {value!r}")
-    return ReviewScore(str(raw["dimension"]), value, raw.get("reason"))
+        raise ValueError(f"{label} value must be an integer {RATING_RANGE}, got {value!r}")
+    return raw
+
+
+def parse_rating(raw: object) -> Rating:
+    entry = _checked_entry(raw, "rating", ("dimension", "criterion", "value"), schema_help())
+    return Rating(
+        str(entry["dimension"]),
+        str(entry["criterion"]),
+        entry["value"],
+        entry.get("reason"),
+        entry.get("ref"),
+    )
+
+
+def parse_review_score(raw: object) -> ReviewScore:
+    entry = _checked_entry(raw, "score", ("dimension", "value"), REVIEW_SCORE_SHAPE)
+    return ReviewScore(str(entry["dimension"]), entry["value"], entry.get("reason"))
 
 
 def validate_review_scores(scores: list[ReviewScore]) -> None:
@@ -208,10 +238,12 @@ def validate_review_scores(scores: list[ReviewScore]) -> None:
     if unknown:
         raise ValueError(f"unknown score dimension(s) {unknown}. {REVIEW_SCORE_SHAPE}")
     for score in scores:
-        if not 1 <= score.value <= 10:
-            raise ValueError(f"{score.dimension}: value {score.value} is outside 1..10")
-        if score.value < 9 and not score.reason:
-            raise ValueError(f"{score.dimension}: a rating below 9 needs a reason")
+        if not RATING_MIN <= score.value <= RATING_MAX:
+            raise ValueError(f"{score.dimension}: value {score.value} is outside {RATING_RANGE}")
+        if score.value < REASON_REQUIRED_BELOW and not score.reason:
+            raise ValueError(
+                f"{score.dimension}: a rating below {REASON_REQUIRED_BELOW} needs a reason"
+            )
 
 
 def validate_ratings(ratings: list[Rating], applicable: dict[str, str | None]) -> None:
@@ -224,17 +256,14 @@ def validate_ratings(ratings: list[Rating], applicable: dict[str, str | None]) -
                 f"unknown criterion {rating.criterion!r} for dimension {rating.dimension!r}; "
                 f"its criteria are {list(_CRITERIA_BY_DIMENSION[rating.dimension])}"
             )
-        if not 1 <= rating.value <= 10:
+        label = f"{rating.dimension}.{rating.criterion}"
+        if not RATING_MIN <= rating.value <= RATING_MAX:
+            raise ValueError(f"{label}: value {rating.value} is outside {RATING_RANGE}")
+        if rating.value < REASON_REQUIRED_BELOW and not rating.reason:
+            raise ValueError(f"{label}: a rating below {REASON_REQUIRED_BELOW} needs a reason")
+        if rating.value < REASON_REQUIRED_BELOW and not rating.ref:
             raise ValueError(
-                f"{rating.dimension}.{rating.criterion}: value {rating.value} is outside 1..10"
-            )
-        if rating.value < 9 and not rating.reason:
-            raise ValueError(
-                f"{rating.dimension}.{rating.criterion}: a rating below 9 needs a reason"
-            )
-        if rating.value < 9 and not rating.ref:
-            raise ValueError(
-                f"{rating.dimension}.{rating.criterion}: a rating below 9 needs a ref (file:line)"
+                f"{label}: a rating below {REASON_REQUIRED_BELOW} needs a ref (file:line)"
             )
         rated.setdefault(rating.dimension, set()).add(rating.criterion)
 
@@ -260,10 +289,6 @@ def validate_ratings(ratings: list[Rating], applicable: dict[str, str | None]) -
         elif dimension in rated:
             raise ValueError(f"{dimension}: rated but marked not applicable ({reason})")
 
-    for dimension in rated:
-        if dimension not in applicable:
-            raise ValueError(f"{dimension}: rated but not present in applicable")
-
 
 def dimension_scores(ratings: list[Rating]) -> dict[str, float]:
     grouped: dict[str, list[int]] = {}
@@ -278,21 +303,22 @@ def dimension_scores(ratings: list[Rating]) -> dict[str, float]:
 def passes(
     scores: dict[str, float], ratings: list[Rating], t: Thresholds
 ) -> tuple[bool, list[str]]:
-    reasons: list[str] = []
-    for dimension, score in scores.items():
-        if score < t.target:
-            reasons.append(f"{dimension}: {score} is below the target of {t.target}")
-    for rating in ratings:
-        if rating.value < t.criterion_floor:
-            reasons.append(
-                f"{rating.dimension}.{rating.criterion}: {rating.value} is below the "
-                f"criterion floor of {t.criterion_floor}"
-            )
+    reasons = [
+        f"{dimension}: {score} is below the target of {t.target}"
+        for dimension, score in scores.items()
+        if score < t.target
+    ]
+    reasons.extend(
+        f"{rating.dimension}.{rating.criterion}: {rating.value} is below the "
+        f"criterion floor of {t.criterion_floor}"
+        for rating in ratings
+        if rating.value < t.criterion_floor
+    )
     return (len(reasons) == 0, reasons)
 
 
 def issues_from(ratings: list[Rating]) -> list[Rating]:
-    return [rating for rating in ratings if rating.value <= 4]
+    return [rating for rating in ratings if rating.value <= ISSUE_AT_OR_BELOW]
 
 
 def disagreements(a: dict[str, float], b: dict[str, float], t: Thresholds) -> list[str]:
@@ -333,7 +359,3 @@ def classify(
             return "improved"
 
     return "plateau"
-
-
-def below_floor(scores: dict[str, float], t: Thresholds) -> list[str]:
-    return [dimension for dimension, score in scores.items() if score < t.floor]

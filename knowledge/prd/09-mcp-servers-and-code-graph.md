@@ -26,6 +26,13 @@
   `mcp__plugin_…` names that cartographer's agents grant and its hooks match. The a11y
   servers keep their bare keys until a11y renames its tools to the plugin form.
 - Tool names: `mcp__swarm-ledger__<tool>` and `mcp__codebase-kg__<tool>`.
+- Every ledger tool stays an MCP tool, for every role, and codebase-kg's read tools stay
+  on MCP too. A command-line tool would serve only the Coder and the Driver, the two
+  roles with a shell, and `pre_shell` closes the shell to the other roles on purpose.
+  A command-line call carries no `pre_ledger` identity stamp, so the caller would pick
+  its own identity. It saves no model turn, and it costs the gated shell's hooks plus
+  the tool's own process start. A tool no role calls stays out of the templates:
+  `kg_stats`, `kg_validate`, and `kg_parity_gaps` run through codebase-kg's CLI.
 - Each role keeps a fixed `tools` allowlist in its agent file. It names each ledger tool
   the role may call, from `identity.ROLE_TOOLS`, never the whole `mcp__swarm-ledger`
   server. See "Tools" in [06-ledger-server.md](06-ledger-server.md).

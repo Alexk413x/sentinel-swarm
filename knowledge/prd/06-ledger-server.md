@@ -4,6 +4,12 @@
   health check at `/health`. Every session of the run connects to it. One server per
   repo is required: its front holds the watchdog, `on_run_finish`, and the activity
   clock, and the run lock names its process.
+- The ledger takes no slot in the 47821-47829 block that codebase-kg assigns to its
+  plugins. Several repos run swarms at once, each with its own ledger on its own saved
+  port. No session reaches the ledger through a plugin `.mcp.json`: the launcher writes
+  the URL into each role's `--mcp-config`. One ledger for the whole machine would put
+  every run in one failure domain and tie the watchdog and the idle exit to no single
+  run.
 - The server is a front process and a pool of worker processes. The front is the lean
   stdlib HTTP server in `http_front.py`. The front and the workers import only the
   standard library and run on Python 3.9 or newer; see "How the ledger runs" in
@@ -149,8 +155,9 @@ the project's code in the host repo itself. Tracking is `local` only.
 
 - Every connection opens with WAL, `synchronous=NORMAL`, foreign keys on, and a 5-second
   busy timeout. Every write runs inside `BEGIN IMMEDIATE`.
-- `migrate` applies `schema.sql` at schema version 1 and adds later columns and tables
-  idempotently.
+- `migrate` applies `schema.sql` to a new ledger at schema version 1. It does not upgrade an
+  older ledger: a ledger from an earlier release lacks columns and tables, and the ledger
+  fails on them. Delete `.sentinel-swarm/ledger.db` to start fresh.
 - Tables, grouped: the plan (`runs`, `phases`, `phase_deps`, `modules`, `module_deps`,
   `files`, `file_deps`, `guidelines`); agents (`agents`, `agent_events`, `briefs`,
   `wakeups`); review (`handoffs`, `reviews`, `scores`, `test_runs`, `versions`,

@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import json
-import os
 import shutil
 import sys
 from pathlib import Path
 
 import pytest
+from helpers import write_registry
 
 from swarm_ledger import graph
 from swarm_ledger.identity import LedgerError
@@ -64,11 +63,9 @@ def test_the_base_command_runs_isolated_with_codebase_kgs_source_on_the_path(
     assert fallback[-1] == str(target)
 
 
-def _register_kg(tmp_path: Path, host: Path, install: Path) -> None:
-    registry = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "plugins" / "installed_plugins.json"
-    registry.parent.mkdir(parents=True, exist_ok=True)
+def _register_kg(host: Path, install: Path) -> None:
     entry = {"scope": "project", "projectPath": str(host), "installPath": str(install)}
-    registry.write_text(json.dumps({"plugins": {"codebase-kg@alexk413x": [entry]}}), "utf-8")
+    write_registry({"codebase-kg@alexk413x": [entry]})
 
 
 def test_codebase_kg_root_reads_the_repos_install_from_the_registry(
@@ -78,7 +75,7 @@ def test_codebase_kg_root_reads_the_repos_install_from_the_registry(
     host = tmp_path / "host"
     host.mkdir()
     install = _kg(tmp_path).parent
-    _register_kg(tmp_path, host, install)
+    _register_kg(host, install)
 
     assert graph.codebase_kg_root(host) == install / "mcp"
     other = tmp_path / "other"

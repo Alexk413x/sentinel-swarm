@@ -5,42 +5,15 @@ import re
 from pathlib import Path
 
 import pytest
+from helpers import register_agent
 
 from swarm_ledger import graph as graph_module
-from swarm_ledger import sessions
 from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import events
 from swarm_ledger.identity import ROLES, LedgerError
 from swarm_ledger.ledger import Ledger
 
-
-@pytest.fixture(autouse=True)
-def no_claude_sessions(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(args: list[str], cwd: Path | None = None) -> str:
-        del cwd
-        assert args[:2] == ["agents", "--json"], args
-        return "[]"
-
-    monkeypatch.setattr(sessions, "_run", fake_run)
-
-
-@pytest.fixture
-def fake_repo(tmp_path: Path, repo_root: Path) -> Path:
-    host = tmp_path / "host"
-    (host / ".git").mkdir(parents=True)
-    claude_dir = host / ".claude"
-    claude_dir.mkdir()
-    template = (repo_root / "templates" / "sentinel-swarm.local.md.example").read_text(
-        encoding="utf-8"
-    )
-    text = template.replace("test_command:\n", "test_command: pytest -q {target}\n")
-    (claude_dir / "sentinel-swarm.local.md").write_text(text, encoding="utf-8")
-    return host
-
-
-@pytest.fixture
-def ledger(fake_repo: Path) -> Ledger:
-    return Ledger(fake_repo, db_path=fake_repo / ".sentinel-swarm" / "ledger.db")
+pytestmark = pytest.mark.usefixtures("claude_sessions")
 
 
 @pytest.fixture
@@ -53,14 +26,14 @@ def tree(ledger: Ledger) -> dict:
     ledger.brief_create(
         "oracle", oracle_id, manager, "manager", "opus", "Own it.", phase_id=phase["phase_id"]
     )
-    ledger.agent_register_start("mgr-agent", "manager", parent_agent_id=oracle_id)
+    register_agent(ledger, "mgr-agent", "manager", parent_agent_id=oracle_id)
     ledger.brief_ack(manager, "mgr-agent")
     module = ledger.module_add(manager, "mgr-agent", phase["phase_id"], "auth")
     lead = f"lead-p{phase['ordinal']}-auth"
     ledger.brief_create(
         manager, "mgr-agent", lead, "lead", "sonnet", "Own it.", module_id=module["module_id"]
     )
-    ledger.agent_register_start("lead-agent", "lead", parent_agent_id="mgr-agent")
+    register_agent(ledger, "lead-agent", "lead", parent_agent_id="mgr-agent")
     ledger.brief_ack(lead, "lead-agent")
     return {
         "run_id": started["run"]["run_id"],
@@ -241,7 +214,7 @@ def test_a_coder_still_upserts_only_its_own_file(
     _claim(ledger, tree, "token", "src/token.py")
     _brief_coder(ledger, tree, "login", login["file_id"], [])
     name = f"{tree['coder_prefix']}-login"
-    ledger.agent_register_start("coder-agent", "coder", parent_agent_id="lead-agent")
+    register_agent(ledger, "coder-agent", "coder", parent_agent_id="lead-agent")
     ledger.brief_ack(name, "coder-agent")
 
     with pytest.raises(LedgerError, match="ask your Lead"):

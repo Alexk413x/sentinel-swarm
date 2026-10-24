@@ -12,21 +12,16 @@ from pathlib import Path
 from typing import TextIO
 
 from . import env, notify, wake
+from .clock import stamp, utcnow
 from .db import connect, write_tx
-from .watchdog import stamp, utcnow
+from .queries import live_run
 
 POLL_SECONDS = 2.0
 
 
-def _live_run(conn: sqlite3.Connection) -> sqlite3.Row | None:
-    return conn.execute(
-        "SELECT * FROM runs WHERE state IN ('active', 'paused') ORDER BY run_id DESC LIMIT 1"
-    ).fetchone()
-
-
 def claim(conn: sqlite3.Connection, owner: str) -> None:
     with write_tx(conn):
-        run = _live_run(conn)
+        run = live_run(conn)
         if run is not None:
             conn.execute("UPDATE runs SET watch_owner = ? WHERE run_id = ?", (owner, run["run_id"]))
 
@@ -34,7 +29,7 @@ def claim(conn: sqlite3.Connection, owner: str) -> None:
 def poll(
     conn: sqlite3.Connection, now: datetime, owner: str | None = None
 ) -> tuple[bool, list[str]]:
-    run = _live_run(conn)
+    run = live_run(conn)
     if run is None or run["state"] != "active":
         return False, []
     # Windows does not kill a killed Monitor's child processes, so an expired listener can

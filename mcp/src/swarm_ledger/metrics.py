@@ -125,7 +125,7 @@ class TranscriptStats:
         }
 
 
-def _agent_cost(agent: dict[str, Any]) -> float | None:
+def agent_cost(agent: dict[str, Any]) -> float | None:
     if agent.get("cost_usd") is not None:
         return float(agent["cost_usd"])
     return pricing.estimate(agent.get("model"), agent)
@@ -158,7 +158,7 @@ def run_metrics(conn: sqlite3.Connection, run: sqlite3.Row, repo_root: Path) -> 
     ]
     by_role: defaultdict[str, list[float | None]] = defaultdict(list)
     for agent in agents:
-        by_role[agent["role"]].append(_agent_cost(agent))
+        by_role[agent["role"]].append(agent_cost(agent))
 
     stats = TranscriptStats()
     missing: list[str] = []

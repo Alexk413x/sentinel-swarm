@@ -1,20 +1,25 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import re
-import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
+from helpers import (
+    ledger_for,
+    make_host,
+    register_agent,
+    running,
+    settings_text,
+    untimed,
+)
 
-from swarm_ledger import agentfiles, auth, sessions, setup, wake, watch, watchdog
+from swarm_ledger import sessions, wake, watch, watchdog
 from swarm_ledger.db import connect, write_tx
 from swarm_ledger.hooks import events
 from swarm_ledger.ledger import Ledger
-from swarm_ledger.settings import load_settings
 
 ORACLE = "sess-1"
 ORACLE_SESSION = "host-oracle"
@@ -35,38 +40,18 @@ def listing(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
     return entries
 
 
-def _write_settings(root: Path, text: str) -> None:
-    claude_dir = root / ".claude"
-    claude_dir.mkdir(parents=True, exist_ok=True)
-    (claude_dir / "sentinel-swarm.local.md").write_text(text, encoding="utf-8")
-
-
 @pytest.fixture
-def host(tmp_path: Path, repo_root: Path) -> Path:
-    root = tmp_path / "host"
-    (root / ".git").mkdir(parents=True)
-    template = (repo_root / "templates" / "sentinel-swarm.local.md.example").read_text(
-        encoding="utf-8"
-    )
-    _write_settings(root, template.replace("test_command:\n", "test_command: pytest {target}\n"))
-    return root
-
-
-def _ledger(host: Path) -> Ledger:
-    return Ledger(host, db_path=host / ".sentinel-swarm" / "ledger.db")
+def host(tmp_path: Path) -> Path:
+    return make_host(tmp_path / "host", settings_text(test_command="pytest {target}"))
 
 
 @pytest.fixture
 def ledger(host: Path, listing: list[dict]) -> Ledger:
-    return _ledger(host)
-
-
-def _running(listing: list[dict], agent_id: str, name: str) -> None:
-    listing.append({"pid": 7, "sessionId": agent_id, "name": name, "status": "idle"})
+    return ledger_for(host)
 
 
 def _bootstrap(ledger: Ledger, listing: list[dict]) -> dict:
-    _running(listing, ORACLE, ORACLE_SESSION)
+    running(listing, ORACLE, ORACLE_SESSION)
     started = ledger.run_start(prd="Build X", session_id=ORACLE)
     phase = ledger.phase_add("oracle", ORACLE, "phase-1")
     ledger.phase_update("oracle", ORACLE, phase["phase_id"], "unlocked")
@@ -79,13 +64,13 @@ def _bootstrap(ledger: Ledger, listing: list[dict]) -> dict:
         "Own p1-phase-1.",
         phase_id=phase["phase_id"],
     )
-    ledger.agent_register_start(MANAGER, "manager", parent_agent_id=ORACLE)
+    register_agent(ledger, MANAGER, "manager", parent_agent_id=ORACLE)
     ledger.brief_ack("mgr-p1-phase-1", MANAGER)
     with write_tx(ledger.conn) as conn:
         conn.execute(
             "UPDATE agents SET session_name = ? WHERE agent_id = ?", (MANAGER_SESSION, MANAGER)
         )
-    _running(listing, MANAGER, MANAGER_SESSION)
+    running(listing, MANAGER, MANAGER_SESSION)
     return started
 
 
@@ -118,11 +103,6 @@ RESUME = 'agent_resume(target_name="oracle")'
 # -- route_wakeup ---------------------------------------------------------------------------
 
 
-def _untimed(text: str) -> str:
-    assert re.search(r" elapsed \d+s(?: / \d+s)?", text), text
-    return re.sub(r" elapsed \d+s(?: / \d+s)?", "", text)
-
-
 def test_a_running_target_gets_the_send_message_instruction() -> None:
     delivery = wake.route_wakeup(_wakeup(), live=True)
     assert delivery.kind == "send"
@@ -144,11 +124,6 @@ def test_an_unknown_liveness_names_both_calls() -> None:
 def test_a_target_with_no_session_name_is_resumed() -> None:
     delivery = wake.route_wakeup(_wakeup(to_session_name=None), live=True)
     assert delivery.next == RESUME
-
-
-def test_settings_ignore_a_leftover_wake_transport(tmp_path: Path) -> None:
-    _write_settings(tmp_path, "---\nwake_transport: channel\n---\n")
-    assert not hasattr(load_settings(tmp_path), "wake_transport")
 
 
 # -- the ledger's single switch point -------------------------------------------------------
@@ -176,10 +151,10 @@ def test_the_wake_hint_routes_through_the_switch(ledger: Ledger, listing: list[d
     _bootstrap(ledger, listing)
     manager = _agent(ledger, MANAGER)
     assert (
-        events._wake_hint(ledger, manager, {MANAGER})
+        events._wake_hint(manager, {MANAGER})
         == f"wake it with SendMessage(to={json.dumps(MANAGER_SESSION)})"
     )
-    assert "its session is not running" in events._wake_hint(ledger, manager, set())
+    assert "its session is not running" in events._wake_hint(manager, set())
 
 
 def test_the_watchdog_wake_call_routes_through_the_switch(ledger: Ledger, listing) -> None:
@@ -256,7 +231,7 @@ def test_next_carries_the_signal_for_a_manager_and_none_for_a_lead(
 ) -> None:
     _bootstrap(ledger, listing)
     _member(ledger, "lead-agent", "lead")
-    _running(listing, "lead-agent", "host-lead-1")
+    running(listing, "lead-agent", "host-lead-1")
 
     to_manager = ledger.message_post("oracle", ORACLE, "mgr-p1-phase-1", "phase-1 changed")
     to_lead = ledger.message_post("mgr-p1-phase-1", MANAGER, "lead-1", "module changed")
@@ -318,7 +293,7 @@ def test_stop_blocks_an_owed_wake_up_at_once_with_send_message(
 
     assert blocked is not None and blocked["decision"] == "block"
     send = f"SendMessage(to={json.dumps(ORACLE_SESSION)}, message={json.dumps(wakeup['pointer'])})"
-    assert f"- {send}" in _untimed(blocked["reason"])
+    assert f"- {send}" in untimed(blocked["reason"])
     assert _wakeups(ledger)[0]["sent_at"] is None
 
 
@@ -345,38 +320,6 @@ def test_the_send_message_clears_the_debt(ledger: Ledger, listing: list[dict]) -
 # -- launch ----------------------------------------------------------------------------------
 
 
-def test_dev_channel_args_pass_through_only_the_users_channels(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    assert sessions.dev_channel_args() == []
-    monkeypatch.setenv("CLAUDE_DEV_CHANNELS", "plugin:q@m plugin:q@m")
-    assert sessions.dev_channel_args() == [
-        "--dangerously-load-development-channels",
-        "plugin:q@m",
-    ]
-
-
-@pytest.mark.parametrize("role", ["oracle", "coder"])
-def test_no_role_session_carries_a_channel(ledger: Ledger, role: str) -> None:
-    setup.run_setup(ledger.repo_root)
-    auth.ensure_token(ledger.repo_root)
-    url = "http://127.0.0.1:5123/mcp"
-    options = agentfiles.session_options(ledger.repo_root, role, None, url)
-    assert "swarm-events" not in options[options.index("--mcp-config") + 1]
-    assert "--dangerously-load-development-channels" not in options
-
-
-def test_the_shim_has_no_channel_command(capsys: pytest.CaptureFixture[str]) -> None:
-    spec = importlib.util.spec_from_file_location(
-        "sentinel_swarm_hook_shim_wake", setup.SHIM_TEMPLATE
-    )
-    assert spec is not None and spec.loader is not None
-    shim = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(shim)
-    assert shim.main(["channel"]) == 1
-    assert "channel" not in capsys.readouterr().err
-
-
 # -- the database ------------------------------------------------------------------------------
 
 
@@ -387,22 +330,3 @@ def test_a_new_ledger_has_no_channel_columns(tmp_path: Path) -> None:
     conn.close()
     assert "channel" not in agents
     assert "pushed_at" not in wakeups
-
-
-def test_an_older_ledger_with_channel_columns_still_owes_and_clears_wake_ups(
-    host: Path, listing: list[dict]
-) -> None:
-    path = host / ".sentinel-swarm" / "ledger.db"
-    connect(path).close()
-    raw = sqlite3.connect(path)
-    raw.execute("ALTER TABLE agents ADD COLUMN channel TEXT NOT NULL DEFAULT 'none'")
-    raw.execute("ALTER TABLE wakeups ADD COLUMN pushed_at TEXT")
-    raw.commit()
-    raw.close()
-    ledger = _ledger(host)
-
-    _owe_oracle(ledger, listing)
-
-    assert events.handle_stop(ledger, {"session_id": MANAGER}) is not None
-    assert ledger.wakeups_sent(MANAGER, ORACLE_SESSION) == 1
-    assert ledger.owed_wakeups(MANAGER) == []

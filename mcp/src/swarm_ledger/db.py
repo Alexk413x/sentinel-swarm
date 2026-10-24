@@ -1,96 +1,17 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
+NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 _GIT_EXCLUDE_LINE = ".sentinel-swarm/"
 _GITDIR_PREFIX = "gitdir:"
-# What an older version 1 ledger may lack. schema.sql declares them too, for a new ledger.
-_ADDED_COLUMNS = (
-    ("agents", "session_name", "TEXT"),
-    ("agents", "bg_id", "TEXT"),
-    ("agents", "cost_usd", "REAL"),
-    ("runs", "watch_heartbeat_at", "TEXT"),
-    ("runs", "watch_expires_at", "TEXT"),
-    ("runs", "watch_owner", "TEXT"),
-    ("directives", "notified_at", "TEXT"),
-    ("change_requests", "path", "TEXT"),
-    ("change_requests", "decision_reason", "TEXT"),
-    ("change_requests", "accepted_at", "TEXT"),
-    ("change_requests", "completed_at", "TEXT"),
-    ("change_requests", "completion_notes", "TEXT"),
-    ("change_requests", "evidence_test_run_id", "INTEGER"),
-    ("change_requests", "verified_at", "TEXT"),
-    ("change_requests", "verify_notes", "TEXT"),
-    ("change_requests", "decided_at", "TEXT"),
-    ("departures", "file_id", "INTEGER"),
-    ("departures", "handoff_id", "INTEGER"),
-    ("departures", "decided_by", "TEXT"),
-    ("departures", "decided_at", "TEXT"),
-    ("departures", "decision_reason", "TEXT"),
-    ("departures", "solution", "TEXT"),
-    ("departures", "level", "TEXT"),
-    ("departures", "signed_off_at", "TEXT"),
-    ("departures", "reworked_at", "TEXT"),
-    ("departures", "reworked_by_handoff_id", "INTEGER"),
-    ("runs", "repo_check_json", "TEXT"),
-    ("briefs", "effort", "TEXT"),
-    ("test_runs", "fingerprint", "TEXT"),
-    ("test_runs", "reused_from", "INTEGER"),
-    ("runs", "repo_checked_at", "TEXT"),
-    ("runs", "branch", "TEXT"),
-    ("phases", "handed_up_at", "TEXT"),
-    ("phases", "paused_at", "TEXT"),
-    ("phases", "pause_reason", "TEXT"),
-    ("reviews", "details_json", "TEXT"),
-    ("directives", "question", "TEXT"),
-    ("handoffs", "floor_pass_json", "TEXT"),
-    ("briefs", "finding_ids_json", "TEXT"),
-    ("briefs", "contract", "TEXT"),
-    ("briefs", "last_read_by_child_at", "TEXT"),
-    ("deferrals", "kind", "TEXT"),
-    ("deferrals", "parties_json", "TEXT"),
-    ("deferrals", "arbiter_agent_id", "TEXT"),
-    ("deferrals", "open_issues_json", "TEXT"),
-    ("deferrals", "issue_ids_json", "TEXT"),
-    ("deferrals", "directive_id", "INTEGER"),
-    ("drive_requests", "map_test_at", "TEXT"),
-    ("messages", "claim_id", "TEXT"),
-    ("messages", "claimed_at", "TEXT"),
-)
-# Renamed to snake_case; an older ledger may still hold either the code's old
-# spelling or a value directive_submit stored before this alias table existed.
-_DIRECTIVE_SOURCE_RENAMES = (
-    ("user-chat", "user_chat"),
-    ("outside-session", "outside_session"),
-)
-# Indexes a later version added to a table an older ledger already has; schema.sql
-# runs again only when a table is missing.
-_ADDED_INDEXES = (
-    (
-        "messages",
-        "CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages (run_id, to_name, read_at)",
-    ),
-)
-_ADDED_TABLES = (
-    "wakeups",
-    "watchdog_findings",
-    "departure_decisions",
-    "drive_requests",
-    "drive_findings",
-    "notifications",
-    "drive_stops",
-    "module_deps",
-    "file_deps",
-    "graph_gaps",
-    "mod_sessions",
-)
 
 
-def _main_git_dir(repo_root: Path) -> Path:
+def main_git_dir(repo_root: Path) -> Path:
     git_path = repo_root / ".git"
     if git_path.is_file():
         line = git_path.read_text(encoding="utf-8").strip()
@@ -105,19 +26,45 @@ def _main_git_dir(repo_root: Path) -> Path:
 
 
 def ledger_path(repo_root: Path) -> Path:
-    return _main_git_dir(repo_root).parent / ".sentinel-swarm" / "ledger.db"
+    return main_git_dir(repo_root).parent / ".sentinel-swarm" / "ledger.db"
 
 
-def ensure_git_exclude(repo_root: Path) -> None:
-    exclude_path = _main_git_dir(repo_root) / "info" / "exclude"
-    exclude_path.parent.mkdir(parents=True, exist_ok=True)
-    existing = exclude_path.read_text(encoding="utf-8") if exclude_path.exists() else ""
-    if _GIT_EXCLUDE_LINE in existing.splitlines():
-        return
-    with exclude_path.open("a", encoding="utf-8", newline="\n") as handle:
-        if existing and not existing.endswith("\n"):
-            handle.write("\n")
-        handle.write(_GIT_EXCLUDE_LINE + "\n")
+def append_git_excludes(repo_root: Path, lines: Sequence[str]) -> list[str]:
+    path = main_git_dir(repo_root) / "info" / "exclude"
+    existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+    present = {line.strip() for line in existing.splitlines()}
+    missing = [line for line in lines if line not in present]
+    if missing:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
+            if existing and not existing.endswith("\n"):
+                handle.write("\n")
+            handle.write("".join(line + "\n" for line in missing))
+    return missing
+
+
+def ensure_git_exclude(repo_root: Path) -> bool:
+    if not main_git_dir(repo_root).is_dir():
+        return False
+    return bool(append_git_excludes(repo_root, (_GIT_EXCLUDE_LINE,)))
+
+
+def dict_rows(cursor: sqlite3.Cursor) -> list[dict]:
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def in_clause(values: Collection[object]) -> str:
+    return ",".join("?" for _ in values)
+
+
+def row_dict(conn: sqlite3.Connection, table: str, pk_column: str, value: object) -> dict:
+    return dict(conn.execute(f"SELECT * FROM {table} WHERE {pk_column} = ?", (value,)).fetchone())
+
+
+def open_readonly(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -155,82 +102,6 @@ def migrate(conn: sqlite3.Connection) -> None:
     if row is not None:
         if row["version"] != 1:
             raise RuntimeError(f"unsupported ledger schema version {row['version']}")
-        _upgrade(conn)
         return
     conn.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
     conn.execute("INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 1)")
-
-
-def _upgrade(conn: sqlite3.Connection) -> None:
-    tables = {
-        row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-    }
-    # Create any table a later version added before adding columns to it: an older
-    # ledger may lack a whole table that _ADDED_COLUMNS also targets, not just a column.
-    needed_tables = set(_ADDED_TABLES) | {table for table, _, _ in _ADDED_COLUMNS}
-    if any(table not in tables for table in needed_tables):
-        conn.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
-
-    for table, column, declaration in _ADDED_COLUMNS:
-        # A ledger old enough to predate the table itself gets it from _ADDED_TABLES below.
-        if table not in tables:
-            continue
-        columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
-        if column in columns:
-            continue
-        try:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
-        except sqlite3.OperationalError as exc:
-            if "duplicate column" not in str(exc):
-                raise
-    for table, statement in _ADDED_INDEXES:
-        if table in tables:
-            conn.execute(statement)
-    _upgrade_departure_states(conn)
-    _upgrade_directive_sources(conn)
-    _upgrade_driver_unavailable(conn)
-
-
-def _upgrade_driver_unavailable(conn: sqlite3.Connection) -> None:
-    # runs.driver_unavailable_at means the run skips explorations. A declined
-    # [driver-unavailable] directive keeps that meaning once the columns are gone.
-    columns = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
-    if "driver_unavailable_at" not in columns:
-        return
-    conn.execute(
-        "INSERT INTO directives (run_id, source, sender_name, body, state, outcome, "
-        "resolved_at, resolution) "
-        "SELECT run_id, 'driver', 'ledger', '[driver-unavailable] ' || "
-        "COALESCE(driver_unavailable_reason, 'no reason recorded'), 'resolved', 'declined', "
-        "driver_unavailable_at, 'recorded before a Driver that fails to load became a "
-        "directive; the run skips explorations' FROM runs "
-        "WHERE driver_unavailable_at IS NOT NULL"
-    )
-    for column in ("driver_unavailable_at", "driver_unavailable_reason"):
-        try:
-            conn.execute(f"ALTER TABLE runs DROP COLUMN {column}")
-        except sqlite3.OperationalError:
-            conn.execute("UPDATE runs SET driver_unavailable_at = NULL")
-            return
-
-
-def _upgrade_directive_sources(conn: sqlite3.Connection) -> None:
-    for old, new in _DIRECTIVE_SOURCE_RENAMES:
-        conn.execute("UPDATE directives SET source = ? WHERE source = ?", (new, old))
-
-
-def _upgrade_departure_states(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        "UPDATE departures SET state = 'lead_agreed', level = 'manager' "
-        "WHERE kind = 'departure' AND state = 'accepted'"
-    )
-    conn.execute(
-        "UPDATE departures SET state = 'pushed_back', level = NULL "
-        "WHERE kind = 'departure' AND state = 'denied'"
-    )
-    conn.execute(
-        "UPDATE departures SET level = CASE (SELECT role FROM agents a "
-        "WHERE a.agent_id = departures.agent_id) WHEN 'coder' THEN 'lead' "
-        "WHEN 'lead' THEN 'manager' ELSE 'oracle' END "
-        "WHERE kind = 'departure' AND state = 'open' AND level IS NULL"
-    )

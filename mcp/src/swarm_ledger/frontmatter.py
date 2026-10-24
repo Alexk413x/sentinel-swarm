@@ -20,14 +20,30 @@ class FrontmatterError(ValueError):
     pass
 
 
-def split(text: str) -> tuple[str, str] | None:
-    lines = text.splitlines()
+class MissingFrontmatter(FrontmatterError):
+    pass
+
+
+class UnclosedFrontmatter(FrontmatterError):
+    pass
+
+
+def split_document(text: str) -> tuple[str, str]:
+    lines = text.splitlines(keepends=True)
     if not lines or lines[0].strip() != "---":
+        raise MissingFrontmatter("the file has no frontmatter block")
+    for index in range(1, len(lines)):
+        if lines[index].strip() == "---":
+            return "".join(lines[1:index]), "".join(lines[index + 1 :])
+    raise UnclosedFrontmatter("the frontmatter block has no closing ---")
+
+
+def split(text: str) -> tuple[str, str] | None:
+    try:
+        head, body = split_document(text)
+    except FrontmatterError:
         return None
-    end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
-    if end is None:
-        return None
-    return "\n".join(lines[1:end]), "\n".join(lines[end + 1 :])
+    return "\n".join(head.splitlines()), "\n".join(body.splitlines())
 
 
 def parse(text: str) -> Any:
@@ -85,7 +101,7 @@ def _sequence(lines: list[Line], index: int, indent: int, raw: list[str]) -> tup
             lines = [*lines[:index], (column, rest, number), *lines[index + 1 :]]
             value, index = _mapping(lines, index, column, raw)
         else:
-            value, index = _inline(lines, index, rest, raw)
+            value, index = _inline(lines, index, rest)
         items.append(value)
     return items, index
 
@@ -103,7 +119,7 @@ def _mapping(lines: list[Line], index: int, indent: int, raw: list[str]) -> tupl
         elif rest[0] in "|>":
             value, index = _block_scalar(lines, index, indent, rest, raw)
         else:
-            value, index = _inline(lines, index, rest, raw)
+            value, index = _inline(lines, index, rest)
         result[key] = value
     return result, index
 
@@ -149,7 +165,7 @@ def _closing_quote(text: str, start: int) -> int | None:
     return None
 
 
-def _inline(lines: list[Line], index: int, rest: str, raw: list[str]) -> tuple[Any, int]:
+def _inline(lines: list[Line], index: int, rest: str) -> tuple[Any, int]:
     if rest[0] in "[{":
         text = rest
         index += 1

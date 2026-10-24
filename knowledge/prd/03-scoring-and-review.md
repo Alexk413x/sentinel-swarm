@@ -39,6 +39,14 @@ into architecture and code structure.
 - A rating below 9 needs a reason and a `ref` (file and line). `score_record` refuses
   a rating below 9 that lacks either.
 
+| Rating | Meaning |
+|---|---|
+| 9 to 10 | Fully met |
+| 7 to 8 | Met, with a minor suggestion |
+| 5 to 6 | Partly met |
+| 3 to 4 | Not met; must be fixed |
+| 1 to 2 | Wrong, unsafe, or missing |
+
 ## Module and phase review scores
 
 - `module_review` and `phase_review` take a `scores` list when the outcome is
@@ -49,14 +57,6 @@ into architecture and code structure.
 - The scores are the Manager's or the Oracle's own judgment of the module or the
   phase as a whole; they are not derived from the files' rubric scores. They are
   stored on the review record and the report shows them next to that review.
-
-| Rating | Meaning |
-|---|---|
-| 9 to 10 | Fully met |
-| 7 to 8 | Met, with a minor suggestion |
-| 5 to 6 | Partly met |
-| 3 to 4 | Not met; must be fixed |
-| 1 to 2 | Wrong, unsafe, or missing |
 
 ## Thresholds
 

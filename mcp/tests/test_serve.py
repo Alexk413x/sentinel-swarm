@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import http.client
 import importlib.util
 import json
@@ -20,6 +21,7 @@ from typing import Any
 import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
+from helpers import make_host
 
 from swarm_ledger import auth, front, serve
 from swarm_ledger import hooks as hooks_package
@@ -29,24 +31,15 @@ from swarm_ledger.identity import LedgerError
 
 
 @pytest.fixture
-def host(tmp_path: Path, repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    root = tmp_path / "host"
-    (root / ".git").mkdir(parents=True)
-    claude_dir = root / ".claude"
-    claude_dir.mkdir()
-    template = (repo_root / "templates" / "sentinel-swarm.local.md.example").read_text(
-        encoding="utf-8"
-    )
-    (claude_dir / "sentinel-swarm.local.md").write_text(template, encoding="utf-8")
+def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    root = make_host(tmp_path / "host")
     monkeypatch.setenv("SENTINEL_SWARM_CLAUDE", str(tmp_path / "no-claude-here"))
     monkeypatch.delenv("SENTINEL_SWARM_LEDGER_DB", raising=False)
     yield root
     info = serve.read_server_info(root)
     if info is not None:
-        try:
+        with contextlib.suppress(OSError):
             os.kill(int(info["pid"]), signal.SIGTERM)
-        except OSError:
-            pass
 
 
 def _wait_for(condition, timeout: float = 20.0) -> bool:

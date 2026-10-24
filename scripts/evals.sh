@@ -5,7 +5,7 @@ set -euo pipefail
 # cache, and plugin eval refuses a plugin that holds a hard-linked file.
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-win() { if command -v cygpath >/dev/null; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
+. "$root/scripts/lib.sh"
 claude_bin="${CLAUDE_BIN:-claude}"
 
 copy="${TMPDIR:-/tmp}/sentinel-swarm-evals-$(date +%s)"

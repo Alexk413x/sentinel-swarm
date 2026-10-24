@@ -8,13 +8,14 @@ import statistics
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-ROLES = ("oracle", "manager", "lead", "coder", "driver")
-EFFORTS = ("low", "medium", "high", "xhigh", "max")
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parents[1] / "mcp" / "src"))
+from swarm_ledger.clock import parse_stamp  # noqa: E402
+from swarm_ledger.identity import EFFORT_LEVELS, ROLES  # noqa: E402
+
 CONFTEST = HERE / "acceptance_conftest.py"
 
 
@@ -44,7 +45,7 @@ def _output(command: list[str], cwd: Path | None = None) -> str | None:
 
 def override(args: argparse.Namespace) -> int:
     pins = _pairs(args.model_pin, "--model-pin", None)
-    efforts = _pairs(args.effort, "--effort", EFFORTS)
+    efforts = _pairs(args.effort, "--effort", EFFORT_LEVELS)
     settings: dict[str, Any] = {}
     if args.settings:
         loaded = json.loads(Path(args.settings).read_text(encoding="utf-8"))
@@ -121,18 +122,8 @@ def run_acceptance(acceptance: Path, host: Path, work: Path) -> dict[str, Any]:
     return {"exit_code": done.returncode, **_junit(report)}
 
 
-def _stamp(raw: object) -> datetime | None:
-    if not isinstance(raw, str) or not raw:
-        return None
-    try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-
-
 def _stale(run: dict[str, Any], since: str | None) -> bool:
-    started, floor = _stamp(run.get("started_at")), _stamp(since)
+    started, floor = parse_stamp(run.get("started_at")), parse_stamp(since)
     return floor is not None and (started is None or started < floor)
 
 

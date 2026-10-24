@@ -25,7 +25,7 @@ claude_bin="${CLAUDE_BIN:-claude}"
 config_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 export SENTINEL_SWARM_CLAUDE="${SENTINEL_SWARM_CLAUDE:-$claude_bin}"
 
-win() { if command -v cygpath >/dev/null; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
+. "$root/scripts/lib.sh"
 
 # Runs a ledger module from a plugin folder on the base interpreter, as the hooks and skills do.
 ledger_at() {
@@ -145,7 +145,7 @@ teardown
 for old in "${TMPDIR:-/tmp}"/sentinel-swarm-plugin*; do rm -rf "$old" 2>/dev/null || true; done
 # Same reasoning for the dev copies this run's own install left in the plugin cache: skip
 # one a live session still has open instead of forcing the removal.
-for old in "$HOME/.claude/plugins/cache/sentinel-swarm/sentinel-swarm"/*-dev.*; do
+for old in "$config_dir/plugins/cache/sentinel-swarm/sentinel-swarm"/*-dev.*; do
   rm -rf "$old" 2>/dev/null || true
 done
 plugin_dir="${TMPDIR:-/tmp}/sentinel-swarm-plugin-$(date +%s)"

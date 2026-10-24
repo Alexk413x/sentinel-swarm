@@ -20,7 +20,7 @@ EOF
 }
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-win() { if command -v cygpath >/dev/null; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
+. "$root/scripts/lib.sh"
 
 prd="" trials=1 settings="" label="" dry=0
 pins=() efforts=()

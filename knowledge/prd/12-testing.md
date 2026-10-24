@@ -18,10 +18,11 @@ claude plugin test .
 claude plugin validate --strict .claude-plugin/plugin.json
 ```
 
-The repo ships no marketplace, so there is no marketplace to validate. CI also runs the
-launcher and the frontmatter tests on Python 3.9, the oldest Python the ledger supports.
+The repo ships no marketplace, so there is no marketplace to validate. CI runs
+`claude plugin validate --strict` but not `claude plugin test .`, whose tests use
+Windows paths and fail on Linux. It also runs the launcher and the frontmatter tests on Python 3.9, the oldest Python the ledger supports.
 
-The local run is the gate. CI runs the same checks as a backup. The dev instructions
+The local run is the gate. CI runs the other checks as a backup. The dev instructions
 live in `.claude/CLAUDE.md`, not at the plugin root, because the validator warns about a
 root `CLAUDE.md`, which a plugin install does not load.
 
@@ -111,6 +112,53 @@ run `/reload-plugins`.
 - `--prd modules` runs `scripts/prds/modules.md` in three waves: `hello` and `world` in
   parallel, then `name` (a `World` subclass), then the command that uses all three.
 - `--prd textstats` runs `scripts/prds/textstats.md`, a larger two-module PRD.
+
+## Measured baselines
+
+Each figure was measured on 2026-10-08 on Windows 11, at the commit or machine load
+shown. Compare a new measurement with the same measure under similar load.
+
+- **Smoke runs.** `hello` on commit 083384b, with the mod as the only hook transport: 4
+  minutes 24 seconds, 67 tool calls (Oracle 26, Manager 18, Lead 16, Coder 7), $1.62. The
+  Lead's model changes the cost: with the Lead on Sonnet the run costs about $1.44, with
+  Opus about $1.62. `modules` on commit 164ec7b passed all 10 checks: 4 phases, 7 files,
+  and 16 agents approved and released, 19 tests passed, 20 minutes 9 seconds, 147 tool
+  calls, $4.47.
+- **Ledger load.** `uv run --project mcp python scripts/bench/ledger_load.py` starts one
+  ledger on a scratch repo and runs N fake Coders (`--agents 1,4,8,16`, `--rounds 5`,
+  `--max-workers 8` by default). Each round is `message_post`, `message_inbox`, `issue_list`, `who_owns`, `tests_run` with a
+  stubbed command, and one `POST /hook/pre_write`, all with the bearer token. It reports
+  server memory, start time, the median, p90, and maximum of each call, and the
+  `message_post` to `message_inbox` latency. With the lean front and 8 workers at 16
+  agents, on a machine at 96% to 99% CPU: median tool call 217 ms, median hook 75 ms, wall
+  time 11.6 s, no errors, ledger idle memory 24.7 MB, 1.4 s from spawn to `server.json`.
+  The same load on FastMCP with the pool alone gave a 353 ms median and an 80 MB idle
+  front; FastMCP with no pool gave 611 ms and 30.2 s. At 1 agent the median tool call is 8
+  ms.
+- **Hook cost.** A mod hook post takes 6.3 ms median; the shim's process takes 383 ms. See
+  [13-platform-facts.md](13-platform-facts.md).
+- **Up-front `select:` bytes.** The bytes count each tool's `name`, `description`, and
+  `inputSchema` as JSON. The ledger exposes 67 tools, 40,929 bytes. The allowed ledger
+  tools and the ledger tools in the up-front `select:` per role, with the start-call and
+  end tools moved out:
+
+  | Role | Allowed ledger tools | Up-front `select:` |
+  |---|---|---|
+  | Oracle | 47 (25,518 B) | 15 (9,018 B) |
+  | Manager | 33 (18,785 B) | 9 (6,876 B) |
+  | Lead | 35 (23,201 B) | 10 (10,699 B) |
+  | Coder | 25 (15,322 B) | 6 (3,031 B) |
+  | Driver | 10 (5,690 B) | 3 (1,916 B) |
+
+  The tools out of the up-front set: `ledger_info` 196 B, `brief_get` 610 B, `brief_ack`
+  415 B, `guidelines_get` 323 B, `run_status` 449 B, `score_record` 3,683 B,
+  `handoff_submit` 530 B, `drive_done` 940 B. A 10-agent run (1 Oracle, 1 Manager, 2
+  Leads, 6 Coders) saves 15.2 KB of schemas and 30 ledger calls from the start calls, and
+  the Coder's end tools wait about 25.3 KB until the first handoff. `kg_search` adds about
+  900 B per role.
+- **`graph_upsert`.** On the base interpreter a call takes 369 ms median, against 579 ms
+  through `uv run`, on a machine at 63% to 77% CPU; most of it is codebase-kg's own
+  validation.
 
 ## The benchmark
 

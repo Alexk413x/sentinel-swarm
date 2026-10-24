@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .clock import stamp, utcnow
 from .db import write_tx
+from .pool import hidden_console_flags
 
 TITLE = "Sentinel Swarm"
 MAX_CHARS = 199
@@ -124,27 +125,16 @@ def os_command(
 
 def _run(argv: list[str], log: Log = _log) -> None:
     try:
-        if sys.platform == "win32":
-            result = subprocess.run(
-                argv,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=RUN_TIMEOUT_S,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-        else:
-            result = subprocess.run(
-                argv,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=RUN_TIMEOUT_S,
-            )
+        result = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=RUN_TIMEOUT_S,
+            creationflags=hidden_console_flags(),
+        )
     except (OSError, subprocess.SubprocessError) as exc:
         log(f"the OS notification failed: {exc}")
         return

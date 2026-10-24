@@ -94,7 +94,10 @@ ledger and knows the session id, which is the child's `agent_id`.
 Each role's first tool call is then one `ToolSearch` `select:` of its working set,
 without the start-call tools. A tool a role calls only at the end of its work stays
 out of that set: the Coder loads `score_record` and `handoff_submit`, and the Driver
-loads `drive_done`, with a second `select:` just before the first call.
+loads `drive_done`, with a second `select:` just before the first call. Tool search is
+on by default, so a session starts with tool names only and loads a schema when a
+`select:` names it. A tool taken out of a role's set saves its schema bytes in every
+session of that role. See "Measured baselines" in [12-testing.md](12-testing.md).
 
 ## Agent states
 
@@ -168,7 +171,8 @@ one. The ledger pushes nothing into a session.
   a session registers 10 to 14 s after it starts. Any other refusal ends the attempt.
 - The mod posts `wake_sent` with the ids whose send reported `isDelivered`. The ledger
   marks only the caller's own rows sent and releases a closed Driver, as `post_any`
-  does. A wake-up whose send failed stays owed.
+  does. A wake-up whose send failed stays owed. `isDelivered` means the message is
+  queued for the target, not read, as for a `SendMessage` call.
 - The mod's `Stop` hook waits for the sends still in flight from earlier calls, pays
   what is still owed, and only then posts `stop`. So the Stop hook names `SendMessage` or `agent_resume` only for a
   wake-up the mod did not deliver: that is the fallback, and `agent_resume` stays the
@@ -181,6 +185,10 @@ one. The ledger pushes nothing into a session.
   2. The target's liveness is unknown: both calls, as for `next` above.
   3. Otherwise: the `SendMessage` call.
 - The member Stop hook names each owed call at once. It does not wait.
+- No role session runs a `Monitor` to receive wake-ups. Each one adds a process per
+  session, keeps the session's status `busy` while it waits, leaves its children running
+  on Windows when it stops, and puts every printed line into the session's context. Only
+  the Oracle's watchdog `Monitor` exists.
 - A device-queue broker that tells a session when a device frees up needs a new plan on
   the mod's delivery path. **(needs implementation)**
 - The Coder's Stop hook also blocks once, per Coder, when the Coder stops while working
@@ -251,7 +259,13 @@ a possible injection. So only the Oracle and the Managers see the elapsed time.
   and a late `inbox_ack` then marks nothing. The woken role calls `message_inbox`
   only when that text says more wait.
 - An index on `messages (run_id, to_name, read_at)` serves the inbox and the unread
-  counts. `connect` adds it to an older `ledger.db`.
+  counts.
+- Message bodies live in `ledger.db`, not in a separate mailbox. A `message_post`
+  commits the body, the recipient check, and the owed wake-up in one transaction. A
+  second database would split run state and move the recipient check out of the
+  ledger's gates. The ledger sets no rate limit and no duplicate filter on messages:
+  the agents of one run are trusted peers, and the watchdog and the escalation budget
+  control a runaway agent.
 - A `SendMessage` body is one line that points at the ledger record, for example
   "Handoff 1 for hello.py is waiting in the ledger." The detail lives in the ledger.
 

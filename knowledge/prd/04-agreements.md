@@ -146,9 +146,8 @@ The responsible level:
   ledger itself writes a `driver` directive for each new Driver stop rule, and one for
   a Driver that fails to load. The second blocks explorations and `run_finish` like any
   open directive; see "Explorations" in [02-run-lifecycle.md](02-run-lifecycle.md).
-  `directive_submit` accepts the older `user-chat` and `outside-session` spellings too
-  and normalizes them; a stored row from before the rename is migrated to the new
-  spelling. It needs no identity, so an ordinary session can call it.
+  `directive_submit` accepts only these spellings. It needs no identity, so an ordinary
+  session can call it.
 - A directive does not interrupt the agents. The Oracle reads `directive_inbox()` at
   safe points and turns each directive into a plan change, a guideline change, a brief,
   or a message. It never forwards a directive's text down the tree.

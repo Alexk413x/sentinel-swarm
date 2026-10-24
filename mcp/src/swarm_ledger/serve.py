@@ -18,9 +18,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from . import auth, lock, sessions
+from .agentfiles import LEDGER_SERVER
 from .db import ledger_path
 from .identity import LedgerError
-from .pool import Pool, base_python, worker_command
+from .paths import same_path, unlink_quiet
+from .pool import Pool, base_python, hidden_console_flags, worker_command
 
 if TYPE_CHECKING:
     from .settings import Settings
@@ -105,10 +107,6 @@ def server_url(repo_root: Path) -> str:
     return str(info["url"])
 
 
-def same_path(a: str, b: Path) -> bool:
-    return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(b.resolve()))
-
-
 def is_answering(info: dict[str, Any], repo_root: Path) -> bool:
     url = f"http://{HOST}:{info['port']}{HEALTH_PATH}"
     try:
@@ -118,7 +116,7 @@ def is_answering(info: dict[str, Any], repo_root: Path) -> bool:
         return False
     return (
         isinstance(data, dict)
-        and data.get("name") == "swarm-ledger"
+        and data.get("name") == LEDGER_SERVER
         and same_path(str(data.get("repo_root") or ""), repo_root)
     )
 
@@ -140,27 +138,15 @@ def ensure_server(repo_root: Path, timeout: float = START_TIMEOUT_S) -> str:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     command = [base_python(), "-I", "-S", str(LAUNCHER), "serve", "--repo", str(root)]
     with log_path.open("ab") as log:
-        if sys.platform == "win32":
-            # A hidden console, not DETACHED_PROCESS: a process with no console opens a new
-            # window for every console program it runs, such as the watchdog's claude calls.
-            flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
-            process = subprocess.Popen(
-                command,
-                cwd=root,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=log,
-                creationflags=flags,
-            )
-        else:
-            process = subprocess.Popen(
-                command,
-                cwd=root,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=log,
-                start_new_session=True,
-            )
+        process = subprocess.Popen(
+            command,
+            cwd=root,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=log,
+            creationflags=hidden_console_flags(new_process_group=True),
+            start_new_session=sys.platform != "win32",
+        )
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -220,10 +206,10 @@ def refusal(
 def _remove_if_ours(path: Path) -> None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(data, dict) and data.get("pid") == os.getpid():
-            path.unlink()
     except (OSError, json.JSONDecodeError):
-        pass
+        return
+    if isinstance(data, dict) and data.get("pid") == os.getpid():
+        unlink_quiet(path)
 
 
 def write_server_info(path: Path, info: dict[str, Any]) -> None:
@@ -310,7 +296,7 @@ def serve(repo_root: Path) -> None:
         sock,
         root,
         lambda client, headers, route: refusal(client, headers, route, token, port),
-        {"name": "swarm-ledger", "repo_root": str(root), "pid": os.getpid()},
+        {"name": LEDGER_SERVER, "repo_root": str(root), "pid": os.getpid()},
     )
     info = {
         "url": f"http://{HOST}:{port}{MCP_PATH}",

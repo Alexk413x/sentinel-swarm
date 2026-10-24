@@ -2,65 +2,26 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from pathlib import Path
+from collections.abc import Callable
 from typing import Literal
 
 from . import graph, rubric
-from .db import write_tx
-from .identity import Caller, LedgerError, require_role, resolve
-from .rubric import Thresholds
-from .settings import Settings
+from .db import dict_rows, in_clause, row_dict, write_tx
+from .host import LedgerHost
+from .identity import Caller, LedgerError, ledger_errors, require_role, resolve
+from .review import latest_lead_review
 
-
-def _rows(cursor: sqlite3.Cursor) -> list[dict]:
-    return [dict(row) for row in cursor.fetchall()]
+_CLEAN_TEST_RUN = "t.exit_code = 0 AND t.failed = 0 AND t.skipped = 0"
 
 
 def _review_scores_json(scores: list[dict] | None) -> list[dict]:
     parsed = [rubric.parse_review_score(s) for s in (scores or [])]
-    try:
+    with ledger_errors():
         rubric.validate_review_scores(parsed)
-    except ValueError as exc:
-        raise LedgerError(str(exc)) from exc
     return [{"dimension": s.dimension, "value": s.value, "reason": s.reason} for s in parsed]
 
 
-class OversightMixin:
-    """The Manager-level module review and the Oracle-level phase review.
-
-    Split out of `ledger.py` and `review.py` like `ReviewMixin`; every method
-    here still assumes it is mixed into `Ledger` and relies on `self.conn`,
-    `self.settings`, `self._owe_wakeup`, `self.next_step`, `self._scores_for`,
-    and `self._thresholds`.
-    """
-
-    conn: sqlite3.Connection
-    settings: Settings
-    repo_root: Path
-
-    def _owe_wakeup(
-        self,
-        conn: sqlite3.Connection,
-        c: Caller,
-        to_agent_id: str | None,
-        reason: str,
-        pointer: str,
-    ) -> dict | None: ...
-
-    def next_step(self, wakeup: dict | None) -> str | None: ...
-
-    def _scores_for(self, review_id: int) -> dict[str, float]: ...
-
-    def _thresholds(self) -> Thresholds: ...
-
-    def _block_module_review_for_departures(
-        self, conn: sqlite3.Connection, module_id: int
-    ) -> None: ...
-
-    def _block_phase_review_for_departures(
-        self, conn: sqlite3.Connection, phase_id: int
-    ) -> None: ...
-
+class OversightMixin(LedgerHost):
     # -- Shared helpers -----------------------------------------------------
 
     def _latest_role_agent(
@@ -95,7 +56,7 @@ class OversightMixin:
     ) -> bool:
         row = conn.execute(
             "SELECT 1 FROM test_runs t JOIN agents a ON a.agent_id = t.agent_id "
-            "WHERE t.exit_code = 0 AND t.failed = 0 AND t.skipped = 0 AND "
+            f"WHERE {_CLEAN_TEST_RUN} AND "
             "((t.scope = 'module' AND a.module_id = ?) OR (t.scope = 'phase' AND a.phase_id = ?)) "
             "AND (? IS NULL OR t.created_at >= ?) LIMIT 1",
             (module_id, phase_id, after, after),
@@ -107,8 +68,8 @@ class OversightMixin:
     ) -> bool:
         row = conn.execute(
             "SELECT 1 FROM test_runs t JOIN agents a ON a.agent_id = t.agent_id "
-            "WHERE t.run_id = ? AND t.scope = 'full' AND a.role = 'oracle' AND t.exit_code = 0 "
-            "AND t.failed = 0 AND t.skipped = 0 AND (? IS NULL OR t.created_at >= ?) LIMIT 1",
+            f"WHERE t.run_id = ? AND t.scope = 'full' AND a.role = 'oracle' AND {_CLEAN_TEST_RUN} "
+            "AND (? IS NULL OR t.created_at >= ?) LIMIT 1",
             (run_id, after, after),
         ).fetchone()
         return row is not None
@@ -121,16 +82,12 @@ class OversightMixin:
         ).fetchone()
         if handoff is None or handoff["self_review_id"] is None:
             return []
-        lead_review = conn.execute(
-            "SELECT * FROM reviews WHERE file_id = ? AND kind = 'lead' AND created_at >= ? "
-            "ORDER BY review_id DESC LIMIT 1",
-            (file_id, handoff["created_at"]),
-        ).fetchone()
+        lead_review = latest_lead_review(conn, file_id, handoff["created_at"])
         if lead_review is None:
             return []
         self_scores = self._scores_for(handoff["self_review_id"])
         lead_scores = self._scores_for(lead_review["review_id"])
-        return rubric.disagreements(self_scores, lead_scores, self._thresholds())
+        return rubric.disagreements(self_scores, lead_scores, self.settings.rubric)
 
     def _require_module_ready_for_review(
         self,
@@ -139,7 +96,7 @@ class OversightMixin:
         phase_id: int,
         disagreement_notes: dict[str, str],
     ) -> None:
-        files = _rows(conn.execute("SELECT * FROM files WHERE module_id = ?", (module_id,)))
+        files = dict_rows(conn.execute("SELECT * FROM files WHERE module_id = ?", (module_id,)))
         not_ready = [
             f["path"] for f in files if f["state"] not in ("approved", "incomplete", "superseded")
         ]
@@ -168,7 +125,7 @@ class OversightMixin:
             )
 
     def _require_phase_modules_reviewed(self, conn: sqlite3.Connection, phase_id: int) -> None:
-        modules = _rows(
+        modules = dict_rows(
             conn.execute("SELECT module_id FROM modules WHERE phase_id = ?", (phase_id,))
         )
         missing = []
@@ -203,7 +160,7 @@ class OversightMixin:
 
         untested = [
             f"file {f['file_id']} ({f['path']})"
-            for f in _rows(
+            for f in dict_rows(
                 conn.execute(
                     "SELECT f.* FROM files f JOIN modules m ON m.module_id = f.module_id "
                     "WHERE m.phase_id = ? AND f.state IN ('approved', 'incomplete') "
@@ -222,18 +179,14 @@ class OversightMixin:
                 "claim supersedes the old one"
             )
 
-        target = self._thresholds().target
+        target = self.settings.rubric.target
         missing_low = []
         for file_row in conn.execute(
             "SELECT f.* FROM files f JOIN modules m ON m.module_id = f.module_id "
             "WHERE m.phase_id = ?",
             (phase_id,),
         ).fetchall():
-            lead_review = conn.execute(
-                "SELECT * FROM reviews WHERE file_id = ? AND kind = 'lead' "
-                "ORDER BY review_id DESC LIMIT 1",
-                (file_row["file_id"],),
-            ).fetchone()
+            lead_review = latest_lead_review(conn, file_row["file_id"])
             if lead_review is None:
                 continue
             scores = self._scores_for(lead_review["review_id"])
@@ -245,6 +198,58 @@ class OversightMixin:
                 f"low_score_notes needs a non-empty note keyed by file_id for {missing_low}, "
                 "whose latest lead review has a dimension below the rubric target"
             )
+
+    def _record_review(
+        self,
+        conn: sqlite3.Connection,
+        c: Caller,
+        *,
+        kind: str,
+        scope: dict[str, int],
+        subject: sqlite3.Row | None,
+        outcome: str,
+        notes: str,
+        details_notes: dict[str, dict[str, str]],
+        scores: list[dict] | None,
+        ready: Callable[[], None],
+        reopen: tuple[str, int],
+        pointer: str,
+    ) -> tuple[int | None, dict | None, bool]:
+        review_scores: list[dict] = []
+        wakeup = None
+        subject_ended = False
+        if outcome == "accepted":
+            ready()
+            review_scores = _review_scores_json(scores)
+        else:
+            conn.execute(reopen[0], (reopen[1],))
+            if subject is not None and subject["ended_at"] is None:
+                wakeup = self._owe_wakeup(conn, c, subject["agent_id"], f"{kind}_review", pointer)
+            else:
+                subject_ended = True
+        columns = {
+            **scope,
+            "reviewer_agent_id": c.agent_id,
+            "subject_agent_id": subject["agent_id"] if subject is not None else None,
+            "kind": "manager" if kind == "module" else "oracle",
+            "outcome": outcome,
+            "notes": notes,
+            "details_json": json.dumps({**details_notes, "review_scores": review_scores}),
+        }
+        cur = conn.execute(
+            f"INSERT INTO reviews ({', '.join(columns)}) VALUES ({in_clause(columns)})",
+            tuple(columns.values()),
+        )
+        return cur.lastrowid, wakeup, subject_ended
+
+    def _review_result(
+        self, review_id: int | None, outcome: str, ended_key: str, ended: bool, wakeup: dict | None
+    ) -> dict:
+        result = row_dict(self.conn, "reviews", "review_id", review_id)
+        if outcome == "returned":
+            result[ended_key] = ended
+            result["next"] = self.next_step(wakeup)
+        return result
 
     # -- Manager review of a module ------------------------------------------
 
@@ -260,11 +265,8 @@ class OversightMixin:
     ) -> dict:
         if outcome not in ("accepted", "returned"):
             raise LedgerError(f"unknown module_review outcome {outcome!r}")
-        disagreement_notes = disagreement_notes or {}
-        review_scores: list[dict] = []
+        file_notes = disagreement_notes or {}
 
-        wakeup = None
-        lead_ended = False
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
             require_role(c, "manager")
@@ -275,53 +277,24 @@ class OversightMixin:
                 raise LedgerError(f"unknown module_id {module_id!r}")
             if c.phase_id != module_row["phase_id"]:
                 raise LedgerError(f"{caller!r} is not the Manager of this module's phase")
-
-            lead_row = self._latest_role_agent(conn, module_id=module_id, role="lead")
-
-            if outcome == "accepted":
-                self._require_module_ready_for_review(
-                    conn, module_id, module_row["phase_id"], disagreement_notes
-                )
-                review_scores = _review_scores_json(scores)
-            else:
-                conn.execute(
-                    "UPDATE modules SET state = 'returned' WHERE module_id = ?", (module_id,)
-                )
-                if lead_row is not None and lead_row["ended_at"] is None:
-                    wakeup = self._owe_wakeup(
-                        conn,
-                        c,
-                        lead_row["agent_id"],
-                        "module_review",
-                        f"Module {module_id} was returned; read the review in the ledger.",
-                    )
-                else:
-                    lead_ended = True
-
-            cur = conn.execute(
-                "INSERT INTO reviews (module_id, phase_id, reviewer_agent_id, subject_agent_id, "
-                "kind, outcome, notes, details_json) VALUES (?, ?, ?, ?, 'manager', ?, ?, ?)",
-                (
-                    module_id,
-                    module_row["phase_id"],
-                    c.agent_id,
-                    lead_row["agent_id"] if lead_row is not None else None,
-                    outcome,
-                    notes,
-                    json.dumps(
-                        {"disagreement_notes": disagreement_notes, "review_scores": review_scores}
-                    ),
+            review_id, wakeup, ended = self._record_review(
+                conn,
+                c,
+                kind="module",
+                scope={"module_id": module_id, "phase_id": module_row["phase_id"]},
+                subject=self._latest_role_agent(conn, module_id=module_id, role="lead"),
+                outcome=outcome,
+                notes=notes,
+                details_notes={"disagreement_notes": file_notes},
+                scores=scores,
+                ready=lambda: self._require_module_ready_for_review(
+                    conn, module_id, module_row["phase_id"], file_notes
                 ),
+                reopen=("UPDATE modules SET state = 'returned' WHERE module_id = ?", module_id),
+                pointer=f"Module {module_id} was returned; read the review in the ledger.",
             )
-            review_id = cur.lastrowid
 
-        result = dict(
-            self.conn.execute("SELECT * FROM reviews WHERE review_id = ?", (review_id,)).fetchone()
-        )
-        if outcome == "returned":
-            result["lead_ended"] = lead_ended
-            result["next"] = self.next_step(wakeup)
-        return result
+        return self._review_result(review_id, outcome, "lead_ended", ended, wakeup)
 
     # -- Oracle review of a phase --------------------------------------------
 
@@ -337,11 +310,8 @@ class OversightMixin:
     ) -> dict:
         if outcome not in ("accepted", "returned"):
             raise LedgerError(f"unknown phase_review outcome {outcome!r}")
-        low_score_notes = low_score_notes or {}
-        review_scores: list[dict] = []
+        file_notes = low_score_notes or {}
 
-        wakeup = None
-        manager_ended = False
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
             require_role(c, "oracle")
@@ -352,45 +322,19 @@ class OversightMixin:
                 raise LedgerError(f"unknown phase_id {phase_id!r}")
             if phase_row["state"] != "handed_up":
                 raise LedgerError(f"phase {phase_id} is {phase_row['state']!r}, not handed_up")
-
-            manager_row = self._latest_role_agent(conn, phase_id=phase_id, role="manager")
-
-            if outcome == "accepted":
-                self._require_phase_ready_for_review(conn, phase_row, low_score_notes)
-                review_scores = _review_scores_json(scores)
-            else:
-                conn.execute("UPDATE phases SET state = 'working' WHERE phase_id = ?", (phase_id,))
-                if manager_row is not None and manager_row["ended_at"] is None:
-                    wakeup = self._owe_wakeup(
-                        conn,
-                        c,
-                        manager_row["agent_id"],
-                        "phase_review",
-                        f"Phase {phase_id} was returned; read the review in the ledger.",
-                    )
-                else:
-                    manager_ended = True
-
-            cur = conn.execute(
-                "INSERT INTO reviews (phase_id, reviewer_agent_id, subject_agent_id, kind, "
-                "outcome, notes, details_json) VALUES (?, ?, ?, 'oracle', ?, ?, ?)",
-                (
-                    phase_id,
-                    c.agent_id,
-                    manager_row["agent_id"] if manager_row is not None else None,
-                    outcome,
-                    notes,
-                    json.dumps(
-                        {"low_score_notes": low_score_notes, "review_scores": review_scores}
-                    ),
-                ),
+            review_id, wakeup, ended = self._record_review(
+                conn,
+                c,
+                kind="phase",
+                scope={"phase_id": phase_id},
+                subject=self._latest_role_agent(conn, phase_id=phase_id, role="manager"),
+                outcome=outcome,
+                notes=notes,
+                details_notes={"low_score_notes": file_notes},
+                scores=scores,
+                ready=lambda: self._require_phase_ready_for_review(conn, phase_row, file_notes),
+                reopen=("UPDATE phases SET state = 'working' WHERE phase_id = ?", phase_id),
+                pointer=f"Phase {phase_id} was returned; read the review in the ledger.",
             )
-            review_id = cur.lastrowid
 
-        result = dict(
-            self.conn.execute("SELECT * FROM reviews WHERE review_id = ?", (review_id,)).fetchone()
-        )
-        if outcome == "returned":
-            result["manager_ended"] = manager_ended
-            result["next"] = self.next_step(wakeup)
-        return result
+        return self._review_result(review_id, outcome, "manager_ended", ended, wakeup)

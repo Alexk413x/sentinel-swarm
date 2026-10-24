@@ -5,10 +5,13 @@ import re
 import subprocess
 import sys
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Literal
 
 from . import setup
+from .sessions import child_env, claude_binary, dev_channel_args
+from .sessions import plugin_load_problem as _plugin_load_problem
 
 Mode = Literal["interactive", "bg", "headless"]
 
@@ -41,30 +44,6 @@ def _session_options(repo: Path, role: str, model: str | None, ledger_url: str) 
     )
 
 
-def _claude_binary() -> str:
-    from .sessions import claude_binary
-
-    return claude_binary()
-
-
-def _plugin_load_problem(repo: Path) -> str | None:
-    from .sessions import plugin_load_problem
-
-    return plugin_load_problem(repo)
-
-
-def _child_env() -> dict[str, str]:
-    from .sessions import child_env
-
-    return child_env()
-
-
-def _dev_channel_args() -> list[str]:
-    from .sessions import dev_channel_args
-
-    return dev_channel_args()
-
-
 def repo_slug(repo: Path) -> str:
     return re.sub(r"[^a-z0-9]+", "-", repo.resolve().name.lower()).strip("-") or "repo"
 
@@ -80,8 +59,8 @@ def oracle_command(
     repo: Path, prompt: str, ledger_url: str, mode: Mode, name: str | None = None
 ) -> list[str]:
     options = _session_options(repo, "oracle", _oracle_model(repo), ledger_url)
-    claude = _claude_binary()
-    dev = _dev_channel_args()
+    claude = claude_binary()
+    dev = dev_channel_args()
     if mode == "headless":
         return [claude, "-p", *options, "--output-format", "stream-json", "--verbose", *dev]
     # The prompt goes first: --allowedTools takes a space-separated list and swallows a
@@ -101,15 +80,16 @@ def _needs_setup(repo: Path) -> bool:
 
 
 def _run(command: list[str], repo: Path, prompt: str, mode: Mode, transcript: Path | None) -> int:
-    if mode != "headless":
-        return subprocess.run(command, cwd=repo, env=_child_env()).returncode
-    payload = prompt.encode("utf-8")
-    if transcript is None:
-        return subprocess.run(command, input=payload, cwd=repo, env=_child_env()).returncode
-    transcript.parent.mkdir(parents=True, exist_ok=True)
-    with transcript.open("wb") as out:
+    headless = mode == "headless"
+    if headless and transcript is not None:
+        transcript.parent.mkdir(parents=True, exist_ok=True)
+    with transcript.open("wb") if headless and transcript is not None else nullcontext() as out:
         return subprocess.run(
-            command, input=payload, stdout=out, cwd=repo, env=_child_env()
+            command,
+            input=prompt.encode("utf-8") if headless else None,
+            stdout=out,
+            cwd=repo,
+            env=child_env(),
         ).returncode
 
 

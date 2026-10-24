@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .identity import LedgerError
+from .paths import config_dir, unlink_quiet
 
 _GIT_TIMEOUT_S = 10
 _FILE_LOCK_POLL_S = 0.05
@@ -21,9 +22,7 @@ class LockHeldError(LedgerError):
 
 
 def _locks_dir() -> Path:
-    raw = os.environ.get("CLAUDE_CONFIG_DIR")
-    base = Path(raw) if raw else Path.home() / ".claude"
-    return base / "sentinel-swarm" / "locks"
+    return config_dir() / "sentinel-swarm" / "locks"
 
 
 def _git_common_dir(repo_root: Path) -> Path | None:
@@ -116,19 +115,13 @@ def release(repo_root: Path, run_id: int | None = None) -> None:
         return
     if run_id is not None and existing.get("run_id") != run_id:
         return
-    try:
-        _lock_path(repo_root).unlink()
-    except OSError:
-        pass
+    unlink_quiet(_lock_path(repo_root))
 
 
 def release_owned(repo_root: Path, server_pid: int) -> None:
     existing = read_lock(repo_root)
     if existing is not None and existing.get("server_pid") == server_pid:
-        try:
-            _lock_path(repo_root).unlink()
-        except OSError:
-            pass
+        unlink_quiet(_lock_path(repo_root))
 
 
 @contextmanager

@@ -46,6 +46,7 @@ PLUGIN = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PLUGIN / "mcp" / "src"))
 from swarm_ledger import auth, lock, sessions  # noqa: E402
 from swarm_ledger.ledger import Ledger  # noqa: E402
+from swarm_ledger.pool import base_python  # noqa: E402
 from swarm_ledger.serve import REPO_HEADER, server_info_path  # noqa: E402
 
 MAX_AGENTS = 16
@@ -426,10 +427,6 @@ async def load(root: Path, server: dict[str, Any], coders: list[dict[str, str]],
     }
 
 
-def _base_python() -> str:
-    return getattr(sys, "_base_executable", None) or sys.executable
-
-
 def shim_hook(root: Path, coder: dict[str, str], reps: int) -> dict[str, Any]:
     """The hook as a role session runs it: one shim process per hook call, server fast path."""
     shim = root / ".sentinel-swarm" / "hook.py"
@@ -445,23 +442,22 @@ def shim_hook(root: Path, coder: dict[str, str], reps: int) -> dict[str, Any]:
     for _ in range(reps):
         started = time.perf_counter()
         proc = subprocess.Popen(
-            [_base_python(), str(shim), "hook", "pre_write"],
+            [base_python(), str(shim), "hook", "pre_write"],
             cwd=root,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             creationflags=NO_WINDOW,
         )
-        out, err = proc.communicate(payload)
+        _, err = proc.communicate(payload)
         times.append((time.perf_counter() - started) * 1000)
         if proc.returncode != 0:
             raise RuntimeError(f"hook shim failed: {err.decode(errors='replace')[:300]}")
         if sys.platform == "win32":
             handle = int(proc._handle)  # type: ignore[attr-defined]
             peaks.append(_win_counters(handle).PeakWorkingSetSize / 2**20)
-        del out
     return {
-        "python": _base_python(),
+        "python": base_python(),
         **_stats(times),
         "peak_working_set_mb": round(max(peaks), 1) if peaks else None,
     }

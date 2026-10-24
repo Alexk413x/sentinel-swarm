@@ -84,12 +84,13 @@ the heartbeat, the current activity, and the transcript path, sets an idle agent
 working, and records each `Grep` and `Glob` as a graph gap. The mod and the shim stamp the input with the time it fired, so a `post_activity` that
 lands after the agent's Stop hook does not set the agent working again.
 
-The Driver is the one role whose `swarm-driver.md` carries `Agent` in its `tools` and
-gets a shell: `pre_agent` allows only its calls to cartographer's `map-driver` and
-`map-reviewer` subagents and denies every other `subagent_type`, and `pre_shell` allows
-only a command that starts with the profile's `build_command`. Every other role's file
-still has no `Agent` tool and no shell, so `pre_agent` and `pre_shell` deny them
-unconditionally, as before.
+The Driver is the one role whose `swarm-driver.md` carries `Agent` in its `tools`:
+`pre_agent` allows only its calls to cartographer's `map-driver` and `map-reviewer`
+subagents and denies every other `subagent_type`. `pre_shell` allows the Driver only a
+command that starts with the profile's `build_command`, and a Coder only a command that
+starts with the profile's test, build, or lint command or read-only git. No other role's
+file has a shell, and none has an `Agent` tool, so `pre_agent` and `pre_shell` deny them
+unconditionally.
 
 `pre_send_message` denies a `SendMessage` whose `to` is not the `session_name` of a
 registered agent of the caller's own run, and names the valid session names in the

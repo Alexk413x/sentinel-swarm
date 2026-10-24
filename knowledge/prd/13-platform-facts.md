@@ -147,7 +147,7 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   uv venv linked from uv's cache. In its runs, a plugin whose `dependencies` are not
   installed loads no skill. (2026-09-28, Claude Code 2.1.284)
 - Claude Code 2.1.294, mods (function hooks) in role sessions, from a throwaway test
-  mod (`plans/mods-live-check.md`): a plugin's module loads in a
+  mod: a plugin's module loads in a
   `claude --bg --agent swarm-coder --strict-mcp-config` session in a trusted folder,
   from `--plugin-dir` and from a project-scope install. `claude --bg` refuses an
   untrusted folder; `claude -p --plugin-dir` runs the mod there. (2026-10-08)
@@ -198,3 +198,10 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
 - Claude Code 2.1.295 refuses to load a plugin whose `dependencies` entry is not
   installed for the project. `claude plugin list` shows "✘ failed to load — Dependency
   <id> is not installed", and the plugin's mod and skills do not run. (2026-10-08)
+- Tool search is on by default: a session lists tool names only, and a tool's schema
+  loads when a `ToolSearch` `select:` names it. From codebase-kg's measurements, not
+  checked here. (2026-10-07)
+- A mod hook has a 10-second budget; time spent in `$` calls does not count against it. A
+  hook that throws or outruns the budget is skipped and the tool runs, unless the hook
+  carries a `.catch`. From the plugin-authoring reference, not yet checked in a live
+  session. (2026-10-08)

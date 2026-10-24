@@ -22,10 +22,19 @@ KG_TOOLS = (
 )
 KG_CLI_TOOLS = ("kg_parity_gaps", "kg_stats", "kg_validate")
 LEDGER_PREFIX = "mcp__swarm-ledger__"
-LEDGER_MODULES = ("ledger", "review", "agreements", "oversight", "drive", "repo")
+LEDGER_MODULES = (
+    "ledger",
+    "review",
+    "report",
+    "agreements",
+    "oversight",
+    "drive",
+    "repo",
+    "messages",
+    "issues",
+)
 ALL_ROLES = frozenset(ROLES)
 SYNC_POST_MATCHER = "SendMessage|PushNotification|Monitor|Write|Edit|MultiEdit|NotebookEdit"
-ASYNC_EVENTS = frozenset({"post_activity"})
 HOOK_TABLE = (
     ("SessionStart", None, "session_start", ALL_ROLES),
     ("PreToolUse", "Agent", "pre_agent", ALL_ROLES),
@@ -60,11 +69,6 @@ def _template(root: Path, role: str) -> Path:
 
 def _tools(fields: dict) -> list[str]:
     return [t.strip() for t in str(fields.get("tools", "")).split(",") if t.strip()]
-
-
-def _hook_command(event: str) -> str:
-    shim = ".sentinel-swarm/hook.py hook"
-    return f"python3 {shim} {event} || python {shim} {event}"
 
 
 def test_plugin_manifest_parses(repo_root: Path):
@@ -163,7 +167,8 @@ def _required_roles() -> dict[str, set[str]]:
             checks = [
                 node
                 for node in ast.walk(method)
-                if isinstance(node, ast.Call) and ast.unparse(node.func) == "require_role"
+                if isinstance(node, ast.Call)
+                and ast.unparse(node.func) in ("require_role", "require_run")
             ]
             if not checks:
                 continue
@@ -418,22 +423,6 @@ def test_the_ledger_imports_only_the_standard_library(repo_root: Path):
         assert not extra, f"{path} imports {extra}"
     pyproject = (repo_root / "mcp" / "pyproject.toml").read_text(encoding="utf-8")
     assert "\ndependencies = []\n" in pyproject
-
-
-def test_nothing_shipped_names_the_removed_channel(repo_root: Path):
-    shipped = [
-        *(repo_root / "templates").rglob("*.md"),
-        *(repo_root / "templates").rglob("*.example"),
-        repo_root / "templates" / "hook_shim.py",
-        *(repo_root / "skills").rglob("*.md"),
-        *(repo_root / "hooks").iterdir(),
-        *(repo_root / ".claude-plugin").glob("*.json"),
-    ]
-    for path in shipped:
-        text = path.read_text(encoding="utf-8")
-        for word in ("swarm-events", "wake_transport", "development channel"):
-            assert word not in text, f"{path} names {word}"
-    assert not (repo_root / "mcp" / "src" / "swarm_ledger" / "bridge.py").exists()
 
 
 @pytest.mark.parametrize("name", SKILLS)

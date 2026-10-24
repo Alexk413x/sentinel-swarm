@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
+from helpers import ledger_for, make_host
 
 from swarm_ledger import serve, sessions, wake, watch, watchdog
 from swarm_ledger.db import write_tx
@@ -19,7 +20,6 @@ from swarm_ledger.ledger import Ledger
 from swarm_ledger.settings import WatchdogSettings, load_settings
 
 ORACLE = "sess-oracle"
-SETTINGS = WatchdogSettings()
 
 
 class FakeClaude:
@@ -57,22 +57,14 @@ def claude(monkeypatch: pytest.MonkeyPatch) -> FakeClaude:
 
 
 @pytest.fixture
-def host(tmp_path: Path, repo_root: Path) -> Path:
-    root = tmp_path / "host"
-    (root / ".git").mkdir(parents=True)
-    claude_dir = root / ".claude"
-    claude_dir.mkdir()
-    template = (repo_root / "templates" / "sentinel-swarm.local.md.example").read_text(
-        encoding="utf-8"
-    )
-    (claude_dir / "sentinel-swarm.local.md").write_text(template, encoding="utf-8")
-    return root
+def host(tmp_path: Path) -> Path:
+    return make_host(tmp_path / "host")
 
 
 @pytest.fixture
 def ledger(host: Path, claude: FakeClaude) -> Ledger:
     del claude
-    return Ledger(host, db_path=host / ".sentinel-swarm" / "ledger.db")
+    return ledger_for(host)
 
 
 @pytest.fixture
@@ -409,12 +401,12 @@ def test_a_run_waiting_on_the_user_is_not_stalled(
 ) -> None:
     _run_id(ledger)
     _agent(ledger, "sess-lead-1", "lead", "idle", started=now)
-    asked = ledger.directive_submit("user-chat", "alex", "Which database?")
+    asked = ledger.directive_submit("user_chat", "alex", "Which database?")
     ledger.directive_resolve("oracle", ORACLE, asked["directive_id"], "needs_user", "Ask Alex.")
 
     assert _scan(ledger, claude, now) == []
 
-    ledger.directive_submit("user-chat", "alex", "SQLite.", reply_to=asked["directive_id"])
+    ledger.directive_submit("user_chat", "alex", "SQLite.", reply_to=asked["directive_id"])
     assert _kinds(_scan(ledger, claude, now)) == [("oracle", "stalled")]
 
 
@@ -649,8 +641,9 @@ def test_no_wake_while_the_oracle_runs_or_after_the_listener_notified_it(
     assert claude.resumed == []
 
 
+@pytest.mark.usefixtures("claude")
 def test_the_server_exits_after_the_idle_window_with_no_active_run(
-    ledger: Ledger, claude: FakeClaude, now: datetime
+    ledger: Ledger, now: datetime
 ) -> None:
     exits = Exits()
     dog = _dog(ledger, exits, idle_exit_minutes=15)
@@ -687,9 +680,8 @@ def test_a_paused_run_keeps_the_server_while_one_of_its_sessions_runs(
     assert exits.count == 1
 
 
-def test_an_active_run_never_idles_the_server_out(
-    ledger: Ledger, claude: FakeClaude, now: datetime
-) -> None:
+@pytest.mark.usefixtures("claude")
+def test_an_active_run_never_idles_the_server_out(ledger: Ledger, now: datetime) -> None:
     _run_id(ledger)
     exits = Exits()
     dog = _dog(ledger, exits)
@@ -766,7 +758,7 @@ def test_the_listener_prints_each_watchdog_directive_once_and_beats(
 ) -> None:
     _run_id(ledger)
     ledger.directive_submit("watchdog", "watchdog", "Watchdog finding stuck:\nline two")
-    ledger.directive_submit("user-chat", "alex", "Not for the listener.")
+    ledger.directive_submit("user_chat", "alex", "Not for the listener.")
 
     keep, lines = watch.poll(ledger.conn, now)
     assert keep is True

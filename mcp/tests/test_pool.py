@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -255,10 +256,8 @@ def test_a_dead_worker_fails_only_its_own_call(host: Path, workers: Pool) -> Non
     for pid in workers.pids():
         os.kill(pid, 9)
     time.sleep(0.2)
-    try:
+    with contextlib.suppress(WorkerError):
         workers.call(request)
-    except WorkerError:
-        pass
     assert workers.call(request)["result"] == str(host)
 
 
