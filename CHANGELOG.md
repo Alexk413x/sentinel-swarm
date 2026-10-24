@@ -2,6 +2,13 @@
 
 All notable changes to the `sentinel-swarm` plugin.
 
+## [0.3.1] — 2026-10-23 — release under the intended version number
+
+### Changed
+
+- The code is the same as 0.3.0. Install 0.3.1 instead of 0.3.0; see 0.3.0 below for what
+  changed since 0.2.2.
+
 ## [0.3.0] — 2026-10-23 — cleanup of dead code, duplicates, and the ledger upgrade path
 
 ### Removed
