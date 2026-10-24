@@ -1,5 +1,8 @@
 # Open items
 
+- **Mod tests on Linux.** `hooks/register.test.ts` builds Windows-style host paths, so 15 of
+  its 18 tests fail on Ubuntu and CI skips `claude plugin test .`. Make the paths
+  platform-neutral, then add the command to the `validate` job in `ci.yml`.
 - **macOS.** The code has POSIX branches, but no live run has happened on a Mac. Run one
   smoke test there.
 - **Watchdog rescue of a dropped API call.** The idle-stall check is built to catch a

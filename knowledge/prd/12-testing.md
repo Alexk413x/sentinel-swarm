@@ -18,10 +18,11 @@ claude plugin test .
 claude plugin validate --strict .claude-plugin/plugin.json
 ```
 
-The repo ships no marketplace, so there is no marketplace to validate. CI runs the same
-two commands, and also runs the launcher and the frontmatter tests on Python 3.9, the oldest Python the ledger supports.
+The repo ships no marketplace, so there is no marketplace to validate. CI runs
+`claude plugin validate --strict` but not `claude plugin test .`, whose tests use
+Windows paths and fail on Linux. It also runs the launcher and the frontmatter tests on Python 3.9, the oldest Python the ledger supports.
 
-The local run is the gate. CI runs the same checks as a backup. The dev instructions
+The local run is the gate. CI runs the other checks as a backup. The dev instructions
 live in `.claude/CLAUDE.md`, not at the plugin root, because the validator warns about a
 root `CLAUDE.md`, which a plugin install does not load.
 
