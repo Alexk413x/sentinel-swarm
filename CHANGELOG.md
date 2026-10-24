@@ -2,6 +2,29 @@
 
 All notable changes to the `sentinel-swarm` plugin.
 
+## [0.3.0] — 2026-10-23 — cleanup of dead code, duplicates, and the ledger upgrade path
+
+### Removed
+
+- The ledger no longer upgrades a ledger from an earlier release. A ledger created before
+  0.3.0 can lack columns and tables, and the ledger fails on them. Delete
+  `.sentinel-swarm/ledger.db` in the host repo to start fresh.
+- `directive_submit` no longer accepts the `user-chat` and `outside-session` spellings. Use
+  `user_chat` and `outside_session`.
+- The `tracking` setting, which nothing read, and the `agents` columns `phase_at_start`,
+  `context_pct_peak`, `context_pct_at_end`, and `duration_ms`, which nothing wrote.
+- The `agent_type` argument of `brief_ack`.
+
+### Changed
+
+- The ledger code is split into smaller modules (`report`, `messages`, `issues`, `host`,
+  `queries`, `paths`), and duplicated helpers in the ledger, the hooks, the watchdog, the
+  server, and the tests are merged. The tool catalog is unchanged except for `brief_ack`.
+- `same_path` returns false for an empty path or one it cannot read, `parent_chain` stops
+  on a parent cycle, and the report's duration no longer fails on a malformed timestamp.
+- The finished plans are folded into the PRD, and CI runs on pushes to `main` and on pull
+  requests only.
+
 ## [0.2.2] — 2026-10-14 — role sessions reach HTTP plugin servers by manifest path
 
 ### Fixed
