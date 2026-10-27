@@ -46,6 +46,7 @@ _LABELS = ("agents", "plugin", "stop", "--resume", "--bg")
 _DEAD = frozenset({"stopped", "exited", "crashed", "failed", "killed", "dead", "completed"})
 _TIMEOUT_S = 60.0
 _SPAWN_WAIT_S = 15.0
+_RESUME_WAIT_S = 15.0
 _POLL_S = 0.5
 
 
@@ -184,6 +185,31 @@ def spawn(prompt: str, name: str, options: list[str], cwd: Path) -> tuple[str, s
         f"session {name} ({bg_id}) did not appear in claude agents --json "
         f"within {_SPAWN_WAIT_S:.0f}s, so it was stopped"
     )
+
+
+def resumed_entry(sessions: list[dict], bg_id: str | None, name: str | None) -> dict | None:
+    if bg_id:
+        entry = next((s for s in sessions if s.get("id") == bg_id and s.get("sessionId")), None)
+        if entry is not None:
+            return entry
+    if not name:
+        return None
+    return next(
+        (s for s in sessions if s.get("name") == name and s.get("sessionId") and is_running(s)),
+        None,
+    )
+
+
+def wait_for_resumed(bg_id: str | None, name: str | None) -> str | None:
+    deadline = time.monotonic() + _RESUME_WAIT_S
+    while True:
+        with suppress(LedgerError):
+            entry = resumed_entry(list_sessions(), bg_id, name)
+            if entry is not None:
+                return str(entry["sessionId"])
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(_POLL_S)
 
 
 def stop(bg_id: str) -> None:

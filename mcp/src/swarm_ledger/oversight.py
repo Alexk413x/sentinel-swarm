@@ -21,6 +21,22 @@ def _review_scores_json(scores: list[dict] | None) -> list[dict]:
     return [{"dimension": s.dimension, "value": s.value, "reason": s.reason} for s in parsed]
 
 
+def _returned_message(
+    conn: sqlite3.Connection, label: str, reviewer: str, notes: str, file_notes: dict[str, str]
+) -> str:
+    lines = [f"{label} was returned by {reviewer}.", f"Notes: {notes}"]
+    if file_notes:
+        lines.append("Notes by file:")
+        for file_id, note in file_notes.items():
+            row = conn.execute(
+                "SELECT path FROM files WHERE file_id = ?",
+                (int(file_id) if str(file_id).isdigit() else None,),
+            ).fetchone()
+            where = f"file {file_id} ({row['path']})" if row is not None else f"file {file_id}"
+            lines.append(f"- {where}: {note}")
+    return "\n".join(lines)
+
+
 class OversightMixin(LedgerHost):
     # -- Shared helpers -----------------------------------------------------
 
@@ -213,6 +229,7 @@ class OversightMixin(LedgerHost):
         scores: list[dict] | None,
         ready: Callable[[], None],
         reopen: tuple[str, int],
+        returned_message: str,
         pointer: str,
     ) -> tuple[int | None, dict | None, bool]:
         review_scores: list[dict] = []
@@ -223,6 +240,11 @@ class OversightMixin(LedgerHost):
             review_scores = _review_scores_json(scores)
         else:
             conn.execute(reopen[0], (reopen[1],))
+            if subject is not None:
+                conn.execute(
+                    "INSERT INTO messages (run_id, from_name, to_name, body) VALUES (?, ?, ?, ?)",
+                    (c.run_id, c.name, subject["name"], returned_message),
+                )
             if subject is not None and subject["ended_at"] is None:
                 wakeup = self._owe_wakeup(conn, c, subject["agent_id"], f"{kind}_review", pointer)
             else:
@@ -241,6 +263,30 @@ class OversightMixin(LedgerHost):
             tuple(columns.values()),
         )
         return cur.lastrowid, wakeup, subject_ended
+
+    def returned_review(self, brief: dict) -> dict | None:
+        if brief["child_role"] == "manager" and brief["phase_id"] is not None:
+            where, key, kind = "phase_id", brief["phase_id"], "oracle"
+        elif brief["child_role"] == "lead" and brief["module_id"] is not None:
+            where, key, kind = "module_id", brief["module_id"], "manager"
+        else:
+            return None
+        row = self.conn.execute(
+            f"SELECT review_id, outcome, notes, details_json, created_at FROM reviews "
+            f"WHERE {where} = ? AND kind = ? ORDER BY review_id DESC LIMIT 1",
+            (key, kind),
+        ).fetchone()
+        if row is None or row["outcome"] != "returned":
+            return None
+        details = json.loads(row["details_json"] or "{}")
+        file_notes = details.get("low_score_notes") or details.get("disagreement_notes") or {}
+        return {
+            "review_id": row["review_id"],
+            "outcome": row["outcome"],
+            "notes": row["notes"],
+            "file_notes": file_notes,
+            "created_at": row["created_at"],
+        }
 
     def _review_result(
         self, review_id: int | None, outcome: str, ended_key: str, ended: bool, wakeup: dict | None
@@ -291,7 +337,10 @@ class OversightMixin(LedgerHost):
                     conn, module_id, module_row["phase_id"], file_notes
                 ),
                 reopen=("UPDATE modules SET state = 'returned' WHERE module_id = ?", module_id),
-                pointer=f"Module {module_id} was returned; read the review in the ledger.",
+                returned_message=_returned_message(
+                    conn, f"Module {module_id}", c.name, notes, file_notes
+                ),
+                pointer=f"Module {module_id} was returned; read why with message_inbox.",
             )
 
         return self._review_result(review_id, outcome, "lead_ended", ended, wakeup)
@@ -334,7 +383,10 @@ class OversightMixin(LedgerHost):
                 scores=scores,
                 ready=lambda: self._require_phase_ready_for_review(conn, phase_row, file_notes),
                 reopen=("UPDATE phases SET state = 'working' WHERE phase_id = ?", phase_id),
-                pointer=f"Phase {phase_id} was returned; read the review in the ledger.",
+                returned_message=_returned_message(
+                    conn, f"Phase {phase_id}", c.name, notes, file_notes
+                ),
+                pointer=f"Phase {phase_id} was returned; read why with message_inbox.",
             )
 
         return self._review_result(review_id, outcome, "manager_ended", ended, wakeup)

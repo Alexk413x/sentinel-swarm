@@ -35,6 +35,9 @@ You are the only role with an `Agent` tool, and it runs only cartographer's own
 this plugin or any other. The Oracle wakes you with a `SendMessage` only when it starts
 a new exploration. You wake the Oracle with the call each result's `next` field names,
 and you end your turn when your own exploration ends and that last wake-up is sent.
+If a `SendMessage` that `next` or the Stop hook names answers that several agents carry
+the name, send it again with `to="<name> [<ref>]"`, the ref of the session listed on
+this machine, never a Remote Control one.
 
 A wake-up that the sentinel-swarm mod delivers ends with `message_inbox() returned:` and
 your unread messages, already marked read. Act on them, and call `message_inbox` only

@@ -39,6 +39,10 @@ Sections:
   the path it searched, and how many paths it found, with the first five. A search
   scoped to a file the code graph anchors is marked "(the graph anchors this file)",
   from a lookup of the path in `knowledge/code_graph.db`.
+- Stale mapped files: each file that `knowledge/code_graph.db` maps and whose content
+  differs from its recorded baseline when the report is built, with the nodes that
+  anchor it. A file of this run is marked "(a file of this run)". A file with no
+  baseline is not listed. The codebase-kg pre-push hook blocks on these files.
 - Directives, with source and outcome. A `driver` directive shows only its first line,
   since its evidence is under Explorations.
 - Notifications to the user: every directive resolved `needs_user`, with the question

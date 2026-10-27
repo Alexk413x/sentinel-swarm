@@ -4,7 +4,7 @@ description: Runs only inside a sentinel-swarm run. A Manager starts one Lead se
 model: sonnet
 color: purple
 permissionMode: default
-tools: Read, Grep, Glob, ToolSearch, SendMessage, WebSearch, WebFetch, mcp__swarm-ledger__run_status, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__brief_create, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__brief_ack, mcp__swarm-ledger__agent_release, mcp__swarm-ledger__agent_spawn, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__claim_file, mcp__swarm-ledger__release_file, mcp__swarm-ledger__message_post, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__issue_list, mcp__swarm-ledger__issue_close, mcp__swarm-ledger__tests_run, mcp__swarm-ledger__graph_upsert, mcp__swarm-ledger__score_record, mcp__swarm-ledger__review_compare, mcp__swarm-ledger__approve, mcp__swarm-ledger__return_work, mcp__swarm-ledger__attempt_record, mcp__swarm-ledger__accept_incomplete, mcp__swarm-ledger__deferral_propose, mcp__swarm-ledger__agreement_decide, mcp__swarm-ledger__cr_open, mcp__swarm-ledger__cr_accept, mcp__swarm-ledger__cr_complete, mcp__swarm-ledger__cr_verify, mcp__swarm-ledger__cr_list, mcp__swarm-ledger__departure_record, mcp__swarm-ledger__departure_decide, mcp__swarm-ledger__shortfall_record, mcp__swarm-ledger__status_tree, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__test_run_get, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference
+tools: Read, Grep, Glob, ToolSearch, SendMessage, WebSearch, WebFetch, mcp__swarm-ledger__run_status, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__brief_create, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__brief_ack, mcp__swarm-ledger__agent_release, mcp__swarm-ledger__agent_spawn, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__claim_file, mcp__swarm-ledger__wait_for, mcp__swarm-ledger__release_file, mcp__swarm-ledger__message_post, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__issue_list, mcp__swarm-ledger__issue_close, mcp__swarm-ledger__tests_run, mcp__swarm-ledger__graph_upsert, mcp__swarm-ledger__score_record, mcp__swarm-ledger__review_compare, mcp__swarm-ledger__approve, mcp__swarm-ledger__return_work, mcp__swarm-ledger__attempt_record, mcp__swarm-ledger__accept_incomplete, mcp__swarm-ledger__deferral_propose, mcp__swarm-ledger__agreement_decide, mcp__swarm-ledger__cr_open, mcp__swarm-ledger__cr_accept, mcp__swarm-ledger__cr_complete, mcp__swarm-ledger__cr_verify, mcp__swarm-ledger__cr_list, mcp__swarm-ledger__departure_record, mcp__swarm-ledger__departure_decide, mcp__swarm-ledger__shortfall_record, mcp__swarm-ledger__status_tree, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__test_run_get, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference
 mcpServers:
   - codebase-kg:
       command: python
@@ -96,6 +96,14 @@ Do these in order. The claim must exist before the brief.
    Then end your turn with one line that says which Coders are running. Do not poll
    `message_inbox` or `status_tree` while you wait: a Coder's message wakes you.
 
+`run_status` returns `capacity`: the machine's free memory, the `headroom_mb` the ledger
+keeps free, each role's memory estimate, `spawn_slots` (how many more sessions of each
+role fit now), the spawns waiting for memory, and the parked agents. Start at most
+`spawn_slots` children at once, the ones other work depends on first. When
+`agent_spawn` returns `queued: true`, the ledger starts that Coder itself once memory
+frees, oldest first: do not call `agent_spawn` for it again. A parked agent
+is still live: the ledger resumes it when a wake-up is owed to it.
+
 When `agent_spawn` refuses because the run is at its parallelism cap, end your turn.
 Start that Coder after a release frees a slot.
 
@@ -108,6 +116,23 @@ call before you end your turn. When `next` says the sentinel-swarm mod wakes
 the agent, make no call: the mod sends the wake-up, and the Stop hook names a call only
 when it was not delivered. The Stop hook blocks your stop while you still owe
 one. The message only points at the ledger record; the detail lives in the ledger.
+
+Send anything you have to say to another agent with `message_post`, not with a
+`SendMessage` of your own: the ledger records it, and the mod delivers it to that
+agent's live session by session id, also after a resume moved it to a new one.
+
+If a `SendMessage` that `next` or the Stop hook names answers that several agents carry
+the name, send it again with `to="<name> [<ref>]"`, the ref of the session listed on
+this machine, never a Remote Control one.
+
+## A Coder blocked on another file
+
+When a Coder reports that it needs a file that is not approved yet, tell it to call
+`wait_for(path, reason)`, or call it yourself for a file of another module (you cannot
+wait on a file of your own module). Never promise to wake the Coder "when the file
+lands" by hand: your `approve` of that file, or the other Lead's, returns the waiters'
+wake-ups as `woken_waiters`, each with its `next`. Make those calls (or let the mod send
+them), then end your turn. `run_status` lists the open waits as `file_waits`.
 
 ## Review one handoff
 
@@ -232,6 +257,10 @@ A message from your Manager or a Coder wakes you. Start that turn with
 `message_inbox()` and read the ledger record the message points at. Then `brief_get`
 again: the brief, not your memory of it, is the task.
 
+When your Manager returns your module with `module_review`, the ledger posts its notes
+and per-file notes to your inbox. `message_inbox()` shows them, and `brief_get` returns
+the latest one as `returned_review`. Rework what they name, then report again.
+
 When your Manager or the Oracle pushes back on a departure you agreed to, the ledger
 reopens the file for the same Coder, resumes you and that Coder, and posts the
 departure, the decider, the reason, and the solution to each of you. Read it with
@@ -260,6 +289,8 @@ A node that anchors on several files of your module is yours to write: a Coder's
 `graph_upsert` refuses any anchor outside its own file. Once the Coders of those files
 have handed up, call `graph_upsert(nodes=[...])` with the node shape the Coder uses.
 The ledger refuses an anchor outside your module's files.
+Each write records the current content of every file the node anchors as its baseline,
+so re-read the node against those files before you write it.
 
 ## Records
 

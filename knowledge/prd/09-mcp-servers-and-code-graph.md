@@ -144,10 +144,30 @@ find what exists while many agents change the code at once. The graph file,
   functions or classes is anchored by its path alone: `"anchors": ["<path>"]`. A Coder
   never adds code only to have an anchor.
 - The Coder updates the graph before its handoff, and again after any later change.
+- **Baselines:** codebase-kg records one content hash per mapped file (its `source`
+  baseline, SCHEMA.md section 6.3) and reports a file whose content differs as stale;
+  its pre-push hook blocks on a stale file. `graph_upsert` sends every node with
+  `"rebaseline": true`, so the write re-hashes every file the node anchors. A write
+  states that the caller re-read the node against its files. An unchanged node that is
+  not written again keeps its old baseline, which is how a reworked file goes stale.
 - **Graph current at handoff:** a node anchors on the file, each anchored symbol appears
   in the file as a whole word, and, for a Python file, every public top-level function
-  and class is anchored. The file-content hash is a review signal for the Lead and the
-  git hooks, not a gate.
+  and class is anchored. The file and its test file are also not stale: neither differs
+  from its recorded baseline. A file with no baseline is not stale. `handoff_submit`
+  refuses a stale file and names its nodes; the Coder re-reads each node against the
+  file and calls `graph_upsert` for it again. A node that spans files is the Lead's to
+  update. The ledger reads the baseline from the graph's `source` table and hashes the
+  file the way codebase-kg does (CRLF folded to LF, then SHA-256), in process. It does
+  not re-baseline at `approve`: the gate has just held for the exact content the Lead
+  reviewed, and the Lead has no edit tool.
+- **Ownership of a node edit:** `graph_upsert` checks both the anchors a node carries and
+  the anchors the graph already holds for its id against the caller's files. A node
+  without `anchors` counts as anchored where the graph already anchors it. So a Coder
+  cannot edit, and so re-baseline, another file's node by leaving the anchors out,
+  sending empty anchors, or re-anchoring it on its own file.
+- **Stale mapped files in the report:** the report lists every mapped file that is
+  stale when it is built, with its nodes, and marks the files of the run. See
+  [10-report-and-costs.md](10-report-and-costs.md).
 - **Test-file gate:** `phase_review(accepted)` refuses an approved or incomplete file
   with no test file when the graph anchors any symbol in it. Test anchors in the graph
   do not count as tests.

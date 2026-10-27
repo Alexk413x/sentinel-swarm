@@ -48,6 +48,10 @@ _SEARCH_TOOLS = frozenset({"Grep", "Glob"})
 _GAP_PATHS = 20
 _CONTENT_LINE = re.compile(r"^((?:[A-Za-z]:)?[^:]+):\d+[:-]")
 _PAUSE_HINT = "If the run is blocked on something only the user can fix, call run_pause(reason)."
+_RESUMING = (
+    "This session was just resumed, and the ledger has not matched it to its agent yet. "
+    "Wait a few seconds, then make the same call again."
+)
 _WATCH_STALE = timedelta(seconds=60)
 _WATCH_RENEW = timedelta(seconds=30)
 _ARM_WATCHDOG = (
@@ -442,8 +446,26 @@ def handle_pre_send_message(ledger: Ledger, data: dict) -> dict | None:
     caller = _data_caller(ledger, data)
     if caller is None or caller["run_id"] is None:
         return None
-    reason = _send_refusal(ledger, caller, str(_tool_input(data).get("to") or ""))
+    to = wake.bare_session_name(str(_tool_input(data).get("to") or ""))
+    reason = _send_refusal(ledger, caller, to)
     return _deny(reason) if reason is not None else None
+
+
+def handle_send_target(ledger: Ledger, data: dict) -> dict | None:
+    caller = _data_caller(ledger, data)
+    to = wake.bare_session_name(str(data.get("to") or ""))
+    if caller is None or caller["run_id"] is None or not to:
+        return None
+    if _send_refusal(ledger, caller, to) is not None:
+        return None
+    target = ledger.conn.execute(
+        "SELECT agent_id, name FROM agents WHERE run_id = ? AND session_name = ? "
+        "AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1",
+        (caller["run_id"], to),
+    ).fetchone()
+    if target is None:
+        return None
+    return {"session_id": target["agent_id"], "name": target["name"]}
 
 
 def handle_pre_skill(ledger: Ledger, data: dict) -> dict | None:
@@ -466,6 +488,13 @@ def handle_pre_ledger(ledger: Ledger, data: dict) -> dict:
         return _deny("override_grant is for the Oracle only")
     if caller is not None and caller["state"] == "registered" and method not in PRE_BIND_TOOLS:
         return _deny(unbound_reason(caller["name"]))
+    if (
+        caller is None
+        and method not in IDENTITY_FREE_TOOLS | {"run_start"}
+        and str(data.get("agent_type") or "").startswith("swarm-")
+        and ledger.resume_pending()
+    ):
+        return _deny(_RESUMING)
 
     tool_input = dict(_tool_input(data))
     if method == "brief_get" and caller_id:
@@ -529,7 +558,7 @@ def handle_post_any(ledger: Ledger, data: dict) -> None:
             ledger.watch_armed(timeout_ms if isinstance(timeout_ms, int) else None)
 
     if tool_name == "SendMessage":
-        to = str(_tool_input(data).get("to") or "")
+        to = wake.bare_session_name(str(_tool_input(data).get("to") or ""))
         if to:
             ledger.wakeups_sent(caller["agent_id"], to)
 
@@ -748,6 +777,12 @@ def _block_coder_stop_once(ledger: Ledger, caller: dict, data: dict) -> dict | N
     ).fetchone()
     if already_blocked is not None:
         return None
+    waiting = ledger.conn.execute(
+        "SELECT 1 FROM file_waits WHERE agent_id = ? AND closed_at IS NULL",
+        (caller["agent_id"],),
+    ).fetchone()
+    if waiting is not None:
+        return None
 
     with write_tx(ledger.conn) as conn:
         conn.execute(
@@ -762,7 +797,9 @@ def _block_coder_stop_once(ledger: Ledger, caller: dict, data: dict) -> dict | N
     return _block(
         "Your file has no handoff on record. Call handoff_submit. If a blocker stops you, "
         f"call message_post(to_name={lead_name}, body=<the blocker>) and make the "
-        "SendMessage call its next field names, then stop."
+        "SendMessage call its next field names, then stop. If you wait on a file another "
+        "Coder is still writing, call wait_for(path, reason) instead: the ledger wakes you "
+        "when that file is approved."
     )
 
 
@@ -973,6 +1010,10 @@ def _oracle_work_block(ledger: Ledger, run: dict, oracle: dict) -> dict | None:
     ]
     if any(a["state"] == "working" for a in live) or _child_starting(live):
         return None
+    if ledger.conn.execute(
+        "SELECT 1 FROM spawn_queue WHERE run_id = ? AND state = 'queued'", (run["run_id"],)
+    ).fetchone():
+        return None
 
     plan_unlocked = ledger.plan_unlocked(oracle["name"], oracle["agent_id"])
     awaiting_review = len(submitted_handoffs(ledger.conn, run["run_id"], unpaused_only=True))
@@ -1015,6 +1056,8 @@ def _oracle_work_block(ledger: Ledger, run: dict, oracle: dict) -> dict | None:
     else:
         lines = ["Continue the plan, or call run_finish."]
 
+    if any("SendMessage(" in line for line in lines):
+        lines.append(wake.AMBIGUOUS_NAME_RULE)
     return _block(f"The run still has work: {', '.join(reasons)}.", *lines, _PAUSE_HINT)
 
 
@@ -1032,6 +1075,8 @@ def _member_stop(ledger: Ledger, caller: dict, data: dict) -> dict | None:
             lines = []
             if steps:
                 lines += ["You still owe a wake-up. Make each call below, then stop:", *steps]
+                if any("SendMessage(" in step for step in steps):
+                    lines.append(wake.AMBIGUOUS_NAME_RULE)
             if unread:
                 lines.append(
                     f"You have {unread} unread message(s). Call message_inbox, act on them, "
@@ -1083,12 +1128,21 @@ def handle_owed(ledger: Ledger, data: dict) -> dict | None:
     caller = _data_caller(ledger, data)
     if caller is None:
         return None
+
+    def sendable() -> list[dict]:
+        return [
+            w
+            for w in ledger.owed_wakeups(caller["agent_id"])
+            if caller["run_id"] is None
+            or _send_refusal(ledger, caller, w["to_session_name"]) is None
+        ]
+
+    owed = sendable()
+    if owed:
+        stopped = ledger.wake_stopped_targets(list(dict.fromkeys(w["to_agent_id"] for w in owed)))
+        owed = [w for w in sendable() if w["to_agent_id"] not in stopped]
     targets: dict[str, dict] = {}
-    for wakeup in ledger.owed_wakeups(caller["agent_id"]):
-        if caller["run_id"] is not None and _send_refusal(
-            ledger, caller, wakeup["to_session_name"]
-        ):
-            continue
+    for wakeup in owed:
         target = targets.get(wakeup["to_agent_id"])
         if target is None:
             row = ledger.conn.execute(

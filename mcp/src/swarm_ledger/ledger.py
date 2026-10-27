@@ -8,8 +8,9 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import __version__, agentfiles, lock, sessions, wake
+from . import __version__, agentfiles, lock, rekey, sessions, wake
 from .agreements import AgreementsMixin
+from .capacity import CapacityMixin
 from .db import (
     NOW,
     connect,
@@ -37,8 +38,10 @@ from .repo import RepoMixin
 from .report import ReportMixin
 from .review import ReviewMixin, agent_names, live_agents, run_summary
 from .settings import Settings, load_settings
+from .waits import WaitsMixin, open_file_waits
 
 _RESUME_POINTER = "Re-read your brief and your inbox in the ledger."
+_RESUME_WINDOW_S = 120
 _PHASE_STATES = ("planned", "unlocked", "working", "handed_up", "approved")
 _LIVE_RUN = "state IN ('active', 'paused')"
 SLUG_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
@@ -114,6 +117,7 @@ def require_slug(label: str, value: str) -> None:
 
 
 class Ledger(
+    CapacityMixin,
     AgreementsMixin,
     ReviewMixin,
     ReportMixin,
@@ -122,6 +126,7 @@ class Ledger(
     DriveMixin,
     MessagesMixin,
     IssuesMixin,
+    WaitsMixin,
 ):
     def __init__(
         self,
@@ -472,6 +477,8 @@ class Ledger(
             "agents": live_agents(conn, run_id),
             "issues": issues,
             "directives": directives,
+            "file_waits": open_file_waits(conn, run_id),
+            "capacity": self.capacity(run_id),
         }
 
     def run_finish(self, caller: str, agent_id: str, outcome: str) -> dict:
@@ -650,6 +657,7 @@ class Ledger(
             if state == "approved":
                 self._approve_phase(conn, phase_id)
             elif state == "handed_up":
+                self._block_phase_hand_up_for_cr(conn, phase_id)
                 self._require_leads_released(conn, phase_id)
                 conn.execute(
                     f"UPDATE phases SET state = ?, handed_up_at = {NOW} WHERE phase_id = ?",
@@ -1066,6 +1074,7 @@ class Ledger(
         brief["findings"] = findings_named(
             self.conn, json.loads(brief["finding_ids_json"] or "[]"), evidence=True
         )
+        brief["returned_review"] = self.returned_review(brief)
         brief["depends_on_contracts"] = [
             {"id": dep["id"], "name": dep["label"], "contract": dep["contract"]}
             for dep in self._dependencies(
@@ -1239,6 +1248,9 @@ class Ledger(
 
     def agent_spawn(self, caller: str, agent_id: str, child_name: str) -> dict:
         c = resolve(self.conn, caller, agent_id)
+        queued = self._queued_entry(child_name)
+        if queued is not None and queued["parent_agent_id"] == c.agent_id:
+            return self._queued_result(queued)
         brief = self._spawn_brief(c, caller, child_name)
         self._require_spawnable(brief, child_name)
 
@@ -1247,7 +1259,13 @@ class Ledger(
         if session_name in sessions.live_names(listing):
             raise LedgerError(f"a running session already has the name {session_name!r}")
         self._require_spawn_slot(brief, listing)
+        reason = self._queue_reason(brief)
+        if reason is not None:
+            return self._queue_spawn(brief, c.agent_id, reason)
+        return self._start_child(brief, c.agent_id, session_name)
 
+    def _start_child(self, brief: sqlite3.Row, parent_id: str, session_name: str) -> dict:
+        child_name = brief["child_name"]
         role = brief["child_role"]
         effort = brief["effort"] or self.settings.effort.get(role)
         options = self._session_options(role, brief["model"], effort)
@@ -1266,7 +1284,7 @@ class Ledger(
                     role,
                     brief["model"],
                     effort,
-                    c.agent_id,
+                    parent_id,
                     brief["run_id"],
                     brief["phase_id"],
                     brief["module_id"],
@@ -1429,57 +1447,142 @@ class Ledger(
                 f"{target_name!r} has no recorded session, so agent_resume cannot wake it: "
                 "a resume without one starts a fresh session"
             )
-        if sessions.is_live(target["agent_id"]):
+        listing = sessions.list_sessions()
+        own = sessions.find_session(listing, target["agent_id"])
+        if own is not None and sessions.is_running(own):
             label = target["session_name"] or target["agent_id"]
             raise LedgerError(
                 f"{target_name!r} is still running as {label!r}; wake it with "
                 f"SendMessage(to={json.dumps(label)}) instead"
             )
+        moved = sessions.resumed_entry(listing, None, target["session_name"])
+        if moved is not None:
+            current = self.adopt_resumed(target["agent_id"], str(moved["sessionId"]))
+            return {
+                "agent": self._agent_dict(current),
+                "message": None,
+                "wakeups_sent": 0,
+                "session_id": current,
+                "reachable": True,
+                "rekeyed_from": target["agent_id"],
+            }
+        return self.resume_agent(target, f"agent_resume by {c.name}")
 
+    def resume_agent(self, target: sqlite3.Row, reason: str) -> dict:
+        old_id = target["agent_id"]
         owed = dict_rows(
             self.conn.execute(
-                "SELECT * FROM wakeups WHERE from_agent_id = ? AND to_agent_id = ? "
-                "AND sent_at IS NULL ORDER BY wakeup_id",
-                (c.agent_id, target["agent_id"]),
+                "SELECT * FROM wakeups WHERE to_agent_id = ? AND sent_at IS NULL "
+                "ORDER BY wakeup_id",
+                (old_id,),
             )
         )
         message = wake.timed(
-            " ".join(w["pointer"] for w in owed) or _RESUME_POINTER,
-            wake.signal_for(self.conn, target["agent_id"]),
+            " ".join(dict.fromkeys(w["pointer"] for w in owed)) or _RESUME_POINTER,
+            wake.signal_for(self.conn, old_id),
         )
-        bg_id = sessions.resume(
-            target["agent_id"],
-            message,
-            cwd=self.repo_root,
-            name=target["session_name"],
-            options=self._resume_options(target["role"], target["model"], target["effort"]),
-        )
-
         with write_tx(self.conn) as conn:
-            if bg_id is not None and bg_id != target["bg_id"]:
+            claimed = conn.execute(
+                f"UPDATE agents SET resume_started_at = {NOW} WHERE agent_id = ? "
+                "AND (resume_started_at IS NULL OR resume_started_at < "
+                f"strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-{_RESUME_WINDOW_S} seconds'))",
+                (old_id,),
+            ).rowcount
+        if not claimed:
+            raise LedgerError(
+                f"{target['name']!r} is already being resumed; its wake-ups reach it once it "
+                "is back"
+            )
+        try:
+            bg_id = sessions.resume(
+                old_id,
+                message,
+                cwd=self.repo_root,
+                name=target["session_name"],
+                options=self._resume_options(target["role"], target["model"], target["effort"]),
+            )
+        except LedgerError:
+            with write_tx(self.conn) as conn:
                 conn.execute(
-                    "UPDATE agents SET bg_id = ? WHERE agent_id = ?", (bg_id, target["agent_id"])
+                    "UPDATE agents SET resume_started_at = NULL WHERE agent_id = ?", (old_id,)
                 )
-            conn.execute(
-                f"UPDATE wakeups SET sent_at = {NOW} WHERE from_agent_id = ? "
-                "AND to_agent_id = ? AND sent_at IS NULL",
-                (c.agent_id, target["agent_id"]),
-            )
-            self._log_event(
-                conn,
-                target["agent_id"],
-                target["state"],
-                target["state"],
-                f"agent_resume by {c.name}: {message}",
-            )
-        if owed:
-            self.release_closed_driver(c.agent_id)
+            raise
+        with write_tx(self.conn) as conn:
+            if bg_id is not None:
+                conn.execute("UPDATE agents SET bg_id = ? WHERE agent_id = ?", (bg_id, old_id))
+            self._log_event(conn, old_id, target["state"], target["state"], f"{reason}: {message}")
 
+        new_id = sessions.wait_for_resumed(bg_id, target["session_name"])
+        current = self.adopt_resumed(old_id, new_id) if new_id is not None else old_id
+        sent = 0
+        if new_id is not None:
+            sent = self._mark_resume_sent([w["wakeup_id"] for w in owed])
         return {
-            "agent": self._agent_dict(target["agent_id"]),
+            "agent": self._agent_dict(current),
             "message": message,
-            "wakeups_sent": len(owed),
+            "wakeups_sent": sent,
+            "session_id": current,
+            "reachable": new_id is not None,
         }
+
+    def _mark_resume_sent(self, wakeup_ids: list[int]) -> int:
+        if not wakeup_ids:
+            return 0
+        with write_tx(self.conn) as conn:
+            senders = [
+                row["from_agent_id"]
+                for row in conn.execute(
+                    "SELECT DISTINCT from_agent_id FROM wakeups WHERE sent_at IS NULL "
+                    f"AND wakeup_id IN ({in_clause(wakeup_ids)})",
+                    wakeup_ids,
+                )
+            ]
+            cur = conn.execute(
+                f"UPDATE wakeups SET sent_at = {NOW} WHERE sent_at IS NULL "
+                f"AND wakeup_id IN ({in_clause(wakeup_ids)})",
+                wakeup_ids,
+            )
+        for sender in senders:
+            self.release_closed_driver(sender)
+        return cur.rowcount
+
+    def adopt_resumed(self, old_id: str, new_id: str) -> str:
+        with write_tx(self.conn) as conn:
+            rekey.adopt(conn, old_id, new_id)
+        return new_id
+
+    def adopt_session(self, session_id: str | None, *, use_listing: bool = False) -> str | None:
+        if not session_id:
+            return None
+        known = self.conn.execute(
+            "SELECT 1 FROM agents WHERE agent_id = ?", (session_id,)
+        ).fetchone()
+        if known is not None:
+            return None
+        pending = dict_rows(
+            self.conn.execute(
+                "SELECT agent_id, bg_id, session_name FROM agents WHERE ended_at IS NULL "
+                "AND resume_started_at IS NOT NULL"
+            )
+        )
+        match = next((a for a in pending if a["bg_id"] and session_id[:8] == a["bg_id"]), None)
+        if match is None and use_listing and self.resume_pending():
+            try:
+                entry = sessions.find_session(sessions.list_sessions(), session_id)
+            except LedgerError:
+                entry = None
+            name = entry.get("name") if entry is not None else None
+            match = next((a for a in pending if name and a["session_name"] == name), None)
+        if match is None:
+            return None
+        return self.adopt_resumed(match["agent_id"], session_id)
+
+    def resume_pending(self) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM agents WHERE ended_at IS NULL AND resume_started_at >= "
+            f"strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-{_RESUME_WINDOW_S} seconds')"
+        ).fetchone()
+        return row is not None
 
     def _owe_wakeup(
         self,

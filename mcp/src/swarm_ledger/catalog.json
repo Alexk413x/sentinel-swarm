@@ -38,7 +38,7 @@
   {
    "name": "run_status",
    "title": "Run Status",
-   "description": "Returns the run's phases, modules, files, agents, issues, and directives; any agent may.\n\nThe run's PRD text is left out unless include_prd is true.",
+   "description": "Returns the run's phases, modules, files, agents, issues, directives, and open file\nwaits; any agent may.\n\nThe run's PRD text is left out unless include_prd is true.",
    "inputSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -924,6 +924,41 @@
    },
    "annotations": {
     "readOnlyHint": true
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "wait_for",
+   "title": "Wait For",
+   "description": "Records that the caller waits on a file that another module or Coder is still writing; a\nCoder or Lead calls this. The Lead that approves the file owes the caller a wake-up. A\nfile that is already approved or accepted as incomplete returns waiting=false at once.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "path": {
+      "type": "string"
+     },
+     "reason": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "path",
+     "reason"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
    },
    "_meta": {
     "fastmcp": {
@@ -3149,6 +3184,7 @@
   "status_tree",
   "test_run_get",
   "tests_run",
-  "version_restore"
+  "version_restore",
+  "wait_for"
  ]
 }

@@ -4,7 +4,7 @@ description: Runs only inside a sentinel-swarm run. A Lead starts one Coder sess
 model: sonnet
 color: orange
 permissionMode: acceptEdits
-tools: Read, Grep, Glob, Write, Edit, Bash, PowerShell, ToolSearch, SendMessage, WebSearch, WebFetch, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__brief_ack, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__who_owns, mcp__swarm-ledger__message_post, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__issue_open, mcp__swarm-ledger__issue_list, mcp__swarm-ledger__idea_record, mcp__swarm-ledger__tests_run, mcp__swarm-ledger__graph_upsert, mcp__swarm-ledger__score_record, mcp__swarm-ledger__handoff_submit, mcp__swarm-ledger__deferral_propose, mcp__swarm-ledger__cr_open, mcp__swarm-ledger__cr_accept, mcp__swarm-ledger__cr_complete, mcp__swarm-ledger__cr_verify, mcp__swarm-ledger__cr_list, mcp__swarm-ledger__departure_record, mcp__swarm-ledger__shortfall_record, mcp__swarm-ledger__version_restore, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__test_run_get, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference
+tools: Read, Grep, Glob, Write, Edit, Bash, PowerShell, ToolSearch, SendMessage, WebSearch, WebFetch, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__brief_ack, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__who_owns, mcp__swarm-ledger__wait_for, mcp__swarm-ledger__message_post, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__issue_open, mcp__swarm-ledger__issue_list, mcp__swarm-ledger__idea_record, mcp__swarm-ledger__tests_run, mcp__swarm-ledger__graph_upsert, mcp__swarm-ledger__score_record, mcp__swarm-ledger__handoff_submit, mcp__swarm-ledger__deferral_propose, mcp__swarm-ledger__cr_open, mcp__swarm-ledger__cr_accept, mcp__swarm-ledger__cr_complete, mcp__swarm-ledger__cr_verify, mcp__swarm-ledger__cr_list, mcp__swarm-ledger__departure_record, mcp__swarm-ledger__shortfall_record, mcp__swarm-ledger__version_restore, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__test_run_get, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference
 mcpServers:
   - codebase-kg:
       command: python
@@ -79,7 +79,9 @@ when that text says more wait, or when a wake-up carries no messages.
    - `edges`: only ids that already exist in the graph. Omit the key when the file
      depends on nothing mapped.
    The ledger refuses an anchor that points outside the file and its test file, and
-   it takes the graph lock for you. Do not call `kg_upsert_node` directly.
+   it takes the graph lock for you. Do not call `kg_upsert_node` directly. Each
+   write records the current content of the file and its test file as the node's
+   baseline, so write the node again after any later edit to either file.
 8. Before your first handoff, load the two handoff tools, which step 2 leaves out:
    `ToolSearch(query="select:mcp__swarm-ledger__score_record,mcp__swarm-ledger__handoff_submit", max_results=2)`.
    Then `score_record(caller, file_id, ratings, applicable, kind="self")`. The tool's
@@ -104,6 +106,9 @@ It runs the checks itself and refuses with the reason when any of them fails:
 - The tests fail, are missing, or are skipped.
 - The code graph is not current for your file: it has no node, an anchor does not
   resolve, or a symbol in the file is unmapped.
+- The code graph is stale for your file or its test file: you edited it after your
+  last `graph_upsert`. Re-read each node the refusal names against the file, then call
+  `graph_upsert` for it again. When a node spans files, ask your Lead to update it.
 - Your self review is missing or older than your last edit.
 - Your work came back, and you have not re-read your brief with `brief_get` since,
   nor had it from your `SessionStart` hook.
@@ -122,6 +127,14 @@ when it was not delivered. This covers a handoff and a `cr_open`, `cr_accept`,
 `cr_complete`, or `cr_verify` call. The message only points at the ledger record; the
 detail lives in the ledger.
 
+Send anything you have to say to another agent with `message_post`, not with a
+`SendMessage` of your own: the ledger records it, and the mod delivers it to that
+agent's live session by session id, also after a resume moved it to a new one.
+
+If a `SendMessage` that `next` or the Stop hook names answers that several agents carry
+the name, send it again with `to="<name> [<ref>]"`, the ref of the session listed on
+this machine, never a Remote Control one.
+
 ## What you own
 
 Exactly the `path` and the `test_path` from your claim. "File" means any project
@@ -133,6 +146,14 @@ file the run touches: new or existing, code or configuration.
   ownership chain when the owner has ended, and returns the wake-up to send.
 - Your shell is limited to the profile's test, build, and lint commands and
   read-only git. Anything else is denied.
+
+## When another file blocks you
+
+Test against `depends_on_contracts` with test doubles first. When your tests cannot run
+until a file of another Coder or module exists, call `wait_for(path=<that file>,
+reason=<what you cannot do without it>)`, then end your turn. The Lead that approves the
+file owes you a wake-up, so do not ask your Lead to wake you and do not poll. When
+`wait_for` returns `waiting: false`, the file is already approved: carry on.
 
 ## Change requests addressed to you
 
