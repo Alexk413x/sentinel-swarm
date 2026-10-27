@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -348,3 +349,16 @@ def bootstrap_oracle(
         "phase_id": phase["phase_id"],
         "run_id": started["run"]["run_id"],
     }
+
+
+def ensure_graph_source_base(host: Path) -> None:
+    # codebase-kg finds a graph's source tree by sampling its first anchors, and a re-baseline
+    # fails without one. The copied repo graph anchors files the host lacks, so create one.
+    conn = sqlite3.connect(str(host / "knowledge" / "code_graph.db"))
+    try:
+        row = conn.execute("SELECT path FROM anchor ORDER BY path LIMIT 1").fetchone()
+    finally:
+        conn.close()
+    stub = host / row[0]
+    stub.parent.mkdir(parents=True, exist_ok=True)
+    stub.write_text("", encoding="utf-8")

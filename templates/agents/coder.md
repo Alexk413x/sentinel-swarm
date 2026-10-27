@@ -79,7 +79,9 @@ when that text says more wait, or when a wake-up carries no messages.
    - `edges`: only ids that already exist in the graph. Omit the key when the file
      depends on nothing mapped.
    The ledger refuses an anchor that points outside the file and its test file, and
-   it takes the graph lock for you. Do not call `kg_upsert_node` directly.
+   it takes the graph lock for you. Do not call `kg_upsert_node` directly. Each
+   write records the current content of the file and its test file as the node's
+   baseline, so write the node again after any later edit to either file.
 8. Before your first handoff, load the two handoff tools, which step 2 leaves out:
    `ToolSearch(query="select:mcp__swarm-ledger__score_record,mcp__swarm-ledger__handoff_submit", max_results=2)`.
    Then `score_record(caller, file_id, ratings, applicable, kind="self")`. The tool's
@@ -104,6 +106,9 @@ It runs the checks itself and refuses with the reason when any of them fails:
 - The tests fail, are missing, or are skipped.
 - The code graph is not current for your file: it has no node, an anchor does not
   resolve, or a symbol in the file is unmapped.
+- The code graph is stale for your file or its test file: you edited it after your
+  last `graph_upsert`. Re-read each node the refusal names against the file, then call
+  `graph_upsert` for it again. When a node spans files, ask your Lead to update it.
 - Your self review is missing or older than your last edit.
 - Your work came back, and you have not re-read your brief with `brief_get` since,
   nor had it from your `SessionStart` hook.

@@ -428,13 +428,17 @@ class ReviewMixin(LedgerHost):
 
         for node in nodes:
             anchored_files: set[int] = set()
+            anchor_paths: list[str] = []
             for anchor in node.get("anchors") or []:
                 if isinstance(anchor, str):
-                    anchor_path = anchor.split("#", 1)[0].strip()
+                    anchor_paths.append(anchor.split("#", 1)[0].strip())
                 elif isinstance(anchor, dict):
-                    anchor_path = str(anchor.get("path", "")).strip()
+                    anchor_paths.append(str(anchor.get("path", "")).strip())
                 else:
                     raise LedgerError(f"anchor {anchor!r} must be a string or an object")
+            if "anchors" not in node:
+                anchor_paths = graph.node_anchor_paths(self.repo_root, str(node.get("id")))
+            for anchor_path in anchor_paths:
                 if anchor_path not in allowed_paths:
                     raise LedgerError(refusal)
                 if anchor_path in file_of:
@@ -735,6 +739,16 @@ class ReviewMixin(LedgerHost):
         if not graph_ok:
             raise LedgerError(
                 f"code graph is not current for {file_row['path']}: {'; '.join(graph_reasons)}"
+            )
+        paths = [p for p in (file_row["path"], file_row["test_path"]) if p]
+        stale = graph.stale_files(self.repo_root, paths)
+        if stale:
+            detail = "; ".join(f"{p} (nodes {', '.join(ids)})" for p, ids in stale.items())
+            raise LedgerError(
+                f"code graph is stale: changed since its baseline: {detail}. Re-read each node "
+                "against its file, then call graph_upsert for it again; the call records the "
+                "file's current content as the baseline. A node that spans files is your "
+                "Lead's to update"
             )
 
         self_review = self.conn.execute(

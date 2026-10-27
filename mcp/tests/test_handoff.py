@@ -11,6 +11,7 @@ from helpers import (
     all_applicable,
     all_ratings,
     bootstrap_module,
+    ensure_graph_source_base,
     file_id_for,
     insert_passing_test_run,
     make_host,
@@ -107,7 +108,22 @@ def host(tmp_path: Path, repo_root: Path) -> Path:
     finally:
         conn.close()
 
+    ensure_graph_source_base(root)
     return root
+
+
+def _record_baseline(host: Path, rel_path: str, content: bytes | None = None) -> None:
+    data = content if content is not None else (host / rel_path).read_bytes()
+    conn = sqlite3.connect(str(host / "knowledge" / "code_graph.db"))
+    try:
+        conn.execute(
+            "INSERT INTO source (path, sha) VALUES (?, ?) "
+            "ON CONFLICT (path) DO UPDATE SET sha = excluded.sha",
+            (rel_path, graph_module._content_sha(data)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _accept_module_and_phase(ledger: Ledger, ctx: dict) -> None:
@@ -734,6 +750,112 @@ def test_report_build_writes_the_file(ledger: Ledger) -> None:
     assert Path(result["path"]).read_text(encoding="utf-8") == result["text"]
 
 
+def test_handoff_refused_while_the_file_is_stale_against_its_baseline(
+    ledger: Ledger, host: Path
+) -> None:
+    ctx = bootstrap_module(ledger)
+    coder = spawn_coder(ledger, ctx, "coder-p1-module-1-sb", "pkg/good.py", "tests/test_good.py")
+    file_id = file_id_for(ledger, "pkg/good.py")
+    _record_baseline(host, "pkg/good.py")
+    touch_module(host, "good", "reworked after a return")
+
+    with pytest.raises(LedgerError, match=r"code graph is stale.*pkg/good\.py.*swarmtest_good"):
+        ledger.handoff_submit("coder-p1-module-1-sb", coder["agent_id"], file_id, [], [])
+    with pytest.raises(LedgerError, match="call graph_upsert for it again"):
+        ledger.handoff_submit("coder-p1-module-1-sb", coder["agent_id"], file_id, [], [])
+
+    _record_baseline(host, "pkg/good.py")
+    with pytest.raises(LedgerError, match="self review is missing"):
+        ledger.handoff_submit("coder-p1-module-1-sb", coder["agent_id"], file_id, [], [])
+
+
+def test_handoff_refused_while_the_test_file_is_stale_against_its_baseline(
+    ledger: Ledger, host: Path
+) -> None:
+    ctx = bootstrap_module(ledger)
+    coder = spawn_coder(ledger, ctx, "coder-p1-module-1-st", "pkg/good.py", "tests/test_good.py")
+    file_id = file_id_for(ledger, "pkg/good.py")
+    conn = sqlite3.connect(str(host / "knowledge" / "code_graph.db"))
+    try:
+        conn.execute(
+            "INSERT INTO anchor (node_id, ord, path, base, symbol) "
+            "VALUES ('swarmtest_good', 1, 'tests/test_good.py', 'test_good.py', 'test_add')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    _record_baseline(host, "pkg/good.py")
+    _record_baseline(host, "tests/test_good.py", b"an earlier version\n")
+
+    with pytest.raises(LedgerError, match=r"code graph is stale.*tests/test_good\.py"):
+        ledger.handoff_submit("coder-p1-module-1-st", coder["agent_id"], file_id, [], [])
+
+
+def test_a_file_without_a_baseline_is_not_stale(ledger: Ledger, host: Path) -> None:
+    ctx = bootstrap_module(ledger)
+    coder = spawn_coder(ledger, ctx, "coder-p1-module-1-nb", "pkg/good.py", "tests/test_good.py")
+    file_id = file_id_for(ledger, "pkg/good.py")
+    touch_module(host, "good", "no baseline recorded")
+
+    with pytest.raises(LedgerError, match="self review is missing"):
+        ledger.handoff_submit("coder-p1-module-1-nb", coder["agent_id"], file_id, [], [])
+
+
+@pytest.mark.integration
+def test_a_reworked_file_hands_off_after_graph_upsert_re_baselines_its_node(
+    ledger: Ledger, host: Path, kg_root: Path
+) -> None:
+    del kg_root
+    ctx = bootstrap_module(ledger)
+    coder = spawn_coder(ledger, ctx, "coder-p1-module-1-rw", "pkg/good.py", "tests/test_good.py")
+    file_id = file_id_for(ledger, "pkg/good.py")
+    node = {
+        "id": "swarmtest_good",
+        "kind": "function",
+        "description": "adds two numbers",
+        "anchors": ["pkg/good.py#add"],
+    }
+    ledger.graph_upsert("coder-p1-module-1-rw", coder["agent_id"], [node])
+    assert graph_module.stale_files(host, ["pkg/good.py"]) == {}
+
+    touch_module(host, "good", "reworked after a return")
+    assert graph_module.stale_files(host, ["pkg/good.py"]) == {"pkg/good.py": ["swarmtest_good"]}
+    with pytest.raises(LedgerError, match="code graph is stale"):
+        ledger.handoff_submit("coder-p1-module-1-rw", coder["agent_id"], file_id, [], [])
+
+    ledger.graph_upsert("coder-p1-module-1-rw", coder["agent_id"], [node])
+    assert graph_module.stale_files(host, ["pkg/good.py"]) == {}
+    ledger.score_record(
+        "coder-p1-module-1-rw",
+        coder["agent_id"],
+        file_id,
+        all_ratings(10),
+        all_applicable(),
+        "self",
+    )
+    handoff = ledger.handoff_submit("coder-p1-module-1-rw", coder["agent_id"], file_id, [], [])
+    assert handoff["state"] == "submitted"
+
+
+def test_the_report_lists_stale_mapped_files(ledger: Ledger, host: Path) -> None:
+    ctx = bootstrap_module(ledger)
+    spawn_coder(ledger, ctx, "coder-p1-module-1-rp", "pkg/good.py", "tests/test_good.py")
+    _record_baseline(host, "pkg/good.py")
+    _record_baseline(host, "pkg/unmapped.py")
+    before = ledger.report_build("oracle", ctx["oracle_id"])["text"]
+    assert "## Stale mapped files" in before
+    assert "changed since its baseline; nodes swarmtest_good" not in before
+
+    touch_module(host, "good", "changed after its baseline")
+    touch_module(host, "unmapped", "changed after its baseline")
+    text = ledger.report_build("oracle", ctx["oracle_id"])["text"]
+    assert (
+        "- pkg/good.py (a file of this run): changed since its baseline; nodes swarmtest_good"
+        in text
+    )
+    assert "- pkg/unmapped.py: changed since its baseline; nodes swarmtest_unmapped" in text
+
+
 # -- graph_upsert (Ledger method) ------------------------------------------------------------
 
 
@@ -778,6 +900,28 @@ def test_graph_upsert_passes_through_for_the_owned_file(
     assert result == {"ok": True, "written": True}
     assert seen["repo_root"] == ledger.repo_root
     assert seen["nodes"][0]["id"] == "swarmtest_good"
+
+
+def test_graph_upsert_refuses_a_node_edit_without_anchors_on_another_files_node(
+    ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = bootstrap_module(ledger)
+    coder = spawn_coder(
+        ledger, ctx, "coder-p1-module-1-graph4", "pkg/good.py", "tests/test_good.py"
+    )
+    monkeypatch.setattr(graph_module, "graph_upsert", lambda repo_root, nodes: {"ok": True})
+
+    with pytest.raises(LedgerError, match="updates only the nodes"):
+        ledger.graph_upsert(
+            "coder-p1-module-1-graph4",
+            coder["agent_id"],
+            [{"id": "swarmtest_unmapped", "description": "rewritten"}],
+        )
+    assert ledger.graph_upsert(
+        "coder-p1-module-1-graph4",
+        coder["agent_id"],
+        [{"id": "swarmtest_good", "description": "rewritten"}],
+    ) == {"ok": True}
 
 
 @pytest.mark.integration
