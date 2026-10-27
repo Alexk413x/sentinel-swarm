@@ -428,19 +428,20 @@ class ReviewMixin(LedgerHost):
 
         for node in nodes:
             anchored_files: set[int] = set()
-            anchor_paths: list[str] = []
+            supplied: list[str] = []
             for anchor in node.get("anchors") or []:
                 if isinstance(anchor, str):
-                    anchor_paths.append(anchor.split("#", 1)[0].strip())
+                    supplied.append(anchor.split("#", 1)[0].strip())
                 elif isinstance(anchor, dict):
-                    anchor_paths.append(str(anchor.get("path", "")).strip())
+                    supplied.append(str(anchor.get("path", "")).strip())
                 else:
                     raise LedgerError(f"anchor {anchor!r} must be a string or an object")
-            if "anchors" not in node:
-                anchor_paths = graph.node_anchor_paths(self.repo_root, str(node.get("id")))
-            for anchor_path in anchor_paths:
+            stored = graph.node_anchor_paths(self.repo_root, str(node.get("id")))
+            anchor_paths = supplied if "anchors" in node else stored
+            for anchor_path in (*anchor_paths, *stored):
                 if anchor_path not in allowed_paths:
                     raise LedgerError(refusal)
+            for anchor_path in anchor_paths:
                 if anchor_path in file_of:
                     anchored_files.add(file_of[anchor_path])
             if c.role == "lead" and len(anchored_files) < 2:

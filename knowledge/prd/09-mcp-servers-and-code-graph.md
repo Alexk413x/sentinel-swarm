@@ -160,9 +160,11 @@ find what exists while many agents change the code at once. The graph file,
   file the way codebase-kg does (CRLF folded to LF, then SHA-256), in process. It does
   not re-baseline at `approve`: the gate has just held for the exact content the Lead
   reviewed, and the Lead has no edit tool.
-- **Ownership of a node edit:** a `graph_upsert` node without `anchors` counts as
-  anchored where the graph already anchors it, so a Coder cannot edit, and so
-  re-baseline, another file's node by leaving the anchors out.
+- **Ownership of a node edit:** `graph_upsert` checks both the anchors a node carries and
+  the anchors the graph already holds for its id against the caller's files. A node
+  without `anchors` counts as anchored where the graph already anchors it. So a Coder
+  cannot edit, and so re-baseline, another file's node by leaving the anchors out,
+  sending empty anchors, or re-anchoring it on its own file.
 - **Stale mapped files in the report:** the report lists every mapped file that is
   stale when it is built, with its nodes, and marks the files of the run. See
   [10-report-and-costs.md](10-report-and-costs.md).

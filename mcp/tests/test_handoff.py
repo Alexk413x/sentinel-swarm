@@ -924,6 +924,24 @@ def test_graph_upsert_refuses_a_node_edit_without_anchors_on_another_files_node(
     ) == {"ok": True}
 
 
+@pytest.mark.parametrize("anchors", [[], ["pkg/good.py#good"]])
+def test_graph_upsert_refuses_new_anchors_on_another_files_node(
+    ledger: Ledger, monkeypatch: pytest.MonkeyPatch, anchors: list[str]
+) -> None:
+    ctx = bootstrap_module(ledger)
+    coder = spawn_coder(
+        ledger, ctx, "coder-p1-module-1-graph5", "pkg/good.py", "tests/test_good.py"
+    )
+    monkeypatch.setattr(graph_module, "graph_upsert", lambda repo_root, nodes: {"ok": True})
+
+    with pytest.raises(LedgerError, match="updates only the nodes"):
+        ledger.graph_upsert(
+            "coder-p1-module-1-graph5",
+            coder["agent_id"],
+            [{"id": "swarmtest_unmapped", "anchors": anchors, "description": "taken over"}],
+        )
+
+
 @pytest.mark.integration
 def test_graph_upsert_integration_calls_the_real_codebase_kg(ledger: Ledger, kg_root: Path) -> None:
     del kg_root
