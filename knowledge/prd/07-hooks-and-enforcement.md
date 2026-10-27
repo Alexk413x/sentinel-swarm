@@ -292,8 +292,8 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
 | Only the owner's chain escalates an issue | `issue_escalate` |
 | A finished Lead or Manager is released | `phase_update(handed_up)` refuses a live Lead; `phase_update(approved)` releases the phase; `run_finish` releases the rest |
 | A non-owner requests, the owner changes | `cr_open` routing and the write gate |
-| A change request closes with evidence | `cr_complete` and `cr_verify`; gates on `handoff_submit`, `approve`, `phase_update(approved)`, `run_finish` |
-| A departure is signed off or reworked | `departure_decide`; gates on `approve`, `return_work`, `accept_incomplete`, `module_review`, `phase_review`, `run_finish` |
+| A change request closes with evidence | `cr_complete` and `cr_verify`; gates on `handoff_submit`, `approve`, `phase_update(handed_up)`, `phase_update(approved)`, `run_finish`. A release hands the released agent's open requests to its nearest live ancestor |
+| A departure is signed off or reworked | `departure_decide`; gates on `approve`, `return_work`, `accept_incomplete`, `module_review`, `phase_review`, `run_finish`. `handoff_submit` closes the departures of a handoff it supersedes |
 | A deferral is decided by a high enough role in its scope | `agreement_decide`; gates on `phase_update(approved)` and `run_finish` |
 | A directive outcome is one of the four values | `directive_resolve` |
 | The user is notified when the Driver finishes or hits an error | `drive_done`, `drive_unavailable`, and the watchdog record the notification and show the OS notification; the Oracle's `stop` blocks until a `PushNotification` call, which `post_any` records |

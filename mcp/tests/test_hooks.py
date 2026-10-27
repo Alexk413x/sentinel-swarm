@@ -423,6 +423,24 @@ def test_stop_blocks_the_oracle_while_a_handoff_is_submitted(ledger: Ledger) -> 
     assert result["decision"] == "block"
 
 
+def test_stop_leaves_a_superseded_handoff_out_of_the_review_count(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    coder = _spawn_coder(ledger, ctx, "stop3", "src/mine.py", "tests/test_mine.py")
+    _submit_handoff_row(ledger, coder, "src/mine.py")
+    _submit_handoff_row(ledger, coder, "src/mine.py")
+    for agent_id in (coder["agent_id"], ctx["lead"]["agent_id"], ctx["manager"]["agent_id"]):
+        go_idle(ledger, agent_id)
+
+    both = events.handle_stop(ledger, {"agent_id": ctx["oracle_id"]})
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE handoffs SET state = 'superseded' WHERE handoff_id = 1")
+    one = events.handle_stop(ledger, {"agent_id": ctx["oracle_id"]})
+
+    assert both is not None and "2 handoff(s) awaiting review" in both["reason"]
+    assert one is not None and "1 handoff(s) awaiting review" in one["reason"]
+    assert "handoff 1 " not in one["reason"]
+
+
 def test_stop_allows_when_stop_hook_active_is_true(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     coder = _spawn_coder(ledger, ctx, "stop2", "src/mine.py", "tests/test_mine.py")

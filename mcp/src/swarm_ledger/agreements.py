@@ -108,6 +108,49 @@ class AgreementsMixin(LedgerHost):
                 "call cr_complete first"
             )
 
+    def _reassign_crs_of(self, conn: sqlite3.Connection, agent: sqlite3.Row) -> None:
+        rows = conn.execute(
+            "SELECT cr_id, path, state FROM change_requests WHERE to_agent_id = ? "
+            "AND state IN ('open', 'accepted') ORDER BY cr_id",
+            (agent["agent_id"],),
+        ).fetchall()
+        heir = self.nearest_live_agent(conn, agent["agent_id"]) if rows else None
+        if heir is None:
+            return
+        for row in rows:
+            conn.execute(
+                "UPDATE change_requests SET to_agent_id = ? WHERE cr_id = ?",
+                (heir["agent_id"], row["cr_id"]),
+            )
+            next_call = "cr_accept" if row["state"] == "open" else "cr_complete"
+            conn.execute(
+                "INSERT INTO messages (run_id, from_name, to_name, body) VALUES (?, ?, ?, ?)",
+                (
+                    agent["run_id"],
+                    agent["name"],
+                    heir["name"],
+                    f"{agent['name']} was released while change request {row['cr_id']} for "
+                    f"{row['path']} was {row['state']}. It is yours now: call {next_call} "
+                    "when the work is done.",
+                ),
+            )
+
+    def _block_phase_hand_up_for_cr(self, conn: sqlite3.Connection, phase_id: int) -> None:
+        rows = conn.execute(
+            "SELECT cr.cr_id, a.name FROM change_requests cr "
+            "JOIN files f ON f.file_id = cr.file_id "
+            "JOIN modules m ON m.module_id = f.module_id "
+            "LEFT JOIN agents a ON a.agent_id = cr.to_agent_id "
+            "WHERE m.phase_id = ? AND cr.state = 'accepted' ORDER BY cr.cr_id",
+            (phase_id,),
+        ).fetchall()
+        if rows:
+            waits = ", ".join(f"{r['cr_id']} (recipient {r['name']})" for r in rows)
+            raise LedgerError(
+                f"change request(s) in the phase are accepted and not completed: {waits}. "
+                "Each recipient calls cr_complete before the phase hands up"
+            )
+
     def _block_approve_for_cr(self, conn: sqlite3.Connection, file_id: int) -> None:
         rows = conn.execute(
             "SELECT cr_id FROM change_requests WHERE file_id = ? "
@@ -324,13 +367,24 @@ class AgreementsMixin(LedgerHost):
             f"no passing test run or approved handoff for {cr_row['path']} since acceptance"
         )
 
+    def _stands_in_for_recipient(
+        self, conn: sqlite3.Connection, cr_row: sqlite3.Row, c: Caller
+    ) -> bool:
+        recipient = conn.execute(
+            "SELECT * FROM agents WHERE agent_id = ?", (cr_row["to_agent_id"],)
+        ).fetchone()
+        if recipient is None or recipient["ended_at"] is None:
+            return False
+        heir = self.nearest_live_agent(conn, recipient["agent_id"])
+        return heir is not None and heir["agent_id"] == c.agent_id
+
     def cr_complete(self, caller: str, agent_id: str, cr_id: int, notes: str) -> dict:
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
             row = conn.execute("SELECT * FROM change_requests WHERE cr_id = ?", (cr_id,)).fetchone()
             if row is None:
                 raise LedgerError(f"unknown cr_id {cr_id!r}")
-            if row["to_agent_id"] != c.agent_id:
+            if row["to_agent_id"] != c.agent_id and not self._stands_in_for_recipient(conn, row, c):
                 raise LedgerError(f"{caller!r} is not the recipient of change request {cr_id}")
             if row["state"] != "accepted":
                 raise LedgerError(f"change request {cr_id} is {row['state']}, not accepted")

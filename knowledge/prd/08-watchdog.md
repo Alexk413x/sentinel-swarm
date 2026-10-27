@@ -30,6 +30,8 @@ listing skips one pass.
   does not count, because its armed Monitor keeps it `busy`.
 - A stall is reported only when two passes in a row see it, since a run passes through
   "no session running" while one session exits and another resumes.
+- A handoff that a newer handoff of the same file superseded is not pending work. The
+  stall check, and the Oracle's Stop hook, count only `submitted` handoffs.
 - A scoped pause (`run_pause(reason, phases=[...])`) takes its phase's unlocked state
   and submitted handoffs out of the "pending" count the stall check reads, so a run with
   only paused phases left to do reports no stall over them.

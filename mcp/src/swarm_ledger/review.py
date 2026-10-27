@@ -8,7 +8,7 @@ from typing import Literal
 
 from . import graph, notify, rubric, versions
 from .agreements import test_run_passed, work_scope
-from .db import NOW, dict_rows, ledger_path, open_readonly, row_dict, write_tx
+from .db import NOW, dict_rows, in_clause, ledger_path, open_readonly, row_dict, write_tx
 from .drive import findings_named, open_findings
 from .host import LedgerHost
 from .identity import (
@@ -158,6 +158,43 @@ def _attach_departures(
         )
 
 
+def _supersede_handoffs(
+    conn: sqlite3.Connection, file_id: int, handoff_id: int | None
+) -> tuple[list[int], list[dict]]:
+    earlier = [
+        row["handoff_id"]
+        for row in conn.execute(
+            "SELECT handoff_id FROM handoffs WHERE file_id = ? AND state = 'submitted' "
+            "AND handoff_id != ? ORDER BY handoff_id",
+            (file_id, handoff_id),
+        )
+    ]
+    if not earlier:
+        return [], []
+    marks = in_clause(earlier)
+    conn.execute(
+        "UPDATE handoffs SET state = 'superseded', decided_notes = ? "
+        f"WHERE handoff_id IN ({marks})",
+        (f"Superseded by handoff {handoff_id}.", *earlier),
+    )
+    open_departures = dict_rows(
+        conn.execute(
+            "SELECT departure_id, body FROM departures WHERE kind = 'departure' "
+            f"AND state = 'open' AND level = 'lead' AND handoff_id IN ({marks}) "
+            "ORDER BY departure_id",
+            earlier,
+        )
+    )
+    conn.execute(
+        "UPDATE departures SET state = 'superseded', level = NULL, "
+        f"decided_at = {NOW}, decision_reason = ? "
+        "WHERE kind = 'departure' AND state = 'open' AND level = 'lead' "
+        f"AND handoff_id IN ({marks})",
+        (f"Handoff {handoff_id} replaced the handoff this departure was recorded on.", *earlier),
+    )
+    return earlier, open_departures
+
+
 def live_agents(conn: sqlite3.Connection, run_id: int) -> list[dict]:
     names = agent_names(conn, run_id)
     rows = conn.execute(
@@ -189,6 +226,11 @@ class ReviewMixin(LedgerHost):
         ).fetchone()
         if handoff_row is None:
             raise LedgerError(f"unknown handoff_id {handoff_id!r}")
+        if handoff_row["state"] == "superseded":
+            raise LedgerError(
+                f"handoff {handoff_id} is superseded by a later handoff of the file; "
+                "review that one"
+            )
         return handoff_row, self._lead_file(c, handoff_row["file_id"])
 
     def _ratings_for(self, review_id: int) -> list[Rating]:
@@ -224,6 +266,7 @@ class ReviewMixin(LedgerHost):
             (phase_name, target_agent_id),
         )
         self._log_event(conn, target_agent_id, row["state"], "released", reason)
+        self._reassign_crs_of(conn, row)
         conn.execute(
             f"UPDATE drive_requests SET state = 'abandoned', done_at = {NOW} "
             "WHERE agent_id = ? AND state = 'open'",
@@ -644,6 +687,7 @@ class ReviewMixin(LedgerHost):
                 ),
             )
             handoff_id = cur.lastrowid
+            superseded_ids, closed_departures = _supersede_handoffs(conn, file_id, handoff_id)
             _attach_departures(conn, c, file_id, handoff_id, departures)
             conn.execute("UPDATE files SET state = 'handed_up' WHERE file_id = ?", (file_id,))
 
@@ -662,6 +706,14 @@ class ReviewMixin(LedgerHost):
             )
 
         handoff = row_dict(self.conn, "handoffs", "handoff_id", handoff_id)
+        if superseded_ids:
+            handoff["superseded_handoff_ids"] = superseded_ids
+        if closed_departures:
+            handoff["superseded_departures"] = closed_departures
+            handoff["superseded_departures_note"] = (
+                "These open departures were recorded on a handoff this one replaced, and are "
+                "closed. Record each one that still applies with departure_record."
+            )
         handoff["next"] = self.next_step(wakeup)
         return handoff
 

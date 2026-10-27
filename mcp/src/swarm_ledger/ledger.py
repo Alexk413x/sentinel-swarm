@@ -650,6 +650,7 @@ class Ledger(
             if state == "approved":
                 self._approve_phase(conn, phase_id)
             elif state == "handed_up":
+                self._block_phase_hand_up_for_cr(conn, phase_id)
                 self._require_leads_released(conn, phase_id)
                 conn.execute(
                     f"UPDATE phases SET state = ?, handed_up_at = {NOW} WHERE phase_id = ?",

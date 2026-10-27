@@ -441,6 +441,8 @@ class ReportMixin(LedgerHost):
             final = dep["state"]
             if dep["state"] == "reworked" and dep["reworked_by_handoff_id"] is not None:
                 final = f"reworked, approved in handoff {dep['reworked_by_handoff_id']}"
+            elif dep["state"] == "superseded":
+                final = f"superseded: {dep['decision_reason']}"
             elif dep["level"]:
                 final = f"{dep['state']}, waits on the {dep['level']}"
             lines.append(f"  - Final state: {final}")
