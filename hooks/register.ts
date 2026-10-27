@@ -1,4 +1,4 @@
-import type { EngineInterface, Register, SessionSendAddress } from 'claude-code'
+import type { EngineInterface, Register, SessionSendAddress, SessionSendResult } from 'claude-code'
 
 import type { SentinelSwarmSession } from '../types'
 
@@ -107,6 +107,17 @@ export const register: Register = on => {
     if (s !== null) await runHook($, s, 'session_end', { ...e, [TRANSPORT_KEY]: 'mod' }).catch(() => null)
     return next(e)
   })
+
+  // SendMessage resolves a name after the hooks, and a stale or Remote Control session can carry
+  // the same name: a swarm session name goes to the live session by id instead.
+  on('session.send', async ($, e, next) => {
+    const s = await active($)
+    if (s === null || e.origin.kind !== 'model' || e.agentId !== undefined) return next(e)
+    const answer = await post($, s, 'send_target', { ...base(s), to: e.to }).catch(() => null)
+    const sessionId = isRecord(answer) && typeof answer.session_id === 'string' ? answer.session_id : null
+    if (sessionId === null) return next(e)
+    return sendOwn($, { sessionId }, e.text)
+  }).catch(($, e, next) => next(e))
 
   on('session.receive', async ($, e, next) => {
     const s = await active($)
@@ -285,26 +296,26 @@ function isOwnSend(e: { message?: unknown }): boolean {
 }
 
 async function deliver($: EngineInterface, wakeup: Owed): Promise<number[]> {
-  sendingTexts.set(wakeup.text, (sendingTexts.get(wakeup.text) ?? 0) + 1)
-  try {
-    return await sendWithRetry($, wakeup)
-  } finally {
-    const left = (sendingTexts.get(wakeup.text) ?? 1) - 1
-    if (left > 0) sendingTexts.set(wakeup.text, left)
-    else sendingTexts.delete(wakeup.text)
-  }
-}
-
-async function sendWithRetry($: EngineInterface, wakeup: Owed): Promise<number[]> {
   const to: SessionSendAddress = { sessionId: wakeup.session_id }
   for (const pause of [0, ...SEND_RETRY_MS]) {
     if (pause > 0) await $.clock.sleep(pause)
-    const sent = await within($, SEND_MS, $.session.send({ to, text: wakeup.text })).catch(() => undefined)
+    const sent = await sendOwn($, to, wakeup.text).catch(() => undefined)
     if (sent?.isDelivered) return wakeup.wakeup_ids
     // A session registers 10 to 14 s after it starts; a send before that finds no live session.
     if (sent === undefined || !NOT_YET_LIVE.test(sent.reason)) return []
   }
   return []
+}
+
+async function sendOwn($: EngineInterface, to: SessionSendAddress, text: string): Promise<SessionSendResult> {
+  sendingTexts.set(text, (sendingTexts.get(text) ?? 0) + 1)
+  try {
+    return await within($, SEND_MS, $.session.send({ to, text }))
+  } finally {
+    const left = (sendingTexts.get(text) ?? 1) - 1
+    if (left > 0) sendingTexts.set(text, left)
+    else sendingTexts.delete(text)
+  }
 }
 
 function withInbox(text: string, taken: Answer): string {

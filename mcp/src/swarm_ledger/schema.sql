@@ -95,7 +95,15 @@ CREATE TABLE IF NOT EXISTS agents (
     tool_uses INTEGER,
     transcript_path TEXT,
     session_name TEXT,
-    bg_id TEXT
+    bg_id TEXT,
+    -- Set when the ledger resumes the session; cleared once the agent is matched to the
+    -- resumed session's id. A hook from an unknown session whose id starts with bg_id
+    -- re-keys the agent to that id.
+    resume_started_at TEXT,
+    -- Set while the agent is live but its session is not running: the daemon retired it, or
+    -- the ledger stopped an idle parent under memory pressure. A parked agent keeps its state.
+    parked_at TEXT,
+    park_reason TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_name_live
@@ -538,4 +546,33 @@ CREATE TABLE IF NOT EXISTS graph_gaps (
     path TEXT,
     results_json TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+-- A spawn agent_spawn held back because free memory minus the role's estimate was below
+-- memory.headroom_mb. The watchdog starts it when memory frees, oldest first.
+CREATE TABLE IF NOT EXISTS spawn_queue (
+    queue_id INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL REFERENCES runs (run_id) ON DELETE RESTRICT,
+    brief_id INTEGER NOT NULL REFERENCES briefs (brief_id) ON DELETE RESTRICT,
+    child_name TEXT NOT NULL,
+    role TEXT NOT NULL,
+    parent_agent_id TEXT NOT NULL,
+    -- queued, started, or dropped.
+    state TEXT NOT NULL DEFAULT 'queued',
+    reason TEXT,
+    -- The started session's id.
+    agent_id TEXT,
+    queued_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    started_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_spawn_queue_waiting
+    ON spawn_queue (child_name) WHERE state = 'queued';
+
+-- The mean resident memory the watchdog measured for each role's sessions.
+CREATE TABLE IF NOT EXISTS memory_estimates (
+    role TEXT PRIMARY KEY,
+    mean_mb INTEGER NOT NULL,
+    samples INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
 );

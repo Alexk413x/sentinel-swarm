@@ -329,6 +329,7 @@ def start_pool(root: Path, settings: Settings) -> Pool | None:
 def _start_watchdog(root: Path, path: Path, settings: Settings) -> None:
     from . import env, front, watchdog
     from .db import connect
+    from .ledger import Ledger
 
     watchdog.start(
         root,
@@ -337,6 +338,7 @@ def _start_watchdog(root: Path, path: Path, settings: Settings) -> None:
         exit_server=lambda: _exit_now(path, root),
         activity=lambda: front.last_call_at,
         notify_channels=settings.notify,
+        ledger=Ledger(root, db_path=env.db_path_for(root), settings=settings),
     )
 
 

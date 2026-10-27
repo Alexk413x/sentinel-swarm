@@ -59,6 +59,20 @@ watchdog:
   # The ledger server exits after this many minutes with no active run, or a paused
   # run, and no session of the run running.
   idle_exit_minutes: 15
+  # A wake-up still unsent this many minutes after it was owed is reported to the Oracle.
+  unsent_wakeup_minutes: 5
+  # A spawn still queued for memory this many minutes after agent_spawn is reported.
+  queued_spawn_minutes: 10
+
+memory:
+  # Megabytes of free memory the ledger keeps. agent_spawn queues a session whose role's
+  # estimate would take free memory below this, and the watchdog starts it once memory
+  # frees; a parked agent is resumed against the same rule. Claude Code's daemon retires
+  # idle background sessions at about 700 MB free. Leave it empty to admit every spawn.
+  headroom_mb: 1500
+  # Under memory pressure, the watchdog stops an idle Manager or Lead whose children still
+  # work and resumes it when a wake-up is owed to it. false leaves that to the daemon.
+  park_idle_parents: true
 
 # Left empty; the setup skill fills this in from the plugin's test_command option, set
 # at install, or else the detected stack.

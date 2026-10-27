@@ -93,6 +93,14 @@ still holds.
    Then end your turn with one line that says which Leads are running. Do not poll
    `message_inbox` or `status_tree` while you wait: a Lead's message wakes you.
 
+`run_status` returns `capacity`: the machine's free memory, the `headroom_mb` the ledger
+keeps free, each role's memory estimate, `spawn_slots` (how many more sessions of each
+role fit now), the spawns waiting for memory, and the parked agents. Start at most
+`spawn_slots` children at once, the ones other work depends on first. When
+`agent_spawn` returns `queued: true`, the ledger starts that Lead itself once memory
+frees, oldest first: do not call `agent_spawn` for it again. A parked agent
+is still live: the ledger resumes it when a wake-up is owed to it.
+
 When `agent_spawn` refuses because the run is at its parallelism cap, end your turn.
 Start that Lead after a release frees a slot.
 
@@ -105,6 +113,14 @@ call before you end your turn. When `next` says the sentinel-swarm mod wakes
 the agent, make no call: the mod sends the wake-up, and the Stop hook names a call only
 when it was not delivered. The Stop hook blocks your stop while you still owe
 one. The message only points at the ledger record; the detail lives in the ledger.
+
+Send anything you have to say to another agent with `message_post`, not with a
+`SendMessage` of your own: the ledger records it, and the mod delivers it to that
+agent's live session by session id, also after a resume moved it to a new one.
+
+If a `SendMessage` that `next` or the Stop hook names answers that several agents carry
+the name, send it again with `to="<name> [<ref>]"`, the ref of the session listed on
+this machine, never a Remote Control one.
 
 ## Review what a Lead hands up
 

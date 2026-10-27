@@ -158,11 +158,21 @@ READS: list[tuple[str, dict[str, Any]]] = [
 
 def test_a_pooled_and_an_in_process_ledger_return_equal_results(host: Path, workers: Pool) -> None:
     _seed_manager()
-    in_process = [call(name, args) for name, args in READS]
+    in_process = [_steady(call(name, args)) for name, args in READS]
     _use(host, workers)
-    pooled = [call(name, args) for name, args in READS]
+    pooled = [_steady(call(name, args)) for name, args in READS]
     assert pooled == in_process
     assert workers.size() >= 1
+
+
+def _steady(result: object) -> object:
+    # A worker process reads the machine's own free memory, which the tests do not fake there.
+    if isinstance(result, dict) and isinstance(result.get("capacity"), dict):
+        capacity = dict(result["capacity"])
+        for key in ("free_mb", "spawn_slots"):
+            capacity.pop(key, None)
+        return {**result, "capacity": capacity}
+    return result
 
 
 def test_a_pooled_refusal_is_the_same_tool_error(host: Path, workers: Pool) -> None:

@@ -6,7 +6,8 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   runs and takes messages. (2026-09-24)
 - `claude --resume <id> --bg "<message>"` continues a stopped session under the same id,
   with its saved name, agent, permission mode, MCP config, and tools. On a running
-  session, it starts a second copy. (2026-09-23)
+  session, it starts a second copy. (2026-09-23; on 2.1.294 and later the id changes,
+  see below)
 - A background session that has ended its turn can exit while it waits.
   `claude --resume` brings it back. (2026-09-23)
 - A line printed by a `Monitor` command wakes an idle background session. (2026-09-24)
@@ -115,6 +116,13 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   files. (2026-09-21, 2026-09-23)
 - A stale session, local or over Remote Control, can keep an old session name and
   receive messages meant for a new session with that name. (2026-09-23)
+- A swarm session also connected over Remote Control is listed twice by `ListAgents`
+  under one name. `SendMessage(to="<name>")` then fails with "2 agents are named
+  '<name>'. Re-send with the ref of the one you mean". `to="<name> [<ref>]"`, with the
+  6-hex ref from `ListAgents` or the error, picks one. The ref changes when the session
+  is resumed, and an old ref fails with "No agent named '<name> [<ref>]' is
+  reachable". A reply by bare name can go to "the one confirmed earlier in this
+  conversation", an offline Remote Control entry, where it stays queued. (2026-10-27)
 - A session run with `--agent` loads the user's global `CLAUDE.md`, so a persona from
   it can appear in messages to the user. (2026-09-22)
 - On Windows, Python 3.12's `shutil.which` returns an extensionless file before its `.cmd` twin. A plugin that ships a POSIX launcher beside a `.cmd`, such as codebase-kg 0.8.0's `bin/kg-shim`, then fails with WinError 193. The shim prefers the PATHEXT variants. Verified 2026-09-25.
@@ -206,3 +214,19 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   hook that throws or outruns the budget is skipped and the tool runs, unless the hook
   carries a `.catch`. From the plugin-authoring reference, not yet checked in a live
   session. (2026-10-08)
+- `claude --resume <old id> --bg "<message>" --name <name> <options>` on a session the
+  daemon retired prints a background id and starts a session under a new session id,
+  never the old one. In `claude agents --json`, the entry whose `id` equals that
+  background id carries the new `sessionId` and the same `name`. The background id is
+  the first 8 characters of the new session id. (2026-10-27)
+- A session the daemon retired is absent from the plain `claude agents --json` listing.
+  `--all` lists it as `{"id", "kind": "background", "sessionId", "name", "state":
+  "done"}`, with no `pid`, `status`, or reason. The reason is only in
+  `~/.claude/daemon.log`, in lines such as `bg retire <id>: idle-prompt, idle 6m [low
+  memory]` (other reasons: `settled`, `stale-spare`) and `bg: low memory (685MB free) —
+  retiring settled workers before spawning <id>`. (2026-10-27)
+- On a 31.7 GB Windows machine, the daemon retired idle background sessions at 600 to
+  800 MB free. A `claude` process averaged about 210 to 225 MB, the largest 390 to 570
+  MB. A Coder's test and type-check processes were short-lived and small. With about 20
+  Coders in two phases, it retired every idle Manager and Lead (10 sessions) within a
+  few minutes. (2026-10-27)

@@ -5,8 +5,9 @@
 `agent_spawn(caller, child_name)` refuses unless the caller is the parent named in the
 child's unacknowledged brief. It also refuses a Manager before a `repo_check`, a child
 whose phase is paused, a child that is already registered, a session name
-a running session holds, and a start past `parallelism_cap` when the user set one. It
-then runs, in the repo root:
+a running session holds, and a start past `parallelism_cap` when the user set one. A
+start that would take free memory below `memory.headroom_mb` is queued, not refused;
+see "Memory" below. It then runs, in the repo root:
 
 ```
 claude "You are <name>. Read your brief from the swarm ledger and follow it." --bg \
@@ -107,6 +108,10 @@ session of that role. See "Measured baselines" in [12-testing.md](12-testing.md)
   The next tool use or session start sets it back to `working`.
 - `handoff_submit` sets the Coder to `handed_up`. `return_work` sets it to `idle`.
 - Release sets `released` and `ended_at`.
+- Parked is a flag on a live agent, not a state: `agents.parked_at` and `park_reason`
+  are set while its session is not running because the daemon retired it or the ledger
+  stopped it, and the agent keeps its state. A parked agent is not ended: the ledger
+  resumes it when a wake-up is owed to it. See "Parked agents" below.
 
 ## Wake-ups owed
 
@@ -166,6 +171,20 @@ one. The ledger pushes nothing into a session.
   in the ledger before the mod sends. They do raise its `SendMessage` gate, which
   passes a wake-up text the mod is sending (see "The mod" in
   [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md)).
+- Before it answers, the ledger reads `claude agents --json` once for the targets. A
+  target whose session is not running, or that is parked, is left out of the answer.
+  When it has a session name and is not the Oracle, the ledger resumes it itself, after
+  the owing call's transaction committed, with the pointers of every wake-up owed to it,
+  and re-keys it; see "Re-keying a resumed session" below. A resume already in flight
+  for the target, started in the last 2 minutes, starts no second one. When free memory
+  minus the role's estimate is below `memory.headroom_mb` and another member session of
+  the run still runs, the target is parked instead, "waiting for memory to resume it for
+  a wake-up", and the watchdog resumes it later. A running entry under the target's
+  session name with another id re-keys the agent, and the wake-up goes to the new id.
+  When the listing fails, nothing is resumed and every target is answered as before.
+- The Oracle is never resumed this way: an interactive Oracle is the user's terminal,
+  and a background Oracle follows the watchdog's Oracle resume (see "How a report
+  reaches the Oracle" in [08-watchdog.md](08-watchdog.md)).
 - The mod sends each entry with `$.session.send({ to: { sessionId }, text })`, all
   targets in parallel. Every role is addressed by session id, the interactive Oracle
   included, never by name.
@@ -271,6 +290,34 @@ a possible injection. So only the Oracle and the Managers see the elapsed time.
   control a runaway agent.
 - A `SendMessage` body is one line that points at the ledger record, for example
   "Handoff 1 for hello.py is waiting in the ledger." The detail lives in the ledger.
+- Agent-to-agent text goes through `message_post`, never a model's own `SendMessage`:
+  the ledger checks the recipient, and the mod delivers the wake-up by session id at
+  delivery time, so it reaches the live session even after a resume moved it to a new
+  id. The role templates say so.
+
+### Session names and SendMessage
+
+`SendMessage` takes a session name. A swarm session that is also connected over Remote
+Control is listed twice under one name, and after a resume the old session's Remote
+Control entry stays listed, offline, under the same name. A send by bare name then
+fails as ambiguous, or goes to the offline entry and waits there for good. See
+[13-platform-facts.md](13-platform-facts.md).
+
+- The mod's `session.send` hook takes every `SendMessage` the model of a swarm session
+  makes and posts `send_target` with its `to`. When `to`, without a trailing
+  ` [<ref>]`, is the session name of a live agent of the caller's run that
+  `pre_send_message` allows, the ledger answers that agent's session id, and the mod
+  sends the text to `{ sessionId }` itself and returns that result to the model.
+  Any other name goes through unchanged.
+- `pre_send_message`, `send_target`, and `post_any` read `to` without a trailing
+  ` [<ref>]`, so a send to `"<name> [<ref>]"` is checked, and pays a wake-up, as a send
+  to the name.
+- Where a model-issued `SendMessage` stays the fallback, the text that names it adds
+  the retry rule: "If a SendMessage answers that several agents carry the name, send
+  it again with to="<name> [<ref>]", the ref of the session listed on this machine,
+  never a Remote Control one." The member Stop hook's owed calls, the Oracle Stop
+  hook's wake hints, and the watchdog's stall step carry it whenever they name a
+  `SendMessage`, and every role template states it.
 
 ## The Oracle's Stop hook
 
@@ -306,14 +353,17 @@ a possible injection. So only the Oracle and the Managers see the elapsed time.
 - `agent_resume(target_name)` resumes a live agent of the run whose session is not
   running, with `claude --resume <session id> --bg "<pointer>" --name <session name>`
   and the role's launch options, because `--resume` restores the conversation but not
-  the name or the launch flags. The pointer is the text
-  of every wake-up the caller owes the target, or "Re-read your brief and your inbox in
-  the ledger." The resume marks those wake-ups sent. It refuses a running session,
-  because a resume of a running session starts a second copy. It refuses a target with
-  no recorded `session_name`: "'<name>' has no recorded session, so agent_resume cannot
-  wake it: a resume without one starts a fresh session". `claude --resume <id> --bg
-  <message>` without `--name` comes back as a session named after the message. Any live
-  agent of the run may call it, except on itself.
+  the name or the launch flags. The pointer is the text of every unsent wake-up owed to
+  the target, from any sender, or "Re-read your brief and your inbox in the ledger." It
+  refuses a running session, because a resume of a running session starts a second
+  copy. It refuses a target with no recorded `session_name`: "'<name>' has no recorded
+  session, so agent_resume cannot wake it: a resume without one starts a fresh
+  session". `claude --resume <id> --bg <message>` without `--name` comes back as a
+  session named after the message. Any live agent of the run may call it, except on
+  itself.
+- When a session runs under the target's session name with another session id, for
+  example one resumed earlier, `agent_resume` starts nothing: it re-keys the agent to
+  that session and returns `rekeyed_from`.
 - Release sets the row `released` and stops the session with `claude stop <bg_id>`,
   which frees its memory. The Oracle's session is never stopped this way.
 - `agent_release(target_agent_id)` releases a child of the caller. The other releases
@@ -324,6 +374,61 @@ a possible injection. So only the Oracle and the Managers see the elapsed time.
   its `SendMessage` to the Oracle, after its own `agent_resume` of the Oracle, or at its
   Stop hook when it owes nothing. `drive_request` and `run_finish` release one that is
   still live.
+
+### Re-keying a resumed session
+
+Every part of the ledger keys an agent by its current session id: the hooks stamp it as
+`agent_id`, and liveness, the mod's sends, `mod_sessions`, and the transcript all use
+it. A resumed background session can come back under a new session id (see
+[13-platform-facts.md](13-platform-facts.md)), so the ledger re-keys the agent rather
+than keep an alias.
+
+- Before the resume, the ledger sets `agents.resume_started_at`. After it, it records
+  the background id the CLI printed as `bg_id`, then polls `claude agents --json` for
+  up to 15 seconds for the entry whose `id` is that background id, or else a running
+  entry with the session name.
+- When the entry's session id differs, one write transaction replaces the old id with
+  the new one in every column that stores an agent id: `rekey.agent_id_columns` reads
+  the schema for columns named `*agent_id`, columns that reference `agents`, and
+  `mod_sessions.session_id`. It also sets `bg_id` to the new id's first 8 characters,
+  points `transcript_path` at `<new id>.jsonl` in the same folder, clears
+  `resume_started_at`, and logs a `rekeyed` agent event. The same id needs no re-key.
+- The resumed session's own hooks can arrive before the poll ends. Each hook from a
+  session id the ledger does not know re-keys the agent whose `resume_started_at` is set
+  and whose `bg_id` equals the id's first 8 characters. `session_start` and `pre_ledger`
+  also look the id up in `claude agents --json` and match its session name, while a
+  resume started in the last 2 minutes is pending. Both paths and the poll are
+  idempotent.
+- While such a resume is pending, `pre_ledger` denies a swarm session the ledger does
+  not know every tool that takes an identity, except `run_start`: "This session was just
+  resumed, and the ledger has not matched it to its agent yet. Wait a few seconds, then
+  make the same call again."
+- A resume marks the wake-ups its pointer carried sent, and reports `reachable: true`,
+  only once the poll found the resumed session. Otherwise they stay owed, and the call
+  returns `reachable: false`. The agent is re-keyed when its first hook arrives, and the
+  sender's mod then delivers the wake-ups to the new id.
+- The watchdog's Oracle resume re-keys the Oracle the same way.
+
+### Parked agents
+
+- On each pass, the watchdog compares the run's live Managers, Leads, and Coders with the
+  plain `claude agents --json` listing. One whose session is absent or not running,
+  started more than 2 minutes ago and with no resume in flight, is parked. Its reason
+  is the matching `bg retire <bg id>: <reason>` line of `~/.claude/daemon.log` when one
+  exists ("the daemon retired its session: idle-prompt, idle 6m [low memory]"), else
+  "its session is not in claude agents --json" or "its session is not running (state
+  <state>)". A parked agent whose session is seen running again is unparked. A
+  successful resume clears the flag.
+- When memory frees, the watchdog resumes parked agents that are owed a wake-up, each
+  with that wake-up's pointers: first the parents none of whose children is still
+  `registered` or `working`, then by phase ordinal, then by the oldest owed wake-up. It
+  stops at the first one that does not fit under the headroom.
+- A resume fits when free memory minus the role's estimate stays at or above
+  `memory.headroom_mb`, or when no member session of the run runs, since then waiting
+  frees nothing. Unknown free memory fits.
+- `crashed` still reports a `working` or late `registered` agent whose session is gone,
+  and the Oracle resumes it with `agent_resume`. A failed resume is logged as a
+  `resume_failed` agent event, and the agent stays parked.
 
 ## What stops when
 
@@ -356,6 +461,48 @@ a possible injection. So only the Oracle and the Managers see the elapsed time.
   apply to it exactly as to any other role; in practice a run has at most one live
   Driver, since `drive_request` refuses while an exploration is already open.
 - A swarm session starts only its role's MCP servers, about 300 MB of memory each.
+
+## Memory
+
+Claude Code's daemon retires idle background sessions when the machine runs low on
+memory, and an idle parent waiting on its children is what it retires first. The
+ledger treats memory as a run resource. See [13-platform-facts.md](13-platform-facts.md)
+for the measured figures.
+
+- **Measure.** `memory.free_mb` reads free system memory with the standard library:
+  `GlobalMemoryStatusEx` on Windows, `vm_stat` (free, inactive, speculative, and
+  purgeable pages) on macOS, and `MemAvailable` in `/proc/meminfo` on Linux. Each
+  watchdog pass samples each running session's resident memory where it finds a pid,
+  from the listing or from `<config>/sessions/<pid>.json`, with
+  `GetProcessMemoryInfo` on Windows or `ps -o rss=` elsewhere, and keeps a running mean
+  per role in `memory_estimates`. A role's estimate is that mean, or 300 MB with no
+  sample, plus 300 MB for a Coder's test and type-check processes. The functions are
+  replaceable, as `sessions._run` is, so tests fake them.
+- **Admit.** Before `agent_spawn` starts a session, it checks that free memory minus the
+  child role's estimate stays at or above `memory.headroom_mb` (1,500 by default; the
+  daemon retires sessions at about 700 MB free). A spawn that does not fit, or that
+  arrives while earlier spawns of the run wait, is queued in `spawn_queue` and returns
+  `queued: true`, the reason, and a `next` that says not to call `agent_spawn` for it
+  again. A second `agent_spawn` of a queued child returns the same entry. Unknown free
+  memory, or an empty `headroom_mb`, admits the spawn.
+- **Start queued spawns.** Each watchdog pass starts queued spawns oldest first, while
+  they fit. It skips one whose phase is paused or that a parallelism cap holds back,
+  and drops one whose brief was acknowledged, whose parent ended, or whose start failed,
+  with a ledger message to the parent that says why. While a spawn is queued, the
+  Oracle's Stop hook does not block for pending work, and the watchdog reports no stall.
+- **Capacity.** `run_status` returns `capacity`: `free_mb`, `headroom_mb`,
+  `estimate_mb` per role, `spawn_slots` per role (how many more sessions fit under the
+  headroom, within the parallelism caps, less the queued spawns), `queued_spawns`, and
+  `parked` agents with their reasons. The Manager, Lead, and Oracle templates start at
+  most `spawn_slots` children at once.
+- **Park idle parents.** When `memory.park_idle_parents` is on (the default) and free
+  memory is below the headroom plus the estimates of the queued spawns, each watchdog
+  pass stops idle Leads, then idle Managers, with `claude stop <bg_id>`, until the
+  estimates it freed cover the shortfall. It stops only one whose session runs, that has
+  a live child that is `registered` or `working`, and that is owed no unsent wake-up and
+  has no unread messages, checked in the same transaction that sets `parked_at`, with
+  the reason "the ledger stopped it under memory pressure while its children work". A
+  failed stop clears the flag. The first wake-up owed to it resumes it.
 
 ## The multi-repo lock
 

@@ -173,6 +173,8 @@ descriptions stay out of every session's context.
 | `watchdog.*` | See "Watchdog" in [08-watchdog.md](08-watchdog.md) | Watchdog timing, thresholds, and server idle exit |
 | `test_command` | empty | Must contain `{target}`, for example `python -m pytest -q -p no:cacheprovider {target}` |
 | `build_command`, `lint_command` | empty | Optional; the Coder's shell gate allows them, and the Driver's allows `build_command` only |
+| `memory.headroom_mb` | 1500 | Megabytes of free memory the ledger keeps. `agent_spawn` queues a session whose role's estimate would take free memory below it, the watchdog starts it once memory frees, and a parked agent's resume follows the same rule. Empty admits every spawn. See "Memory" in [05-sessions.md](05-sessions.md) |
+| `memory.park_idle_parents` | `true` | Under memory pressure, the watchdog stops an idle Manager or Lead whose children still work and resumes it when a wake-up is owed to it. `false` leaves idle parents to the daemon |
 | `parallelism_cap` | empty | No limit when empty; also counts other swarms' live sessions on the machine |
 | `time_budget_minutes` | empty | Advisory minutes for the run. Each wake-up and watchdog line for the Oracle or a Manager ends with `elapsed <n>s / <budget>s`, or `elapsed <n>s` when empty. A value that is not a positive whole number reads as empty. See "Time signal" in [05-sessions.md](05-sessions.md) |
 | `base_branch` | empty | `repo_check` tries `main`, then `master` |

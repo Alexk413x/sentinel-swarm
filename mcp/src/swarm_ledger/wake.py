@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -14,6 +15,12 @@ from .clock import parse_stamp, utcnow
 TIMED_ROLES = ("oracle", "manager")
 
 Kind = Literal["send", "resume", "send_or_resume"]
+_REF_SUFFIX = re.compile(r"^(.*\S)\s+\[[0-9A-Za-z]+\]$")
+AMBIGUOUS_NAME_RULE = (
+    "If a SendMessage answers that several agents carry the name, send it again with "
+    'to="<name> [<ref>]", the ref of the session listed on this machine, never a Remote '
+    "Control one."
+)
 
 
 @dataclass(frozen=True)
@@ -91,3 +98,8 @@ def route_wakeup(
     if send is None or live is False:
         return Delivery("resume", target, send, resume)
     return Delivery("send" if live else "send_or_resume", target, send, resume)
+
+
+def bare_session_name(to: str) -> str:
+    match = _REF_SUFFIX.match(to.strip())
+    return match.group(1) if match else to.strip()
