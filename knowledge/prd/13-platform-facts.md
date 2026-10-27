@@ -225,3 +225,8 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   `~/.claude/daemon.log`, in lines such as `bg retire <id>: idle-prompt, idle 6m [low
   memory]` (other reasons: `settled`, `stale-spare`) and `bg: low memory (685MB free) —
   retiring settled workers before spawning <id>`. (2026-10-27)
+- On a 31.7 GB Windows machine, the daemon retired idle background sessions at 600 to
+  800 MB free. A `claude` process averaged about 210 to 225 MB, the largest 390 to 570
+  MB. A Coder's test and type-check processes were short-lived and small. With about 20
+  Coders in two phases, it retired every idle Manager and Lead (10 sessions) within a
+  few minutes. (2026-10-27)

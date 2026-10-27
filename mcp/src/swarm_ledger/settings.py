@@ -26,6 +26,8 @@ DEFAULT_EFFORT = dict.fromkeys(_DEFAULT_MODELS, "medium")
 _SETTINGS_PATH = Path(".claude") / "sentinel-swarm.local.md"
 NOTIFY_CHANNELS = ("os", "push")
 DEFAULT_MAX_WORKERS = 8
+DEFAULT_HEADROOM_MB = 1500
+_FALSE_WORDS = frozenset({"false", "no", "off", "0"})
 PROFILE_KEYS = ("test_command", "build_command", "lint_command")
 
 
@@ -72,6 +74,25 @@ class WatchdogSettings:
     context_pct: int = 80
     context_window: int | None = None
     idle_exit_minutes: int = 15
+    unsent_wakeup_minutes: int = 5
+
+
+@dataclass
+class MemorySettings:
+    headroom_mb: int | None = DEFAULT_HEADROOM_MB
+    park_idle_parents: bool = True
+
+
+def normalize_memory(raw: object) -> MemorySettings:
+    data = raw if isinstance(raw, dict) else {}
+    headroom: int | None = DEFAULT_HEADROOM_MB
+    if "headroom_mb" in data:
+        try:
+            headroom = max(0, int(str(data["headroom_mb"]).strip()))
+        except ValueError:
+            headroom = None
+    park = str(data.get("park_idle_parents", True)).strip().lower()
+    return MemorySettings(headroom_mb=headroom, park_idle_parents=park not in _FALSE_WORDS)
 
 
 _Section = TypeVar("_Section", Thresholds, EscalationSettings, WatchdogSettings)
@@ -86,6 +107,7 @@ class Settings:
     rubric: Thresholds = field(default_factory=Thresholds)
     escalation: EscalationSettings = field(default_factory=EscalationSettings)
     watchdog: WatchdogSettings = field(default_factory=WatchdogSettings)
+    memory: MemorySettings = field(default_factory=MemorySettings)
     test_command: str | None = None
     build_command: str | None = None
     lint_command: str | None = None
@@ -115,6 +137,7 @@ class Settings:
                 "rubric": Thresholds(**data["rubric"]),
                 "escalation": EscalationSettings(**data["escalation"]),
                 "watchdog": WatchdogSettings(**data["watchdog"]),
+                "memory": MemorySettings(**(data.get("memory") or {})),
             }
         )
 
@@ -162,6 +185,7 @@ def load_settings(repo_root: Path) -> Settings:
     rubric = _section(Thresholds, data.get("rubric"))
     escalation = _section(EscalationSettings, data.get("escalation"))
     watchdog = _section(WatchdogSettings, data.get("watchdog"))
+    memory = normalize_memory(data.get("memory"))
 
     effort = (
         {role: str(level) for role, level in (data.get("effort") or {}).items() if level}
@@ -181,6 +205,7 @@ def load_settings(repo_root: Path) -> Settings:
         rubric=rubric,
         escalation=escalation,
         watchdog=watchdog,
+        memory=memory,
         test_command=data.get("test_command") or defaults.test_command,
         build_command=data.get("build_command") or defaults.build_command,
         lint_command=data.get("lint_command") or defaults.lint_command,
