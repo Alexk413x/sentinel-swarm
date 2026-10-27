@@ -75,6 +75,7 @@ class WatchdogSettings:
     context_window: int | None = None
     idle_exit_minutes: int = 15
     unsent_wakeup_minutes: int = 5
+    queued_spawn_minutes: int = 10
 
 
 @dataclass

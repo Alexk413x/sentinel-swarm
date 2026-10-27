@@ -29,10 +29,11 @@ pass reads the listing again for the scan. See "Parked agents" and "Memory" in
 | `driver_unsent` | The Driver's exploration is closed, the ledger has not released it, its session runs but sits idle, and it has owed a live agent an unsent wake-up for more than 2 minutes. This is the Driver ignoring its Stop hook block twice: `stop_hook_active` lets the second stop through idle. Not also reported as `crashed`, which covers a dead session instead. | Read its result in the ledger, then `agent_release` it. |
 | `wait_landed` | A live Coder or Lead has an open `wait_for` row on a path whose latest claim is `approved` or `incomplete`. `approve` closes the waits in the same transaction, so this reports a race or a lost close | `agent_resume(target_name=...)`, or the `SendMessage` to its session when it runs |
 | `wake_unsent` | A wake-up a live agent owes a live Manager, Lead, Coder, or Driver has been unsent for `unsent_wakeup_minutes`. One finding per target, from its oldest such wake-up. Not reported for a Driver's debt, which `driver_unsent` covers | The wake call (`SendMessage` or `agent_resume`) for the target. For a parked target: the ledger resumes it once memory allows, or wake it now with that call |
+| `spawn_queued` | A spawn `agent_spawn` queued for memory has waited `queued_spawn_minutes`. Reported on the parent, one finding per queued spawn | Free memory on the machine, lower `memory.headroom_mb`, or `run_pause` and tell the user the run waits on memory |
 | `waiting_permission` | A Manager's, Lead's, or Coder's session waits on a permission prompt. Not also reported as crashed or stuck | Tell the user to open that session and answer |
 | `spinning` | The agent's last `spin_failures` test runs for one scope and target all failed. Does not apply to a Driver, which runs no `tests_run` | Ask its parent to `return_work` or `issue_escalate` |
 | `context_high` | The latest request of the agent, the Oracle included, fills `context_pct` of its window | Have its parent replace it. For the Oracle: `run_pause`, then resume in a fresh session |
-| `stalled` | No session of the run runs; or sessions run, but no member session is busy, no member is `working`, and nothing changed for 2 minutes. Not reported while a directive waits on the user | Wake the agent whose work is pending: the reviewer of a submitted handoff, an agent with unread messages, or the Lead of a file with an open issue. With no such agent: resume or spawn the owner of the pending work, or, with nothing pending, continue the plan or call `run_finish` |
+| `stalled` | No session of the run runs; or sessions run, but no member session is busy, no member is `working`, and nothing changed for 2 minutes. Not reported while a directive waits on the user, or while a spawn is queued for memory, which `spawn_queued` reports | Wake the agent whose work is pending: the reviewer of a submitted handoff, an agent with unread messages, or the Lead of a file with an open issue. With no such agent: resume or spawn the owner of the pending work, or, with nothing pending, continue the plan or call `run_finish` |
 
 - The context size is the input, cache read, and cache creation tokens of the last
   assistant response in the agent's transcript. The window is 200,000 tokens when the
@@ -108,5 +109,5 @@ pass reads the listing again for the scan. See "Parked agents" and "Memory" in
 Under `watchdog` in `.claude/sentinel-swarm.local.md`: `interval_seconds` (30),
 `stuck_minutes` (15), `spin_failures` (5), `context_pct` (80), `context_window` (unset:
 taken from the model), `idle_exit_minutes` (15), `unsent_wakeup_minutes` (5; 0 turns
-`wake_unsent` off). The memory steps read `memory.headroom_mb` and
+`wake_unsent` off), `queued_spawn_minutes` (10; 0 turns `spawn_queued` off). The memory steps read `memory.headroom_mb` and
 `memory.park_idle_parents`; see [11-setup-and-settings.md](11-setup-and-settings.md).

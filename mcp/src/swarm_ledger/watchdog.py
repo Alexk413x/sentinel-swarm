@@ -104,6 +104,7 @@ def scan(
 
     findings += _landed_wait_findings(conn, run["run_id"], agents, by_session)
     findings += _unsent_findings(conn, run["run_id"], agents, by_session, now, settings)
+    findings += _queued_findings(conn, run["run_id"], agents, now, settings)
 
     stalled = _stalled(conn, run, agents, by_session, now)
     if stalled is not None:
@@ -177,6 +178,39 @@ def _unsent_findings(
                 f"{row['from_name']} has owed it a wake-up for {_minutes(now - owed)} minutes: "
                 f"{pointer}",
                 step,
+            )
+        )
+    return findings
+
+
+def _queued_findings(
+    conn: sqlite3.Connection,
+    run_id: int,
+    agents: list[dict],
+    now: datetime,
+    settings: WatchdogSettings,
+) -> list[Finding]:
+    after = timedelta(minutes=settings.queued_spawn_minutes)
+    if after <= timedelta(0):
+        return []
+    by_id = {a["agent_id"]: a for a in agents}
+    findings: list[Finding] = []
+    for row in conn.execute(
+        "SELECT * FROM spawn_queue WHERE run_id = ? AND state = 'queued' ORDER BY queue_id",
+        (run_id,),
+    ):
+        parent = by_id.get(row["parent_agent_id"])
+        queued = parse_stamp(row["queued_at"])
+        if parent is None or queued is None or now - queued < after:
+            continue
+        findings.append(
+            _finding(
+                parent,
+                "spawn_queued",
+                f"its spawn of {row['child_name']} ({row['role']}) has waited "
+                f"{_minutes(now - queued)} minutes for free memory",
+                "Free memory on the machine, or lower memory.headroom_mb, or call run_pause "
+                "and tell the user the run waits on memory.",
             )
         )
     return findings

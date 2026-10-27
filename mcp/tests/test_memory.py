@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -419,6 +419,27 @@ def test_a_wake_up_unsent_for_minutes_is_reported(ledger: Ledger, claude: Moving
         for f in watchdog.scan(ledger.conn, claude.listing, utcnow(), settings)
         if f.kind == "wake_unsent"
     ]
+
+
+def test_a_spawn_queued_for_minutes_is_reported_on_its_parent(
+    ledger: Ledger, claude: MovingClaude, free: dict
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    name = _brief_coder(ledger, ctx, "c1")
+    free["mb"] = 1_000
+    ledger.agent_spawn(*ctx.lead, name)
+    settings = WatchdogSettings(queued_spawn_minutes=10)
+
+    def queued(at: datetime) -> list[watchdog.Finding]:
+        found = watchdog.scan(ledger.conn, claude.listing, at, settings)
+        return [f for f in found if f.kind == "spawn_queued"]
+
+    assert queued(utcnow()) == []
+    late = queued(utcnow() + timedelta(minutes=11))
+    assert [f.name for f in late] == ["lead-p1-module-1"]
+    assert f"its spawn of {name} (coder) has waited 11 minutes" in late[0].detail
+    settings.queued_spawn_minutes = 0
+    assert queued(utcnow() + timedelta(minutes=11)) == []
 
 
 def test_the_watchdog_tick_runs_the_memory_passes(

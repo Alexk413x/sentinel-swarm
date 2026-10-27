@@ -61,6 +61,8 @@ watchdog:
   idle_exit_minutes: 15
   # A wake-up still unsent this many minutes after it was owed is reported to the Oracle.
   unsent_wakeup_minutes: 5
+  # A spawn still queued for memory this many minutes after agent_spawn is reported.
+  queued_spawn_minutes: 10
 
 memory:
   # Megabytes of free memory the ledger keeps. agent_spawn queues a session whose role's
