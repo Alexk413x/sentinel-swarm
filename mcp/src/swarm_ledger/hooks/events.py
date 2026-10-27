@@ -446,8 +446,26 @@ def handle_pre_send_message(ledger: Ledger, data: dict) -> dict | None:
     caller = _data_caller(ledger, data)
     if caller is None or caller["run_id"] is None:
         return None
-    reason = _send_refusal(ledger, caller, str(_tool_input(data).get("to") or ""))
+    to = wake.bare_session_name(str(_tool_input(data).get("to") or ""))
+    reason = _send_refusal(ledger, caller, to)
     return _deny(reason) if reason is not None else None
+
+
+def handle_send_target(ledger: Ledger, data: dict) -> dict | None:
+    caller = _data_caller(ledger, data)
+    to = wake.bare_session_name(str(data.get("to") or ""))
+    if caller is None or caller["run_id"] is None or not to:
+        return None
+    if _send_refusal(ledger, caller, to) is not None:
+        return None
+    target = ledger.conn.execute(
+        "SELECT agent_id, name FROM agents WHERE run_id = ? AND session_name = ? "
+        "AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1",
+        (caller["run_id"], to),
+    ).fetchone()
+    if target is None:
+        return None
+    return {"session_id": target["agent_id"], "name": target["name"]}
 
 
 def handle_pre_skill(ledger: Ledger, data: dict) -> dict | None:
@@ -540,7 +558,7 @@ def handle_post_any(ledger: Ledger, data: dict) -> None:
             ledger.watch_armed(timeout_ms if isinstance(timeout_ms, int) else None)
 
     if tool_name == "SendMessage":
-        to = str(_tool_input(data).get("to") or "")
+        to = wake.bare_session_name(str(_tool_input(data).get("to") or ""))
         if to:
             ledger.wakeups_sent(caller["agent_id"], to)
 
@@ -1026,6 +1044,8 @@ def _oracle_work_block(ledger: Ledger, run: dict, oracle: dict) -> dict | None:
     else:
         lines = ["Continue the plan, or call run_finish."]
 
+    if any("SendMessage(" in line for line in lines):
+        lines.append(wake.AMBIGUOUS_NAME_RULE)
     return _block(f"The run still has work: {', '.join(reasons)}.", *lines, _PAUSE_HINT)
 
 
@@ -1043,6 +1063,8 @@ def _member_stop(ledger: Ledger, caller: dict, data: dict) -> dict | None:
             lines = []
             if steps:
                 lines += ["You still owe a wake-up. Make each call below, then stop:", *steps]
+                if any("SendMessage(" in step for step in steps):
+                    lines.append(wake.AMBIGUOUS_NAME_RULE)
             if unread:
                 lines.append(
                     f"You have {unread} unread message(s). Call message_inbox, act on them, "

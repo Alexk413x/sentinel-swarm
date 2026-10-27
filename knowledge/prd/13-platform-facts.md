@@ -115,6 +115,13 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   files. (2026-09-21, 2026-09-23)
 - A stale session, local or over Remote Control, can keep an old session name and
   receive messages meant for a new session with that name. (2026-09-23)
+- A swarm session also connected over Remote Control is listed twice by `ListAgents`
+  under one name. `SendMessage(to="<name>")` then fails with "2 agents are named
+  '<name>'. Re-send with the ref of the one you mean". `to="<name> [<ref>]"`, with the
+  6-hex ref from `ListAgents` or the error, picks one. The ref changes when the session
+  is resumed, and an old ref fails with "No agent named '<name> [<ref>]' is
+  reachable". A reply by bare name can go to "the one confirmed earlier in this
+  conversation", an offline Remote Control entry, where it stays queued. (2026-10-27)
 - A session run with `--agent` loads the user's global `CLAUDE.md`, so a persona from
   it can appear in messages to the user. (2026-09-22)
 - On Windows, Python 3.12's `shutil.which` returns an extensionless file before its `.cmd` twin. A plugin that ships a POSIX launcher beside a `.cmd`, such as codebase-kg 0.8.0's `bin/kg-shim`, then fails with WinError 193. The shim prefers the PATHEXT variants. Verified 2026-09-25.

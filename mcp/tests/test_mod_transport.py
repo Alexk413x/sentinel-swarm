@@ -4,6 +4,7 @@ import pytest
 from helpers import as_session
 from test_hooks import _bootstrap, host
 
+from swarm_ledger import wake
 from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import HANDLERS, events
 from swarm_ledger.ledger import Ledger
@@ -177,3 +178,55 @@ def test_inbox_take_never_takes_an_earlier_runs_mail(ledger: Ledger) -> None:
         )
     taken = events.handle_inbox_take(ledger, {"session_id": "lead-agent"})
     assert taken == {"claim": None, "messages": [], "remaining": 0}
+
+
+def test_a_session_name_with_a_ref_reads_as_the_name() -> None:
+    assert wake.bare_session_name("host-r1-manager-1 [a1b2c3]") == "host-r1-manager-1"
+    assert wake.bare_session_name(" host-r1-manager-1 ") == "host-r1-manager-1"
+    assert wake.bare_session_name("odd [name] here") == "odd [name] here"
+
+
+def test_send_target_answers_the_live_session_id_of_an_allowed_name(ledger: Ledger) -> None:
+    _bootstrap(ledger)
+    as_session(ledger, "mgr-agent", "host-r1-manager-1")
+    answer = events.handle_send_target(
+        ledger, {"session_id": "lead-agent", "to": "host-r1-manager-1 [a1b2c3]"}
+    )
+    assert answer == {"session_id": "mgr-agent", "name": "mgr-p1-phase-1"}
+
+
+def test_send_target_answers_nothing_for_a_name_outside_the_run(ledger: Ledger) -> None:
+    _bootstrap(ledger)
+    assert events.handle_send_target(ledger, {"session_id": "lead-agent", "to": "other"}) is None
+    assert events.handle_send_target(ledger, {"session_id": "stranger", "to": "x"}) is None
+
+
+def test_a_send_with_a_ref_passes_the_gate_and_pays_the_wake_up(ledger: Ledger) -> None:
+    _bootstrap(ledger)
+    as_session(ledger, "mgr-agent", "host-r1-manager-1")
+    ledger.message_post("lead-p1-module-1", "lead-agent", "mgr-p1-phase-1", "up")
+    send = {
+        "session_id": "lead-agent",
+        "tool_name": "SendMessage",
+        "tool_input": {"to": "host-r1-manager-1 [a1b2c3]", "message": "up"},
+    }
+    assert events.handle_pre_send_message(ledger, send) is None
+    events.handle_post_any(ledger, send)
+    assert ledger.owed_wakeups("lead-agent") == []
+
+
+def test_a_stop_that_names_a_send_message_adds_the_ambiguous_name_rule(
+    ledger: Ledger, claude_sessions: list[dict]
+) -> None:
+    _bootstrap(ledger)
+    as_session(ledger, "mgr-agent", "host-r1-manager-1")
+    claude_sessions.append(
+        {"pid": 7, "sessionId": "mgr-agent", "name": "host-r1-manager-1", "status": "idle"}
+    )
+    ledger.message_post("lead-p1-module-1", "lead-agent", "mgr-p1-phase-1", "up")
+
+    blocked = events.handle_stop(ledger, {"session_id": "lead-agent"})
+
+    assert blocked is not None
+    assert 'SendMessage(to="host-r1-manager-1"' in blocked["reason"]
+    assert wake.AMBIGUOUS_NAME_RULE in blocked["reason"]

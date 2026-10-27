@@ -122,6 +122,14 @@ when it was not delivered. This covers a handoff and a `cr_open`, `cr_accept`,
 `cr_complete`, or `cr_verify` call. The message only points at the ledger record; the
 detail lives in the ledger.
 
+Send anything you have to say to another agent with `message_post`, not with a
+`SendMessage` of your own: the ledger records it, and the mod delivers it to that
+agent's live session by session id, also after a resume moved it to a new one.
+
+If a `SendMessage` that `next` or the Stop hook names answers that several agents carry
+the name, send it again with `to="<name> [<ref>]"`, the ref of the session listed on
+this machine, never a Remote Control one.
+
 ## What you own
 
 Exactly the `path` and the `test_path` from your claim. "File" means any project

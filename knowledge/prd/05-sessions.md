@@ -268,6 +268,34 @@ a possible injection. So only the Oracle and the Managers see the elapsed time.
   control a runaway agent.
 - A `SendMessage` body is one line that points at the ledger record, for example
   "Handoff 1 for hello.py is waiting in the ledger." The detail lives in the ledger.
+- Agent-to-agent text goes through `message_post`, never a model's own `SendMessage`:
+  the ledger checks the recipient, and the mod delivers the wake-up by session id at
+  delivery time, so it reaches the live session even after a resume moved it to a new
+  id. The role templates say so.
+
+### Session names and SendMessage
+
+`SendMessage` takes a session name. A swarm session that is also connected over Remote
+Control is listed twice under one name, and after a resume the old session's Remote
+Control entry stays listed, offline, under the same name. A send by bare name then
+fails as ambiguous, or goes to the offline entry and waits there for good. See
+[13-platform-facts.md](13-platform-facts.md).
+
+- The mod's `session.send` hook takes every `SendMessage` the model of a swarm session
+  makes and posts `send_target` with its `to`. When `to`, without a trailing
+  ` [<ref>]`, is the session name of a live agent of the caller's run that
+  `pre_send_message` allows, the ledger answers that agent's session id, and the mod
+  sends the text to `{ sessionId }` itself and returns that result to the model.
+  Any other name goes through unchanged.
+- `pre_send_message`, `send_target`, and `post_any` read `to` without a trailing
+  ` [<ref>]`, so a send to `"<name> [<ref>]"` is checked, and pays a wake-up, as a send
+  to the name.
+- Where a model-issued `SendMessage` stays the fallback, the text that names it adds
+  the retry rule: "If a SendMessage answers that several agents carry the name, send
+  it again with to="<name> [<ref>]", the ref of the session listed on this machine,
+  never a Remote Control one." The member Stop hook's owed calls, the Oracle Stop
+  hook's wake hints, and the watchdog's stall step carry it whenever they name a
+  `SendMessage`, and every role template states it.
 
 ## The Oracle's Stop hook
 

@@ -113,6 +113,10 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   `post_shell` for a Coder's shell; `classic.PreCompact` and `classic.SessionEnd`
   post theirs. A failed post here allows, as a failed shim does. Every payload
   carries `sentinel_swarm_transport: "mod"`.
+- **A model's SendMessage.** The mod's `session.send` hook posts `send_target` for each
+  `SendMessage` the session's model makes, and sends a swarm session name to that
+  session's id itself. See "Session names and SendMessage" in
+  [05-sessions.md](05-sessions.md).
 - **Owed wake-ups and the inbox.** The mod posts `owed` and `wake_sent` to pay the
   session's wake-ups, and `inbox_take`, `inbox_ack`, and `inbox_release` to read the
   inbox inside a wake-up. See "Mod wake-up delivery" and "Messages" in
@@ -238,6 +242,11 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   and that owes nothing more is released instead of set idle. After a run finishes, the
   Oracle's stop refreshes the report, then blocks while the Oracle still owes a
   `PushNotification` call.
+- `send_target`: posted by the mod's `session.send` hook for a model's `SendMessage`.
+  It answers the session id of the live agent of the caller's run whose session name
+  is `to` without a trailing ` [<ref>]`, when `pre_send_message` would allow the send,
+  and nothing otherwise. See "Session names and SendMessage" in
+  [05-sessions.md](05-sessions.md).
 - `owed`, `wake_sent`, `inbox_take`, `inbox_ack`, `inbox_release`: posted by the mod
   only. See "Mod wake-up delivery" and "Messages" in
   [05-sessions.md](05-sessions.md). Each ignores a caller the registry does not know.

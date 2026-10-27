@@ -92,6 +92,11 @@ its turn, and the `post_any` hook clears the debt when it sees the `SendMessage`
 `SendMessage` or `agent_resume` call. The message only points at the ledger record, for example
 "Handoff 1 for hello.py is waiting in the ledger." The detail lives in the ledger.
 
+Agents say what they have for each other with `message_post`, not a `SendMessage` of their
+own. The mod sends a model's `SendMessage` to a swarm session name to that session's id, and
+a `SendMessage` that fails because several agents carry the name is sent again to
+`"<name> [<ref>]"`, with the ref of the session on this machine.
+
 ## Start calls in the SessionStart hook
 
 For a Manager, Lead, Coder, or Driver, the `session_start` hook makes the start calls

@@ -487,6 +487,8 @@ def _stalled(
         by_name = {a["name"]: a for a in members}
         calls = ", ".join(_wake_call(by_name[t], by_session) for t in targets)
         step = f"Wake the agent whose work is pending: {calls}."
+        if "SendMessage(" in calls:
+            step = f"{step} {wake.AMBIGUOUS_NAME_RULE}"
     elif pending:
         step = "Continue the plan: resume or spawn the agent that owns the pending work."
     else:

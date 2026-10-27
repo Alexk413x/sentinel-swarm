@@ -253,6 +253,33 @@ describe('owed wake-ups', () => {
   })
 })
 
+describe("a model's SendMessage", () => {
+  test('a swarm session name goes to the live session by its id', async ($, on) => {
+    const w = world(on, { answers: { send_target: { session_id: 'sess-mgr', name: 'mgr-p1-phase-1' } } })
+    await start($)
+    const result = await $.session.send({ to: 'host-r1-mgr-p1-phase-1 [a1b2c3]', text: 'Handoff 1 is waiting.', origin: { kind: 'model' } } as never)
+    expect(result.isDelivered).toBe(true)
+    expect(w.posts.find(p => p.event === 'send_target')?.body.to).toBe('host-r1-mgr-p1-phase-1 [a1b2c3]')
+    expect(w.sends.length).toBe(1)
+    expect(w.sends[0]?.to).toContain('sess-mgr')
+    expect(w.sends[0]?.to).not.toContain('host-r1')
+  })
+
+  test('a name the ledger does not resolve is sent as the model wrote it', async ($, on) => {
+    const w = world(on)
+    await start($)
+    await $.session.send({ to: 'someone-else', text: 'hi', origin: { kind: 'model' } } as never)
+    expect(w.sends.map(s => s.to)).toEqual(['someone-else'])
+  })
+
+  test('a send outside a swarm session asks the ledger nothing', async ($, on) => {
+    const w = world(on)
+    await start($, 'general-purpose', 'sess-user')
+    await $.session.send({ to: 'host-r1-mgr-p1-phase-1', text: 'hi', origin: { kind: 'model' } } as never)
+    expect(w.events()).not.toContain('send_target')
+  })
+})
+
 describe('the inbox inside a wake-up', () => {
   const TAKEN = { claim: 'c1', messages: [{ message_id: 7, from_name: 'manager', body: 'Start module 2.' }], remaining: 0 }
 

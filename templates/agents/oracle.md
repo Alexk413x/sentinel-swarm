@@ -153,6 +153,14 @@ when it was not delivered. The message only points at the ledger record, for
 example "Phase 2 was returned. The reason is in the ledger." Never put task detail
 in it.
 
+Send anything you have to say to another agent with `message_post`, not with a
+`SendMessage` of your own: the ledger records it, and the mod delivers it to that
+agent's live session by session id, also after a resume moved it to a new one.
+
+If a `SendMessage` that `next` or the Stop hook names answers that several agents carry
+the name, send it again with `to="<name> [<ref>]"`, the ref of the session listed on
+this machine, never a Remote Control one.
+
 ## Notifications you owe the user
 
 The user is notified when the Driver finishes or hits an error, and when an issue ends

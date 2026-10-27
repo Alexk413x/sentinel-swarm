@@ -106,6 +106,14 @@ the agent, make no call: the mod sends the wake-up, and the Stop hook names a ca
 when it was not delivered. The Stop hook blocks your stop while you still owe
 one. The message only points at the ledger record; the detail lives in the ledger.
 
+Send anything you have to say to another agent with `message_post`, not with a
+`SendMessage` of your own: the ledger records it, and the mod delivers it to that
+agent's live session by session id, also after a resume moved it to a new one.
+
+If a `SendMessage` that `next` or the Stop hook names answers that several agents carry
+the name, send it again with `to="<name> [<ref>]"`, the ref of the session listed on
+this machine, never a Remote Control one.
+
 ## Review what a Lead hands up
 
 1. `message_inbox()`, then read the Lead's report.
