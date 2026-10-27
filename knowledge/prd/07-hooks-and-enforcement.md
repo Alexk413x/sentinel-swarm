@@ -288,6 +288,7 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
 | A role's fallback search is recorded | `post_activity` writes a `graph_gaps` row for each `Grep` and `Glob`; the report lists them |
 | A Coder re-reads its brief after a return | `pre_ledger` records the read; `handoff_submit` refuses without one since the last return |
 | An agent reads only its own run's mail, in bounded batches | `message_inbox` filters by `run_id` and name and caps one call at 40,000 characters; `message_post` refuses a body over 32,000 |
+| An agent that waits on a file is woken when it lands | `wait_for` records the wait; `approve` and `accept_incomplete` owe the wake-up; the watchdog reports a `wait_landed` |
 | A Manager, Lead, Coder, or Driver reads its mail before it stops | The member `stop` blocks once while the caller has unread messages in its run |
 | Only the owner's chain escalates an issue | `issue_escalate` |
 | A finished Lead or Manager is released | `phase_update(handed_up)` refuses a live Lead; `phase_update(approved)` releases the phase; `run_finish` releases the rest |

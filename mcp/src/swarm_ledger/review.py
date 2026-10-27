@@ -272,6 +272,10 @@ class ReviewMixin(LedgerHost):
             "WHERE agent_id = ? AND state = 'open'",
             (target_agent_id,),
         )
+        conn.execute(
+            f"UPDATE file_waits SET closed_at = {NOW} WHERE agent_id = ? AND closed_at IS NULL",
+            (target_agent_id,),
+        )
         if row["bg_id"] and row["role"] != "oracle":
             self._pending_stops.append((target_agent_id, row["bg_id"]))
 
@@ -852,6 +856,7 @@ class ReviewMixin(LedgerHost):
                 )
             self._mark_departures_reworked(conn, file_row["file_id"], handoff_id)
             self._release_agent(conn, handoff_row["agent_id"], "approve")
+            woken = self._wake_file_waiters(conn, c, file_row["path"], "approved")
             pending = conn.execute(
                 "SELECT COUNT(*) AS n FROM files WHERE module_id = ? "
                 "AND state NOT IN ('approved', 'incomplete', 'superseded')",
@@ -866,6 +871,10 @@ class ReviewMixin(LedgerHost):
         result = row_dict(self.conn, "handoffs", "handoff_id", handoff_id)
         if floor_dimensions:
             result["floor_pass_dimensions"] = floor_dimensions
+        if woken:
+            result["woken_waiters"] = [
+                {"name": w["to_name"], "next": self.next_step(w)} for w in woken
+            ]
         return result
 
     def _floor_pass_dimensions(
@@ -1212,6 +1221,7 @@ class ReviewMixin(LedgerHost):
             )
             self._mark_departures_reworked(conn, file_row["file_id"], handoff_id)
             self._release_agent(conn, handoff_row["agent_id"], "accept_incomplete")
+            woken = self._wake_file_waiters(conn, c, file_row["path"], "incomplete")
 
             cur = conn.execute(
                 "INSERT INTO deferrals (run_id, file_id, proposed_by, reason, kind, state, "
@@ -1227,7 +1237,12 @@ class ReviewMixin(LedgerHost):
             )
             deferral_id = cur.lastrowid
 
-        return row_dict(self.conn, "deferrals", "deferral_id", deferral_id)
+        result = row_dict(self.conn, "deferrals", "deferral_id", deferral_id)
+        if woken:
+            result["woken_waiters"] = [
+                {"name": w["to_name"], "next": self.next_step(w)} for w in woken
+            ]
+        return result
 
     # -- Agreements ---------------------------------------------------------------
 

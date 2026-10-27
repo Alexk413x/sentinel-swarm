@@ -37,6 +37,7 @@ from .repo import RepoMixin
 from .report import ReportMixin
 from .review import ReviewMixin, agent_names, live_agents, run_summary
 from .settings import Settings, load_settings
+from .waits import WaitsMixin, open_file_waits
 
 _RESUME_POINTER = "Re-read your brief and your inbox in the ledger."
 _PHASE_STATES = ("planned", "unlocked", "working", "handed_up", "approved")
@@ -122,6 +123,7 @@ class Ledger(
     DriveMixin,
     MessagesMixin,
     IssuesMixin,
+    WaitsMixin,
 ):
     def __init__(
         self,
@@ -472,6 +474,7 @@ class Ledger(
             "agents": live_agents(conn, run_id),
             "issues": issues,
             "directives": directives,
+            "file_waits": open_file_waits(conn, run_id),
         }
 
     def run_finish(self, caller: str, agent_id: str, outcome: str) -> dict:
@@ -1067,6 +1070,7 @@ class Ledger(
         brief["findings"] = findings_named(
             self.conn, json.loads(brief["finding_ids_json"] or "[]"), evidence=True
         )
+        brief["returned_review"] = self.returned_review(brief)
         brief["depends_on_contracts"] = [
             {"id": dep["id"], "name": dep["label"], "contract": dep["contract"]}
             for dep in self._dependencies(

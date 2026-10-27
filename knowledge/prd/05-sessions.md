@@ -116,6 +116,8 @@ wake-up the caller owes, and returns a `next` field with the exact call to make.
 
 - Steps that owe a wake-up: `handoff_submit`, `return_work`, `message_post`,
   `phase_update(handed_up)`, a returned `module_review` or `phase_review`, `cr_open`,
+  `approve` and `accept_incomplete` for each live agent that called `wait_for` on the
+  file,
   `cr_accept`, `cr_complete`, a failed `cr_verify`, each level of a departure pushback
   chain, `issue_escalate`, an `attempt_record` that advances an issue's round, and, for
   the Driver, `drive_issue` and `drive_checkin` (both owe the Oracle).
@@ -192,7 +194,8 @@ one. The ledger pushes nothing into a session.
 - A device-queue broker that tells a session when a device frees up needs a new plan on
   the mod's delivery path. **(needs implementation)**
 - The Coder's Stop hook also blocks once, per Coder, when the Coder stops while working
-  with no handoff, and names `handoff_submit` or a `message_post` to its Lead.
+  with no handoff, and names `handoff_submit`, a `message_post` to its Lead, or
+  `wait_for`. It does not block a Coder with an open file wait.
 
 ## Time signal
 

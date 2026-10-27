@@ -15,6 +15,7 @@ from .db import write_tx
 from .identity import ROLES, LedgerError
 from .queries import latest_live_oracle, live_run, submitted_handoffs, unread_count
 from .settings import NOTIFY_CHANNELS, WatchdogSettings
+from .waits import landed_waits
 
 WATCH_COMMAND = "python3 .sentinel-swarm/hook.py watch || python .sentinel-swarm/hook.py watch"
 MONITOR_TIMEOUT_MS = 1_800_000
@@ -97,10 +98,33 @@ def scan(
         if context is not None:
             findings.append(_finding(agent, "context_high", context, _context_step(agent, names)))
 
+    findings += _landed_wait_findings(conn, run["run_id"], agents, by_session)
+
     stalled = _stalled(conn, run, agents, by_session, now)
     if stalled is not None:
         findings.append(stalled)
     return findings
+
+
+def _landed_wait_findings(
+    conn: sqlite3.Connection, run_id: int, agents: list[dict], by_session: dict[str, dict]
+) -> list[Finding]:
+    by_id = {a["agent_id"]: a for a in agents}
+    waits: dict[str, list[str]] = {}
+    for wait in landed_waits(conn, run_id):
+        waits.setdefault(wait["agent_id"], []).append(
+            f"{wait['path']} ({wait['file_state']}; waiting for: {wait['reason']})"
+        )
+    return [
+        _finding(
+            by_id[agent_id],
+            "wait_landed",
+            f"it still waits on {', '.join(paths)}",
+            f"Wake it: {_wake_call(by_id[agent_id], by_session)}.",
+        )
+        for agent_id, paths in waits.items()
+        if agent_id in by_id
+    ]
 
 
 def _finding(agent: dict, kind: str, detail: str, next_step: str) -> Finding:
