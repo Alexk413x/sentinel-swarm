@@ -355,7 +355,9 @@ def test_stop_blocks_a_working_coder_once_and_not_twice(ledger: Ledger) -> None:
         "reason": (
             "Your file has no handoff on record. Call handoff_submit. If a blocker stops you, "
             'call message_post(to_name="lead-p1-module-1", body=<the blocker>) and make the '
-            "SendMessage call its next field names, then stop."
+            "SendMessage call its next field names, then stop. If you wait on a file another "
+            "Coder is still writing, call wait_for(path, reason) instead: the ledger wakes you "
+            "when that file is approved."
         ),
     }
 

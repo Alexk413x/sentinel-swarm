@@ -157,7 +157,8 @@ def run_start(
 def run_status(
     caller: CallerName, include_prd: bool = False, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
-    """Returns the run's phases, modules, files, agents, issues, and directives; any agent may.
+    """Returns the run's phases, modules, files, agents, issues, directives, and open file
+    waits; any agent may.
 
     The run's PRD text is left out unless include_prd is true.
     """
@@ -368,6 +369,16 @@ def release_file(
 @_tool(read_only=True)
 def who_owns(path: str) -> dict[str, Any]:
     """Looks up the live owner of a file path; any caller may call this."""
+    ...
+
+
+@_tool()
+def wait_for(
+    caller: CallerName, path: str, reason: str, agent_id: str | None = _STAMPED_AGENT_ID
+) -> dict[str, Any]:
+    """Records that the caller waits on a file that another module or Coder is still writing; a
+    Coder or Lead calls this. The Lead that approves the file owes the caller a wake-up. A
+    file that is already approved or accepted as incomplete returns waiting=false at once."""
     ...
 
 

@@ -157,6 +157,9 @@ keeps every gate.
 - While the run has an open Driver finding, `brief_create` refuses an Oracle brief
   without `finding_ids`: the ids it fixes, or `[]` for none. It refuses an unknown
   finding id from any role. A child's brief inherits its parent's list.
+- `wait_for(path, reason)` records that a Coder or Lead waits on a file that is not
+  approved yet; the Lead that approves it owes the waiter a wake-up. A file already
+  approved answers `waiting: false`.
 - `claim_file` refuses a path that already has a live claim. The claim is the file
   lock; `who_owns(path)` names the owner.
 - `accept_incomplete` refuses an empty reason, a handoff without `review_compare`, and

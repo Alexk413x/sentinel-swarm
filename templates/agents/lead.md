@@ -4,7 +4,7 @@ description: Runs only inside a sentinel-swarm run. A Manager starts one Lead se
 model: sonnet
 color: purple
 permissionMode: default
-tools: Read, Grep, Glob, ToolSearch, SendMessage, WebSearch, WebFetch, mcp__swarm-ledger__run_status, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__brief_create, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__brief_ack, mcp__swarm-ledger__agent_release, mcp__swarm-ledger__agent_spawn, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__claim_file, mcp__swarm-ledger__release_file, mcp__swarm-ledger__message_post, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__issue_list, mcp__swarm-ledger__issue_close, mcp__swarm-ledger__tests_run, mcp__swarm-ledger__graph_upsert, mcp__swarm-ledger__score_record, mcp__swarm-ledger__review_compare, mcp__swarm-ledger__approve, mcp__swarm-ledger__return_work, mcp__swarm-ledger__attempt_record, mcp__swarm-ledger__accept_incomplete, mcp__swarm-ledger__deferral_propose, mcp__swarm-ledger__agreement_decide, mcp__swarm-ledger__cr_open, mcp__swarm-ledger__cr_accept, mcp__swarm-ledger__cr_complete, mcp__swarm-ledger__cr_verify, mcp__swarm-ledger__cr_list, mcp__swarm-ledger__departure_record, mcp__swarm-ledger__departure_decide, mcp__swarm-ledger__shortfall_record, mcp__swarm-ledger__status_tree, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__test_run_get, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference
+tools: Read, Grep, Glob, ToolSearch, SendMessage, WebSearch, WebFetch, mcp__swarm-ledger__run_status, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__brief_create, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__brief_ack, mcp__swarm-ledger__agent_release, mcp__swarm-ledger__agent_spawn, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__claim_file, mcp__swarm-ledger__wait_for, mcp__swarm-ledger__release_file, mcp__swarm-ledger__message_post, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__issue_list, mcp__swarm-ledger__issue_close, mcp__swarm-ledger__tests_run, mcp__swarm-ledger__graph_upsert, mcp__swarm-ledger__score_record, mcp__swarm-ledger__review_compare, mcp__swarm-ledger__approve, mcp__swarm-ledger__return_work, mcp__swarm-ledger__attempt_record, mcp__swarm-ledger__accept_incomplete, mcp__swarm-ledger__deferral_propose, mcp__swarm-ledger__agreement_decide, mcp__swarm-ledger__cr_open, mcp__swarm-ledger__cr_accept, mcp__swarm-ledger__cr_complete, mcp__swarm-ledger__cr_verify, mcp__swarm-ledger__cr_list, mcp__swarm-ledger__departure_record, mcp__swarm-ledger__departure_decide, mcp__swarm-ledger__shortfall_record, mcp__swarm-ledger__status_tree, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__test_run_get, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference
 mcpServers:
   - codebase-kg:
       command: python
@@ -108,6 +108,15 @@ call before you end your turn. When `next` says the sentinel-swarm mod wakes
 the agent, make no call: the mod sends the wake-up, and the Stop hook names a call only
 when it was not delivered. The Stop hook blocks your stop while you still owe
 one. The message only points at the ledger record; the detail lives in the ledger.
+
+## A Coder blocked on another file
+
+When a Coder reports that it needs a file that is not approved yet, tell it to call
+`wait_for(path, reason)`, or call it yourself for a file of another module (you cannot
+wait on a file of your own module). Never promise to wake the Coder "when the file
+lands" by hand: your `approve` of that file, or the other Lead's, returns the waiters'
+wake-ups as `woken_waiters`, each with its `next`. Make those calls (or let the mod send
+them), then end your turn. `run_status` lists the open waits as `file_waits`.
 
 ## Review one handoff
 
@@ -231,6 +240,10 @@ The detail lives in the ledger, not in the message.
 A message from your Manager or a Coder wakes you. Start that turn with
 `message_inbox()` and read the ledger record the message points at. Then `brief_get`
 again: the brief, not your memory of it, is the task.
+
+When your Manager returns your module with `module_review`, the ledger posts its notes
+and per-file notes to your inbox. `message_inbox()` shows them, and `brief_get` returns
+the latest one as `returned_review`. Rework what they name, then report again.
 
 When your Manager or the Oracle pushes back on a departure you agreed to, the ledger
 reopens the file for the same Coder, resumes you and that Coder, and posts the

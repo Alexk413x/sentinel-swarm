@@ -53,6 +53,10 @@ class LedgerHost:
 
     def next_step(self, wakeup: dict | None) -> str | None: ...
 
+    def _wake_file_waiters(
+        self, conn: sqlite3.Connection, c: Caller, path: str, state: str
+    ) -> list[dict]: ...
+
     def _write_brief(
         self,
         caller: str,
