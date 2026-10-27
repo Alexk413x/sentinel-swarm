@@ -34,3 +34,4 @@ Thumbs.db
 
 # claude plugin eval writes each run here.
 evals/results/
+.claude/worktrees/
