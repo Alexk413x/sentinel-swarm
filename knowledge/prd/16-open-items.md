@@ -49,10 +49,23 @@
   takes 1.4 s from spawn to `server.json`, against a goal of 0.3 s. Run
   `scripts/bench/ledger_load.py` on an idle machine to judge both. See "Measured
   baselines" in [12-testing.md](12-testing.md).
-- **A stopped wake-up target.** The sender's model calls `agent_resume` for a target
-  that is not running. The ledger could resume it itself. The plan is
-  `plans/resume-stopped-wake-targets.md`; it is optional and waits on a decision about
-  the Oracle.
+- **Resume and re-key, live.** Built and unit-tested against a faked CLI. A live run must
+  show a daemon-retired session resumed under a new session id and re-keyed, including
+  whether its `SessionStart` hook can arrive before the ledger records the new background
+  id, and that the hook-side re-key then catches it. It must also measure how long the
+  `owed` hook takes when it resumes a target: up to a 15 s poll, against the mod's 10 s
+  budget for the post.
+- **The mod's `SendMessage` redirect, live.** The mod's `session.send` hook sends a
+  model's `SendMessage` to a swarm session by session id. No real role session has shown
+  it yet, including on a session that Remote Control also lists.
+- **Memory-aware runs, live.** Built and unit-tested with a faked memory sampler. A live
+  low-memory run must show queued spawns starting as memory frees, retired agents parked
+  with the reason from `daemon.log`, parked agents resumed for their wake-ups, and idle
+  parents parked on purpose. It must also confirm where a background session's pid comes
+  from (`~/.claude/sessions/<pid>.json`), which the resident-memory samples need.
+- **A wake-up during a deliberate park.** A wake-up sent between the watchdog's decision
+  to park an idle parent and its `claude stop` can be lost. The `wake_unsent` finding
+  reports it after `unsent_wakeup_minutes`.
 - **Other platforms.** An exploration of running a Coder on a non-Claude CLI through
   ide-agent-tabs, not a build. The plan is `plans/other-platforms.md`.
 - **The Oracle's wake of a waiting agent.** `pre_send_message` lets the Oracle wake any
