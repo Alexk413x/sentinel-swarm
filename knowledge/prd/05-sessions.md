@@ -303,14 +303,17 @@ a possible injection. So only the Oracle and the Managers see the elapsed time.
 - `agent_resume(target_name)` resumes a live agent of the run whose session is not
   running, with `claude --resume <session id> --bg "<pointer>" --name <session name>`
   and the role's launch options, because `--resume` restores the conversation but not
-  the name or the launch flags. The pointer is the text
-  of every wake-up the caller owes the target, or "Re-read your brief and your inbox in
-  the ledger." The resume marks those wake-ups sent. It refuses a running session,
-  because a resume of a running session starts a second copy. It refuses a target with
-  no recorded `session_name`: "'<name>' has no recorded session, so agent_resume cannot
-  wake it: a resume without one starts a fresh session". `claude --resume <id> --bg
-  <message>` without `--name` comes back as a session named after the message. Any live
-  agent of the run may call it, except on itself.
+  the name or the launch flags. The pointer is the text of every unsent wake-up owed to
+  the target, from any sender, or "Re-read your brief and your inbox in the ledger." It
+  refuses a running session, because a resume of a running session starts a second
+  copy. It refuses a target with no recorded `session_name`: "'<name>' has no recorded
+  session, so agent_resume cannot wake it: a resume without one starts a fresh
+  session". `claude --resume <id> --bg <message>` without `--name` comes back as a
+  session named after the message. Any live agent of the run may call it, except on
+  itself.
+- When a session runs under the target's session name with another session id, for
+  example one resumed earlier, `agent_resume` starts nothing: it re-keys the agent to
+  that session and returns `rekeyed_from`.
 - Release sets the row `released` and stops the session with `claude stop <bg_id>`,
   which frees its memory. The Oracle's session is never stopped this way.
 - `agent_release(target_agent_id)` releases a child of the caller. The other releases
@@ -319,6 +322,40 @@ a possible injection. So only the Oracle and the Managers see the elapsed time.
   its `SendMessage` to the Oracle, after its own `agent_resume` of the Oracle, or at its
   Stop hook when it owes nothing. `drive_request` and `run_finish` release one that is
   still live.
+
+### Re-keying a resumed session
+
+Every part of the ledger keys an agent by its current session id: the hooks stamp it as
+`agent_id`, and liveness, the mod's sends, `mod_sessions`, and the transcript all use
+it. A resumed background session can come back under a new session id (see
+[13-platform-facts.md](13-platform-facts.md)), so the ledger re-keys the agent rather
+than keep an alias.
+
+- Before the resume, the ledger sets `agents.resume_started_at`. After it, it records
+  the background id the CLI printed as `bg_id`, then polls `claude agents --json` for
+  up to 15 seconds for the entry whose `id` is that background id, or else a running
+  entry with the session name.
+- When the entry's session id differs, one write transaction replaces the old id with
+  the new one in every column that stores an agent id: `rekey.agent_id_columns` reads
+  the schema for columns named `*agent_id`, columns that reference `agents`, and
+  `mod_sessions.session_id`. It also sets `bg_id` to the new id's first 8 characters,
+  points `transcript_path` at `<new id>.jsonl` in the same folder, clears
+  `resume_started_at`, and logs a `rekeyed` agent event. The same id needs no re-key.
+- The resumed session's own hooks can arrive before the poll ends. Each hook from a
+  session id the ledger does not know re-keys the agent whose `resume_started_at` is set
+  and whose `bg_id` equals the id's first 8 characters. `session_start` and `pre_ledger`
+  also look the id up in `claude agents --json` and match its session name, while a
+  resume started in the last 2 minutes is pending. Both paths and the poll are
+  idempotent.
+- While such a resume is pending, `pre_ledger` denies a swarm session the ledger does
+  not know every tool that takes an identity, except `run_start`: "This session was just
+  resumed, and the ledger has not matched it to its agent yet. Wait a few seconds, then
+  make the same call again."
+- A resume marks the wake-ups its pointer carried sent, and reports `reachable: true`,
+  only once the poll found the resumed session. Otherwise they stay owed, and the call
+  returns `reachable: false`. The agent is re-keyed when its first hook arrives, and the
+  sender's mod then delivers the wake-ups to the new id.
+- The watchdog's Oracle resume re-keys the Oracle the same way.
 
 ## What stops when
 

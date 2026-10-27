@@ -27,6 +27,9 @@ HANDLERS = {
     "inbox_ack": events.handle_inbox_ack,
     "inbox_release": events.handle_inbox_release,
 }
+# A resumed session's first hooks: only these may afford a claude agents --json call to match
+# an unknown session id to the agent being resumed.
+LISTING_EVENTS = frozenset({"session_start", "pre_ledger"})
 
 
 def run_event(event_name: str, raw: str, root: Path | None = None) -> tuple[str, str]:
@@ -40,6 +43,10 @@ def run_event(event_name: str, raw: str, root: Path | None = None) -> tuple[str,
         data = json.loads(raw) if raw.strip() else {}
         ledger = env.open_ledger(root)
         try:
+            if isinstance(data, dict) and not data.get("agent_id"):
+                ledger.adopt_session(
+                    data.get("session_id"), use_listing=event_name in LISTING_EVENTS
+                )
             result = handler(ledger, data)
         finally:
             ledger.conn.close()

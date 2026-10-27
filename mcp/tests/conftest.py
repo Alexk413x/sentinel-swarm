@@ -30,6 +30,12 @@ def _isolated_claude_config(
 
 
 @pytest.fixture(autouse=True)
+def _no_resume_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A resumed session that a fake listing never shows would hold each test for 15 seconds.
+    monkeypatch.setattr(sessions, "_RESUME_WAIT_S", 0.0)
+
+
+@pytest.fixture(autouse=True)
 def os_notifications(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     # The default settings turn OS notifications on; no test may pop a real one.
     from swarm_ledger import notify

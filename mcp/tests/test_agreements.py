@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 import subprocess
@@ -811,15 +812,19 @@ def test_a_manager_pushback_reopens_the_approved_file_for_the_same_agents(
         )
 
     resumed: list[list[str]] = []
+    back = {"id": lead_id[:8], "sessionId": lead_id, "name": "host-r1-lead-p1-module-1"}
 
     def fake_run(args: list[str], cwd: Path | None = None) -> str:
         del cwd
         resumed.append(args)
-        return "[]" if args[:2] == ["agents", "--json"] else ""
+        if args[:2] == ["agents", "--json"]:
+            came_back = any(a[0] == "--resume" for a in resumed)
+            return json.dumps([back | {"kind": "background"}] if came_back else [])
+        return f"backgrounded · {lead_id[:8]} · lead\n"
 
     monkeypatch.setattr(sessions, "_run", fake_run)
     ledger.agent_resume("mgr-p1-phase-1", manager_id, "lead-p1-module-1")
-    assert ["--resume", lead_id] == resumed[-1][:2]
+    assert ["--resume", lead_id] == next(a for a in resumed if a[0] == "--resume")[:2]
     assert _owed(ledger) == [(lead_id, coder_id)]
 
     again = ledger.handoff_submit("coder-p1-module-1-good", coder_id, handed["file_id"], [], [])

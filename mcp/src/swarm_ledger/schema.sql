@@ -95,7 +95,11 @@ CREATE TABLE IF NOT EXISTS agents (
     tool_uses INTEGER,
     transcript_path TEXT,
     session_name TEXT,
-    bg_id TEXT
+    bg_id TEXT,
+    -- Set when the ledger resumes the session; cleared once the agent is matched to the
+    -- resumed session's id. A hook from an unknown session whose id starts with bg_id
+    -- re-keys the agent to that id.
+    resume_started_at TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_name_live

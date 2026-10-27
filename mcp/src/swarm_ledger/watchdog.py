@@ -9,9 +9,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import notify, sessions, wake
+from . import notify, rekey, sessions, wake
 from .clock import parse_stamp, stamp, utcnow
-from .db import write_tx
+from .db import NOW, write_tx
 from .identity import ROLES, LedgerError
 from .queries import latest_live_oracle, live_run, submitted_handoffs, unread_count
 from .settings import NOTIFY_CHANNELS, WatchdogSettings
@@ -699,6 +699,7 @@ class Watchdog:
             f"The watchdog reported {waiting} finding(s). Read directive_inbox.",
             wake.time_signal(self.conn, run["run_id"], now),
         )
+        agent_id = oracle["agent_id"]
         if not oracle["session_name"]:
             # A resume without a recorded session starts a fresh session named after the message.
             reason = (
@@ -707,7 +708,7 @@ class Watchdog:
             )
         else:
             try:
-                sessions.resume(
+                bg_id = sessions.resume(
                     oracle["agent_id"],
                     message,
                     cwd=self.repo_root,
@@ -715,15 +716,30 @@ class Watchdog:
                     options=self._oracle_options(oracle["model"]),
                 )
                 reason = f"the watchdog woke the Oracle: {message}"
+                agent_id = self._adopt_resumed(oracle, bg_id)
             except LedgerError as exc:
                 reason = f"the watchdog could not resume the Oracle: {exc}"
         with write_tx(self.conn) as conn:
             conn.execute(
                 "INSERT INTO agent_events (agent_id, from_state, to_state, reason, at) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (oracle["agent_id"], oracle["state"], WAKE_STATE, reason, stamp(now)),
+                (agent_id, oracle["state"], WAKE_STATE, reason, stamp(now)),
             )
         self._log(reason)
+
+    def _adopt_resumed(self, agent: sqlite3.Row, bg_id: str | None) -> str:
+        with write_tx(self.conn) as conn:
+            conn.execute(
+                f"UPDATE agents SET bg_id = COALESCE(?, bg_id), resume_started_at = {NOW} "
+                "WHERE agent_id = ?",
+                (bg_id, agent["agent_id"]),
+            )
+        new_id = sessions.wait_for_resumed(bg_id, agent["session_name"])
+        if new_id is None:
+            return agent["agent_id"]
+        with write_tx(self.conn) as conn:
+            rekey.adopt(conn, agent["agent_id"], new_id)
+        return new_id
 
     def _oracle_options(self, model: str | None) -> list[str]:
         from .agentfiles import session_options

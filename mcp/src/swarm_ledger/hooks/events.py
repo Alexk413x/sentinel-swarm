@@ -48,6 +48,10 @@ _SEARCH_TOOLS = frozenset({"Grep", "Glob"})
 _GAP_PATHS = 20
 _CONTENT_LINE = re.compile(r"^((?:[A-Za-z]:)?[^:]+):\d+[:-]")
 _PAUSE_HINT = "If the run is blocked on something only the user can fix, call run_pause(reason)."
+_RESUMING = (
+    "This session was just resumed, and the ledger has not matched it to its agent yet. "
+    "Wait a few seconds, then make the same call again."
+)
 _WATCH_STALE = timedelta(seconds=60)
 _WATCH_RENEW = timedelta(seconds=30)
 _ARM_WATCHDOG = (
@@ -466,6 +470,13 @@ def handle_pre_ledger(ledger: Ledger, data: dict) -> dict:
         return _deny("override_grant is for the Oracle only")
     if caller is not None and caller["state"] == "registered" and method not in PRE_BIND_TOOLS:
         return _deny(unbound_reason(caller["name"]))
+    if (
+        caller is None
+        and method not in IDENTITY_FREE_TOOLS | {"run_start"}
+        and str(data.get("agent_type") or "").startswith("swarm-")
+        and ledger.resume_pending()
+    ):
+        return _deny(_RESUMING)
 
     tool_input = dict(_tool_input(data))
     if method == "brief_get" and caller_id:

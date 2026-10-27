@@ -133,6 +133,9 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
 - A hook blocks by printing a JSON decision and exiting 0. It never uses exit code 2.
 - A broken ledger hook allows: `swarm_ledger.hooks` catches every exception, writes one
   line to stderr, and prints nothing.
+- Before its handler runs, every hook from a session id the ledger does not know
+  re-keys a resumed agent to that id when it matches a pending resume. See "Re-keying a
+  resumed session" in [05-sessions.md](05-sessions.md).
 - Apart from `pre_write`'s records-folder rule, `pre_ledger`, and `pre_monitor`'s
   `agent_type` check, a hook ignores a caller the registry does not know, so a non-swarm
   session in the same repo passes. An agent that has ended counts as unknown.
@@ -192,7 +195,9 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   No override rule covers it.
 - `pre_ledger`: stamps `agent_id`, and denies `override_grant` to anyone but the
   Oracle. It denies a swarm session still in state `registered` every ledger tool but
-  `brief_ack` and the five tools that take no identity, and names `brief_ack`. This is
+  `brief_ack` and the five tools that take no identity, and names `brief_ack`. While a
+  resume is pending, it denies a swarm session it does not know every tool that takes
+  an identity except `run_start`, and asks it to wait and call again. This is
   the fast path: the ledger server refuses the same calls from any client; see "Tools"
   in [06-ledger-server.md](06-ledger-server.md). On a `brief_get` whose `child_name` is the calling session's own agent name,
   it records `briefs.last_read_by_child_at`, which `handoff_submit` reads. The identity stamp itself takes no override: faking `agent_id` is what the
