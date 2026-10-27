@@ -53,6 +53,10 @@ class LedgerHost:
 
     def next_step(self, wakeup: dict | None) -> str | None: ...
 
+    def _wake_file_waiters(
+        self, conn: sqlite3.Connection, c: Caller, path: str, state: str
+    ) -> list[dict]: ...
+
     def _write_brief(
         self,
         caller: str,
@@ -76,6 +80,8 @@ class LedgerHost:
     def _scores_for(self, review_id: int) -> dict[str, float]: ...
 
     def _block_handoff_for_open_cr(self, conn: sqlite3.Connection, file_id: int) -> None: ...
+
+    def _reassign_crs_of(self, conn: sqlite3.Connection, agent: sqlite3.Row) -> None: ...
 
     def _block_approve_for_cr(self, conn: sqlite3.Connection, file_id: int) -> None: ...
 

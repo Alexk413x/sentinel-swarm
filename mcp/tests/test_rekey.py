@@ -30,6 +30,7 @@ AGENT_ID_COLUMNS = [
     ("departures", "decided_by"),
     ("drive_requests", "agent_id"),
     ("drive_requests", "opened_by"),
+    ("file_waits", "agent_id"),
     ("files", "owner_agent_id"),
     ("graph_gaps", "agent_id"),
     ("handoffs", "agent_id"),

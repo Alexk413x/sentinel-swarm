@@ -519,6 +519,99 @@ def test_phase_review_returned_reports_when_the_manager_has_ended(ledger: Ledger
     assert result["next"] is None
 
 
+def test_phase_review_returned_posts_its_notes_to_the_managers_inbox(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    file_id = _approve_file(ledger, ctx, "good", "pkg/good.py", "tests/test_good.py")
+    _accept_module_and_hand_up(ledger, ctx)
+    as_session(ledger, ctx["manager"]["agent_id"], "host-r1-mgr-p1-phase-1")
+
+    result = ledger.phase_review(
+        "oracle",
+        ctx["oracle_id"],
+        ctx["phase_id"],
+        "returned",
+        "the add function is untested for negatives",
+        low_score_notes={str(file_id): "cover negative operands"},
+    )
+    assert result["next"] is not None
+    pointers = [w["pointer"] for w in ledger.owed_wakeups(ctx["oracle_id"])]
+    assert pointers == [f"Phase {ctx['phase_id']} was returned; read why with message_inbox."]
+
+    inbox = ledger.message_inbox("mgr-p1-phase-1", ctx["manager"]["agent_id"])
+    assert len(inbox["messages"]) == 1
+    message = inbox["messages"][0]
+    assert message["from_name"] == "oracle"
+    assert f"Phase {ctx['phase_id']} was returned" in message["body"]
+    assert "the add function is untested for negatives" in message["body"]
+    assert f"file {file_id} (pkg/good.py): cover negative operands" in message["body"]
+
+
+def test_phase_review_returned_posts_to_an_ended_manager_s_name(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    _accept_module_and_hand_up(ledger, ctx)
+    ledger.agent_release("oracle", ctx["oracle_id"], ctx["manager"]["agent_id"])
+
+    ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "returned", "not ready")
+
+    waiting = ledger.conn.execute(
+        "SELECT body FROM messages WHERE to_name = 'mgr-p1-phase-1' AND read_at IS NULL"
+    ).fetchall()
+    assert [row["body"] for row in waiting if "not ready" in row["body"]]
+
+
+def test_brief_get_returns_the_latest_returned_phase_review_to_the_manager(
+    ledger: Ledger,
+) -> None:
+    ctx = bootstrap_module(ledger)
+    file_id = _approve_file(ledger, ctx, "good", "pkg/good.py", "tests/test_good.py")
+    _accept_module_and_hand_up(ledger, ctx)
+    assert ledger.brief_get("mgr-p1-phase-1", "mgr-p1-phase-1")["returned_review"] is None
+
+    ledger.phase_review(
+        "oracle",
+        ctx["oracle_id"],
+        ctx["phase_id"],
+        "returned",
+        "rework the tests",
+        low_score_notes={str(file_id): "negative operands"},
+    )
+
+    review = ledger.brief_get("mgr-p1-phase-1", "mgr-p1-phase-1")["returned_review"]
+    assert review["outcome"] == "returned"
+    assert review["notes"] == "rework the tests"
+    assert review["file_notes"] == {str(file_id): "negative operands"}
+    assert ledger.brief_get("lead-p1-module-1", "lead-p1-module-1")["returned_review"] is None
+
+
+def test_module_review_returned_posts_its_notes_to_the_leads_inbox(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    file_id = _approve_file(ledger, ctx, "good", "pkg/good.py", "tests/test_good.py")
+    as_session(ledger, ctx["lead"]["agent_id"], "host-r1-lead-p1-module-1")
+
+    result = ledger.module_review(
+        "mgr-p1-phase-1",
+        ctx["manager"]["agent_id"],
+        ctx["module_id"],
+        "returned",
+        "split the helper out",
+        disagreement_notes={str(file_id): "scores disagreed on design"},
+    )
+    assert result["next"] is not None
+    pointers = [w["pointer"] for w in ledger.owed_wakeups(ctx["manager"]["agent_id"])]
+    assert pointers == [f"Module {ctx['module_id']} was returned; read why with message_inbox."]
+
+    inbox = ledger.message_inbox("lead-p1-module-1", ctx["lead"]["agent_id"])
+    assert len(inbox["messages"]) == 1
+    body = inbox["messages"][0]["body"]
+    assert f"Module {ctx['module_id']} was returned" in body
+    assert "split the helper out" in body
+    assert f"file {file_id} (pkg/good.py): scores disagreed on design" in body
+
+    review = ledger.brief_get("lead-p1-module-1", "lead-p1-module-1")["returned_review"]
+    assert review["notes"] == "split the helper out"
+    assert review["file_notes"] == {str(file_id): "scores disagreed on design"}
+
+
 # -- the phase_update(approved) gate ---------------------------------------------------------
 
 

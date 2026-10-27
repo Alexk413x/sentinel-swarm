@@ -777,6 +777,12 @@ def _block_coder_stop_once(ledger: Ledger, caller: dict, data: dict) -> dict | N
     ).fetchone()
     if already_blocked is not None:
         return None
+    waiting = ledger.conn.execute(
+        "SELECT 1 FROM file_waits WHERE agent_id = ? AND closed_at IS NULL",
+        (caller["agent_id"],),
+    ).fetchone()
+    if waiting is not None:
+        return None
 
     with write_tx(ledger.conn) as conn:
         conn.execute(
@@ -791,7 +797,9 @@ def _block_coder_stop_once(ledger: Ledger, caller: dict, data: dict) -> dict | N
     return _block(
         "Your file has no handoff on record. Call handoff_submit. If a blocker stops you, "
         f"call message_post(to_name={lead_name}, body=<the blocker>) and make the "
-        "SendMessage call its next field names, then stop."
+        "SendMessage call its next field names, then stop. If you wait on a file another "
+        "Coder is still writing, call wait_for(path, reason) instead: the ledger wakes you "
+        "when that file is approved."
     )
 
 

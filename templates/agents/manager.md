@@ -218,6 +218,10 @@ A message from the Oracle or a Lead wakes you. Start that turn with
 itself carries no detail. Then `brief_get` again: the brief, not your memory of it,
 is the task. Before you review a Lead's report, re-read the brief you gave it.
 
+When the Oracle returns your phase with `phase_review`, the ledger posts its notes and
+per-file notes to your inbox. `message_inbox()` shows them, and `brief_get` returns the
+latest one as `returned_review`. Rework what they name, then hand the phase up again.
+
 When the Oracle pushes back on a departure you agreed to, the ledger resumes you,
 the Lead, and the Coder, and posts the departure, the reason, and the solution to
 each. Read it with `message_inbox()`, then pay the wake-up you owe your Lead: the

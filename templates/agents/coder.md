@@ -4,7 +4,7 @@ description: Runs only inside a sentinel-swarm run. A Lead starts one Coder sess
 model: sonnet
 color: orange
 permissionMode: acceptEdits
-tools: Read, Grep, Glob, Write, Edit, Bash, PowerShell, ToolSearch, SendMessage, WebSearch, WebFetch, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__brief_ack, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__who_owns, mcp__swarm-ledger__message_post, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__issue_open, mcp__swarm-ledger__issue_list, mcp__swarm-ledger__idea_record, mcp__swarm-ledger__tests_run, mcp__swarm-ledger__graph_upsert, mcp__swarm-ledger__score_record, mcp__swarm-ledger__handoff_submit, mcp__swarm-ledger__deferral_propose, mcp__swarm-ledger__cr_open, mcp__swarm-ledger__cr_accept, mcp__swarm-ledger__cr_complete, mcp__swarm-ledger__cr_verify, mcp__swarm-ledger__cr_list, mcp__swarm-ledger__departure_record, mcp__swarm-ledger__shortfall_record, mcp__swarm-ledger__version_restore, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__test_run_get, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference
+tools: Read, Grep, Glob, Write, Edit, Bash, PowerShell, ToolSearch, SendMessage, WebSearch, WebFetch, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__brief_ack, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__who_owns, mcp__swarm-ledger__wait_for, mcp__swarm-ledger__message_post, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__issue_open, mcp__swarm-ledger__issue_list, mcp__swarm-ledger__idea_record, mcp__swarm-ledger__tests_run, mcp__swarm-ledger__graph_upsert, mcp__swarm-ledger__score_record, mcp__swarm-ledger__handoff_submit, mcp__swarm-ledger__deferral_propose, mcp__swarm-ledger__cr_open, mcp__swarm-ledger__cr_accept, mcp__swarm-ledger__cr_complete, mcp__swarm-ledger__cr_verify, mcp__swarm-ledger__cr_list, mcp__swarm-ledger__departure_record, mcp__swarm-ledger__shortfall_record, mcp__swarm-ledger__version_restore, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__test_run_get, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference
 mcpServers:
   - codebase-kg:
       command: python
@@ -141,6 +141,14 @@ file the run touches: new or existing, code or configuration.
   ownership chain when the owner has ended, and returns the wake-up to send.
 - Your shell is limited to the profile's test, build, and lint commands and
   read-only git. Anything else is denied.
+
+## When another file blocks you
+
+Test against `depends_on_contracts` with test doubles first. When your tests cannot run
+until a file of another Coder or module exists, call `wait_for(path=<that file>,
+reason=<what you cannot do without it>)`, then end your turn. The Lead that approves the
+file owes you a wake-up, so do not ask your Lead to wake you and do not poll. When
+`wait_for` returns `waiting: false`, the file is already approved: carry on.
 
 ## Change requests addressed to you
 

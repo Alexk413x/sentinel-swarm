@@ -67,6 +67,20 @@ message. The Oracle then calls, in order:
   `depends_on_contracts`, each dependency's id, name, and contract, so the dependent
   reads the contract from the record. The dependent Coders test against it with test
   doubles instead of waiting. "Blocked" means the contract is missing or wrong.
+- A Coder whose tests cannot run until another file exists calls
+  `wait_for(path, reason)`, and a Lead calls it for a file of another module. The ledger
+  records an open row in `file_waits`, keyed by the waiter and the path. It refuses an
+  empty reason, a path no module plans, the Coder's own file, a Lead's own module's
+  file, and any role but a Coder or Lead. Calling it again for the same path keeps one
+  wait and takes the new reason. When the file's latest claim is already `approved` or
+  `incomplete`, the call returns `waiting: false` and records nothing. Otherwise
+  `approve`, or `accept_incomplete`, of that path closes every open wait on it and owes
+  each live waiter a wake-up from the approving Lead, with the file named in the
+  pointer. The result lists them as `woken_waiters`, each with its `next`. Releasing a
+  waiter closes its waits. `run_status` lists the open waits of live agents as
+  `file_waits` (waiter, role, path, reason, the file's state). An agent with an open
+  wait is not told to hand off when its Stop hook fires. The watchdog reports a wait
+  whose file is already settled: see `wait_landed` in [08-watchdog.md](08-watchdog.md).
 - Whether the Lead or Manager declared every real dependency, and whether a contract is
   right, stays their judgment. A missing `depends_on` lets a dependent start without a
   contract; the Lead review and `review_compare` judge the result.
@@ -134,7 +148,11 @@ refuses unless:
 On success it saves a version of the file and the test file in
 `.sentinel-swarm/versions/`, records the handoff as `submitted`, writes each string in
 `departures` as a departure row, sets the file and the Coder to `handed_up`, and owes
-the Lead a wake-up.
+the Lead a wake-up. It also sets every earlier `submitted` handoff of the file to
+`superseded` and closes their open departures; see "Departures" in
+[04-agreements.md](04-agreements.md). `review_compare`, `approve`, `return_work`, and
+`accept_incomplete` refuse a superseded handoff, and the watchdog and the Oracle's Stop
+hook do not count it as work awaiting review.
 
 ## Lead review
 
@@ -186,13 +204,20 @@ Manager of the module's phase.
   from 1 to 10, with a reason below 9.
 - `accepted` also refuses while a departure in the module waits on the Lead or the
   Manager, or is pushed back and not reworked.
-- `returned` sets the module to `returned` and owes the live Lead a wake-up. When the
-  Lead has ended, the result says so, and the Manager starts a new Lead.
+- `returned` sets the module to `returned`, posts the review's notes and the
+  per-file `disagreement_notes` to the Lead's inbox as a message from the Manager, and
+  owes the live Lead a wake-up whose pointer names `message_inbox`. The message stays
+  in the inbox when the Lead has ended, for the Lead that replaces it. When the Lead has
+  ended, the result says so, and the Manager starts a new Lead. `brief_get` for the
+  Lead returns the module's latest review as `returned_review` (`review_id`, `outcome`,
+  `notes`, `file_notes`, `created_at`) while that review is the latest and was returned;
+  it is `null` otherwise.
 - After an accepted review, the Manager releases the Lead with `agent_release`.
 
 ## Phase hand-up
 
-`phase_update(phase_id, "handed_up")` refuses while a Lead of the phase is live, and
+`phase_update(phase_id, "handed_up")` refuses while a change request on a file of the
+phase is `accepted` and not completed, while a Lead of the phase is live, and
 unless every module of the phase has an accepted `module_review` newer than its last
 file decision. It records `handed_up_at` and owes the Oracle a wake-up.
 The Manager then posts its phase report to the Oracle.
@@ -210,7 +235,12 @@ for a phase in `handed_up`.
   items from 1 to 10, with a reason below 9.
 - `accepted` also refuses while a departure of the phase is neither signed off nor
   reworked.
-- `returned` sets the phase back to `working` and owes the live Manager a wake-up.
+- `returned` sets the phase back to `working`, posts the review's notes and the
+  per-file `low_score_notes` to the Manager's inbox as a message from the Oracle, and
+  owes the live Manager a wake-up whose pointer names `message_inbox`. The message stays
+  in the inbox when the Manager has ended. `brief_get` for the Manager returns the
+  phase's latest review as `returned_review`, the same fields as for a returned module
+  review, so a resumed Manager recovers the reason from its start calls.
 
 `phase_update(phase_id, "approved")` refuses while a deferral on a file of the phase is
 open, while a change request on a file of the phase is not verified or declined, and

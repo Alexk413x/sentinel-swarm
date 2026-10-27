@@ -413,6 +413,19 @@ CREATE TABLE IF NOT EXISTS wakeups (
 CREATE INDEX IF NOT EXISTS idx_wakeups_owed
     ON wakeups (from_agent_id) WHERE sent_at IS NULL;
 
+CREATE TABLE IF NOT EXISTS file_waits (
+    wait_id INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL REFERENCES runs (run_id) ON DELETE RESTRICT,
+    agent_id TEXT NOT NULL REFERENCES agents (agent_id) ON DELETE RESTRICT,
+    path TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    closed_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_file_waits_open
+    ON file_waits (agent_id, path) WHERE closed_at IS NULL;
+
 CREATE TABLE IF NOT EXISTS mod_sessions (
     session_id TEXT PRIMARY KEY,
     seen_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))

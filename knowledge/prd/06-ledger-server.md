@@ -200,7 +200,7 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
 | Run and plan | `run_start`, `run_status`, `run_pause`, `phase_resume`, `run_finish`, `profile_set`, `guidelines_set`, `guidelines_get`, `phase_add`, `phase_update`, `plan_unlocked`, `module_add` |
 | Repo | `repo_check`, `repo_branch_create` |
 | Briefs and agents | `brief_create`, `brief_get`, `brief_ack`, `agent_spawn`, `agent_resume`, `agent_release` |
-| Ownership | `claim_file`, `release_file`, `who_owns` |
+| Ownership | `claim_file`, `release_file`, `who_owns`, `wait_for` (Coder, Lead) |
 | Messages and directives | `message_post`, `message_inbox`, `directive_submit`, `directive_inbox`, `directive_resolve` |
 | Tests and graph | `tests_run`, `test_run_get`, `graph_upsert` |
 | Review | `score_record`, `handoff_submit`, `review_compare`, `approve`, `return_work`, `attempt_record`, `accept_incomplete`, `version_restore`, `module_review`, `phase_review` |
@@ -265,7 +265,8 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
   `branch`, `plugin_version`, `started_at`, and the decoded `repo_check`), not the run
   row. The PRD text comes back only with `include_prd=true`, and the settings snapshot
   never does. Their agent lists carry names, not session ids (`parent` is the parent's
-  name), and leave out empty fields; a file's `owner` is the owner's name.
+  name), and leave out empty fields; a file's `owner` is the owner's name. `run_status`
+  also lists the open `file_waits`.
   `agent_spawn` leaves empty fields and the settings snapshot out of its result.
 - `version_restore(version_id)` restores a saved version onto the Coder's own file.
 - The server itself shows a desktop notification for each notification it records:

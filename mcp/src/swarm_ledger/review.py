@@ -8,7 +8,7 @@ from typing import Literal
 
 from . import graph, notify, rubric, versions
 from .agreements import test_run_passed, work_scope
-from .db import NOW, dict_rows, ledger_path, open_readonly, row_dict, write_tx
+from .db import NOW, dict_rows, in_clause, ledger_path, open_readonly, row_dict, write_tx
 from .drive import findings_named, open_findings
 from .host import LedgerHost
 from .identity import (
@@ -158,6 +158,43 @@ def _attach_departures(
         )
 
 
+def _supersede_handoffs(
+    conn: sqlite3.Connection, file_id: int, handoff_id: int | None
+) -> tuple[list[int], list[dict]]:
+    earlier = [
+        row["handoff_id"]
+        for row in conn.execute(
+            "SELECT handoff_id FROM handoffs WHERE file_id = ? AND state = 'submitted' "
+            "AND handoff_id != ? ORDER BY handoff_id",
+            (file_id, handoff_id),
+        )
+    ]
+    if not earlier:
+        return [], []
+    marks = in_clause(earlier)
+    conn.execute(
+        "UPDATE handoffs SET state = 'superseded', decided_notes = ? "
+        f"WHERE handoff_id IN ({marks})",
+        (f"Superseded by handoff {handoff_id}.", *earlier),
+    )
+    open_departures = dict_rows(
+        conn.execute(
+            "SELECT departure_id, body FROM departures WHERE kind = 'departure' "
+            f"AND state = 'open' AND level = 'lead' AND handoff_id IN ({marks}) "
+            "ORDER BY departure_id",
+            earlier,
+        )
+    )
+    conn.execute(
+        "UPDATE departures SET state = 'superseded', level = NULL, "
+        f"decided_at = {NOW}, decision_reason = ? "
+        "WHERE kind = 'departure' AND state = 'open' AND level = 'lead' "
+        f"AND handoff_id IN ({marks})",
+        (f"Handoff {handoff_id} replaced the handoff this departure was recorded on.", *earlier),
+    )
+    return earlier, open_departures
+
+
 def live_agents(conn: sqlite3.Connection, run_id: int) -> list[dict]:
     names = agent_names(conn, run_id)
     rows = conn.execute(
@@ -189,6 +226,11 @@ class ReviewMixin(LedgerHost):
         ).fetchone()
         if handoff_row is None:
             raise LedgerError(f"unknown handoff_id {handoff_id!r}")
+        if handoff_row["state"] == "superseded":
+            raise LedgerError(
+                f"handoff {handoff_id} is superseded by a later handoff of the file; "
+                "review that one"
+            )
         return handoff_row, self._lead_file(c, handoff_row["file_id"])
 
     def _ratings_for(self, review_id: int) -> list[Rating]:
@@ -224,9 +266,14 @@ class ReviewMixin(LedgerHost):
             (phase_name, target_agent_id),
         )
         self._log_event(conn, target_agent_id, row["state"], "released", reason)
+        self._reassign_crs_of(conn, row)
         conn.execute(
             f"UPDATE drive_requests SET state = 'abandoned', done_at = {NOW} "
             "WHERE agent_id = ? AND state = 'open'",
+            (target_agent_id,),
+        )
+        conn.execute(
+            f"UPDATE file_waits SET closed_at = {NOW} WHERE agent_id = ? AND closed_at IS NULL",
             (target_agent_id,),
         )
         if row["bg_id"] and row["role"] != "oracle":
@@ -644,6 +691,7 @@ class ReviewMixin(LedgerHost):
                 ),
             )
             handoff_id = cur.lastrowid
+            superseded_ids, closed_departures = _supersede_handoffs(conn, file_id, handoff_id)
             _attach_departures(conn, c, file_id, handoff_id, departures)
             conn.execute("UPDATE files SET state = 'handed_up' WHERE file_id = ?", (file_id,))
 
@@ -662,6 +710,14 @@ class ReviewMixin(LedgerHost):
             )
 
         handoff = row_dict(self.conn, "handoffs", "handoff_id", handoff_id)
+        if superseded_ids:
+            handoff["superseded_handoff_ids"] = superseded_ids
+        if closed_departures:
+            handoff["superseded_departures"] = closed_departures
+            handoff["superseded_departures_note"] = (
+                "These open departures were recorded on a handoff this one replaced, and are "
+                "closed. Record each one that still applies with departure_record."
+            )
         handoff["next"] = self.next_step(wakeup)
         return handoff
 
@@ -800,6 +856,7 @@ class ReviewMixin(LedgerHost):
                 )
             self._mark_departures_reworked(conn, file_row["file_id"], handoff_id)
             self._release_agent(conn, handoff_row["agent_id"], "approve")
+            woken = self._wake_file_waiters(conn, c, file_row["path"], "approved")
             pending = conn.execute(
                 "SELECT COUNT(*) AS n FROM files WHERE module_id = ? "
                 "AND state NOT IN ('approved', 'incomplete', 'superseded')",
@@ -814,6 +871,10 @@ class ReviewMixin(LedgerHost):
         result = row_dict(self.conn, "handoffs", "handoff_id", handoff_id)
         if floor_dimensions:
             result["floor_pass_dimensions"] = floor_dimensions
+        if woken:
+            result["woken_waiters"] = [
+                {"name": w["to_name"], "next": self.next_step(w)} for w in woken
+            ]
         return result
 
     def _floor_pass_dimensions(
@@ -1160,6 +1221,7 @@ class ReviewMixin(LedgerHost):
             )
             self._mark_departures_reworked(conn, file_row["file_id"], handoff_id)
             self._release_agent(conn, handoff_row["agent_id"], "accept_incomplete")
+            woken = self._wake_file_waiters(conn, c, file_row["path"], "incomplete")
 
             cur = conn.execute(
                 "INSERT INTO deferrals (run_id, file_id, proposed_by, reason, kind, state, "
@@ -1175,7 +1237,12 @@ class ReviewMixin(LedgerHost):
             )
             deferral_id = cur.lastrowid
 
-        return row_dict(self.conn, "deferrals", "deferral_id", deferral_id)
+        result = row_dict(self.conn, "deferrals", "deferral_id", deferral_id)
+        if woken:
+            result["woken_waiters"] = [
+                {"name": w["to_name"], "next": self.next_step(w)} for w in woken
+            ]
+        return result
 
     # -- Agreements ---------------------------------------------------------------
 
