@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from helpers import as_session
+from helpers import as_session, running
 from test_hooks import _bootstrap, host
 
 from swarm_ledger import wake
@@ -39,10 +39,11 @@ def test_next_tells_a_mod_session_to_make_no_call(ledger: Ledger) -> None:
 
 
 def test_owed_lists_the_callers_unsent_wake_ups_per_target_with_the_time_signal(
-    ledger: Ledger,
+    ledger: Ledger, claude_sessions: list[dict]
 ) -> None:
     ctx = _bootstrap(ledger)
     as_session(ledger, "mgr-agent", "host-r1-manager-1")
+    running(claude_sessions, "mgr-agent", "host-r1-manager-1")
     first = ledger.message_post("lead-p1-module-1", "lead-agent", "mgr-p1-phase-1", "one")
     second = ledger.message_post("lead-p1-module-1", "lead-agent", "mgr-p1-phase-1", "two")
     ledger.message_post("mgr-p1-phase-1", "mgr-agent", "lead-p1-module-1", "not mine")
@@ -60,9 +61,12 @@ def test_owed_lists_the_callers_unsent_wake_ups_per_target_with_the_time_signal(
     assert " elapsed " in target["text"]
 
 
-def test_owed_gives_a_lead_target_no_time_signal(ledger: Ledger) -> None:
+def test_owed_gives_a_lead_target_no_time_signal(
+    ledger: Ledger, claude_sessions: list[dict]
+) -> None:
     _bootstrap(ledger)
     as_session(ledger, "lead-agent", "host-r1-lead-1")
+    running(claude_sessions, "lead-agent", "host-r1-lead-1")
     ledger.message_post("mgr-p1-phase-1", "mgr-agent", "lead-p1-module-1", "go")
     answer = events.handle_owed(ledger, {"session_id": "mgr-agent"})
     assert answer is not None

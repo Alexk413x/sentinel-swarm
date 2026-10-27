@@ -41,6 +41,8 @@ AGENT_ID_COLUMNS = [
     ("mod_sessions", "session_id"),
     ("reviews", "reviewer_agent_id"),
     ("reviews", "subject_agent_id"),
+    ("spawn_queue", "agent_id"),
+    ("spawn_queue", "parent_agent_id"),
     ("test_runs", "agent_id"),
     ("versions", "agent_id"),
     ("wakeups", "from_agent_id"),

@@ -248,7 +248,8 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   and nothing otherwise. See "Session names and SendMessage" in
   [05-sessions.md](05-sessions.md).
 - `owed`, `wake_sent`, `inbox_take`, `inbox_ack`, `inbox_release`: posted by the mod
-  only. See "Mod wake-up delivery" and "Messages" in
+  only. `owed` resumes a stopped or parked target itself before it answers, except the
+  Oracle, and leaves that target out of the answer. See "Mod wake-up delivery" and "Messages" in
   [05-sessions.md](05-sessions.md). Each ignores a caller the registry does not know.
 - `session_end`: records tokens and cost and the end reason. After a run finishes, the
   Oracle's `session_end` refreshes the report.

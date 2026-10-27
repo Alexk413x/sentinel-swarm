@@ -139,6 +139,14 @@ For each unlocked phase:
    Managers are running. Do not poll the ledger in a loop while children work: a
    Manager's message wakes you.
 
+`run_status` returns `capacity`: the machine's free memory, the `headroom_mb` the ledger
+keeps free, each role's memory estimate, `spawn_slots` (how many more sessions of each
+role fit now), the spawns waiting for memory, and the parked agents. Start at most
+`spawn_slots` children at once, the ones other work depends on first. When
+`agent_spawn` returns `queued: true`, the ledger starts that Manager itself once memory
+frees, oldest first: do not call `agent_spawn` for it again. A parked agent
+is still live: the ledger resumes it when a wake-up is owed to it.
+
 When `agent_spawn` refuses because the run is at its parallelism cap, end your turn.
 Start that Manager after a release frees a slot.
 

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from . import __version__, agentfiles, lock, rekey, sessions, wake
 from .agreements import AgreementsMixin
+from .capacity import CapacityMixin
 from .db import (
     NOW,
     connect,
@@ -116,6 +117,7 @@ def require_slug(label: str, value: str) -> None:
 
 
 class Ledger(
+    CapacityMixin,
     AgreementsMixin,
     ReviewMixin,
     ReportMixin,
@@ -476,6 +478,7 @@ class Ledger(
             "issues": issues,
             "directives": directives,
             "file_waits": open_file_waits(conn, run_id),
+            "capacity": self.capacity(run_id),
         }
 
     def run_finish(self, caller: str, agent_id: str, outcome: str) -> dict:
@@ -1245,6 +1248,9 @@ class Ledger(
 
     def agent_spawn(self, caller: str, agent_id: str, child_name: str) -> dict:
         c = resolve(self.conn, caller, agent_id)
+        queued = self._queued_entry(child_name)
+        if queued is not None and queued["parent_agent_id"] == c.agent_id:
+            return self._queued_result(queued)
         brief = self._spawn_brief(c, caller, child_name)
         self._require_spawnable(brief, child_name)
 
@@ -1253,7 +1259,13 @@ class Ledger(
         if session_name in sessions.live_names(listing):
             raise LedgerError(f"a running session already has the name {session_name!r}")
         self._require_spawn_slot(brief, listing)
+        reason = self._queue_reason(brief)
+        if reason is not None:
+            return self._queue_spawn(brief, c.agent_id, reason)
+        return self._start_child(brief, c.agent_id, session_name)
 
+    def _start_child(self, brief: sqlite3.Row, parent_id: str, session_name: str) -> dict:
+        child_name = brief["child_name"]
         role = brief["child_role"]
         effort = brief["effort"] or self.settings.effort.get(role)
         options = self._session_options(role, brief["model"], effort)
@@ -1272,7 +1284,7 @@ class Ledger(
                     role,
                     brief["model"],
                     effort,
-                    c.agent_id,
+                    parent_id,
                     brief["run_id"],
                     brief["phase_id"],
                     brief["module_id"],
@@ -1470,8 +1482,16 @@ class Ledger(
             wake.signal_for(self.conn, old_id),
         )
         with write_tx(self.conn) as conn:
-            conn.execute(
-                f"UPDATE agents SET resume_started_at = {NOW} WHERE agent_id = ?", (old_id,)
+            claimed = conn.execute(
+                f"UPDATE agents SET resume_started_at = {NOW} WHERE agent_id = ? "
+                "AND (resume_started_at IS NULL OR resume_started_at < "
+                f"strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-{_RESUME_WINDOW_S} seconds'))",
+                (old_id,),
+            ).rowcount
+        if not claimed:
+            raise LedgerError(
+                f"{target['name']!r} is already being resumed; its wake-ups reach it once it "
+                "is back"
             )
         try:
             bg_id = sessions.resume(

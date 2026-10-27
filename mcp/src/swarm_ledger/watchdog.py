@@ -8,6 +8,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from . import notify, rekey, sessions, wake
 from .clock import parse_stamp, stamp, utcnow
@@ -16,6 +17,9 @@ from .identity import ROLES, LedgerError
 from .queries import latest_live_oracle, live_run, submitted_handoffs, unread_count
 from .settings import NOTIFY_CHANNELS, WatchdogSettings
 from .waits import landed_waits
+
+if TYPE_CHECKING:
+    from .ledger import Ledger
 
 WATCH_COMMAND = "python3 .sentinel-swarm/hook.py watch || python .sentinel-swarm/hook.py watch"
 MONITOR_TIMEOUT_MS = 1_800_000
@@ -99,6 +103,7 @@ def scan(
             findings.append(_finding(agent, "context_high", context, _context_step(agent, names)))
 
     findings += _landed_wait_findings(conn, run["run_id"], agents, by_session)
+    findings += _unsent_findings(conn, run["run_id"], agents, by_session, now, settings)
 
     stalled = _stalled(conn, run, agents, by_session, now)
     if stalled is not None:
@@ -125,6 +130,56 @@ def _landed_wait_findings(
         for agent_id, paths in waits.items()
         if agent_id in by_id
     ]
+
+
+def _unsent_findings(
+    conn: sqlite3.Connection,
+    run_id: int,
+    agents: list[dict],
+    by_session: dict[str, dict],
+    now: datetime,
+    settings: WatchdogSettings,
+) -> list[Finding]:
+    after = timedelta(minutes=settings.unsent_wakeup_minutes)
+    if after <= timedelta(0):
+        return []
+    by_id = {a["agent_id"]: a for a in agents}
+    findings: list[Finding] = []
+    seen: set[str] = set()
+    for row in conn.execute(
+        "SELECT w.*, f.name AS from_name, f.role AS from_role FROM wakeups w "
+        "JOIN agents f ON f.agent_id = w.from_agent_id "
+        "WHERE w.run_id = ? AND w.sent_at IS NULL AND f.ended_at IS NULL "
+        "ORDER BY w.wakeup_id",
+        (run_id,),
+    ):
+        target = by_id.get(row["to_agent_id"])
+        owed = parse_stamp(row["created_at"])
+        if target is None or row["to_agent_id"] in seen or row["from_role"] == "driver":
+            continue
+        if owed is None or now - owed < after:
+            continue
+        seen.add(row["to_agent_id"])
+        pointer = " ".join(str(row["pointer"]).split())
+        call = _wake_call(target, by_session)
+        step = f"Wake it: {call}."
+        if target.get("parked_at"):
+            step = (
+                f"The ledger resumes it itself once memory allows ({target['park_reason']}). "
+                f"To wake it now: {call}."
+            )
+        if "SendMessage(" in call:
+            step = f"{step} {wake.AMBIGUOUS_NAME_RULE}"
+        findings.append(
+            _finding(
+                target,
+                "wake_unsent",
+                f"{row['from_name']} has owed it a wake-up for {_minutes(now - owed)} minutes: "
+                f"{pointer}",
+                step,
+            )
+        )
+    return findings
 
 
 def _finding(agent: dict, kind: str, detail: str, next_step: str) -> Finding:
@@ -436,6 +491,10 @@ def _stalled(
         (run_id,),
     ).fetchone():
         return None
+    if conn.execute(
+        "SELECT 1 FROM spawn_queue WHERE run_id = ? AND state = 'queued'", (run_id,)
+    ).fetchone():
+        return None
     members = [a for a in agents if a["role"] != "oracle"]
     live = [
         by_session[a["agent_id"]]
@@ -650,8 +709,10 @@ class Watchdog:
         activity: Callable[[], object] = lambda: None,
         log: Callable[[str], None] = _log,
         notify_channels: Sequence[str] = NOTIFY_CHANNELS,
+        ledger: Ledger | None = None,
     ) -> None:
         self.repo_root = repo_root
+        self.ledger = ledger
         self.conn = conn
         self.settings = settings
         self.notify_channels = tuple(notify_channels)
@@ -673,6 +734,7 @@ class Watchdog:
             self._log(f"skipped a pass: {exc}")
             listing = None
         if run is not None and run["state"] == "active" and listing is not None:
+            listing = self._memory_pass(listing, now)
             findings = scan(self.conn, listing, now, self.settings)
             reported = record(self.conn, run["run_id"], findings, now)
             for row in reported:
@@ -684,6 +746,37 @@ class Watchdog:
                 notify.deliver(notice, self.notify_channels, log=self._log)
             self._wake_oracle(run, listing, now)
         self._check_idle(run, listing, now)
+
+    def _memory_pass(self, listing: list[dict], now: datetime) -> list[dict]:
+        ledger = self.ledger
+        if ledger is None:
+            return listing
+        changed = False
+        steps: list[tuple[str, Callable[[], object]]] = [
+            ("sample memory", lambda: ledger.sample_memory(listing)),
+            (
+                "park agents",
+                lambda: ledger.mark_parked(listing, now, REGISTER_GRACE.total_seconds()),
+            ),
+            ("resume parked agents", lambda: ledger.resume_parked(listing)),
+            ("start queued spawns", lambda: ledger.start_queued_spawns(listing)),
+            ("park idle parents", lambda: ledger.park_idle_parents(listing)),
+        ]
+        for label, step in steps:
+            try:
+                done = step()
+            except Exception as exc:
+                self._log(f"could not {label}: {type(exc).__name__}: {exc}")
+                continue
+            if done:
+                changed = True
+                self._log(f"{label}: {len(done) if isinstance(done, list) else done}")
+        if not changed:
+            return listing
+        try:
+            return sessions.list_sessions()
+        except LedgerError:
+            return listing
 
     def run_forever(self, stop: threading.Event) -> None:
         while not stop.wait(self.settings.interval_seconds):
@@ -839,6 +932,7 @@ def start(
     exit_server: Callable[[], None],
     activity: Callable[[], object],
     notify_channels: Sequence[str] = NOTIFY_CHANNELS,
+    ledger: Ledger | None = None,
 ) -> None:
     dog = Watchdog(
         repo_root,
@@ -847,6 +941,7 @@ def start(
         exit_server=exit_server,
         activity=activity,
         notify_channels=notify_channels,
+        ledger=ledger,
     )
     stop = threading.Event()
     thread = threading.Thread(

@@ -1010,6 +1010,10 @@ def _oracle_work_block(ledger: Ledger, run: dict, oracle: dict) -> dict | None:
     ]
     if any(a["state"] == "working" for a in live) or _child_starting(live):
         return None
+    if ledger.conn.execute(
+        "SELECT 1 FROM spawn_queue WHERE run_id = ? AND state = 'queued'", (run["run_id"],)
+    ).fetchone():
+        return None
 
     plan_unlocked = ledger.plan_unlocked(oracle["name"], oracle["agent_id"])
     awaiting_review = len(submitted_handoffs(ledger.conn, run["run_id"], unpaused_only=True))
@@ -1124,12 +1128,21 @@ def handle_owed(ledger: Ledger, data: dict) -> dict | None:
     caller = _data_caller(ledger, data)
     if caller is None:
         return None
+
+    def sendable() -> list[dict]:
+        return [
+            w
+            for w in ledger.owed_wakeups(caller["agent_id"])
+            if caller["run_id"] is None
+            or _send_refusal(ledger, caller, w["to_session_name"]) is None
+        ]
+
+    owed = sendable()
+    if owed:
+        stopped = ledger.wake_stopped_targets(list(dict.fromkeys(w["to_agent_id"] for w in owed)))
+        owed = [w for w in sendable() if w["to_agent_id"] not in stopped]
     targets: dict[str, dict] = {}
-    for wakeup in ledger.owed_wakeups(caller["agent_id"]):
-        if caller["run_id"] is not None and _send_refusal(
-            ledger, caller, wakeup["to_session_name"]
-        ):
-            continue
+    for wakeup in owed:
         target = targets.get(wakeup["to_agent_id"])
         if target is None:
             row = ledger.conn.execute(

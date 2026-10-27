@@ -57,7 +57,7 @@ def adopt(conn: sqlite3.Connection, old_id: str, new_id: str) -> None:
     if transcript and Path(transcript).stem == old_id:
         transcript = str(Path(transcript).with_name(f"{new_id}.jsonl"))
     conn.execute(
-        "UPDATE agents SET resume_started_at = NULL, bg_id = ?, transcript_path = ? "
-        "WHERE agent_id = ?",
+        "UPDATE agents SET resume_started_at = NULL, parked_at = NULL, park_reason = NULL, "
+        "bg_id = ?, transcript_path = ? WHERE agent_id = ?",
         (new_id[:8], transcript, new_id),
     )
