@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 import shutil
+import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
-from helpers import write_registry
+from helpers import ensure_graph_source_base, write_registry
 
 from swarm_ledger import graph
 from swarm_ledger.identity import LedgerError
@@ -108,6 +111,7 @@ def test_graph_upsert_returns_the_same_result_on_both_paths(
         (host / "pkg" / "good.py").write_text("def add(a, b):\n    return a + b\n", "utf-8")
         (host / "knowledge").mkdir()
         shutil.copy(repo_root / "knowledge" / "code_graph.db", host / "knowledge")
+        ensure_graph_source_base(host)
         monkeypatch.setattr(graph, "runs_on_base", lambda _root, base=base: base)
         node = {
             "id": "swarmtest_good",
@@ -120,3 +124,70 @@ def test_graph_upsert_returns_the_same_result_on_both_paths(
         results.append(result)
     assert results[0]["ok"] is True
     assert results[0] == results[1]
+
+
+def _graph_host(tmp_path: Path, repo_root: Path) -> Path:
+    host = tmp_path / "host"
+    (host / "pkg").mkdir(parents=True)
+    (host / "knowledge").mkdir()
+    shutil.copy(repo_root / "knowledge" / "code_graph.db", host / "knowledge")
+    conn = sqlite3.connect(str(host / "knowledge" / "code_graph.db"))
+    try:
+        conn.execute("INSERT INTO node (id, kind, description) VALUES ('n', 'module', 'd')")
+        for ordinal, path in enumerate(("pkg/a.py", "pkg/b.py", "pkg/c.py", "pkg/gone.py")):
+            conn.execute(
+                "INSERT INTO anchor (node_id, ord, path, base) VALUES ('n', ?, ?, ?)",
+                (ordinal, path, Path(path).name),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return host
+
+
+def _baseline(host: Path, path: str, data: bytes) -> None:
+    conn = sqlite3.connect(str(host / "knowledge" / "code_graph.db"))
+    try:
+        conn.execute(
+            "INSERT INTO source (path, sha) VALUES (?, ?)", (path, graph._content_sha(data))
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_stale_files_compares_content_the_way_codebase_kg_does(
+    tmp_path: Path, repo_root: Path
+) -> None:
+    host = _graph_host(tmp_path, repo_root)
+    (host / "pkg" / "a.py").write_bytes(b"x = 1\r\ny = 2\r\n")
+    (host / "pkg" / "b.py").write_bytes(b"x = 2\n")
+    (host / "pkg" / "c.py").write_bytes(b"unrecorded\n")
+    _baseline(host, "pkg/a.py", b"x = 1\ny = 2\n")
+    _baseline(host, "pkg/b.py", b"x = 1\n")
+    _baseline(host, "pkg/gone.py", b"removed\n")
+
+    assert graph.stale_files(host) == {"pkg/b.py": ["n"]}
+    assert graph.stale_files(host, ["pkg/a.py", "pkg/c.py"]) == {}
+    assert graph.stale_files(host, ["pkg/b.py"]) == {"pkg/b.py": ["n"]}
+    assert graph.stale_files(host, []) == {}
+    assert graph.stale_files(tmp_path / "no-graph") == {}
+
+
+def test_graph_upsert_asks_codebase_kg_to_re_baseline_every_node_it_writes(
+    tmp_path: Path, repo_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = _graph_host(tmp_path, repo_root)
+    sent: dict = {}
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        sent["input"] = json.loads(str(kwargs["input"]))
+        return subprocess.CompletedProcess(command, 0, '{"ok": true}', "")
+
+    monkeypatch.setattr(graph, "codebase_kg_root", lambda _root: _kg(tmp_path))
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    nodes = [{"id": "n", "description": "d"}, {"id": "m", "kind": "module", "rebaseline": False}]
+
+    assert graph.graph_upsert(host, nodes) == {"ok": True}
+    assert [n["rebaseline"] for n in sent["input"]] == [True, True]
+    assert "rebaseline" not in nodes[0]

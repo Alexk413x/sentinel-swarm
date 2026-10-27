@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
 import re
@@ -123,6 +124,8 @@ def graph_upsert(repo_root: Path, nodes: list[dict]) -> dict:
     graph_path = repo_root / "knowledge" / "code_graph.db"
     _check_edges(graph_path, nodes)
     kg_root = codebase_kg_root(repo_root)
+    # A write states that the caller re-read each node against its files, so it re-baselines them.
+    patches = [{**node, "rebaseline": True} for node in nodes]
     # A caller's venv leaks through VIRTUAL_ENV and makes uv refuse the kg project.
     env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
 
@@ -133,7 +136,7 @@ def graph_upsert(repo_root: Path, nodes: list[dict]) -> dict:
                 upsert_command(kg_root, graph_path, base),
                 cwd=repo_root,
                 env=env,
-                input=json.dumps(nodes),
+                input=json.dumps(patches),
                 capture_output=True,
                 text=True,
                 timeout=120,
@@ -204,6 +207,63 @@ def anchored_paths(repo_root: Path, rel_paths: list[str]) -> set[str]:
         }
     except sqlite3.Error:
         return set()
+    finally:
+        conn.close()
+
+
+def node_anchor_paths(repo_root: Path, node_id: str) -> list[str]:
+    graph_path = repo_root / "knowledge" / "code_graph.db"
+    if not graph_path.is_file():
+        return []
+    conn = open_readonly(graph_path)
+    try:
+        return [
+            row[0]
+            for row in conn.execute(
+                "SELECT DISTINCT path FROM anchor WHERE node_id = ? ORDER BY path", (node_id,)
+            )
+        ]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
+def _content_sha(data: bytes) -> str:
+    # Duplicates codebase-kg's content_sha (CRLF folded to LF, then SHA-256), which its own
+    # git hooks also copy; the ledger does not import codebase-kg in-process.
+    return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
+
+
+def stale_files(repo_root: Path, rel_paths: list[str] | None = None) -> dict[str, list[str]]:
+    graph_path = repo_root / "knowledge" / "code_graph.db"
+    if not graph_path.is_file() or rel_paths == []:
+        return {}
+    conn = open_readonly(graph_path)
+    try:
+        query = "SELECT path, sha FROM source WHERE path IN (SELECT path FROM anchor)"
+        params: list[str] = []
+        if rel_paths is not None:
+            query += f" AND path IN ({in_clause(rel_paths)})"
+            params = list(rel_paths)
+        baselines = {row[0]: row[1] for row in conn.execute(query, params)}
+        stale: dict[str, list[str]] = {}
+        for path, recorded in sorted(baselines.items()):
+            try:
+                current = _content_sha((repo_root / path).read_bytes())
+            except OSError:
+                continue
+            if recorded and current != recorded:
+                stale[path] = [
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT DISTINCT node_id FROM anchor WHERE path = ? ORDER BY node_id",
+                        (path,),
+                    )
+                ]
+        return stale
+    except sqlite3.Error:
+        return {}
     finally:
         conn.close()
 

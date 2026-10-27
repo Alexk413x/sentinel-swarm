@@ -273,6 +273,8 @@ A node that anchors on several files of your module is yours to write: a Coder's
 `graph_upsert` refuses any anchor outside its own file. Once the Coders of those files
 have handed up, call `graph_upsert(nodes=[...])` with the node shape the Coder uses.
 The ledger refuses an anchor outside your module's files.
+Each write records the current content of every file the node anchors as its baseline,
+so re-read the node against those files before you write it.
 
 ## Records
 
