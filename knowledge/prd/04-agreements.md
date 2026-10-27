@@ -9,13 +9,22 @@ with verified evidence.
 |---|---|---|
 | `cr_open(path, body)` | Any role | Routes to the file's live owner, else its module's live Lead, else its phase's live Manager, else the Oracle. Refuses a path no module plans, and a caller who is the recipient. Owes the recipient a wake-up |
 | `cr_accept(cr_id, accept, reason)` | The recipient | `open` to `accepted` or `declined`. A decline needs a reason. Owes the requester a wake-up |
-| `cr_complete(cr_id, notes)` | The recipient | `accepted` to `completed`. A Coder recipient needs its own passing file-scope test run of the path or its test file since acceptance. Any other recipient needs such a run by anyone, or an approved handoff of the file since acceptance. Owes the requester a wake-up |
+| `cr_complete(cr_id, notes)` | The recipient, or, once the recipient has ended, its nearest live ancestor | `accepted` to `completed`. A Coder recipient needs its own passing file-scope test run of the path or its test file since acceptance. Any other recipient, and an ancestor standing in, needs such a run by anyone, or an approved handoff of the file since acceptance. Owes the requester a wake-up |
 | `cr_verify(cr_id, ok, notes)` | The requester while it is live, else its nearest live ancestor | `completed` to `verified`, or back to `accepted` with the notes and a wake-up to the recipient |
 | `cr_list(state)` | Any role | The requests the caller opened or received. The Oracle sees every request in the run |
 
 - `handoff_submit` refuses while a Coder's accepted request on the file is not
   completed. `approve`, `phase_update(approved)`, and `run_finish` refuse while a
   request in their scope is `open`, `accepted`, or `completed`.
+- Releasing an agent, by `agent_release` or automatically (`approve`,
+  `accept_incomplete`, `phase_update(approved)`, `run_finish`), hands every `open` or
+  `accepted` request addressed to it to its nearest live ancestor. The ledger posts that
+  ancestor a message that names the request and the next call. A released agent never
+  strands a request, and no release refuses because of one. `completed` requests stay
+  with the recipient, since `cr_verify` belongs to the requester's side.
+- `phase_update(handed_up)` refuses while a request on a file of the phase is
+  `accepted`, naming each request and its recipient. The Manager closes it, or has the
+  recipient close it, before the phase hands up.
 - The report lists each request with its reason, decision, work done, evidence test
   run, and verification.
 
@@ -28,6 +37,14 @@ it toward the guidelines.
 - A Coder lists departures in `handoff_submit`. Each becomes a row linked to the
   handoff, in state `open`, waiting on the Lead. An open departure the Coder recorded
   earlier for the file, with no handoff yet, joins the new handoff too.
+- A new `handoff_submit` for a file supersedes the file's earlier `submitted` handoffs
+  (see "Handoff" in [02-run-lifecycle.md](02-run-lifecycle.md)). The ledger closes each
+  departure still `open` on such a handoff, and waiting on the Lead, as `superseded`,
+  with the replacing handoff in its reason. It cannot judge whether the departure still
+  applies to the new code, so the Coder records each one that does, in the new
+  `departures` list or with `departure_record`; the result of `handoff_submit` lists the
+  closed ones. A departure the Lead already decided keeps its state and its place in the
+  sign-off chain. A superseded departure takes no decision and blocks no gate.
 - `departure_record(body, file_id, guideline_id)` records one outside a handoff: a
   Coder for its own file, a Lead, Manager, or Oracle for work in its scope. A Coder's
   departure waits on the Lead, a Lead's on the Manager, and a Manager's on the Oracle.
@@ -61,7 +78,7 @@ it toward the guidelines.
   pushed-back departure `reworked`.
 - The Manager accepts a module only after it decides every departure in the module. The
   Oracle accepts a phase, and finishes the run, only after every departure is signed off
-  or reworked.
+  or reworked. A `superseded` departure counts as settled.
 
 ## Shortfalls
 

@@ -134,7 +134,11 @@ refuses unless:
 On success it saves a version of the file and the test file in
 `.sentinel-swarm/versions/`, records the handoff as `submitted`, writes each string in
 `departures` as a departure row, sets the file and the Coder to `handed_up`, and owes
-the Lead a wake-up.
+the Lead a wake-up. It also sets every earlier `submitted` handoff of the file to
+`superseded` and closes their open departures; see "Departures" in
+[04-agreements.md](04-agreements.md). `review_compare`, `approve`, `return_work`, and
+`accept_incomplete` refuse a superseded handoff, and the watchdog and the Oracle's Stop
+hook do not count it as work awaiting review.
 
 ## Lead review
 
@@ -192,7 +196,8 @@ Manager of the module's phase.
 
 ## Phase hand-up
 
-`phase_update(phase_id, "handed_up")` refuses while a Lead of the phase is live, and
+`phase_update(phase_id, "handed_up")` refuses while a change request on a file of the
+phase is `accepted` and not completed, while a Lead of the phase is live, and
 unless every module of the phase has an accepted `module_review` newer than its last
 file decision. It records `handed_up_at` and owes the Oracle a wake-up.
 The Manager then posts its phase report to the Oracle.

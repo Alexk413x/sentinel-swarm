@@ -350,6 +350,37 @@ def test_a_run_with_no_running_session_and_pending_work_is_stalled(
     assert _scan(ledger, claude, now) == []
 
 
+def test_a_superseded_handoff_is_not_pending_work(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _agent(ledger, "sess-lead-1", "lead", "idle", started=now)
+    with write_tx(ledger.conn) as conn:
+        run_id = conn.execute("SELECT MAX(run_id) FROM runs").fetchone()[0]
+        phase_id = conn.execute(
+            "INSERT INTO phases (run_id, name, ordinal, state) VALUES (?, 'p1-a', 1, 'working')",
+            (run_id,),
+        ).lastrowid
+        module_id = conn.execute(
+            "INSERT INTO modules (phase_id, name, state) VALUES (?, 'm1', 'working')",
+            (phase_id,),
+        ).lastrowid
+        file_id = conn.execute(
+            "INSERT INTO files (module_id, path, state) VALUES (?, 'a.py', 'handed_up')",
+            (module_id,),
+        ).lastrowid
+        for state in ("superseded", "submitted"):
+            conn.execute(
+                "INSERT INTO handoffs (file_id, agent_id, state) VALUES (?, 'sess-lead-1', ?)",
+                (file_id, state),
+            )
+
+    findings = _scan(ledger, claude, now)
+
+    assert _kinds(findings) == [("oracle", "stalled")]
+    assert "1 submitted handoff(s)" in findings[0].detail
+
+
 def test_live_sessions_that_all_sit_idle_with_pending_work_are_stalled(
     ledger: Ledger, claude: FakeClaude, now: datetime, tmp_path: Path
 ) -> None:

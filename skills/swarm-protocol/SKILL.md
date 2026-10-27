@@ -223,19 +223,23 @@ project files.
 |---|---|---|
 | `cr_open(path, body)` | Any role | Opens a request against a path; refuses a path with no `files` row, and a caller who already owns it |
 | `cr_accept(cr_id, accept, reason)` | The recipient | `open` to `accepted` or `declined`; a decline needs a non-empty reason |
-| `cr_complete(cr_id, notes)` | The recipient | `accepted` to `completed`; refuses without a fresh passing `tests_run(scope="file")` for the path since acceptance |
+| `cr_complete(cr_id, notes)` | The recipient, or its nearest live ancestor once the recipient has ended | `accepted` to `completed`; a Coder needs its own fresh passing `tests_run(scope="file")` for the path since acceptance, any other caller needs one by anyone or an approved handoff of the file |
 | `cr_verify(cr_id, ok, notes)` | The requester, or its nearest live ancestor | `completed` to `verified`, or back to `accepted` with the notes |
 | `cr_list(state=None)` | Any role | The caller's own change requests; the Oracle sees every one in the run |
 
 `handoff_submit` refuses while the Coder has an `accepted` change request on its
 file that is not `completed`. `approve`, `phase_update(approved)`, and `run_finish`
 each refuse while a change request on their scope's files is `open`, `accepted`, or
-`completed`.
+`completed`. `phase_update(handed_up)` refuses while one is `accepted`. Releasing an agent
+hands its `open` and `accepted` requests to its nearest live ancestor, who gets a message.
 
 ## Departures and shortfalls
 
 A departure records a break from the guidelines; `handoff_submit`'s `departures`
-list writes one row per string, linked to the handoff, in state `open`.
+list writes one row per string, linked to the handoff, in state `open`. A newer
+`handoff_submit` for the same file supersedes the earlier `submitted` handoff and closes
+its `open` departures as `superseded`; record again, in the new handoff, each one that
+still applies.
 `departure_record(body, file_id=None, guideline_id=None)` records one outside a
 handoff: a Coder for its own file, a Lead, Manager, or Oracle for work in its scope.
 

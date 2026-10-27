@@ -314,7 +314,9 @@ a possible injection. So only the Oracle and the Managers see the elapsed time.
 - Release sets the row `released` and stops the session with `claude stop <bg_id>`,
   which frees its memory. The Oracle's session is never stopped this way.
 - `agent_release(target_agent_id)` releases a child of the caller. The other releases
-  are automatic.
+  are automatic. Every release hands the released agent's `open` and `accepted` change
+  requests to its nearest live ancestor; see "Change requests" in
+  [04-agreements.md](04-agreements.md).
 - A Driver whose exploration is closed is released once it owes no unsent wake-up: after
   its `SendMessage` to the Oracle, after its own `agent_resume` of the Oracle, or at its
   Stop hook when it owes nothing. `drive_request` and `run_finish` release one that is
