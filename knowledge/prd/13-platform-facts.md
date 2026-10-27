@@ -72,8 +72,9 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
 - A Python hook costs about 200 to 300 ms per call, mostly interpreter start.
   (2026-09-21)
 - `kg_upsert_node` copies, edits, and replaces the graph file with no lock, so
-  concurrent writers lose changes silently. It does not re-baseline a file's hash; only
-  `codebase-kg-build --rebaseline` does, for every file. (2026-09-21)
+  concurrent writers lose changes silently. It re-baselines a file's hash only for a node
+  written with `"rebaseline": true` (every file the node anchors) and for
+  `codebase-kg-build --rebaseline` (every file). (2026-09-21, revised 2026-10-27)
 - SQLite with WAL, a 5-second busy timeout, and `BEGIN IMMEDIATE` took 3,600 of 3,600
   writes from 12 processes without error. (2026-09-21)
 - Per-file pytest runs in parallel in one working tree are reliable while another file

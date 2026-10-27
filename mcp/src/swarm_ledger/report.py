@@ -153,6 +153,7 @@ class ReportMixin(LedgerHost):
             self._report_change_requests(run_id, name_of),
             self._report_overrides(run_id),
             self._report_graph_gaps(run_id, name_of),
+            self._report_stale_files(run_id),
             self._report_directives(run_id),
             self._report_notifications(run_id),
             self._report_final_test_run(run_id),
@@ -546,6 +547,26 @@ class ReportMixin(LedgerHost):
                 f"- {name_of(gap['agent_id'])} ran {gap['tool']} "
                 f"{gap['pattern']!r}{scope}{mapped}: {len(found)} path(s)"
                 + (f", {', '.join(found[:5])}" if found else "")
+            )
+        lines.append("")
+        return lines
+
+    def _report_stale_files(self, run_id: int) -> list[str]:
+        claimed = {
+            path
+            for row in self.conn.execute(
+                "SELECT f.path, f.test_path FROM files f JOIN modules m USING (module_id) "
+                "JOIN phases p USING (phase_id) WHERE p.run_id = ?",
+                (run_id,),
+            )
+            for path in (row["path"], row["test_path"])
+            if path
+        }
+        lines = ["## Stale mapped files"]
+        for path, node_ids in graph.stale_files(self.repo_root).items():
+            owner = " (a file of this run)" if path in claimed else ""
+            lines.append(
+                f"- {path}{owner}: changed since its baseline; nodes {', '.join(node_ids)}"
             )
         lines.append("")
         return lines

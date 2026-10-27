@@ -126,7 +126,7 @@ refuses unless:
 3. When the file has a `test_path`, the ledger runs `tests_run(scope="file")` on it
    and the run passes: exit code 0, at least one test passed, and zero failed, errored,
    or skipped.
-4. The code graph is current for the file. See "The code graph" in [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
+4. The code graph is current for the file, and neither the file nor its test file is stale against its recorded baseline. See "The code graph" in [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
 5. A self review exists and is newer than the Coder's last edit of either path.
 6. After a returned handoff of the file, the Coder has read its brief with `brief_get`
    since the latest return. This is principle 9 in [01-roles.md](01-roles.md).
