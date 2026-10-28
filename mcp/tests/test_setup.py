@@ -38,6 +38,11 @@ def repo(tmp_path: Path, config_dir: Path) -> Path:
     return root
 
 
+def _enable(settings: Path, plugin_id: str) -> None:
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(json.dumps({"enabledPlugins": {plugin_id: True}}), encoding="utf-8")
+
+
 def _register(config: Path, plugin_id: str, entries: list[dict]) -> None:
     path = config / "plugins" / "installed_plugins.json"
     data: dict[str, Any] = {"plugins": {}}
@@ -458,6 +463,16 @@ def test_shim_lookup_prefers_local_then_project_then_user(tmp_path: Path, config
     assert shim.find_install("p@m", repo) == user
 
     _register(config_dir, "p@m", entries[1:2])
+    _enable(repo / ".claude" / "settings.json", "p@m")
+    with pytest.raises(shim.ShimError, match="not installed"):
+        shim.find_install("p@m", repo)
+
+    _enable(config_dir / "settings.json", "p@m")
+    with pytest.raises(shim.ShimError, match="not installed"):
+        shim.find_install("p@m", repo)
+    (repo / ".claude" / "settings.json").unlink()
+    assert shim.find_install("p@m", repo) == local
+    _enable(repo / ".claude" / "settings.local.json", "p@m")
     assert shim.find_install("p@m", repo) == local
 
     _register(config_dir, "p@m", [{**entries[1], "installPath": str(tmp_path / "gone")}])

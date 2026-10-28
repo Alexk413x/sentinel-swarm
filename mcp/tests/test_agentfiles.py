@@ -727,8 +727,9 @@ def _set_enabled(path: Path, value: bool, plugin_id: str = _PLUGIN) -> None:
     enable_plugins([plugin_id], path, value)
 
 
-def test_an_enabled_plugin_installed_only_for_another_project_counts(
-    detect: tuple[Path, Path], tmp_path: Path
+@pytest.mark.parametrize("enabled_in", ["user", "local"])
+def test_a_plugin_the_user_enabled_counts_from_another_projects_install(
+    detect: tuple[Path, Path], tmp_path: Path, enabled_in: str
 ) -> None:
     host, config_dir = detect
     install = _install(config_dir, "carto")
@@ -738,10 +739,36 @@ def test_an_enabled_plugin_installed_only_for_another_project_counts(
         "installPath": str(install),
     }
     write_registry({_PLUGIN: [entry]}, config_dir, enable=False)
-    _set_enabled(host / ".claude" / "settings.json", True)
+    settings = {
+        "user": config_dir / "settings.json",
+        "local": host / ".claude" / "settings.local.json",
+    }[enabled_in]
+    _set_enabled(settings, True)
 
     assert plugin_installed(host, _PLUGIN) is True
     assert install_path(host, _PLUGIN) == install
+
+
+def test_committed_settings_cannot_reach_another_projects_install(
+    detect: tuple[Path, Path], tmp_path: Path
+) -> None:
+    host, config_dir = detect
+    elsewhere = {
+        "scope": "local",
+        "projectPath": str(tmp_path / "elsewhere"),
+        "installPath": str(_install(config_dir, "carto")),
+    }
+    write_registry({_PLUGIN: [elsewhere]}, config_dir, enable=False)
+    _set_enabled(host / ".claude" / "settings.json", True)
+    assert plugin_installed(host, _PLUGIN) is False
+
+    own = {
+        "scope": "project",
+        "projectPath": str(host),
+        "installPath": str(_install(config_dir, "own")),
+    }
+    write_registry({_PLUGIN: [elsewhere, own]}, config_dir, enable=False)
+    assert install_path(host, _PLUGIN) == config_dir / "plugins" / "cache" / "own"
 
 
 def test_local_settings_that_disable_a_plugin_beat_project_settings_that_enable_it(
@@ -859,16 +886,16 @@ def test_driver_available_follows_the_enabled_and_installed_rule(
         for pid, name in ((_PLUGIN, "carto"), (android, "android"), (web, "web"))
     }
     write_registry(plugins, config_dir, enable=False)
-    project = host / ".claude" / "settings.json"
+    user = config_dir / "settings.json"
     local = host / ".claude" / "settings.local.json"
-    _set_enabled(project, True)
-    _set_enabled(project, True, android)
+    _set_enabled(user, True)
+    _set_enabled(user, True, android)
     assert driver_available(host) is True
 
     _set_enabled(local, False, android)
     assert driver_available(host) is False
 
-    _set_enabled(project, True, web)
+    _set_enabled(user, True, web)
     assert driver_available(host) is True
 
     _set_enabled(local, False)

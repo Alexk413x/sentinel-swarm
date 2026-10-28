@@ -122,12 +122,17 @@ when both hold:
   true or false value for the plugin id decides. A file that does not name the plugin
   leaves the lower file's value in effect, and a plugin that no file names is not enabled.
 - **Installed.** `installed_plugins.json` holds an entry for the id whose `installPath` is
-  a folder. The entry's scope and `projectPath` do not matter: Claude Code loads an
-  enabled plugin from any install.
+  a folder: a `user` entry or one whose `projectPath` is this repo. An entry recorded for
+  another project counts only when the deciding settings file is the user's own, the
+  repo's `settings.local.json` or the user's `settings.json`. Claude Code loads an
+  enabled plugin from any install, but a repo's committed `.claude/settings.json` must
+  not pull in a plugin the user installed for another project: the ledger wires that
+  plugin's MCP servers into every swarm session with their tools pre-allowed.
 
 `install_path` returns that folder. It prefers an entry for this repo (scope `local`, then
 `project` with a matching `projectPath`, then `user`) and falls back to any other entry
-whose folder exists, so the version Claude Code loads is the version the ledger reads.
+whose folder exists, under the rule above, so the version Claude Code loads is the version
+the ledger reads. The shim's `find_install` applies the same fallback rule.
 The shim's `find_install` uses the same fallback. The `driver_available` check is
 `cartographer@cartographer` active and any driver plugin active.
 
