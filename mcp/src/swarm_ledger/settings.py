@@ -23,7 +23,7 @@ _DEFAULT_MODELS = {
     "driver": ["sonnet", "opus"],
 }
 DEFAULT_EFFORT = dict.fromkeys(_DEFAULT_MODELS, "medium")
-_SETTINGS_PATH = Path(".claude") / "sentinel-swarm.local.md"
+SETTINGS_PATH = Path(".claude") / "sentinel-swarm.local.md"
 NOTIFY_CHANNELS = ("os", "push")
 DEFAULT_MAX_WORKERS = 8
 DEFAULT_HEADROOM_MB = 1500
@@ -168,7 +168,7 @@ def _section(cls: type[_Section], raw: dict[str, Any] | None) -> _Section:
 
 
 def load_settings(repo_root: Path) -> Settings:
-    path = repo_root / _SETTINGS_PATH
+    path = repo_root / SETTINGS_PATH
     data: dict[str, Any] = {}
     if path.is_file():
         data = _frontmatter(path.read_text(encoding="utf-8"))

@@ -98,8 +98,9 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
   an existing file's frontmatter, or leaves the file alone when it already sets the
   key. See "The code graph" in
   [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
-- Adds `.sentinel-swarm/`, `.claude/agents/swarm-*.md`, and
-  `.claude/codebase-kg.local.md` to `.git/info/exclude`.
+- Adds `.sentinel-swarm/`, `.claude/agents/swarm-*.md`, `.claude/codebase-kg.local.md`,
+  and `.claude/sentinel-swarm.local.md` to `.git/info/exclude`, so the settings file the
+  setup skill writes stays out of `git status`.
 - Reports whether the repo is trusted, from `~/.claude.json` (or
   `$CLAUDE_CONFIG_DIR/.claude.json`), and prints the command that trusts it.
   `--check-trust` only checks, and exits 1 with the command when the repo is not
