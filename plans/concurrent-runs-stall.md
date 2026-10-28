@@ -154,6 +154,10 @@ Neither run was failing. Each was waiting, and nothing outside agent view showed
 - **The smoke test installs and removes a dev marketplace.** Two hosts running
   `scripts/smoke.sh` at the same time would collide. Give each smoke run its own
   marketplace name.
+- **The run panel shows "No brief recorded." on the Oracle's row for the whole run.**
+  `panel.py:192` fills the row's brief from `run["outcome"]`, which stays empty until
+  the run ends. A user reads that as an Oracle with no instructions. Show the run's
+  PRD (`runs.prd`) until there is an outcome.
 - **`setup` cannot run `/reload-plugins`.** A fresh install needs a new session before
   the tools load. `setup` should say so.
 
