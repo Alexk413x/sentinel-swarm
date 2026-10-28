@@ -79,3 +79,4 @@ Each item below is marked **(needs implementation)** in its document.
 
 - **The device-queue broker** ([05-sessions.md](05-sessions.md)). Needs a new plan on
   the mod's delivery path.
+- **Run panel payload.** The panel reads every brief on each 5-second refresh, about 240 KB for a run of 100 agents. Fetch a brief only when its task opens, and read the snapshot over the ledger server's HTTP route while it runs.

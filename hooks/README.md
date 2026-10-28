@@ -1,6 +1,6 @@
 # sentinel-swarm hooks
 
-`hooks.json` carries no command hooks. It names one module, `register.ts`: the
+`hooks.json` carries no command hooks. It names one module, `register.tsx`: the
 plugin's mod. The mod is the only hook transport. Every role runs as its own Claude
 Code session, and the mod runs every hook in the table below inside that session's own
 process. The role files (`.claude/agents/swarm-<role>.md`) carry no `hooks`

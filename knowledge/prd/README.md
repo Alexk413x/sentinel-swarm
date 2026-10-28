@@ -51,3 +51,4 @@ writes unit tests only. End-to-end testing is a separate process outside the swa
 | [13-platform-facts.md](13-platform-facts.md) | Verified Claude Code platform facts the design relies on |
 | [14-key-decisions.md](14-key-decisions.md) | Alex's decisions, one dated line each |
 | [16-open-items.md](16-open-items.md) | Work that is not done yet, including every item marked (needs implementation) |
+| [17-run-panel.md](17-run-panel.md) | The run panel: the open_panel and swarm_status tools, the agent tree, tasks, and status roll-up |

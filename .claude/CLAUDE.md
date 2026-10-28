@@ -13,8 +13,9 @@ report, setup, and testing. The code graph maps every document, so codebase-kg's
   branch.
 - `skills/` — `swarm-protocol`, `run`, `status`, `resume`, `setup`.
 - `hooks/` — `hooks.json`, which carries no command hooks and names one module,
-  `register.ts`: the plugin's mod, which runs every role's ledger hooks in its swarm
-  sessions. `register.test.ts` holds its tests (`claude plugin test .`). The README
+  `register.tsx`: the plugin's mod, which runs every role's ledger hooks in its swarm
+  sessions and draws the run panel, with the panel's pure helpers in `panel.ts`.
+  `register.test.ts` holds its tests (`claude plugin test .`). The README
   has the per-role hook table.
 - `assets/` — `icon.png`, the plugin icon that OS notifications show.
 - `templates/` — `agents/<role>.md`, the five role templates that setup writes to a host
@@ -24,8 +25,9 @@ report, setup, and testing. The code graph maps every document, so codebase-kg's
 - `mcp/` — the swarm-ledger Python server. A separate project; see `mcp/README.md`.
   The plugin declares no MCP server: each host repo runs its own HTTP ledger server.
   `mcp/launch/ledger.py <module>` runs a ledger module on the base interpreter with
-  `-I -S`: `setup` prepares a host repo, `launch` starts the Oracle session, and
-  `directive` steers a live run from an ordinary session.
+  `-I -S`: `setup` prepares a host repo, `launch` starts the Oracle session,
+  `directive` steers a live run from an ordinary session, and `panel` prints the run
+  panel's snapshot.
 - `knowledge/` — `code_graph.db`, the codebase-kg map of this repo, and `prd/`, the
   source-of-truth documents with their index in `prd/README.md`. Both committed.
 - `scripts/smoke.sh` — the smoke test. It rebuilds `runs/hello/` (git-ignored) on each run,
