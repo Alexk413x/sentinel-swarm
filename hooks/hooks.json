@@ -1,5 +1,5 @@
 {
   "description": "The sentinel-swarm mod runs every role's ledger hooks in its swarm sessions and leaves every other session alone. The role files carry no ledger command hooks.",
-  "modules": ["./register.ts"],
+  "modules": ["./register.tsx"],
   "hooks": {}
 }

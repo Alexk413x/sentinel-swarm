@@ -453,15 +453,15 @@ def test_hooks_json_has_no_hooks(repo_root: Path):
 
 def test_hooks_json_names_the_one_mod_module(repo_root: Path):
     data = json.loads((repo_root / "hooks" / "hooks.json").read_text(encoding="utf-8"))
-    assert data["modules"] == ["./register.ts"]
-    assert (repo_root / "hooks" / "register.ts").is_file()
+    assert data["modules"] == ["./register.tsx"]
+    assert (repo_root / "hooks" / "register.tsx").is_file()
     plugin = json.loads((repo_root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
     assert plugin["types"] == "./types/index.d.ts"
     assert (repo_root / "types" / "index.d.ts").is_file()
 
 
 def _mod_source(repo_root: Path) -> str:
-    return (repo_root / "hooks" / "register.ts").read_text(encoding="utf-8")
+    return (repo_root / "hooks" / "register.tsx").read_text(encoding="utf-8")
 
 
 def test_the_mod_runs_every_ledger_hook_event_of_the_table(repo_root: Path):

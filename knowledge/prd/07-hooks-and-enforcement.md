@@ -2,7 +2,7 @@
 
 ## Where the hooks live
 
-- The plugin's mod, `hooks/register.ts`, is the only transport for the ledger hooks.
+- The plugin's mod, `hooks/register.tsx`, is the only transport for the ledger hooks.
   `hooks/hooks.json` names it under `modules`. The role files
   (`.claude/agents/swarm-<role>.md`) carry no `hooks` frontmatter. See "The mod" below.
 - `hooks/hooks.json` carries no command hooks. The mod acts only in a swarm role
@@ -79,7 +79,7 @@ a `systemMessage` that says to run `/sentinel-swarm:setup`. The shim exits 0.
 
 ## The mod
 
-`hooks/register.ts` runs the ledger hooks inside the session's own Claude Code
+`hooks/register.tsx` runs the ledger hooks inside the session's own Claude Code
 process. It posts the hook input as JSON to the `POST /hook/<event>` route, with the
 token and the repo header, and maps the answer onto the function-hook result. A post
 costs the server's own time plus a few milliseconds; the shim's process costs about

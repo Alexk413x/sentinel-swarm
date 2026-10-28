@@ -1,6 +1,9 @@
 import type { On, SessionSendResult } from 'claude-code'
 import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 
+import { startHint } from './panel'
+import type { PanelRunView } from '../types'
+
 const CWD = 'C:/host'
 const TOKEN = 'a'.repeat(40)
 const RAN_OK = { stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
@@ -298,5 +301,83 @@ describe('the inbox inside a wake-up', () => {
     await $.session.receive({ origin: { kind: 'peer' }, text: 'ping' } as never)
     expect(w.events()).toContain('inbox_release')
     expect(w.events()).not.toContain('inbox_ack')
+  })
+})
+
+describe('the swarm status tool', () => {
+  function server(on: On, health: { status: number; body: unknown } | null) {
+    const urls: string[] = []
+    on('fs.read', (_$, e) => {
+      if (e.path.replace(/\\/g, '/') === `${CWD}/.sentinel-swarm/server.json`) return { value: JSON.stringify({ port: 47999 }) }
+      throw new Error(`ENOENT: ${e.path}`)
+    })
+    on('http.fetch', (_$, e) => {
+      urls.push(e.url)
+      if (health === null) throw new Error('connection refused')
+      return { value: { status: health.status, ok: health.status === 200, headers: {}, text: JSON.stringify(health.body) } }
+    })
+    return urls
+  }
+
+  async function status($: Engine, repo: string) {
+    const ran = (await $.tool.call({ tool: 'mcp__sentinel-swarm__swarm_status', repo } as never)) as { result?: unknown }
+    return JSON.parse(String(ran.result)) as { running: boolean; repo: string }
+  }
+
+  test('a ledger server that answers for the repo means a run is active', async ($, on) => {
+    const urls = server(on, { status: 200, body: { name: 'swarm-ledger', repo_root: 'C:\\host\\', pid: 1 } })
+    expect(await status($, CWD)).toEqual({ running: true, repo: CWD })
+    expect(urls).toEqual(['http://127.0.0.1:47999/health'])
+  })
+
+  test('a server that does not answer means no run is active', async ($, on) => {
+    server(on, null)
+    expect((await status($, CWD)).running).toBe(false)
+  })
+
+  test('a server for another repo means none is active here', async ($, on) => {
+    server(on, { status: 200, body: { name: 'swarm-ledger', repo_root: 'C:/other', pid: 1 } })
+    expect((await status($, CWD)).running).toBe(false)
+  })
+
+  test('a repo without server.json asks no server', async ($, on) => {
+    const urls = server(on, { status: 200, body: { name: 'swarm-ledger', repo_root: 'C:/elsewhere', pid: 1 } })
+    expect((await status($, 'C:/elsewhere')).running).toBe(false)
+    expect(urls).toEqual([])
+  })
+})
+
+describe('the run panel', () => {
+  test('opens on a repo with no ledger and no server', async ($, on) => {
+    const opened: string[] = []
+    const launched: string[][] = []
+    const clock = mock.clock(on, { now: 1_000 })
+    on('ui.open', (_$, e) => {
+      opened.push(e.id)
+      return { value: { isPlaced: true } }
+    })
+    on('fs.read', (_$, e) => {
+      throw new Error(`ENOENT: ${e.path}`)
+    })
+    on('process.run', (_$, e) => {
+      launched.push([...e.argv])
+      return {
+      value: { ...RAN_OK, exitCode: 0, stdout: JSON.stringify({ repo: 'C:/fresh', generated_at: '', runs: [], error: 'no ledger' }) },
+      }
+    })
+    const ran = (await $.tool.call({ tool: 'mcp__sentinel-swarm__open_panel', repo: 'C:/fresh' } as never)) as { result?: unknown }
+    expect(String(ran.result)).toBe('Swarm panel opened on C:/fresh.')
+    expect(opened).toEqual(['swarm-run'])
+    await clock.settle()
+    expect(launched[0]?.slice(-3)).toEqual(['panel', '--repo', 'C:/fresh'])
+  })
+
+  const view = (ended: boolean) => ({ run: { run_id: 3, ended_at: ended ? '2026-10-27T00:00:00Z' : null } }) as PanelRunView
+
+  test('says how to start a run when none is active', () => {
+    expect(startHint([], false)[0]).toBe('No swarm has run in this repo.')
+    expect(startHint([view(true)], false)).toEqual(['No run is active.', 'To start a run, run /sentinel-swarm:run with a PRD.'])
+    expect(startHint([view(false)], false)[1]).toBe('To continue it, run /sentinel-swarm:resume.')
+    expect(startHint([view(false)], true)).toEqual([])
   })
 })
