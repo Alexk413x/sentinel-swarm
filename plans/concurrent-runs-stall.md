@@ -161,6 +161,36 @@ Neither run was failing. Each was waiting, and nothing outside agent view showed
 - **`setup` cannot run `/reload-plugins`.** A fresh install needs a new session before
   the tools load. `setup` should say so.
 
+### 8. The run panel hides the rows that matter
+
+Alex asked for these on 2026-10-28, after watching both runs in the panel.
+
+- **A Coder's file path pushes the row off the screen.**
+  - **Today:** a file task's name is its full repo path (`mcp/src/swarm_ledger/panel.py:173`: `item("file_id", …,
+    f["path"], …)`). `taskButton` renders it in a box with `flexShrink={0}`
+    (`hooks/register.tsx:304-306`), so on a narrow panel the path takes the row and
+    the agent's name or status is cut off.
+  - **Fix:** a file task shows its file name only. The full path goes in the task's
+    detail lines. When even the file name does not fit, it truncates from the left with
+    a leading `…` (Ink `wrap="truncate-start"`), so the end of the name stays visible.
+    The task box shrinks before the agent's name does.
+- **Rows that are done look the same as rows that are working.**
+  - **Today:** a row is dim only when `dimEnded` is on and the agent has an `ended_at`
+    (`register.tsx:362`).
+  - **Fix:** always dim a row whose agent is released, gone, or finished with its task
+    approved. Rows that are working keep full colour.
+- **Rows waiting to start look active.**
+  - **Fix:** dim these too:
+    - a Manager whose phase is still `planned`;
+    - a child with a brief but no session yet (queued in `spawn_queue`);
+    - a parked agent waiting for memory.
+- **Rows waiting on a person look idle.**
+  - **Fix:** a session that `claude agents --json` reports as waiting on input or a
+    permission (cause 3) shows a warning glyph and colour at the top of the panel, never
+    dimmed.
+- **The legend** (`register.tsx:456-458`) gains dimmed for "ended or not started" and
+  the warning glyph for "waiting on you".
+
 ## What got the runs moving again
 
 - **Run A, 2026-10-28 14:35 UTC:**
@@ -179,13 +209,13 @@ Neither run was failing. Each was waiting, and nothing outside agent view showed
 
 ## Order of work
 
-1. Cause 3, the watchdog reading `waitingFor`. It turns an unseen multi-hour stall into a
+1. Cause 3, the watchdog reading `waitingFor`, together with cause 8's "waiting on a person" row. It turns an unseen multi-hour stall into a
    notification in minutes.
 2. Cause 4, a configurable test timeout.
 3. Cause 1, admission against machine-wide memory.
 4. Cause 2, retrying after a config parse error.
 5. Causes 5 and 6, from reproductions in the two ledgers.
-6. The setup friction in cause 7.
+6. The setup friction in cause 7, and the rest of cause 8's panel changes.
 
 Add each finding that stays open to `knowledge/prd/16-open-items.md`, and delete this plan
 once every cause has a fix or an open item.
