@@ -2,6 +2,22 @@
 
 All notable changes to the `sentinel-swarm` plugin.
 
+## [0.4.0] — 2026-10-27 — run panel
+
+### Added
+
+- A run panel: a side pane that shows each run as a tree of agents, with each agent's
+  phase, module, or file as a task. A task's status rolls up from the work below it, and
+  clicking a task shows its brief and latest review. The panel opens in any repo; with no
+  active run it says how to start one and lists the repo's past runs. See
+  `knowledge/prd/17-run-panel.md`.
+- The `open_panel` and `swarm_status` function tools, which other plugins can call to open
+  the panel and to learn whether a run is active in a repo.
+
+### Changed
+
+- The mod is `hooks/register.tsx`, with the panel's pure helpers in `hooks/panel.ts`.
+
 ## [0.3.1] — 2026-10-23 — release under the intended version number
 
 ### Changed
