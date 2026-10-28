@@ -230,3 +230,15 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   MB. A Coder's test and type-check processes were short-lived and small. With about 20
   Coders in two phases, it retired every idle Manager and Lead (10 sessions) within a
   few minutes. (2026-10-27)
+- Claude Code loads a marketplace plugin when an `enabledPlugins` entry for it is true and
+  `installed_plugins.json` holds an install of it. The entry's scope and `projectPath` do
+  not restrict it: on this machine, cartographer is enabled in a repo's
+  `.claude/settings.json`, loads there, and has registry entries only for other project
+  paths. `enabledPlugins` merges key by key across sources, and for each plugin id the
+  value from the highest-precedence source that names it applies. From lowest to
+  highest: `--add-dir` settings (only a true counts), user `settings.json`, project
+  `.claude/settings.json`, local `.claude/settings.local.json`, the `--settings` flag,
+  managed settings (`true` force-enables, `false` blocks). A local `false` turns off a
+  plugin that project settings enable and whose registry entry names this repo. Checked
+  against code.claude.com/docs/en/plugins/loading ("Find where a plugin is enabled") and
+  the settings page on 2026-10-27; not run live.

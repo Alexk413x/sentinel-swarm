@@ -458,6 +458,9 @@ def test_shim_lookup_prefers_local_then_project_then_user(tmp_path: Path, config
     assert shim.find_install("p@m", repo) == user
 
     _register(config_dir, "p@m", entries[1:2])
+    assert shim.find_install("p@m", repo) == local
+
+    _register(config_dir, "p@m", [{**entries[1], "installPath": str(tmp_path / "gone")}])
     with pytest.raises(shim.ShimError, match="not installed"):
         shim.find_install("p@m", repo)
 

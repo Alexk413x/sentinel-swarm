@@ -202,8 +202,9 @@
 
 ### Driver
 
-- **Exists only when:** the host has `cartographer@cartographer` installed and at least
-  one of `android-driver@accessibility-tools`, `ios-driver@accessibility-tools`, or
+- **Exists only when:** the host has `cartographer@cartographer` active (enabled and
+  installed, see "Plugin detection" in [11-setup-and-settings.md](11-setup-and-settings.md))
+  and at least one of `android-driver@accessibility-tools`, `ios-driver@accessibility-tools`, or
   `web-driver@accessibility-tools`. `setup` writes `swarm-driver.md` only then;
   `drive_request` refuses clearly when either is missing. When the plugins are
   missing, the run skips every exploration step, and the report needs no special entry

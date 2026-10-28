@@ -103,6 +103,11 @@ def find_install(plugin_id: str, repo: Path, registry: Path | None = None) -> Pa
             if not path.is_dir():
                 raise ShimError(f"{plugin_id} is registered at {path}, but that folder is missing")
             return path
+    # Claude Code loads an enabled plugin from any install, whatever its projectPath.
+    for entry in entries:
+        install = entry.get("installPath") if isinstance(entry, dict) else None
+        if isinstance(install, str) and install and Path(install).is_dir():
+            return Path(install)
     raise ShimError(f"{plugin_id} is not installed for {repo}")
 
 

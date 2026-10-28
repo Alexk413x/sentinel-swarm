@@ -1205,7 +1205,7 @@ def test_session_start_reports_codebase_kg_not_installed(ledger: Ledger) -> None
     result = events.handle_session_start(ledger, {})
     assert result is not None
     context = result["hookSpecificOutput"]["additionalContext"]
-    assert "codebase-kg is not installed" in context
+    assert "codebase-kg is not enabled and installed" in context
 
 
 @pytest.mark.usefixtures("host")
@@ -1218,7 +1218,7 @@ def test_session_start_reports_a_missing_graph_once_the_plugin_is_installed(
     result = events.handle_session_start(ledger, {})
     assert result is not None
     context = result["hookSpecificOutput"]["additionalContext"]
-    assert "codebase-kg is not installed" not in context
+    assert "codebase-kg is not enabled and installed" not in context
     assert "knowledge/code_graph.db is missing" in context
 
 

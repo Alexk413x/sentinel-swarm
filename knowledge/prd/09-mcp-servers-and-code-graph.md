@@ -8,14 +8,15 @@
   `Authorization: Bearer` header. See "Access" and "The token" in
   [06-ledger-server.md](06-ledger-server.md).
 - A role also gets the a11y plugin's servers, `a11y-tools` and `a11y-kg`, when the host
-  has `a11y@accessibility-tools` installed at user scope or for the host's path.
-  `agent_spawn` and the launcher check the installed-plugins registry and add the
-  servers through the shim, and their tools to `--allowedTools`. See "Plugin servers".
+  has `a11y@accessibility-tools` active (enabled in settings and installed, see
+  "Plugin detection" in [11-setup-and-settings.md](11-setup-and-settings.md)).
+  `agent_spawn` and the launcher check this and add the servers through the shim, and
+  their tools to `--allowedTools`. See "Plugin servers".
 - `setup` writes each role file with the template's `mcpServers` and `tools` only. A
   plugin that the host's `.claude/settings.json` enables does not join a role file.
   User-level plugins, user MCP servers, and claude.ai connectors never join.
 - The Driver's session additionally gets cartographer's MCP server (`cartographer`) and
-  the installed driver plugins' servers (`android-driver-kg`, `ios-driver-kg`,
+  the active driver plugins' servers (`android-driver-kg`, `ios-driver-kg`,
   `web-driver-kg`), through the same shim mechanism as the a11y servers
   (`agentfiles.OPTIONAL_SERVERS` for a11y, `agentfiles.DRIVER_OPTIONAL_SERVERS` for the
   Driver's own, joined only when `role == "driver"`). Every other role's session never
@@ -132,9 +133,10 @@ find what exists while many agents change the code at once. The graph file,
   node that does not exist. It applies the upsert under a lock, with the codebase-kg
   copy that `graph.codebase_kg_root(repo_root)` resolves, run as described above.
   That function reads the install of `codebase-kg@alexk413x` for the repo from
-  `~/.claude/plugins/installed_plugins.json` (scope `local`, then `project` with a
-  matching `projectPath`, then `user`, the lookup that `agentfiles` uses for other
-  plugins) and returns its `mcp` folder. `SENTINEL_SWARM_KG_ROOT` overrides it.
+  `~/.claude/plugins/installed_plugins.json` and returns its `mcp` folder, by the rule
+  in "Plugin detection" in [11-setup-and-settings.md](11-setup-and-settings.md): the
+  plugin must be enabled in settings, and the folder is the install `agentfiles.install_path`
+  picks. `SENTINEL_SWARM_KG_ROOT` overrides it.
 - Setup sets `post_edit_nudge: false` in the host's `.claude/codebase-kg.local.md`, so
   codebase-kg's edit hook does not send a Coder to `/codebase-kg:refresh`.
 - A node that anchors on several files is updated through the Lead, once the Coders

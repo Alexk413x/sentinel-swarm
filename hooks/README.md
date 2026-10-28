@@ -50,7 +50,7 @@ When there is no `server.json`, the server does not accept the connection within
 or it answers anything but 200 with the repo header, the shim falls back. It finds the
 sentinel-swarm install for the repo in `~/.claude/plugins/installed_plugins.json`,
 from any marketplace, in this order: scope `local`, then `project` with a matching
-`projectPath`, then `user`. It then runs `<python> -I -S <installPath>/mcp/launch/ledger.py
+`projectPath`, then `user`, then any other entry whose `installPath` exists. It then runs `<python> -I -S <installPath>/mcp/launch/ledger.py
 hooks <event>` on the base interpreter that runs the shim, and passes stdin and stdout
 through. The ledger imports only the standard library, so no venv and no `uv` is involved.
 
