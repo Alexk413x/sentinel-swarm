@@ -85,6 +85,15 @@ Neither run was failing. Each was waiting, and nothing outside agent view showed
   - A run B Coder showed `"waitingFor": "permission prompt"` from 08:46.
   - The ledger has no record of either. The watchdog filed `stuck` findings on other
     agents, and a Manager's escalation (10:07) went to the waiting Oracle.
+  - **More instances, same pattern (run B):**
+    - 08:46: the watchdog did file `waiting_permission` for
+      `coder-p3-stitched-diagnose-l1b` (directive 29). It went to the Oracle, which was itself
+      waiting on the user from 09:02, so nobody acted on it until 20:58.
+    - 21:12: `coder-p3-stitched-diagnose-l4b` showed `"waitingFor": "permission prompt"` on
+      a `Write` to `.claude/scratch/stitched/test_emit_l4.py`, eight minutes after the run
+      restarted.
+    - Each prompt came from a write or command outside the role's allowed paths. So a run
+      that writes scratch files will keep raising prompts that only agent view shows.
 - **Effect:** run B stalled for over four hours. Every escalation path ends at the Oracle,
   and the Oracle was waiting on a dialog nobody saw.
 - **Fix:**
@@ -96,13 +105,21 @@ Neither run was failing. Each was waiting, and nothing outside agent view showed
   - `status` lists waiting sessions first.
   - In a background run, the Oracle posts a question as a `needs_user` directive and
     keeps the rest of the run moving, instead of blocking on `AskUserQuestion`.
+  - The write hook denies a role's write outside its claim, under `.claude/` included,
+    before Claude Code can prompt for it. The deny message names the role's claimed test
+    file as the place for a scratch helper. A deny returns to the agent at once, and a prompt
+    in a background session waits for agent view. Both run B Coder prompts (08:46 and 21:12)
+    were `Write` calls to `.claude/scratch/stitched/`.
 
 ### 4. The 600 s test-run cap cannot hold a large suite
 
 - **Evidence:**
   - `testing.run_tests` has `timeout_s: int = 600` (`mcp/src/swarm_ledger/testing.py:184`).
   - Run B's full suite took about 25 minutes, and the Oracle's full-suite `tests_run`
-    timed out with no record. `phase_review` needs a passing full-suite run, so no run B
+    timed out with no record. Measured out of band on the run's branch before launch:
+    4,524 tests in 2,318 s (38.6 min) with `-n 4`, while run A was live. The PRD's bench
+    module adds 407 s on its own. Three failures in that run (`test_maproom_site_health`)
+    came from load and passed alone (8 of 8 in 54 s). `phase_review` needs a passing full-suite run, so no run B
     phase could close.
   - Run A's serial suite took about 582 s, too close to the cap. Its operator wrapped
     `test_command` to run seven parallel shards, which took 209 to 271 s.
@@ -132,11 +149,47 @@ Neither run was failing. Each was waiting, and nothing outside agent view showed
     no role can add a claim.
 
   These come from the agents' messages and issues, not from a reproduction.
+- **Measured on run B's ledger (2026-10-28 21:15 UTC):**
+  - The stray claim is file 20, `knowledge/PRD/07-replay.md`, claimed and released at
+    07:38 by `coder-p4-utterances-prd`, which then claimed the real path
+    `07-path-tests-and-replay.md` (files 21 and 56).
+  - The two unclaimed paths in issues 5 and 6 were claimed. Files 25
+    (`maproom/js/views/screen.js`), 27 (`knowledge/PRD/09-maproom.md`) and 28
+    (`maproom/css/app.css`) were claimed at 07:40 for queued Coders. They were released at
+    08:02:07 to 08:02:21, within 15 s of the ledger parking their Lead "under memory
+    pressure while its children work" (08:02:03 and 08:02:07). Their Coders started only
+    at 08:17 to 08:24, so `who_owns` returned no owner and the write hook denied every edit.
+    That parking releases its queued children's claims is a hypothesis from the
+    timestamps; the code path is not confirmed.
 - **Fix:**
   - A released claim on a missing path counts as closed.
   - A Manager may claim an unowned path into one of its modules, which closes the
     missing-claim case without the Oracle.
+  - Parking or replacing a parent keeps the claims of its queued and live children. Confirm
+    the release path first, from run B's ledger.
+  - For a file with no `test_path`, `cr_complete` takes the file's latest submitted
+    handoff after acceptance as evidence, so a handoff that waits on the change request does
+    not wait forever. Run B's CRs 1 and 3 on a PRD file could not complete otherwise.
   - Reproduce the handoff deadlock from run B's ledger, and add the case to the tests.
+
+### 5c. A full test run that can never count as clean
+
+- **Evidence (run B):**
+  - `build_command` drops `{target}` for a full run, so the full command runs pytest from
+    the repo root with no path. pytest applies `testpaths` only when it is invoked from the
+    rootdir, so it walked the whole tree and imported `plans/jev/scripts/test_d.py`, a
+    host script that raises `SystemExit` on import. Full run 101 recorded `INTERNALERROR`,
+    exit code 3, 0 passed. Adding `-c mcp/pyproject.toml --rootdir mcp` did not change
+    that; `--ignore=plans` did, collecting the same 4,751 tests as `mcp/tests`.
+  - `test_run_passed` and `_CLEAN_TEST_RUN` count any skip as a failure (`skipped = 0`). The
+    PRD's bench module skips when its corpus variable is unset, so its file run 203 (13
+    passed, 1 skipped) could never pass, and no full run including it could either.
+- **Fix:**
+  - `setup` dry-runs the full command (`--collect-only` where the stack allows it) and
+    reports a collection error before the run starts.
+  - A full run takes a default target, a `full_target` setting, instead of an empty one.
+  - Count a skip as clean when the test reports an environment skip the host declares in
+    settings, or warn at `setup` that a skip blocks every handoff.
 
 ### 5b. A binary file can never hand off, and its phase cannot close
 
@@ -358,8 +411,48 @@ next step.
   - It committed the work by hand after the full suite passed.
   - It stopped the last two sessions with `claude stop <id>`, and closed the ledger
     with SQL (cause 9).
-- **Run B:** the Oracle's question and the Coder's permission prompt need a person in
-  agent view. Recorded once they are answered.
+- **Run B, 2026-10-28 20:56 UTC:**
+  - A person answered the Oracle's 09:02 `AskUserQuestion` in agent view ("I fix the plugin,
+    continue"). The Oracle's transcript has no entry between 09:02 and 20:56.
+  - Within 48 s the Oracle re-armed its watch and messaged each Manager. The ledger then
+    resumed the parked parents and delivered the wake-ups they were owed.
+  - The stall lasted 10 h 49 min, from the last action at 10:07:47 to 20:56:52. In that
+    time the watchdog's only action was at 13:12, when the daemon retired six idle
+    sessions. It filed no finding, because every agent was `idle` waiting on a wake-up, and
+    `_wake_oracle` skips while the Oracle's session counts as running. Its first `stuck`
+    findings after the stall came at 20:57, about 650 minutes late. Cause 3's fix needs a
+    run-level finding too: no agent working and no wake-up owed for `stuck_minutes`.
+- **Run B, 2026-10-28 21:15 UTC, by the coordinator session:**
+  - It backed up the ledger, then fixed by SQL what no role can: file 20 set to
+    `superseded`, and files 25, 27 and 28 set back to `claimed` (cause 5).
+  - It ran the bench through the plugin's own `run_tests` with
+    `set "CARTOGRAPHER_REPLAY_CORPUS=…" && … pytest … --ignore=plans {target}`: 27 passed,
+    2 failed, 0 skipped, in 407 s (cause 5c). It asked the Oracle to `profile_set` that
+    command.
+  - For cause 4, it wrote a host-side recorder. It runs the run's full `test_command` with
+    no time cap and inserts the result as the Oracle's `scope='full'` row, with the
+    plugin's command, counts and fingerprint, only if the tree did not change. The Oracle
+    asks for it with a `needs_user` directive.
+  - It sent all of this as directive 48 and woke the Oracle by `SendMessage`.
+  - At 21:12 a run B Coder was waiting on a permission prompt to write a scratch test file
+    (cause 3 again). It needs a person in agent view.
+  - **Measured, 21:31 to 21:36 UTC:**
+    - The Oracle read directive 48 at 21:31:03 and applied all of it: `profile_set` with
+      the new command, issues 5 and 6 closed, and the full-run protocol adopted.
+    - p4 `utterances` handed up at 21:33:39, its first phase move since 07:26, once file 20
+      no longer held its module open.
+    - `coder-p3-stitched-surface-prd09` restarted at 21:35:13 on its restored claim.
+    - The Oracle raised one more cause 5 record as directive 49 (below). The coordinator
+      cleared it at 21:34, and the Oracle routed `cr_verify` to both requesters by 21:35.
+  - **21:34 UTC, a change request on a file with no tests (cause 5):** CRs 1 and 3 asked for
+    rows in `knowledge/PRD/06-baseline-and-promotion.md` (file 10). `approve(39)` refused
+    with "change request(s) [1, 3] on this file are not verified". `cr_complete` refused
+    with "no passing test run or approved handoff for … since acceptance". A `.md` file has
+    no `test_path`, and handoff 39 waits on the CRs, so neither condition can ever hold.
+    The coordinator checked that the working tree held both requested rows, then set both
+    CRs to `completed` by SQL, with handoff 39 as the evidence.
+  - Not yet measured: the first recorded full run. It waits for the Oracle's "full run
+    needed" directive, and the tree has to stay still while it runs.
 
 ## Closing a run
 
@@ -381,13 +474,14 @@ must then succeed with no override.
 
 1. Cause 3, the watchdog reading `waitingFor`, together with cause 8's "waiting on a
    person" row. It turns an unseen multi-hour stall into a notification in minutes.
-2. "Closing a run": causes 4, 5b, 6 and 6b, plus cause 9's `file_accept_incomplete` and
+2. "Closing a run": causes 4, 5b, 5c, 6 and 6b, plus cause 9's `file_accept_incomplete` and
    `run_close`. Without them no run with a large suite, a binary file or a replaced parent
    can finish. Accept them on run A's saved ledger.
 3. The rest of cause 9: deleting files, named host commands, cross-module graph updates,
    resuming after a pause clears, and reconciling ended sessions.
 4. Cause 1, admission against machine-wide memory.
-5. Cause 2, retrying after a config parse error.
+5. Cause 2, retrying after a config parse error. Run B's watchdog hit it too: at 08:55 it
+   skipped a pass on "`~/.claude.json` is corrupted: JSON Parse error: Unexpected EOF".
 6. Cause 5, the remaining records that cannot close, from run B's ledger.
 7. The setup friction in cause 7, and the rest of cause 8's panel changes.
 
