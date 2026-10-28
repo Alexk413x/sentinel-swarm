@@ -336,6 +336,40 @@ next step.
   - **Fix:** the watchdog reconciles each agent against `claude agents --json`. An agent
     whose session is gone becomes `parked`, with the reason. Cause 8 dims it.
 
+### 10. Role files override the user's permission mode
+
+Alex asked on 2026-10-28 that every role session start in `bypassPermissions`, so that a
+trivial prompt does not stop a run.
+
+- **Evidence:**
+  - The role templates set `permissionMode: default` for the Oracle, Manager, Lead and
+    Driver, and `acceptEdits` for the Coder (`templates/agents/*.md`, line 6).
+  - `agentfiles.py:351-353` passes that value as `--permission-mode` on every spawn and
+    resume. The flag overrides the user's `permissions.defaultMode`, which on this machine
+    is `bypassPermissions` (`~/.claude/settings.json`).
+  - A run B Coder stopped at a permission prompt at 08:46 UTC (cause 3), and nothing in
+    the run could answer it.
+- **Effect:** a role session asks about any tool call its role's rules do not allow,
+  even when the user runs every other session without prompts. In a background run nobody
+  sees the prompt, so the session waits until a person opens its row.
+- **Workaround on both hosts:** the four role files in `.claude/agents/` were edited to
+  `permissionMode: bypassPermissions`. `setup` keeps a user's frontmatter values, so the
+  edit survives a re-run. It takes effect on the next spawn or resume.
+- **Fix:**
+  - Add a `permission_mode` setting in `sentinel-swarm.local.md`, per role, like
+    `effort`. Empty means inherit: the launcher passes no `--permission-mode`, and the
+    session takes the user's `defaultMode`.
+  - Make inherit the default for every role. Keep `acceptEdits` as the Coder's floor
+    when the inherited mode is `default`, because a `--bg` session in `default` stalls
+    for good on a file write (PRD 13).
+  - `setup` reports the mode each role will start in.
+  - The swarm's limits hold in any mode: the write, shell and `SendMessage` gates are
+    `PreToolUse` hooks, and hooks run in `bypassPermissions` too. Add a test that checks
+    a Coder in `bypassPermissions` is still refused a write outside its claim and a
+    command outside its shell gate.
+  - When policy disables bypass (`permissions.disableBypassPermissionsMode`), `setup`
+    says so and the role falls back to `acceptEdits`.
+
 ## What got the runs moving again
 
 - **Run A, 2026-10-28 14:35 UTC:**
@@ -381,6 +415,8 @@ must then succeed with no override.
 
 1. Cause 3, the watchdog reading `waitingFor`, together with cause 8's "waiting on a
    person" row. It turns an unseen multi-hour stall into a notification in minutes.
+   Cause 10, role sessions inheriting the user's permission mode, lands with it: it
+   removes most of the prompts that cause 3 would report.
 2. "Closing a run": causes 4, 5b, 6 and 6b, plus cause 9's `file_accept_incomplete` and
    `run_close`. Without them no run with a large suite, a binary file or a replaced parent
    can finish. Accept them on run A's saved ledger.
