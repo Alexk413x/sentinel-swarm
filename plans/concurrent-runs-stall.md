@@ -106,8 +106,18 @@ Neither run was failing. Each was waiting, and nothing outside agent view showed
     phase could close.
   - Run A's serial suite took about 582 s, too close to the cap. Its operator wrapped
     `test_command` to run seven parallel shards, which took 209 to 271 s.
+  - **A second limit sits in front of the cap.** The MCP tool call itself times out on
+    the client before the run ends. Run B's Oracle: "My call timed out on the client
+    side, and no record has appeared yet". Run A's Oracle paused at 17:05 UTC because
+    "tests_run(scope=full) exceeds the tool timeout". So a longer ledger cap alone does
+    not let a full run finish.
 - **Fix:**
-  - `test_timeout_s` becomes a setting, with 600 as the default.
+  - **`tests_run` returns at once.** It starts the run, answers with its
+    `test_run_id`, and records the result when the run ends. The caller reads it with
+    `test_run_get`, or gets a wake-up when it is recorded. No tool call waits out a
+    suite.
+  - `test_timeout_s` becomes a setting, with 600 as the default. It bounds the test
+    process, not the tool call.
   - `setup` times one full run and warns when it exceeds half the cap.
   - The docs name sharding (`pytest -n`) as the way to fit a large suite.
 
@@ -158,6 +168,31 @@ Neither run was failing. Each was waiting, and nothing outside agent view showed
   - Fix whichever side is wrong.
   - Until then, a graph-check refusal on an anchor the source shows exists is accepted as
     incomplete, with the reason, instead of blocking the handoff.
+
+### 6b. A replacement parent cannot reach its live children
+
+- **Evidence:** run A's report, shortfall 7.
+  - The Oracle released a dead `mgr-p1-settle` and spawned a replacement.
+  - `lead-p1-settle` stayed parented to the released agent's id, both in the ledger and
+    in the `SendMessage` hook.
+  - `status_tree` named the new Manager, but `message_post` and `SendMessage` from
+    the new Manager and from the Oracle both refused the Lead.
+  - `brief_create` refused a replacement Lead ("a live agent already holds the name"),
+    and `agent_resume` refused because the Lead was running.
+  - Nobody in the run could wake the Lead. An outside nudge got it moving again.
+- **Today:** only the Oracle's own resume re-points children. `run_start` runs
+  `UPDATE agents SET parent_agent_id = ? WHERE parent_agent_id = ?` and the same on
+  `briefs` (`mcp/src/swarm_ledger/ledger.py:338-345`). A Manager or Lead replaced by
+  `agent_spawn` gets no such step.
+- **Fix:**
+  - **The re-pointing step works for every role.** When a replacement takes a released
+    agent's brief (same `child_name`, or a brief carrying `replaces=<agent_id>`), the
+    ledger moves every live child and every brief from the old id to the new one, in
+    the same transaction.
+  - **The `SendMessage` hook reads the parent from the ledger** on each call, rather
+    than from what it cached at spawn.
+  - **A test** releases a Manager with a live Lead, spawns a replacement, and checks
+    that `message_post`, `SendMessage` and `agent_resume` all reach the Lead.
 
 ### 7. Smaller setup friction
 
@@ -255,14 +290,31 @@ Alex asked for these on 2026-10-28, after watching both runs in the panel.
 - **Run B:** the Oracle's question and the Coder's permission prompt need a person in
   agent view. Recorded once they are answered.
 
+## Closing a run
+
+Run A built and reviewed everything its PRD asked for, but the ledger could not close it.
+The Oracle paused twice, at 17:05 and 17:49 UTC: `run_finish` refuses while three phases
+are unapproved. Three fixes clear that:
+
+| Blocker | Cause | Fix |
+|---|---|---|
+| `phase_review` needs a recorded full test run, and `tests_run(scope=full)` outlasts the tool call. | 4 | `tests_run` returns at once and records the result later, with `test_timeout_s` as a setting. |
+| `module_review` refuses a file that never handed off: the binary `android_driver_graph.db`, and `engine.py` and `events.py`, whose graph check refuses `Class.method` anchors. | 5b and 6 | `handoff_submit` hashes binary files and resolves `Class.method` anchors. A phase whose only blocker is a deferred file can hand up. |
+| A replacement Manager cannot reach the Lead its predecessor started. | 6b | Re-point live children and briefs to every replacement parent, and route `SendMessage` from the ledger. |
+
+**Acceptance:** replay run A's ledger (saved on the host as `.claude/scratch/swarm-a/ledger-run-a-2026-10-28.db`, before its
+coordinator integrates the work) against the fixed plugin. `phase_review` and `run_finish`
+must then succeed with no override.
+
 ## Order of work
 
-1. Cause 3, the watchdog reading `waitingFor`, together with cause 8's "waiting on a person" row. It turns an unseen multi-hour stall into a
-   notification in minutes.
-2. Cause 4, a configurable test timeout.
+1. Cause 3, the watchdog reading `waitingFor`, together with cause 8's "waiting on a
+   person" row. It turns an unseen multi-hour stall into a notification in minutes.
+2. "Closing a run": causes 4, 5b, 6 and 6b. Without them no run with a large suite, a
+   binary file or a replaced parent can finish. Accept them on run A's saved ledger.
 3. Cause 1, admission against machine-wide memory.
 4. Cause 2, retrying after a config parse error.
-5. Causes 5 and 6, from reproductions in the two ledgers.
+5. Cause 5, the remaining records that cannot close, from run B's ledger.
 6. The setup friction in cause 7, and the rest of cause 8's panel changes.
 
 Add each finding that stays open to `knowledge/prd/16-open-items.md`, and delete this plan
