@@ -75,6 +75,27 @@ def _same_path(raw: object, repo: Path) -> bool:
     return os.path.normcase(str(left)) == os.path.normcase(str(right))
 
 
+def _enabled_outside_repo(plugin_id: str, repo: Path) -> bool:
+    """Whether the deciding `enabledPlugins` entry is the user's: local or user settings, not
+    the repo's committed `settings.json`."""
+    for source, path in (
+        ("local", repo / ".claude" / "settings.local.json"),
+        ("project", repo / ".claude" / "settings.json"),
+        ("user", config_dir() / "settings.json"),
+    ):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        enabled = data.get("enabledPlugins") if isinstance(data, dict) else None
+        if not isinstance(enabled, dict):
+            continue
+        for key, value in enabled.items():
+            if (key == plugin_id or key.split("@")[0] == plugin_id) and isinstance(value, bool):
+                return value and source != "project"
+    return False
+
+
 def find_install(plugin_id: str, repo: Path, registry: Path | None = None) -> Path:
     registry = registry or registry_path()
     try:
@@ -103,6 +124,15 @@ def find_install(plugin_id: str, repo: Path, registry: Path | None = None) -> Pa
             if not path.is_dir():
                 raise ShimError(f"{plugin_id} is registered at {path}, but that folder is missing")
             return path
+    # Claude Code loads an enabled plugin from any install, whatever its projectPath. Only the
+    # user's own settings may reach another project's install: a repo's committed settings.json
+    # must not start a plugin the user installed elsewhere.
+    if not _enabled_outside_repo(plugin_id, repo):
+        raise ShimError(f"{plugin_id} is not installed for {repo}")
+    for entry in entries:
+        install = entry.get("installPath") if isinstance(entry, dict) else None
+        if isinstance(install, str) and install and Path(install).is_dir():
+            return Path(install)
     raise ShimError(f"{plugin_id} is not installed for {repo}")
 
 

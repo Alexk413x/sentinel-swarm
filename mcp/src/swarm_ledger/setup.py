@@ -17,6 +17,7 @@ from .db import append_git_excludes, main_git_dir
 from .frontmatter import FrontmatterError
 from .frontmatter import split_document as _split_document
 from .paths import config_override
+from .settings import SETTINGS_PATH
 
 CORE_ROLES = ("oracle", "manager", "lead", "coder")
 ROLES = (*CORE_ROLES, "driver")
@@ -28,7 +29,12 @@ SHIM_TEMPLATE = TEMPLATES_DIR / "hook_shim.py"
 SHIM_PATH = Path(".sentinel-swarm") / "hook.py"
 SETTINGS_LOCAL_PATH = Path(".claude") / "settings.local.json"
 KG_SETTINGS_PATH = Path(".claude") / "codebase-kg.local.md"
-EXCLUDE_LINES = (".sentinel-swarm/", ".claude/agents/swarm-*.md", KG_SETTINGS_PATH.as_posix())
+EXCLUDE_LINES = (
+    ".sentinel-swarm/",
+    ".claude/agents/swarm-*.md",
+    KG_SETTINGS_PATH.as_posix(),
+    SETTINGS_PATH.as_posix(),
+)
 WORKTREE_SETTINGS: dict[str, Any] = {"worktree": {"bgIsolation": "none"}}
 # Exact names: an Agent(<name>) deny blocks the Agent tool but not a `claude --agent` launch.
 ROLE_AGENT_DENY = tuple(f"Agent(swarm-{role})" for role in ROLES)

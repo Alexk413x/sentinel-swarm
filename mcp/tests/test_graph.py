@@ -82,8 +82,11 @@ def test_codebase_kg_root_reads_the_repos_install_from_the_registry(
 
     assert graph.codebase_kg_root(host) == install / "mcp"
     other = tmp_path / "other"
-    other.mkdir()
-    with pytest.raises(LedgerError, match="codebase-kg@alexk413x is not installed for"):
+    (other / ".claude").mkdir(parents=True)
+    (other / ".claude" / "settings.local.json").write_text(
+        json.dumps({"enabledPlugins": {"codebase-kg@alexk413x": False}}), encoding="utf-8"
+    )
+    with pytest.raises(LedgerError, match="codebase-kg@alexk413x is not enabled and installed for"):
         graph.codebase_kg_root(other)
 
 

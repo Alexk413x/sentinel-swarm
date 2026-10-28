@@ -42,8 +42,8 @@ def codebase_kg_root(repo_root: Path) -> Path:
     install = install_path(repo_root, CODEBASE_KG_PLUGIN)
     if install is None:
         raise LedgerError(
-            f"{CODEBASE_KG_PLUGIN} is not installed for {repo_root}; "
-            f"install it or set {_ENV_VAR} to override"
+            f"{CODEBASE_KG_PLUGIN} is not enabled and installed for {repo_root}; "
+            f"enable and install it or set {_ENV_VAR} to override"
         )
     mcp_dir = install / "mcp"
     if not mcp_dir.is_dir():

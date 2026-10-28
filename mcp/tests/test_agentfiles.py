@@ -5,14 +5,17 @@ import os
 from pathlib import Path
 
 import pytest
-from helpers import write_registry
+from helpers import enable_plugins, write_registry
 
 from swarm_ledger import auth
 from swarm_ledger.agentfiles import (
     SESSION_SETTINGS,
     agent_file_path,
+    driver_available,
     http_entry,
+    install_path,
     mcp_servers,
+    plugin_installed,
     read_agent_file,
     session_options,
     tool_list,
@@ -153,8 +156,11 @@ def test_session_options_leaves_out_what_the_file_does_not_set(tmp_path: Path) -
     assert options[:2] == ["--agent", "swarm-lead"]
 
 
-def _registry(config_dir: Path, entries: list[dict]) -> None:
-    write_registry({"a11y@accessibility-tools": entries}, config_dir)
+def _registry(config_dir: Path, entries: list[dict], enable: bool = True) -> None:
+    install = config_dir / "plugins" / "cache" / "a11y"
+    install.mkdir(parents=True, exist_ok=True)
+    installed = [{**entry, "installPath": str(install)} for entry in entries]
+    write_registry({"a11y@accessibility-tools": installed}, config_dir, enable=enable)
 
 
 def test_session_options_add_a11y_only_when_the_host_has_it(
@@ -170,15 +176,21 @@ def test_session_options_add_a11y_only_when_the_host_has_it(
         servers = json.loads(options[options.index("--mcp-config") + 1])["mcpServers"]
         return set(servers), options[options.index("--allowedTools") + 1]
 
-    _registry(config_dir, [{"scope": "project", "projectPath": str(tmp_path / "other")}])
+    other = [{"scope": "project", "projectPath": str(tmp_path / "other")}]
+    _registry(config_dir, other, enable=False)
     servers, tools = a11y_parts()
     assert "a11y-tools" not in servers
     assert "mcp__a11y" not in tools
 
-    _registry(config_dir, [{"scope": "project", "projectPath": str(host)}])
+    _registry(config_dir, other)
     servers, tools = a11y_parts()
     assert {"a11y-tools", "a11y-kg"} <= servers
     assert tools.endswith(",mcp__a11y-tools,mcp__a11y-kg")
+
+    enable_plugins(["a11y@accessibility-tools"], host / ".claude" / "settings.local.json", False)
+    servers, tools = a11y_parts()
+    assert "a11y-tools" not in servers
+    assert "mcp__a11y" not in tools
 
 
 def test_session_options_run_every_plugin_server_through_the_stdio_shim(
@@ -273,7 +285,10 @@ def test_session_options_use_the_users_port_setting_not_the_repos(
     _write(host, "coder", _CODER)
     (config_dir / "settings.json").write_text(
         json.dumps(
-            {"pluginConfigs": {"codebase-kg@alexk413x": {"options": {"server_port": 47900}}}}
+            {
+                "enabledPlugins": {"codebase-kg@alexk413x": True},
+                "pluginConfigs": {"codebase-kg@alexk413x": {"options": {"server_port": 47900}}},
+            }
         ),
         "utf-8",
     )
@@ -476,7 +491,12 @@ def test_http_entry_applies_a_users_override_to_the_port_that_names_it(
     _register(config_dir, {"a11y@accessibility-tools": install})
     (config_dir / "settings.json").write_text(
         json.dumps(
-            {"pluginConfigs": {"a11y@accessibility-tools": {"options": {"kg_server_port": 48000}}}}
+            {
+                "enabledPlugins": {"a11y@accessibility-tools": True},
+                "pluginConfigs": {
+                    "a11y@accessibility-tools": {"options": {"kg_server_port": 48000}}
+                },
+            }
         ),
         "utf-8",
     )
@@ -681,3 +701,202 @@ def test_session_options_refuse_a_missing_or_malformed_token(tmp_path: Path, tok
         path.unlink()
     with pytest.raises(LedgerError, match="ledger token"):
         session_options(tmp_path, "coder", None, "http://127.0.0.1:5000/mcp")
+
+
+# -- plugin detection: enabled in settings and installed in the registry --------------------
+
+_PLUGIN = "cartographer@cartographer"
+
+
+@pytest.fixture
+def detect(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    host = tmp_path / "host"
+    config_dir = tmp_path / "config"
+    host.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    return host, config_dir
+
+
+def _install(config_dir: Path, name: str) -> Path:
+    install = config_dir / "plugins" / "cache" / name
+    install.mkdir(parents=True)
+    return install
+
+
+def _set_enabled(path: Path, value: bool, plugin_id: str = _PLUGIN) -> None:
+    enable_plugins([plugin_id], path, value)
+
+
+@pytest.mark.parametrize("enabled_in", ["user", "local"])
+def test_a_plugin_the_user_enabled_counts_from_another_projects_install(
+    detect: tuple[Path, Path], tmp_path: Path, enabled_in: str
+) -> None:
+    host, config_dir = detect
+    install = _install(config_dir, "carto")
+    entry = {
+        "scope": "local",
+        "projectPath": str(tmp_path / "elsewhere"),
+        "installPath": str(install),
+    }
+    write_registry({_PLUGIN: [entry]}, config_dir, enable=False)
+    settings = {
+        "user": config_dir / "settings.json",
+        "local": host / ".claude" / "settings.local.json",
+    }[enabled_in]
+    _set_enabled(settings, True)
+
+    assert plugin_installed(host, _PLUGIN) is True
+    assert install_path(host, _PLUGIN) == install
+
+
+def test_committed_settings_cannot_reach_another_projects_install(
+    detect: tuple[Path, Path], tmp_path: Path
+) -> None:
+    host, config_dir = detect
+    elsewhere = {
+        "scope": "local",
+        "projectPath": str(tmp_path / "elsewhere"),
+        "installPath": str(_install(config_dir, "carto")),
+    }
+    write_registry({_PLUGIN: [elsewhere]}, config_dir, enable=False)
+    _set_enabled(host / ".claude" / "settings.json", True)
+    assert plugin_installed(host, _PLUGIN) is False
+
+    own = {
+        "scope": "project",
+        "projectPath": str(host),
+        "installPath": str(_install(config_dir, "own")),
+    }
+    write_registry({_PLUGIN: [elsewhere, own]}, config_dir, enable=False)
+    assert install_path(host, _PLUGIN) == config_dir / "plugins" / "cache" / "own"
+
+
+def test_local_settings_that_disable_a_plugin_beat_project_settings_that_enable_it(
+    detect: tuple[Path, Path],
+) -> None:
+    host, config_dir = detect
+    install = _install(config_dir, "carto")
+    entry = {"scope": "project", "projectPath": str(host), "installPath": str(install)}
+    write_registry({_PLUGIN: [entry]}, config_dir, enable=False)
+    _set_enabled(host / ".claude" / "settings.json", True)
+    _set_enabled(host / ".claude" / "settings.local.json", False)
+
+    assert plugin_installed(host, _PLUGIN) is False
+    assert install_path(host, _PLUGIN) is None
+
+
+def test_a_plugin_enabled_nowhere_does_not_count(detect: tuple[Path, Path]) -> None:
+    host, config_dir = detect
+    entry = {"scope": "user", "installPath": str(_install(config_dir, "carto"))}
+    write_registry({_PLUGIN: [entry]}, config_dir, enable=False)
+    _set_enabled(host / ".claude" / "settings.json", True, "other@plugin")
+
+    assert plugin_installed(host, _PLUGIN) is False
+
+
+@pytest.mark.parametrize(
+    ("user", "project", "local", "expected"),
+    [
+        (True, None, None, True),
+        (True, False, None, False),
+        (False, True, None, True),
+        (False, True, False, False),
+        (False, False, True, True),
+        (None, None, False, False),
+        (True, None, False, False),
+    ],
+)
+def test_the_highest_settings_file_that_names_the_plugin_decides(
+    detect: tuple[Path, Path],
+    user: bool | None,
+    project: bool | None,
+    local: bool | None,
+    expected: bool,
+) -> None:
+    host, config_dir = detect
+    entry = {"scope": "user", "installPath": str(_install(config_dir, "carto"))}
+    write_registry({_PLUGIN: [entry]}, config_dir, enable=False)
+    for path, value in (
+        (config_dir / "settings.json", user),
+        (host / ".claude" / "settings.json", project),
+        (host / ".claude" / "settings.local.json", local),
+    ):
+        if value is not None:
+            _set_enabled(path, value)
+
+    assert plugin_installed(host, _PLUGIN) is expected
+
+
+def test_an_enabled_plugin_without_a_usable_install_does_not_count(
+    detect: tuple[Path, Path], tmp_path: Path
+) -> None:
+    host, config_dir = detect
+    _set_enabled(host / ".claude" / "settings.json", True)
+
+    assert plugin_installed(host, _PLUGIN) is False
+
+    gone = {"scope": "user", "installPath": str(tmp_path / "gone")}
+    write_registry({_PLUGIN: [gone, {"scope": "user"}]}, config_dir, enable=False)
+    assert plugin_installed(host, _PLUGIN) is False
+    assert install_path(host, _PLUGIN) is None
+
+
+def test_install_path_prefers_this_repos_entry_then_falls_back_to_any_existing_one(
+    detect: tuple[Path, Path], tmp_path: Path
+) -> None:
+    host, config_dir = detect
+    other = {
+        "scope": "local",
+        "projectPath": str(tmp_path / "x"),
+        "installPath": str(_install(config_dir, "other")),
+    }
+    mine = {
+        "scope": "project",
+        "projectPath": str(host),
+        "installPath": str(_install(config_dir, "mine")),
+    }
+    user = {"scope": "user", "installPath": str(_install(config_dir, "user"))}
+    _set_enabled(config_dir / "settings.json", True)
+
+    write_registry({_PLUGIN: [other, user, mine]}, config_dir, enable=False)
+    assert install_path(host, _PLUGIN) == config_dir / "plugins" / "cache" / "mine"
+
+    write_registry({_PLUGIN: [other, user]}, config_dir, enable=False)
+    assert install_path(host, _PLUGIN) == config_dir / "plugins" / "cache" / "user"
+
+    write_registry({_PLUGIN: [other]}, config_dir, enable=False)
+    assert install_path(host, _PLUGIN) == config_dir / "plugins" / "cache" / "other"
+
+
+def test_driver_available_follows_the_enabled_and_installed_rule(
+    detect: tuple[Path, Path], tmp_path: Path
+) -> None:
+    host, config_dir = detect
+    elsewhere = str(tmp_path / "elsewhere")
+    android = "android-driver@accessibility-tools"
+    web = "web-driver@accessibility-tools"
+    plugins = {
+        pid: [
+            {
+                "scope": "project",
+                "projectPath": elsewhere,
+                "installPath": str(_install(config_dir, name)),
+            }
+        ]
+        for pid, name in ((_PLUGIN, "carto"), (android, "android"), (web, "web"))
+    }
+    write_registry(plugins, config_dir, enable=False)
+    user = config_dir / "settings.json"
+    local = host / ".claude" / "settings.local.json"
+    _set_enabled(user, True)
+    _set_enabled(user, True, android)
+    assert driver_available(host) is True
+
+    _set_enabled(local, False, android)
+    assert driver_available(host) is False
+
+    _set_enabled(user, True, web)
+    assert driver_available(host) is True
+
+    _set_enabled(local, False)
+    assert driver_available(host) is False

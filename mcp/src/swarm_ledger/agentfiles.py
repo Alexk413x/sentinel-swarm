@@ -54,16 +54,56 @@ def _read_json(path: Path) -> Any:
         return None
 
 
+def _enablement(repo_root: Path, plugin_id: str) -> tuple[bool, str]:
+    """Claude Code's `enabledPlugins` rule: the highest-precedence file naming the plugin decides.
+
+    Order, highest first: the repo's `settings.local.json`, its `settings.json`, the user's
+    `settings.json`. Managed settings and `--settings` also rank above these and are not read.
+    Returns whether it is enabled and which file decided: `local`, `project`, `user`, or "".
+    """
+    for source, path in (
+        ("local", repo_root / ".claude" / "settings.local.json"),
+        ("project", repo_root / ".claude" / "settings.json"),
+        ("user", config_dir() / "settings.json"),
+    ):
+        data = _read_json(path)
+        enabled = data.get("enabledPlugins") if isinstance(data, dict) else None
+        value = enabled.get(plugin_id) if isinstance(enabled, dict) else None
+        if isinstance(value, bool):
+            return value, source
+    return False, ""
+
+
 def _installs(repo_root: Path, plugin_id: str) -> list[dict[str, Any]]:
+    """Registry entries for an enabled plugin whose `installPath` is a folder, this repo's first.
+
+    Another project's install counts only when the user's own settings enabled the plugin:
+    a repo's committed `settings.json` must not pull in a plugin the user installed elsewhere,
+    since its servers are then wired into swarm sessions with their tools pre-allowed.
+    """
+    enabled, source = _enablement(repo_root, plugin_id)
+    if not enabled:
+        return []
     data = _read_json(_registry_path())
     plugins = data.get("plugins") if isinstance(data, dict) else None
     entries = plugins.get(plugin_id) if isinstance(plugins, dict) else None
-    return [
+    present = [
         entry
         for entry in entries or []
         if isinstance(entry, dict)
-        and (entry.get("scope") == "user" or same_path(entry.get("projectPath"), repo_root))
+        and isinstance(entry.get("installPath"), str)
+        and Path(entry["installPath"]).is_dir()
     ]
+
+    def own(entry: dict[str, Any]) -> bool:
+        return entry.get("scope") == "user" or same_path(entry.get("projectPath"), repo_root)
+
+    ranked = [
+        entry for scope in SCOPES for entry in present if own(entry) and entry.get("scope") == scope
+    ]
+    if source == "project":
+        return ranked
+    return ranked + [entry for entry in present if not any(entry is r for r in ranked)]
 
 
 def plugin_installed(repo_root: Path, plugin_id: str) -> bool:
@@ -72,12 +112,7 @@ def plugin_installed(repo_root: Path, plugin_id: str) -> bool:
 
 def install_path(repo_root: Path, plugin_id: str) -> Path | None:
     entries = _installs(repo_root, plugin_id)
-    for scope in SCOPES:
-        for entry in entries:
-            install = entry.get("installPath")
-            if entry.get("scope") == scope and isinstance(install, str) and Path(install).is_dir():
-                return Path(install)
-    return None
+    return Path(entries[0]["installPath"]) if entries else None
 
 
 def _plugin_option(plugin_id: str, install: Path, key: str) -> str | None:

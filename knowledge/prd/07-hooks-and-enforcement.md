@@ -53,7 +53,8 @@ it as a command hook. It has these commands:
   within 10 seconds (40 for `stop` and `session_end`), or the answer is not a 200 that
   carries the repo header. The fallback finds the sentinel-swarm install for this repo in
   `~/.claude/plugins/installed_plugins.json`, from any marketplace (scope `local`, then
-  `project`, each with a matching `projectPath`, then `user`), and runs
+  `project`, each with a matching `projectPath`, then `user`, then any other entry whose
+  `installPath` exists), and runs
   `<python> -I -S <installPath>/mcp/launch/ledger.py hooks <event>` on the base
   interpreter that runs the shim, with stdin and stdout passed through. Both paths print
   the same bytes. See "How the ledger runs" in

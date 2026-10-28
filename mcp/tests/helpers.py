@@ -47,15 +47,37 @@ def write_server_info(root: Path, info: dict | None = None) -> None:
     (records / "server.json").write_text(json.dumps(info or SERVER_INFO), encoding="utf-8")
 
 
-def write_registry(plugins: dict[str, list[dict]], config_dir: Path | None = None) -> None:
+def enable_plugins(plugin_ids: Iterable[str], settings_path: Path, enabled: bool = True) -> None:
+    """Set each id in the `enabledPlugins` of a settings file, keeping its other keys."""
+    try:
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    data.setdefault("enabledPlugins", {}).update({plugin_id: enabled for plugin_id in plugin_ids})
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def write_registry(
+    plugins: dict[str, list[dict]], config_dir: Path | None = None, enable: bool = True
+) -> None:
+    """Write the install registry and, unless `enable` is false, enable each id for the user."""
     config = config_dir if config_dir is not None else Path(os.environ["CLAUDE_CONFIG_DIR"])
     path = config / "plugins" / "installed_plugins.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"plugins": plugins}), encoding="utf-8")
+    if enable:
+        enable_plugins(plugins, config / "settings.json")
 
 
 def register_plugins(plugin_ids: Iterable[str]) -> None:
-    write_registry({plugin_id: [{"scope": "user"}] for plugin_id in plugin_ids})
+    config = Path(os.environ["CLAUDE_CONFIG_DIR"])
+    plugins = {}
+    for plugin_id in plugin_ids:
+        install = config / "plugins" / "cache" / plugin_id.replace("@", "-")
+        install.mkdir(parents=True, exist_ok=True)
+        plugins[plugin_id] = [{"scope": "user", "installPath": str(install)}]
+    write_registry(plugins)
 
 
 def role_template(

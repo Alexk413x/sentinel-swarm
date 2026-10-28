@@ -255,8 +255,8 @@ def handle_session_start(ledger: Ledger, data: dict) -> dict | None:
 
     if not plugin_installed(ledger.repo_root, CODEBASE_KG_PLUGIN):
         parts.append(
-            "codebase-kg is not installed for this repo; install it, then run "
-            "/sentinel-swarm:setup."
+            "codebase-kg is not enabled and installed for this repo; enable and install it, "
+            "then run /sentinel-swarm:setup."
         )
     elif not (ledger.repo_root / "knowledge" / "code_graph.db").is_file():
         parts.append("knowledge/code_graph.db is missing; codebase-kg has not mapped this repo.")

@@ -87,7 +87,8 @@ It is safe to run again, and it prints what it changed:
 - `.sentinel-swarm/hook.py`, the shim every role's hooks call.
 - `worktree.bgIsolation: "none"` in `.claude/settings.local.json`, so every session
   works in the one shared working tree.
-- `.sentinel-swarm/` and `.claude/agents/swarm-*.md` in `.git/info/exclude`. Do not
+- `.sentinel-swarm/`, `.claude/agents/swarm-*.md`, `.claude/codebase-kg.local.md`, and
+  `.claude/sentinel-swarm.local.md` in `.git/info/exclude`. Do not
   add them to the host repo's committed `.gitignore`. A user who wants to share the
   role files commits them on purpose.
 

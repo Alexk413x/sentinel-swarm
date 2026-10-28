@@ -81,9 +81,9 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
   A new file's MCP server `command` is `python` on Windows, and `python3` elsewhere
   when `python3` is on `PATH`.
 - Writes `swarm-driver.md` the same way, but only when the host has
-  `cartographer@cartographer` installed and at least one of `android-driver`,
-  `ios-driver`, or `web-driver` from the `accessibility-tools` marketplace. Otherwise it
-  reports the file skipped and leaves it alone.
+  `cartographer@cartographer` and at least one of `android-driver`, `ios-driver`, or
+  `web-driver` from the `accessibility-tools` marketplace active, by the rule in
+  "Plugin detection" below. Otherwise it reports the file skipped and leaves it alone.
 - Adds no MCP server beyond the template's. See "MCP servers per role" in
   [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
 - Writes the shim to `.sentinel-swarm/hook.py`, overwriting local edits. The mod's
@@ -98,8 +98,9 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
   an existing file's frontmatter, or leaves the file alone when it already sets the
   key. See "The code graph" in
   [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
-- Adds `.sentinel-swarm/`, `.claude/agents/swarm-*.md`, and
-  `.claude/codebase-kg.local.md` to `.git/info/exclude`.
+- Adds `.sentinel-swarm/`, `.claude/agents/swarm-*.md`, `.claude/codebase-kg.local.md`,
+  and `.claude/sentinel-swarm.local.md` to `.git/info/exclude`, so the settings file the
+  setup skill writes stays out of `git status`.
 - Reports whether the repo is trusted, from `~/.claude.json` (or
   `$CLAUDE_CONFIG_DIR/.claude.json`), and prints the command that trusts it.
   `--check-trust` only checks, and exits 1 with the command when the repo is not
@@ -107,6 +108,37 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
 
 The role files take effect in the next session. A session loads agent files once, at
 startup.
+
+## Plugin detection
+
+The ledger counts a plugin (`codebase-kg`, a11y, cartographer, a driver plugin) as
+present for a host repo by the rule Claude Code applies when it loads one. The code is
+`agentfiles.plugin_installed` and `agentfiles.install_path`. A plugin is active for a repo
+when both hold:
+
+- **Enabled.** Settings files are read in this order, highest precedence first:
+  `<repo>/.claude/settings.local.json`, `<repo>/.claude/settings.json`, then the user's
+  `settings.json` in the config folder. The first file whose `enabledPlugins` holds a
+  true or false value for the plugin id decides. A file that does not name the plugin
+  leaves the lower file's value in effect, and a plugin that no file names is not enabled.
+- **Installed.** `installed_plugins.json` holds an entry for the id whose `installPath` is
+  a folder: a `user` entry or one whose `projectPath` is this repo. An entry recorded for
+  another project counts only when the deciding settings file is the user's own, the
+  repo's `settings.local.json` or the user's `settings.json`. Claude Code loads an
+  enabled plugin from any install, but a repo's committed `.claude/settings.json` must
+  not pull in a plugin the user installed for another project: the ledger wires that
+  plugin's MCP servers into every swarm session with their tools pre-allowed.
+
+`install_path` returns that folder. It prefers an entry for this repo (scope `local`, then
+`project` with a matching `projectPath`, then `user`) and falls back to any other entry
+whose folder exists, under the rule above, so the version Claude Code loads is the version
+the ledger reads. The shim's `find_install` applies the same fallback rule.
+The shim's `find_install` uses the same fallback. The `driver_available` check is
+`cartographer@cartographer` active and any driver plugin active.
+
+Managed settings and the `--settings` flag also rank above these files in Claude Code.
+The ledger does not read them. Source: Claude Code's "Find where a plugin is enabled"
+in the plugin loading reference; see [13-platform-facts.md](13-platform-facts.md).
 
 ## Launch
 
