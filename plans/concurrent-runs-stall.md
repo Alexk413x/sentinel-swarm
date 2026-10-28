@@ -128,6 +128,24 @@ Neither run was failing. Each was waiting, and nothing outside agent view showed
     missing-claim case without the Oracle.
   - Reproduce the handoff deadlock from run B's ledger, and add the case to the tests.
 
+### 5b. A binary file can never hand off, and its phase cannot close
+
+- **Evidence:**
+  - `handoff_submit` reads a claimed SQLite file (a driver plugin's committed
+    `*_driver_graph.db`) as UTF-8 text and fails with `UnicodeDecodeError`. Run A's
+    issue "Binary graph .db cannot pass handoff_submit" reached round 3.
+  - The Oracle had no call that sets a file state, so it settled the file by plan
+    deferral.
+  - The phase's Manager then reported that `phase_update(2, handed_up)` still refuses
+    ("module(s) [1] have no accepted manager review newer…"), and the Manager released
+    itself. That left the phase `unlocked` with no live Manager and no reply.
+- **Fix:**
+  - `handoff_submit` hashes a binary file and records its version without decoding it.
+  - A file whose content is generated (a build output) is claimed as a product of its
+    source file, and its source's handoff carries it.
+  - A phase whose only blocker is a deferred file can hand up.
+  - The watchdog flags a phase that is `unlocked` with no live Manager.
+
 ### 6. The handoff graph check refuses method anchors
 
 - **Evidence:** run A's open issue says "handoff graph check cannot resolve method anchors
