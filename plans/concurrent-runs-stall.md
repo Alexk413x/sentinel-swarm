@@ -274,6 +274,68 @@ Alex asked for these on 2026-10-28, after watching both runs in the panel.
 - **The legend** (`register.tsx:456-458`) gains dimmed for "ended or not started" and
   the warning glyph for "waiting on you".
 
+### 9. The roles lack tools the work needs
+
+Run A's report and ledger (issues 1 and 3, deferral 1, overrides 1 to 3, and the Oracle's
+pause at 19:49 UTC) show five places where the work was done but no role could take the
+next step.
+
+- **No role can delete a file.**
+  - **Evidence:** the plan told run A to delete a helper script and its test. The
+    Coder's shell gate denies `Remove-Item` and `git rm`, and `Write` and `Edit` cannot
+    delete (issue 1). The Oracle had the Coder write both files empty and deferred the
+    delete to the coordinator (deferral 1). The emptied test file then had to pass review
+    as a stub.
+  - **Fix:** add a `file_delete` ledger call for a claimed file. The deletion is recorded
+    as the file's version, so a handoff and a review cover it like an edit. Allow
+    `git rm` of a claimed path in the Coder's shell gate.
+- **A command outside test, build and lint needs a person.**
+  - **Evidence:** a derived database (`driver_recipes.db`) went stale after a graph
+    change, and its test failed the full suite. Rebuilding it is one command,
+    `python scripts/recipes/build_recipes.py`. No role could run it, so the Oracle paused
+    the run until a person ran it (19:49 to 20:20 UTC). Run A's operator already had to
+    put the driver graph's export and build loop behind `build_command` (cause 7).
+  - **Fix:** add a `commands` setting, a list of named host commands each with its
+    working directory and interpreter. The Coder's and the Manager's shell gates allow
+    them, and `setup` proposes the ones the repo's docs name. A failing test whose
+    message names a rebuild command is reported with that command.
+- **The graph's own-module rule blocks a node that spans modules.**
+  - **Evidence:** a Lead could not `graph_upsert` a node whose anchors were a file in
+    its module and a file in no module (override 1). The Oracle has no `graph_upsert`,
+    so the run needed an override.
+  - **Fix:** a Lead may update a node when every anchor it changes is in its module or
+    unclaimed. The Oracle gets `graph_upsert` for nodes that no module owns.
+- **The Oracle cannot mark a file "accepted incomplete" directly.**
+  - **Evidence:** the Oracle told a Manager, "I have no call that sets a file state. The
+    ledger's 'incomplete' state comes from escalation: an issue that ends its last
+    round below the floor". A file that was verified another way (the binary `.db`,
+    covered by its approved export and round-trip tests) could only be deferred. A
+    deferral did not let its module pass `module_review`.
+  - **Fix:** add `file_accept_incomplete(file_id, reason, evidence)` for the Oracle. It
+    records the reason and the test runs that cover the file, and `module_review`
+    counts the file as settled.
+- **No path lets the run's owner close a run the ledger cannot close.**
+  - **Evidence:** after the work was committed by hand, the coordinator closed run A by
+    editing `ledger.db` with SQL. It set three files to `incomplete`, the phases and
+    modules to `approved`, every agent to released, and the run to `finished`, with a
+    backup first. That is the only way today.
+  - **Fix:** add `run_close(outcome, files_incomplete=[...])`, callable by the Oracle or
+    from the launcher (`ledger.py close`). It records the outcome and each file's reason,
+    releases every agent, stops their sessions, and lets the server exit.
+- **A paused run does not resume when its cause clears.**
+  - **Evidence:** run A paused on the corrupt `~/.claude.json` at 07:49 UTC. The file
+    parsed again by about 14:30, but the run stayed paused until another session sent
+    "continue" at 14:35.
+  - **Fix:** a pause records the check that would clear it (for example "the config
+    file parses"). The watchdog tries that check on its timer and resumes the run when
+    it passes, with a note in the run's events.
+- **Ended sessions still show as working.**
+  - **Evidence:** after the daemon retired run B's sessions for memory, the ledger kept
+    4 Coders `working` and 3 `handed_up` whose sessions no longer existed. The panel
+    showed a column of busy Coders under parked Leads.
+  - **Fix:** the watchdog reconciles each agent against `claude agents --json`. An agent
+    whose session is gone becomes `parked`, with the reason. Cause 8 dims it.
+
 ## What got the runs moving again
 
 - **Run A, 2026-10-28 14:35 UTC:**
@@ -287,6 +349,15 @@ Alex asked for these on 2026-10-28, after watching both runs in the panel.
     free memory.
   - So a paused Oracle can be woken without agent view, by any session that can message
     it.
+- **Run A, 2026-10-28 20:20 UTC:**
+  - The Oracle paused for a command no role could run (cause 9).
+  - The coordinator ran it, rebuilding `driver_recipes.db`, and messaged "continue".
+  - The run resumed in under a minute.
+- **Run A, closed 20:35 UTC:**
+  - The coordinator told the Oracle to release every agent and pause.
+  - It committed the work by hand after the full suite passed.
+  - It stopped the last two sessions with `claude stop <id>`, and closed the ledger
+    with SQL (cause 9).
 - **Run B:** the Oracle's question and the Coder's permission prompt need a person in
   agent view. Recorded once they are answered.
 
@@ -310,12 +381,15 @@ must then succeed with no override.
 
 1. Cause 3, the watchdog reading `waitingFor`, together with cause 8's "waiting on a
    person" row. It turns an unseen multi-hour stall into a notification in minutes.
-2. "Closing a run": causes 4, 5b, 6 and 6b. Without them no run with a large suite, a
-   binary file or a replaced parent can finish. Accept them on run A's saved ledger.
-3. Cause 1, admission against machine-wide memory.
-4. Cause 2, retrying after a config parse error.
-5. Cause 5, the remaining records that cannot close, from run B's ledger.
-6. The setup friction in cause 7, and the rest of cause 8's panel changes.
+2. "Closing a run": causes 4, 5b, 6 and 6b, plus cause 9's `file_accept_incomplete` and
+   `run_close`. Without them no run with a large suite, a binary file or a replaced parent
+   can finish. Accept them on run A's saved ledger.
+3. The rest of cause 9: deleting files, named host commands, cross-module graph updates,
+   resuming after a pause clears, and reconciling ended sessions.
+4. Cause 1, admission against machine-wide memory.
+5. Cause 2, retrying after a config parse error.
+6. Cause 5, the remaining records that cannot close, from run B's ledger.
+7. The setup friction in cause 7, and the rest of cause 8's panel changes.
 
 Add each finding that stays open to `knowledge/prd/16-open-items.md`, and delete this plan
 once every cause has a fix or an open item.
