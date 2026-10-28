@@ -184,10 +184,40 @@ Alex asked for these on 2026-10-28, after watching both runs in the panel.
     - a Manager whose phase is still `planned`;
     - a child with a brief but no session yet (queued in `spawn_queue`);
     - a parked agent waiting for memory.
-- **Rows waiting on a person look idle.**
-  - **Fix:** a session that `claude agents --json` reports as waiting on input or a
-    permission (cause 3) shows a warning glyph and colour at the top of the panel, never
-    dimmed.
+- **Rows waiting on a person look idle.** Alex wants the request drawn at the top of the
+  panel and under the agent's row, so it can be answered from the panel.
+  - **Today:** these were checked against Claude Code 2.1.312's mod API
+    (`plugin-authoring` types).
+    - **Waiting sessions:** the mod can run `claude agents --json` through
+      `$.process`. That output carries `"status": "waiting"` with `"waitingFor":
+      "permission prompt"` or `"input needed"` for each background session.
+    - **The request text:** the mod can read it from the session's transcript through
+      `$.fs`. The ledger's `agents.transcript_path` points to it, and the pending
+      tool use, or the `AskUserQuestion` input, is the last entry.
+    - **A red border:** `Box` takes `borderStyle` and `borderColor`.
+    - **Answering:** no mod API answers another session's prompt.
+      - `$.agent.list()` lists only this session's own loops.
+      - `$.ui.focus` moves focus only among the plugin's own elements.
+      - The `claude agents` CLI has no command that sends input.
+  - **Fix, part 1, show it:**
+    - A "Waiting on you" section at the top of the panel lists every waiting role
+      session.
+    - Under that agent's row, a red-bordered box (`borderColor="error"`) shows the
+      tool and its input, or the question and its options, and says where to answer:
+      that session's row in agent view.
+  - **Fix, part 2, answer it in the panel:** stop role sessions raising Claude Code
+    prompts at all, and route each one through the ledger instead.
+    - The role's `PreToolUse` hook (the swarm's `hook.py` shim) posts a
+      `permission_request` row for a tool the role's rules would ask about, and waits.
+    - The panel's box draws Allow and Deny buttons, and a press writes the answer.
+    - The hook returns `permissionDecision` (`allow` or `deny`), which the mod types
+      list as a hook output.
+    - Questions work the same way: the Oracle posts a `needs_user` directive
+      instead of calling `AskUserQuestion` (cause 3), and the panel answers it with a
+      directive reply.
+    - First check how long Claude Code lets a `PreToolUse` hook wait, and what
+      happens at that limit. A request still open at the limit falls back to
+      Claude Code's own prompt.
 - **The legend** (`register.tsx:456-458`) gains dimmed for "ended or not started" and
   the warning glyph for "waiting on you".
 
