@@ -335,6 +335,23 @@ next step.
     showed a column of busy Coders under parked Leads.
   - **Fix:** the watchdog reconciles each agent against `claude agents --json`. An agent
     whose session is gone becomes `parked`, with the reason. Cause 8 dims it.
+- **An agent whose parent is released cannot be released by anyone.**
+  - **Evidence:** run B's directive 71. Only a direct parent may release an agent. Twelve
+    agents (a p3 Lead and eleven Coders) were left live under released parents. No role
+    could release them, so `brief_create` refused a fresh `lead-p3-stitched-surface`
+    because "a live agent already holds the name". The coordinator ended them by SQL and
+    stopped their sessions.
+  - **Fix:** with cause 6b's re-pointing, an orphan moves under the replacement parent.
+    Failing that, the Oracle may release any agent whose parent is released.
+- **Environment in `test_command` applies to every test run.**
+  - **Evidence:** run B's `test_command` set `CARTOGRAPHER_REPLAY_CORPUS` so the corpus
+    bench would run at each handoff. Every full run then re-judged 16 recorded replays.
+    A full run on 16 cores (`-n 8`) took 6 h 29 min and never recorded, so no phase
+    could pass `phase_review`. The coordinator then removed a phase dependency in the
+    ledger so the next phase could start.
+  - **Fix:** add per-scope commands (`test_command.full`, `test_command.file`), and a
+    `slow_tests` setting naming tests that run only when a brief asks for them.
+    `phase_review` names the scope it needs.
 
 ## What got the runs moving again
 
