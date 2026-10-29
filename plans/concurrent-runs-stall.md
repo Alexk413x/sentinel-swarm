@@ -353,6 +353,65 @@ next step.
     `slow_tests` setting naming tests that run only when a brief asks for them.
     `phase_review` names the scope it needs.
 
+### 11. Run B on 2026-10-29: why it kept stopping
+
+Run B resumed at 06:05 UTC with every phase but p6 to finish. It then stopped four more
+times for reasons the causes above do not cover.
+
+- **A full run started by a coordinator is killed with its shell.**
+  - **Evidence:**
+    - The Oracle asked the coordinator for the full run at 11:15 (directive 109) and paused
+      the run at 11:16 to keep the tree still.
+    - The first coordinator ran `full_run.py` in a background shell. Claude Code stopped it
+      before 12:08 "because the system was critically low on memory".
+    - A second coordinator ran it in a foreground shell. Claude Code moves a command to the
+      background after 10 minutes, and stopped it there at about 12:45.
+    - Neither run recorded, and the run stayed paused until a coordinator started the run
+      as a separate Windows process at 18:10, outside every Claude Code shell.
+  - **Effect:** about seven hours with every phase handed up and nothing running.
+  - **Fix:** the ledger server runs the full run itself, as its own child process, and
+    records the result when it ends (cause 4's `tests_run` that returns at once). A run
+    never depends on a Claude Code shell staying alive.
+- **A run paused on the coordinator tells nobody.**
+  - **Evidence:** directive 109 was a `needs_user` directive, and the 11:16 pause named
+    what it waited for. No OS notification or `PushNotification` fired. Alex found the
+    stall at about 18:08 by asking in another session.
+  - **Fix:** a `needs_user` directive and every `run_pause` fire `notify` with the
+    reason, and fire it again on the watchdog's timer while the run stays paused.
+- **The graph gate sends a coordinator round trip for each file on a shared node.**
+  - **Evidence:**
+    - Between 09:23 and 10:57 the Oracle posted 11 directives (84 to 105) asking the
+      coordinator for graph edits that blocked p2 handoffs. The tests behind them passed.
+    - Each edit was one of two kinds:
+      - add a `path#Symbol` anchor for every public top-level `def` and `class`, which
+        `graph_current_for` requires;
+      - re-record one file's baseline after a one-line edit, which `stale_files`
+        requires.
+    - Every node involved also anchored files outside the Coder's claim. For example,
+      `walk_facts` anchors p2's `walkfacts.py` and p4's `test_walkfact_utterance.py`, so
+      `graph_upsert` refused the Coder and the Lead. Each round trip took 5 to 25
+      minutes.
+    - Three of the Oracle's new descriptions were over codebase-kg's 240-character cap,
+      which the coordinator learned only from the refusals.
+  - **Fix:**
+    - Extend cause 9's cross-module rule. A Coder may add `#Symbol` anchors and re-record
+      the baseline for its own claimed file on any node, because both belong to one file.
+    - The gate's refusal lists the exact anchors to add.
+    - The role guidance states the 240-character description cap.
+- **A released agent's processes keep running.**
+  - **Evidence:**
+    - A `pytest` of the scratch test `.claude/scratch/stitched/test_emit_l4.py` ran from
+      21:38 UTC on 2026-10-28 until a coordinator stopped it at about 07:20, after the Coder
+      that started it had been released (directive 55).
+    - It used about 50 CPU minutes and wrote 56,5xx files under
+      `.claude/scratch/stitched/b4/`.
+    - Test run 229 failed on a file it held "busy".
+  - **Fix:** `agent_release` stops the whole process tree of the agent's session. The
+    watchdog reports any process whose ancestor is a released agent's session.
+- **More evidence for cause 9's "Ended sessions still show as working":** at 18:09 the ledger
+  listed five Managers and the Oracle as live, and the run panel showed all six. `claude
+  agents` showed a process for only the Oracle and `mgr-p2-arrival`.
+
 ## What got the runs moving again
 
 - **Run A, 2026-10-28 14:35 UTC:**
@@ -375,8 +434,18 @@ next step.
   - It committed the work by hand after the full suite passed.
   - It stopped the last two sessions with `claude stop <id>`, and closed the ledger
     with SQL (cause 9).
-- **Run B:** the Oracle's question and the Coder's permission prompt need a person in
-  agent view. Recorded once they are answered.
+- **Run B, 2026-10-28 23:21 UTC:** a directive from Alex set the goal, and the Oracle
+  moved the handoff bench gate to a three-run corpus subset.
+- **Run B, 2026-10-29:**
+  - It resumed at 06:05 from an overnight pause Alex asked for.
+  - At about 07:03, a coordinator removed the p2→p1 phase dependency and ended twelve
+    orphaned agents, both by SQL (directives 68 and 71).
+  - From 07:20, a coordinator stopped the stray `pytest` (cause 11) and deleted the
+    scratch files and claim-check noise the Oracle listed.
+  - From 09:27 to 10:58, it made the p2 graph edits with codebase-kg's
+    `kg_upsert_node`, through the shared server (cause 11). It backed up the graph
+    before each edit.
+  - At 18:10, it started the full run as a separate Windows process (cause 11).
 
 ## Closing a run
 
@@ -398,11 +467,14 @@ must then succeed with no override.
 
 1. Cause 3, the watchdog reading `waitingFor`, together with cause 8's "waiting on a
    person" row. It turns an unseen multi-hour stall into a notification in minutes.
+   Cause 11's notification for a `needs_user` directive and a pause lands with it.
 2. "Closing a run": causes 4, 5b, 6 and 6b, plus cause 9's `file_accept_incomplete` and
    `run_close`. Without them no run with a large suite, a binary file or a replaced parent
    can finish. Accept them on run A's saved ledger.
 3. The rest of cause 9: deleting files, named host commands, cross-module graph updates,
-   resuming after a pause clears, and reconciling ended sessions.
+   resuming after a pause clears, and reconciling ended sessions. Cause 11's per-file
+   graph edits and process-tree release land with them. Cause 11's ledger-run full run
+   is part of step 2's `tests_run` change.
 4. Cause 1, admission against machine-wide memory.
 5. Cause 2, retrying after a config parse error.
 6. Cause 5, the remaining records that cannot close, from run B's ledger.
