@@ -408,9 +408,27 @@ times for reasons the causes above do not cover.
     - Test run 229 failed on a file it held "busy".
   - **Fix:** `agent_release` stops the whole process tree of the agent's session. The
     watchdog reports any process whose ancestor is a released agent's session.
-- **More evidence for cause 9's "Ended sessions still show as working":** at 18:09 the ledger
-  listed five Managers and the Oracle as live, and the run panel showed all six. `claude
-  agents` showed a process for only the Oracle and `mgr-p2-arrival`.
+- **A closed session does not update its agent's state.**
+  - **Evidence:**
+    - At 18:09 the ledger listed five Managers and the Oracle as live, and the run panel
+      showed all six. `claude agents` showed a process for only the Oracle and
+      `mgr-p2-arrival`.
+    - The daemon had retired the other four Managers between 06:05 and 07:31. For each,
+      the ledger set `parked_at` and `park_reason` ("the daemon retired its session …"),
+      but `state` stayed `idle` and `ended_at` stayed empty.
+    - The panel and `status_tree` read `state` and `ended_at`, so they showed the four
+      as live for more than eleven hours. Their phases were handed up, with no work left
+      for them, and nothing released them.
+  - **Effect:** a person reading the panel cannot tell a running session from a closed
+    one, and asks for agents to be stood down that are already gone. This extends cause
+    9's "Ended sessions still show as working", which covers Coders.
+  - **Fix:**
+    - Retiring a session sets `state` to `parked` in the same write as `parked_at`, and a
+      resume sets it back.
+    - The panel and `status_tree` show `parked` as closed and dim it (cause 8).
+    - The watchdog releases a parked Manager or Lead whose phase or module is handed up
+      or approved after `idle_exit_minutes`, and notes it in the run's events. The Oracle
+      briefs a fresh one if a review returns work.
 
 ## What got the runs moving again
 
