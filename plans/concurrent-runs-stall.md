@@ -120,6 +120,19 @@ Neither run was failing. Each was waiting, and nothing outside agent view showed
     process, not the tool call.
   - `setup` times one full run and warns when it exceeds half the cap.
   - The docs name sharding (`pytest -n`) as the way to fit a large suite.
+- **Workaround in use until the fix lands.**
+  - The Oracle posts a `needs_user` directive (run B's 109 and 119), and the coordinator
+    runs the full suite outside the ledger.
+  - It runs `full_run.py`, a host script that builds the command with the plugin's own
+    `testing.build_command`, runs it, and inserts the `scope='full'` row under the
+    Oracle with the plugin's count parser and tree fingerprint. It writes the row only
+    when the fingerprint is unchanged at the end.
+  - It has to run as a detached Windows process (`Start-Process`). A run started in a
+    Claude Code shell moves to the background after 10 minutes, and under memory
+    pressure Claude Code kills background shells. Two full runs died that way, and a run
+    launched through WMI's `Win32_Process.Create` also died without a record.
+  - Runs 426 and 464 were recorded this way: 26 to 32 minutes at `-n 8`, with the browser
+    tests failing under load.
 
 ### 5. Ledger records that can never close
 
