@@ -62,7 +62,7 @@ step. Every entry point runs `<python> -I -S <plugin root>/mcp/launch/ledger.py 
 
 ## Setup
 
-`mcp/launch/ledger.py setup [--repo <root>] [--check-trust]`, or the
+`mcp/launch/ledger.py setup [--repo <root>] [--check-trust] [--time-full-run]`, or the
 `/sentinel-swarm:setup` skill, which also creates the settings file, fills in the
 commands from the detected stack, confirms codebase-kg, and builds the graph. Setup:
 
@@ -101,6 +101,24 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
 - Adds `.sentinel-swarm/`, `.claude/agents/swarm-*.md`, `.claude/codebase-kg.local.md`,
   and `.claude/sentinel-swarm.local.md` to `.git/info/exclude`, so the settings file the
   setup skill writes stays out of `git status`.
+- Checks the test command, through the same runner `tests_run` uses (`cmd.exe` with
+  `shell=True` on Windows, so a path that only a POSIX shell accepts fails here first):
+  - With no `test_command`, it reports that the command is not set.
+  - With a full command that contains `{target}` and no `full_target`, it warns that
+    `tests_run(scope="full")` refuses, and stops checking.
+  - For a pytest command, it dry-runs the full command with `--collect-only -q` and
+    reports the collected count, or warns with the exit code and the last 15 lines of
+    output: a collection error such as an import that raises `SystemExit`. Another stack
+    has no dry run, and the report says so.
+  - It warns that `slow_tests` has no effect when the command is not pytest.
+  - With `allowed_skips` empty, it notes that any skip fails its run and so blocks every
+    handoff and phase review. With `allowed_skips` set and a pytest command without `-rs`
+    or `-ra`, it warns that no skip can match.
+  - `--time-full-run` runs the full command once and reports its time against
+    `test_timeout_s`, its counts, and whether it counts as clean. It warns when the run
+    takes more than half the cap or times out, and names sharding (`pytest -n auto`, from
+    pytest-xdist) or a higher `test_timeout_s` as the fix. It also warns about each skip
+    `allowed_skips` does not name. Without the flag, the report names the flag.
 - Reports whether the repo is trusted, from `~/.claude.json` (or
   `$CLAUDE_CONFIG_DIR/.claude.json`), and prints the command that trusts it.
   `--check-trust` only checks, and exits 1 with the command when the repo is not
@@ -204,6 +222,11 @@ descriptions stay out of every session's context.
 | `escalation.attempts_per_round` | 3 | Non-improving attempts per round |
 | `watchdog.*` | See "Watchdog" in [08-watchdog.md](08-watchdog.md) | Watchdog timing, thresholds, and server idle exit |
 | `test_command` | empty | Must contain `{target}`, for example `python -m pytest -q -p no:cacheprovider {target}` |
+| `test_command_by_scope.<scope>` | empty | A command for one scope (`file`, `module`, `phase`, or `full`) in place of `test_command`, for example a sharded full run, or an environment variable that only the full run needs. A scope with no entry uses `test_command`. Unknown scopes are dropped |
+| `test_timeout_s` | 600 | Seconds a test run's process may take. The runner kills the process tree at the cap and records the run as `timed out`. It bounds the test process, not the tool call. A value that is not a positive whole number reads as 600 |
+| `full_target` | empty | What a full run puts in `{target}`, such as `tests`. A full run never runs with an empty target: when the full command contains `{target}` and this is empty, `tests_run(scope="full")` refuses, unless the call passes a target |
+| `allowed_skips` | `[]` | Texts that mark a skip as an environment skip the host expects. A skip whose pytest `-rs` line (`SKIPPED [n] <path>:<line>: <reason>`), or `-v` line, contains one of them counts as clean. Every other skip fails the run |
+| `slow_tests` | `[]` | pytest node ids or path prefixes that run only when a brief asks: the ledger appends `--deselect <id>` for each to a pytest command, and `tests_run(include_slow=true)` leaves them in. Another stack runs them every time |
 | `build_command`, `lint_command` | empty | Optional; the Coder's shell gate allows them, and the Driver's allows `build_command` only |
 | `memory.headroom_mb` | 1500 | Megabytes of free memory the ledger keeps. `agent_spawn` queues a session whose role's estimate would take free memory below it, the watchdog starts it once memory frees, and a parked agent's resume follows the same rule. Empty admits every spawn. See "Memory" in [05-sessions.md](05-sessions.md) |
 | `memory.park_idle_parents` | `true` | Under memory pressure, the watchdog stops an idle Manager or Lead whose children still work and resumes it when a wake-up is owed to it. `false` leaves idle parents to the daemon |

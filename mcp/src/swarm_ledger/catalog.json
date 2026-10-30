@@ -1451,7 +1451,7 @@
   {
    "name": "tests_run",
    "title": "Tests Run",
-   "description": "Runs the profile's test command for a scope; the required role scales Coder to Oracle.\n\nThe result's output is a summary: the tail of a pass, or the first traceback and the\nshort test summary of a failure. test_run_get returns the full output. When a passing\nrun in this run used the same command on an unchanged working tree, the ledger records\na copy of it instead of running again and returns reused: true with reused_from.",
+   "description": "Starts the profile's test command for a scope; the required role scales Coder to Oracle.\n\nThe suite runs in its own process under the ledger server, bounded by test_timeout_s. The\ncall returns the recorded result when the run ends within about 20 seconds; otherwise it\nreturns state: running with the test_run_id, and a wake-up names the result once it is\nrecorded. test_run_get reads a run, with its full output. The result's output is a\nsummary: the tail of a pass, or the first traceback and the short test summary of a\nfailure. When a passing run in this run used the same command on an unchanged working\ntree, the ledger records a copy of it instead of running again and returns reused: true\nwith reused_from.",
    "inputSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -1484,6 +1484,11 @@
       "default": false,
       "description": "Run the tests even when an earlier passing run can be reused.",
       "type": "boolean"
+     },
+     "include_slow": {
+      "default": false,
+      "description": "Also run the settings' slow_tests; only when your brief asks.",
+      "type": "boolean"
      }
     },
     "required": [
@@ -1504,7 +1509,7 @@
   {
    "name": "test_run_get",
    "title": "Test Run Get",
-   "description": "Returns one recorded test run of this run, with its full output.",
+   "description": "Returns one test run of this run, with its state and full output once it is recorded.",
    "inputSchema": {
     "type": "object",
     "additionalProperties": false,

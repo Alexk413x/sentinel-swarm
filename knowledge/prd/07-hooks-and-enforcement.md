@@ -119,7 +119,8 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   session's id itself. See "Session names and SendMessage" in
   [05-sessions.md](05-sessions.md).
 - **Owed wake-ups and the inbox.** The mod posts `owed` and `wake_sent` to pay the
-  session's wake-ups, and `inbox_take`, `inbox_ack`, and `inbox_release` to read the
+  session's wake-ups, `self_owed` on a 15-second timer to deliver a recorded test
+  result to its own idle session with `$.prompt.submit`, and `inbox_take`, `inbox_ack`, and `inbox_release` to read the
   inbox inside a wake-up. See "Mod wake-up delivery" and "Messages" in
   [05-sessions.md](05-sessions.md).
 - **The mod check-in.** The mod's `SessionStart` post carries
@@ -234,7 +235,10 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   A change outside the Coder's claim, other claimed files of the run, the records
   folder, and `knowledge/` is recorded as a `violation` event and posted to its Lead.
 - `pre_compact`: adds one to the agent's `context_overflow_count`.
-- `stop`: records tokens and cost from the transcript, then applies the stop rules in
+- `stop`: first, for any role, when the caller owes itself an unsent test-result
+  wake-up and the stop does not follow the hook's own block, marks it sent and blocks
+  with its pointer. See "Test results" in [05-sessions.md](05-sessions.md). Then it
+  records tokens and cost from the transcript, and applies the stop rules in
   [05-sessions.md](05-sessions.md). For a Manager, Lead, Coder, or Driver it blocks
   while the caller owes a wake-up or has unread messages in its run. The block names
   each owed call first and `message_inbox` last. It does not block a stop that follows
@@ -248,9 +252,11 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   is `to` without a trailing ` [<ref>]`, when `pre_send_message` would allow the send,
   and nothing otherwise. See "Session names and SendMessage" in
   [05-sessions.md](05-sessions.md).
-- `owed`, `wake_sent`, `inbox_take`, `inbox_ack`, `inbox_release`: posted by the mod
-  only. `owed` resumes a stopped or parked target itself before it answers, except the
-  Oracle, and leaves that target out of the answer. See "Mod wake-up delivery" and "Messages" in
+- `owed`, `wake_sent`, `self_owed`, `inbox_take`, `inbox_ack`, `inbox_release`: posted
+  by the mod only. `owed` resumes a stopped or parked target itself before it answers,
+  except the Oracle, and leaves that target out of the answer. `self_owed` marks the
+  caller's self-owed wake-ups sent and answers their text and the count of its test runs
+  still `running`. See "Mod wake-up delivery" and "Messages" in
   [05-sessions.md](05-sessions.md). Each ignores a caller the registry does not know.
 - `session_end`: records tokens and cost and the end reason. After a run finishes, the
   Oracle's `session_end` refreshes the report.
@@ -284,6 +290,8 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
 | Only the run's own sessions reach the ledger | `serve.Guard` answers 403 to a remote caller, a wrong `Host`, a foreign `Origin`, and a missing or wrong token on every path but `/health`; `session_options` sends the token only to a checked `http://127.0.0.1:<port>/mcp` URL |
 | A role calls only its own ledger tools | The role file's `tools` allowlist, which names each `mcp__swarm-ledger__<tool>` in `identity.ROLE_TOOLS`; `server._call` refuses a live agent's call outside its set |
 | A handoff needs passing tests and a current graph | `handoff_submit` |
+| A test run outlives the tool call and no Claude Code shell runs it | `tests_run` starts the detached runner (`testrun.py`); the watchdog and server start sweep runs whose runner is gone to `abandoned` |
+| A full run never collects from the repo root, and only declared skips count as clean | `tests_run` refuses a full run with `{target}` and no `full_target`; `test_run_passed` and `_CLEAN_TEST_RUN` need `skipped = allowed_skipped` |
 | No approval without a handoff and two sets of scores | `approve` |
 | The Lead scores before it sees the Coder's scores | `score_record` refuses a Lead review after `review_compare` |
 | A rule gives way only to the Oracle | `override_grant`, consumed by `pre_write` and `pre_shell` |

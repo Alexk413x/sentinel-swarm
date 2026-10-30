@@ -222,7 +222,9 @@ The detail lives in the ledger, not in the message.
 ## Close the module
 
 1. `tests_run(scope="module", target=<the module's directory or test selector>)` once
-   every file in the module is approved or accepted as incomplete.
+   every file in the module is approved or accepted as incomplete. When it returns
+   `state: "running"`, end your turn: a wake-up names the result when the ledger
+   records it.
 2. `message_post(to_name=<your Manager>, body=<the module review>)`: every file and
    its outcome, the module test result, open issues, deferrals, the departures you
    agreed to, which now wait on your Manager, and recorded shortfalls.

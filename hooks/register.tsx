@@ -47,6 +47,7 @@ const SHIM_MS = 50_000
 const SEND_MS = 15_000
 const SEND_RETRY_MS = [2_000, 4_000, 8_000]
 const NOT_YET_LIVE = /no live session/i
+const SELF_WAKE_MS = 15_000
 const WRITE_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']
 const WRITE_TOOL = new RegExp(`^(${WRITE_TOOLS.join('|')})$`)
 const SHELL_TOOL = /^(Bash|PowerShell)$/
@@ -75,6 +76,8 @@ let session: SentinelSwarmSession | null | undefined
 const sending = new Set<number>()
 const paying = new Set<Promise<void>>()
 const sendingTexts = new Map<string, number>()
+let selfWakePending = true
+let selfWakeTimer = false
 
 const PANE = 'swarm-run'
 const TITLE = 'Swarm'
@@ -106,6 +109,7 @@ export const register: Register = on => {
   on('classic.SessionStart', async ($, e, next) => {
     const s = await adopt($, e)
     if (s === null) return next(e)
+    keepSelfWake($)
     const answer = await runHook($, s, 'session_start', { ...e, [TRANSPORT_KEY]: 'mod' }).catch(() => null)
     const result = await next(e)
     const text = field(answer, 'additionalContext')
@@ -130,7 +134,10 @@ export const register: Register = on => {
     if (s.role === 'coder' && SHELL_TOOL.test(e.tool_name)) {
       await runHook($, s, 'post_shell', payload).catch(() => null)
     }
-    if (LEDGER_TOOL.test(e.tool_name)) void pay($, s)
+    if (LEDGER_TOOL.test(e.tool_name)) {
+      selfWakePending = true
+      void pay($, s)
+    }
     return next(e)
   })
 
@@ -207,6 +214,7 @@ export const register: Register = on => {
       isDeferred: true,
     })
     $.clock.every(REFRESH_MS, () => void refreshIfOpen($))
+    if ((await active($)) !== null) keepSelfWake($)
     return next(e)
   })
 
@@ -621,6 +629,24 @@ async function payOwed($: EngineInterface, s: SentinelSwarmSession): Promise<voi
   } finally {
     ids.forEach(id => sending.delete(id))
   }
+}
+
+// A test run's result arrives while the session may sit idle; a plugin prompt waits for the
+// running turn to end, so it never interrupts one.
+function keepSelfWake($: EngineInterface): void {
+  if (selfWakeTimer) return
+  selfWakeTimer = true
+  $.clock.every(SELF_WAKE_MS, () => void wakeSelf($))
+}
+
+async function wakeSelf($: EngineInterface): Promise<void> {
+  if (!selfWakePending) return
+  const s = await active($)
+  if (s === null) return
+  const answer = await post($, s, 'self_owed', base(s)).catch(() => null)
+  if (!isRecord(answer)) return
+  selfWakePending = typeof answer.running === 'number' && answer.running > 0
+  if (typeof answer.text === 'string' && answer.text !== '') await $.prompt.submit({ text: answer.text }).catch(() => undefined)
 }
 
 function isOwnSend(e: { message?: unknown }): boolean {

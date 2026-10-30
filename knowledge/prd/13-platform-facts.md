@@ -184,6 +184,9 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   lists, the sessions file's, and `$.session.id()` are the same value. (2026-10-08)
 - `$.clock.every` keeps firing in an idle `--bg` session for at least 18 minutes, and
   `$.prompt.submit` from a timer starts a turn there. (2026-10-08)
+- A plugin's `$.prompt.submit` runs once the session is idle: it never enters a running
+  turn, and its `prompt.submit` event carries no `turnId`. From the Claude Code 2.1.314
+  mod API types, not checked in a live session. (2026-10-30)
 - `$.session.send` runs as a `SendMessage` tool call through the sending session's own
   `tool.call` hooks. The call's `to` is the target's `uds:\.\pipe\LOCAL\cc-msg-...`
   address, not the session id or name, and its `tool_use_id` starts with

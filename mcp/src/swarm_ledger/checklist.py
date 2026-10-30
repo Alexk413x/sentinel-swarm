@@ -85,7 +85,7 @@ def _agents_check(conn: sqlite3.Connection, run_id: int) -> Check:
 
 def _full_test_check(conn: sqlite3.Connection, run_id: int) -> Check:
     row = conn.execute(
-        "SELECT * FROM test_runs WHERE run_id = ? AND scope = 'full' "
+        "SELECT * FROM test_runs WHERE run_id = ? AND scope = 'full' AND state != 'running' "
         "ORDER BY test_run_id DESC LIMIT 1",
         (run_id,),
     ).fetchone()

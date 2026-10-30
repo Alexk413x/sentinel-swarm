@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import notify, rekey, sessions, wake
+from . import notify, rekey, sessions, testrun, wake
 from .clock import parse_stamp, stamp, utcnow
 from .db import NOW, write_tx
 from .identity import ROLES, LedgerError
@@ -151,7 +151,7 @@ def _unsent_findings(
         "SELECT w.*, f.name AS from_name, f.role AS from_role FROM wakeups w "
         "JOIN agents f ON f.agent_id = w.from_agent_id "
         "WHERE w.run_id = ? AND w.sent_at IS NULL AND f.ended_at IS NULL "
-        "ORDER BY w.wakeup_id",
+        "AND w.to_agent_id != w.from_agent_id ORDER BY w.wakeup_id",
         (run_id,),
     ):
         target = by_id.get(row["to_agent_id"])
@@ -396,7 +396,7 @@ def _spinning(conn: sqlite3.Connection, agent: dict, settings: WatchdogSettings)
     groups: dict[tuple[str, str | None], list[sqlite3.Row]] = {}
     for row in conn.execute(
         "SELECT test_run_id, scope, target, exit_code, failed FROM test_runs "
-        "WHERE agent_id = ? ORDER BY test_run_id DESC",
+        "WHERE agent_id = ? AND state != 'running' ORDER BY test_run_id DESC",
         (agent["agent_id"],),
     ):
         latest = groups.setdefault((row["scope"], row["target"]), [])
@@ -761,6 +761,8 @@ class Watchdog:
         return timedelta(seconds=self.settings.interval_seconds)
 
     def tick(self, now: datetime) -> None:
+        for test_run_id in testrun.sweep(self.conn, now):
+            self._log(f"abandoned test run {test_run_id}: {testrun.NO_RUNNER}")
         run = live_run(self.conn)
         try:
             listing: list[dict] | None = sessions.list_sessions()

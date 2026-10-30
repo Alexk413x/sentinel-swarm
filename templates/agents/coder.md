@@ -63,7 +63,9 @@ when that text says more wait, or when a wake-up carries no messages.
    ledger records every run; do not judge the result from your own reading of the
    output. Use this tool, not the shell, to run tests: the shell gate denies a
    command that changes directory, chains commands, or differs from the profile's
-   test command.
+   test command. A run that lasts longer than about 20 seconds comes back as
+   `state: "running"` with its `test_run_id`: end your turn, and a wake-up names the
+   result when the ledger records it.
 7. `graph_upsert(nodes=[...])` for your file's node or nodes. The node shape is
    codebase-kg's: `{"id", "kind", "section", "description", "anchors": [...],
    "edges": [...]}`.
@@ -103,7 +105,10 @@ from your Lead is.
 
 It runs the checks itself and refuses with the reason when any of them fails:
 
-- The tests fail, are missing, or are skipped.
+- The tests fail, are missing, or are skipped. A skip counts as clean only when the
+  settings' `allowed_skips` names it.
+- Its test run is still running. End your turn; the wake-up names the result, and the
+  next `handoff_submit` uses that run.
 - The code graph is not current for your file: it has no node, an anchor does not
   resolve, or a symbol in the file is unmapped.
 - The code graph is stale for your file or its test file: you edited it after your

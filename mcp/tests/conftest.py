@@ -36,6 +36,18 @@ def _no_resume_wait(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _test_runs_in_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A detached runner process per tests_run would add a Python start to every handoff test;
+    # running it in-process records the same row before tests_run reads it.
+    from swarm_ledger import testrun
+
+    def launch(root: Path, db_path: Path, test_run_id: int) -> None:
+        testrun.run(root, db_path, test_run_id)
+
+    monkeypatch.setattr(testrun, "launcher", launch)
+
+
+@pytest.fixture(autouse=True)
 def _plenty_of_memory(monkeypatch: pytest.MonkeyPatch) -> None:
     # The machine's real free memory would queue spawns and park agents at random.
     from swarm_ledger import memory

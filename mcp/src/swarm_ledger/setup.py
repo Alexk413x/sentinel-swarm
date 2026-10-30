@@ -11,13 +11,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import testing
 from .agentfiles import agent_file_path as role_file
 from .agentfiles import driver_available
 from .db import append_git_excludes, main_git_dir
 from .frontmatter import FrontmatterError
 from .frontmatter import split_document as _split_document
 from .paths import config_override
-from .settings import SETTINGS_PATH
+from .settings import SETTINGS_PATH, Settings, load_settings
 
 CORE_ROLES = ("oracle", "manager", "lead", "coder")
 ROLES = (*CORE_ROLES, "driver")
@@ -45,6 +46,12 @@ _HOOK_ITEM_LINE = re.compile(r"^    - ")
 _LEDGER_HOOK = re.compile(r"hook\.py hook (\w+)")
 _TOOLS_LINE = re.compile(r"^tools\s*:\s*\S")
 WHOLE_LEDGER = "mcp__swarm-ledger"
+_COLLECTED = re.compile(r"(\d+) tests? collected")
+_OUTPUT_TAIL_LINES = 15
+_SKIP_REASON_FLAGS = re.compile(r"(^|\s)-r\S*[sa]")
+
+
+Executor = Callable[[str, Path, int], testing.Executed]
 
 
 class SetupError(Exception):
@@ -347,7 +354,112 @@ def trust_instructions(repo: Path) -> str:
     )
 
 
-def run_setup(repo: Path) -> SetupReport:
+def _tail(output: str) -> str:
+    lines = [line for line in output.strip().splitlines() if line.strip()]
+    return "\n".join(f"    {line}" for line in lines[-_OUTPUT_TAIL_LINES:])
+
+
+def _dry_run(
+    repo: Path, command: str, timeout_s: int, report: SetupReport, execute: Executor
+) -> None:
+    dry = testing.collect_only_command(command)
+    if dry is None:
+        report.add(
+            f"no collection dry run for {command!r}: only a pytest command has one; "
+            "run setup with --time-full-run to try the command once"
+        )
+        return
+    ran = execute(dry, repo, timeout_s)
+    collected = _COLLECTED.search(ran.output)
+    if ran.timed_out:
+        report.add(f"warning: the collection dry run {dry!r} did not end within {timeout_s} s")
+    elif ran.exit_code == 0 and collected:
+        report.add(f"the full test command collects {collected.group(1)} tests: {dry}")
+    else:
+        report.add(
+            f"warning: the collection dry run {dry!r} failed with exit code {ran.exit_code}; "
+            "every full run fails the same way until the command or full_target changes:\n"
+            + _tail(ran.output)
+        )
+
+
+def _timed_run(
+    repo: Path, command: str, settings: Settings, report: SetupReport, execute: Executor
+) -> None:
+    cap = settings.test_timeout_s
+    ran = execute(command, repo, cap)
+    result = testing.result_of(command, ran, settings.allowed_skips)
+    seconds = ran.duration_ms / 1000
+    if ran.timed_out:
+        report.add(
+            f"warning: one full run did not end within test_timeout_s ({cap} s); shard the "
+            "suite (pytest -n auto, from pytest-xdist) or raise test_timeout_s"
+        )
+        return
+    report.add(
+        f"one full run took {seconds:.0f} s of the {cap} s test_timeout_s: {result.passed} "
+        f"passed, {result.failed} failed, {result.skipped} skipped, exit code {ran.exit_code}"
+    )
+    if seconds > cap / 2:
+        report.add(
+            f"warning: the full run takes more than half of test_timeout_s ({cap} s); shard the "
+            "suite (pytest -n auto, from pytest-xdist) or raise test_timeout_s"
+        )
+    if result.skipped > result.allowed_skipped:
+        report.add(
+            f"warning: {result.skipped - result.allowed_skipped} skipped test(s) that "
+            "allowed_skips does not name; a skip fails the run, so it blocks every handoff "
+            "and phase review"
+        )
+    if not result.ok and result.reason:
+        report.add(f"warning: the full run does not count as clean: {result.reason}")
+
+
+def check_tests(
+    repo: Path,
+    report: SetupReport,
+    time_full_run: bool = False,
+    execute: Executor = testing.execute,
+) -> None:
+    settings = load_settings(repo)
+    template = settings.test_template("full")
+    if not template:
+        report.add("test_command is not set: fill it in before a run")
+        return
+    target = settings.full_target
+    if target is None and "{target}" in template:
+        report.add(
+            "warning: full_target is not set, so tests_run(scope='full') refuses: set it to the "
+            "folder that holds the tests, such as tests"
+        )
+        return
+    command = testing.build_command(template, target, settings.slow_tests)
+    pytest = testing.is_pytest(command)
+    _dry_run(repo, command, settings.test_timeout_s, report, execute)
+    if settings.slow_tests and not pytest:
+        report.add(
+            "warning: slow_tests applies only to a pytest command (--deselect); this command "
+            "runs them every time"
+        )
+    if not settings.allowed_skips:
+        report.add(
+            "note: allowed_skips is empty, so any skipped test fails its run and blocks every "
+            "handoff and phase review; name a test the environment skips on purpose there"
+        )
+    elif pytest and not _SKIP_REASON_FLAGS.search(command):
+        report.add(
+            "warning: pytest prints skip reasons only with -rs or -ra; add one to the test "
+            "command, or no skip can match allowed_skips"
+        )
+    if time_full_run:
+        _timed_run(repo, command, settings, report, execute)
+    else:
+        report.add(
+            "to time one full run against test_timeout_s, run setup again with --time-full-run"
+        )
+
+
+def run_setup(repo: Path, time_full_run: bool = False) -> SetupReport:
     repo = repo.resolve()
     report = SetupReport()
     write_role_files(repo, report)
@@ -355,6 +467,7 @@ def run_setup(repo: Path) -> SetupReport:
     merge_settings_local(repo, report)
     quiet_codebase_kg_nudge(repo, report)
     ensure_excludes(repo, report)
+    check_tests(repo, report, time_full_run)
     report.trusted = is_trusted(repo)
     report.trust_note = f"{repo} is trusted" if report.trusted else trust_instructions(repo)
     return report
@@ -368,6 +481,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="only check that the repo is trusted; exit 1 with the trust command when it is not",
     )
+    parser.add_argument(
+        "--time-full-run",
+        action="store_true",
+        help="run the full test command once and compare its time with test_timeout_s",
+    )
     args = parser.parse_args(argv)
     repo = (args.repo or Path.cwd()).resolve()
     if args.check_trust:
@@ -378,7 +496,7 @@ def main(argv: list[str] | None = None) -> int:
     if not repo.is_dir():
         sys.stderr.write(f"{repo} is not a folder\n")
         return 1
-    print(run_setup(repo).text())
+    print(run_setup(repo, args.time_full_run).text())
     return 0
 
 

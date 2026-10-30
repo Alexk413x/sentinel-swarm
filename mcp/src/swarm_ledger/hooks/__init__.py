@@ -23,6 +23,7 @@ HANDLERS = {
     "session_end": events.handle_session_end,
     "owed": events.handle_owed,
     "wake_sent": events.handle_wake_sent,
+    "self_owed": events.handle_self_owed,
     "inbox_take": events.handle_inbox_take,
     "inbox_ack": events.handle_inbox_ack,
     "inbox_release": events.handle_inbox_release,

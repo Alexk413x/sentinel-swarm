@@ -519,14 +519,22 @@ def tests_run(
         bool,
         Field(description="Run the tests even when an earlier passing run can be reused."),
     ] = False,
+    include_slow: Annotated[
+        bool,
+        Field(description="Also run the settings' slow_tests; only when your brief asks."),
+    ] = False,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
-    """Runs the profile's test command for a scope; the required role scales Coder to Oracle.
+    """Starts the profile's test command for a scope; the required role scales Coder to Oracle.
 
-    The result's output is a summary: the tail of a pass, or the first traceback and the
-    short test summary of a failure. test_run_get returns the full output. When a passing
-    run in this run used the same command on an unchanged working tree, the ledger records
-    a copy of it instead of running again and returns reused: true with reused_from.
+    The suite runs in its own process under the ledger server, bounded by test_timeout_s. The
+    call returns the recorded result when the run ends within about 20 seconds; otherwise it
+    returns state: running with the test_run_id, and a wake-up names the result once it is
+    recorded. test_run_get reads a run, with its full output. The result's output is a
+    summary: the tail of a pass, or the first traceback and the short test summary of a
+    failure. When a passing run in this run used the same command on an unchanged working
+    tree, the ledger records a copy of it instead of running again and returns reused: true
+    with reused_from.
     """
     ...
 
@@ -535,7 +543,7 @@ def tests_run(
 def test_run_get(
     caller: CallerName, test_run_id: int, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
-    """Returns one recorded test run of this run, with its full output."""
+    """Returns one test run of this run, with its state and full output once it is recorded."""
     ...
 
 

@@ -77,6 +77,27 @@ memory:
 # Left empty; the setup skill fills this in from the plugin's test_command option, set
 # at install, or else the detected stack.
 test_command:
+# A command per scope (file, module, phase, full) in place of test_command, such as a full
+# run sharded with pytest -n auto. A scope left empty uses test_command.
+test_command_by_scope:
+  file:
+  module:
+  phase:
+  full:
+# Seconds one test run's process may take; the ledger kills it at the cap. A full run that
+# takes more than half of it needs sharding (pytest -n auto) or a higher cap.
+test_timeout_s: 600
+# What a full run puts in {target}, such as tests. Left empty, a full run whose command
+# holds {target} refuses: pytest run from the repo root with no path collects every
+# test_*.py in the tree.
+full_target:
+# Texts that mark a skip the environment causes on purpose, matched against pytest's
+# "SKIPPED [n] <path>:<line>: <reason>" lines (add -rs to the command). Any other skip
+# fails the run and blocks every handoff.
+allowed_skips: []
+# pytest node ids or folders left out of every run (--deselect) unless a brief asks for
+# them with tests_run(include_slow=true).
+slow_tests: []
 # Left empty; the setup skill fills this in from the detected stack.
 build_command:
 # Left empty; the setup skill fills this in from the detected stack.

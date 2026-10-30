@@ -69,7 +69,9 @@ Call these in order. Nothing else works until `run_start` succeeds.
    `.claude/sentinel-swarm.local.md` first and use the values the `setup` skill
    detected. The test command must contain `{target}`, for example
    `python -m pytest -q -p no:cacheprovider {target}`. Every `tests_run` in the run
-   uses this command, so a wrong value blocks every handoff. The build command is a
+   uses this command, unless the settings' `test_command_by_scope` names one for the
+   scope, so a wrong value blocks every handoff. A full run puts the settings'
+   `full_target` in `{target}`. The build command is a
    one-shot build, such as `npm run build`: `profile_set` refuses one that serves or
    watches.
 6. `guidelines_set(body=...)`. Record the architecture, the stack, the conventions,
@@ -205,8 +207,12 @@ messages, or an agent none of whose children is working.
 2. `status_tree()` and `run_status()` for the tree and the states. `issue_list()` for
    what is still open. `events()` when you need the order things happened in.
 3. `tests_run(scope="full")`. Run it now that the phase is handed up, before you
-   review: `phase_review` refuses without a passing run recorded after the phase's
-   hand-up.
+   review: `phase_review` refuses without a clean run recorded after the phase's
+   hand-up. The suite runs in its own process under the ledger server, so it never
+   needs a shell of yours or a person's. A run longer than about 20 seconds returns
+   `state: "running"` with its `test_run_id`: end your turn, and a wake-up names the
+   result when the ledger records it. A full run that saw the working tree change
+   records `stale` and counts for nothing, so start it while no agent edits.
 4. Audit the scores. Investigate every dimension below the target and every issue
    that reached round 3. You do not score files: `score_record` accepts only the
    Coder's self review and the Lead's review.

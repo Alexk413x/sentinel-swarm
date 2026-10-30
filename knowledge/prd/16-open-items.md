@@ -3,6 +3,12 @@
 - **Mod tests on Linux.** `hooks/register.test.ts` builds Windows-style host paths, so 15 of
   its 18 tests fail on Ubuntu and CI skips `claude plugin test .`. Make the paths
   platform-neutral, then add the command to the `validate` job in `ci.yml`.
+- **Asynchronous test runs, live.** Built and unit-tested, including a real detached
+  runner that records its own row. No live run has shown a full suite of 25 minutes or
+  more finish under the runner while role sessions come and go, nor a recorded result
+  reach an idle `--bg` session through the mod's `self_owed` poll and `$.prompt.submit`.
+  Replay run A's saved ledger and run a `textstats` smoke run with a slow full command
+  to confirm both.
 - **macOS.** The code has POSIX branches, but no live run has happened on a Mac. Run one
   smoke test there.
 - **Watchdog rescue of a dropped API call.** The idle-stall check is built to catch a

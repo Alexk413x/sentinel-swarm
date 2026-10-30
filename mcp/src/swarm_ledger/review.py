@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Literal
 
-from . import graph, notify, rubric, versions
+from . import graph, notify, rubric, testrun, versions
 from .agreements import test_run_passed, work_scope
 from .db import NOW, dict_rows, in_clause, ledger_path, open_readonly, row_dict, write_tx
 from .drive import findings_named, open_findings
@@ -21,7 +22,7 @@ from .identity import (
     resolve,
 )
 from .rubric import Rating
-from .testing import TestResult, build_command, run_tests, summarize_output, tree_fingerprint
+from .testing import build_command, summarize_output, tree_fingerprint
 
 _SCOPE_ROLE = {"file": "coder", "module": "lead", "phase": "manager", "full": "oracle"}
 _PARENT_ROLE = {"manager": "oracle", "lead": "manager", "coder": "lead"}
@@ -34,6 +35,8 @@ _DEFERRAL_LEVEL = {
     "prd": "oracle",
 }
 DEFERRAL_KINDS = tuple(_DEFERRAL_LEVEL)
+INLINE_WAIT_S = 20.0
+_WAIT_POLL_S = 0.2
 
 _SELECT_RE = re.compile(r"(?is)^\s*select\b")
 
@@ -116,19 +119,38 @@ def fix_briefs(conn: sqlite3.Connection, run_id: int) -> list[dict]:
     ]
 
 
-def _reused_result(earlier: sqlite3.Row) -> TestResult:
-    return TestResult(
-        command=earlier["command"],
-        exit_code=earlier["exit_code"],
-        passed=earlier["passed"],
-        failed=earlier["failed"],
-        skipped=earlier["skipped"],
-        errors=0,
-        output=earlier["output"] or "",
-        duration_ms=0,
-        ok=True,
-        reason=None,
-    )
+def test_run_result(row: sqlite3.Row) -> dict:
+    ok = test_run_passed(row)
+    output = row["output"] or ""
+    result = {
+        "reused": row["reused_from"] is not None,
+        "test_run_id": row["test_run_id"],
+        "state": row["state"],
+        "scope": row["scope"],
+        "target": row["target"],
+        "command": row["command"],
+        "exit_code": row["exit_code"],
+        "passed": row["passed"],
+        "failed": row["failed"],
+        "skipped": row["skipped"],
+        "allowed_skipped": row["allowed_skipped"],
+        "errors": row["errors"],
+        "output": summarize_output(output, ok),
+        "output_chars": len(output),
+        "duration_ms": row["duration_ms"],
+        "ok": ok,
+        "reason": None if ok else row["reason"],
+    }
+    if row["reused_from"] is not None:
+        result["reused_from"] = row["reused_from"]
+    if row["state"] == "running":
+        result["reason"] = "still running"
+        result["next"] = (
+            f"The suite runs in its own process under the ledger server, bounded by "
+            f"test_timeout_s ({row['timeout_s']} s). End your turn: a wake-up names the result "
+            f"once it is recorded. test_run_get(test_run_id={row['test_run_id']}) reads it."
+        )
+    return result
 
 
 def _insert_version(
@@ -288,6 +310,7 @@ class ReviewMixin(LedgerHost):
         scope: Literal["file", "module", "phase", "full"],
         target: str | None = None,
         force: bool = False,
+        include_slow: bool = False,
     ) -> dict:
         if scope not in _SCOPE_ROLE:
             raise LedgerError(f"unknown test scope {scope!r}")
@@ -304,58 +327,130 @@ class ReviewMixin(LedgerHost):
                 raise LedgerError(f"{caller!r} may only run tests for its own file or test file")
 
         self.adopt_run_profile(c.run_id)
-        if not self.settings.test_command:
-            raise LedgerError("no test command in the profile")
-
-        fingerprint = tree_fingerprint(self.repo_root, self._claimed_paths(c.run_id))
-        earlier = None if force else self._reusable_run(c.run_id, target, fingerprint)
-        if earlier is not None:
-            result = _reused_result(earlier)
-        else:
-            result = run_tests(self.settings.test_command, target, self.repo_root)
+        if scope == "full" and target is None:
+            target = self.settings.full_target
+        command = self.test_command_for(scope, target, include_slow)
+        testrun.sweep(self.conn)
+        claimed = self._claimed_paths(c.run_id)
+        fingerprint = tree_fingerprint(self.repo_root, claimed)
+        if not force:
+            earlier = self._reusable_run(c.run_id, command, fingerprint)
+            if earlier is not None:
+                return self._record_reuse(c, scope, target, earlier)
+            running = self.conn.execute(
+                "SELECT test_run_id FROM test_runs WHERE run_id = ? AND agent_id = ? "
+                "AND command = ? AND fingerprint IS ? AND state = 'running' "
+                "ORDER BY test_run_id DESC LIMIT 1",
+                (c.run_id, c.agent_id, command, fingerprint),
+            ).fetchone()
+            if running is not None:
+                return self._await_run(running["test_run_id"])
 
         with write_tx(self.conn) as conn:
             cur = conn.execute(
-                "INSERT INTO test_runs (run_id, agent_id, scope, target, command, exit_code, "
-                "passed, failed, skipped, output, fingerprint, reused_from) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO test_runs (run_id, agent_id, scope, target, command, fingerprint, "
+                "state, skip_patterns_json, claimed_json, timeout_s) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)",
                 (
                     c.run_id,
                     c.agent_id,
                     scope,
                     target,
-                    result.command,
-                    result.exit_code,
-                    result.passed,
-                    result.failed,
-                    result.skipped,
-                    result.output,
+                    command,
                     fingerprint,
-                    earlier["test_run_id"] if earlier is not None else None,
+                    json.dumps(self.settings.allowed_skips),
+                    json.dumps(sorted(set(claimed))),
+                    self.settings.test_timeout_s,
                 ),
             )
-            test_run_id = cur.lastrowid
+            test_run_id = int(cur.lastrowid or 0)
+        self._launch_run(test_run_id)
+        return self._await_run(test_run_id)
 
-        reuse = (
-            {"reused": True, "reused_from": earlier["test_run_id"]}
-            if earlier is not None
-            else {"reused": False}
-        )
-        return {
-            **reuse,
-            "test_run_id": test_run_id,
-            "command": result.command,
-            "exit_code": result.exit_code,
-            "passed": result.passed,
-            "failed": result.failed,
-            "skipped": result.skipped,
-            "errors": result.errors,
-            "output": summarize_output(result.output, result.ok),
-            "output_chars": len(result.output),
-            "duration_ms": result.duration_ms,
-            "ok": result.ok,
-            "reason": result.reason,
-        }
+    def test_command_for(self, scope: str, target: str | None, include_slow: bool = False) -> str:
+        template = self.settings.test_template(scope)
+        if not template:
+            raise LedgerError("no test command in the profile")
+        if scope == "full" and target is None:
+            target = self.settings.full_target
+            if target is None and "{target}" in template:
+                raise LedgerError(
+                    "a full run needs a target, and full_target is not set: set full_target in "
+                    ".claude/sentinel-swarm.local.md to the folder that holds the tests, such "
+                    "as tests, or pass target"
+                )
+        return build_command(template, target, self.settings.slow_tests, include_slow)
+
+    def _launch_run(self, test_run_id: int) -> None:
+        try:
+            pid = testrun.launcher(self.repo_root, self.db_path, test_run_id)
+        except OSError as exc:
+            testrun.abandon(self.conn, test_run_id, f"the test runner did not start: {exc}")
+            return
+        if pid is not None:
+            with write_tx(self.conn) as conn:
+                conn.execute(
+                    "UPDATE test_runs SET runner_pid = ? WHERE test_run_id = ? "
+                    "AND state = 'running'",
+                    (pid, test_run_id),
+                )
+
+    def _await_run(self, test_run_id: int) -> dict:
+        deadline = time.monotonic() + INLINE_WAIT_S
+        while True:
+            row = self.conn.execute(
+                "SELECT * FROM test_runs WHERE test_run_id = ?", (test_run_id,)
+            ).fetchone()
+            if row["state"] != "running" or time.monotonic() >= deadline:
+                break
+            time.sleep(_WAIT_POLL_S)
+        if row["state"] != "running":
+            self._take_test_wakeup(row)
+        return test_run_result(row)
+
+    def _take_test_wakeup(self, row: sqlite3.Row) -> None:
+        with write_tx(self.conn) as conn:
+            conn.execute(
+                f"UPDATE wakeups SET sent_at = {NOW} WHERE from_agent_id = ? AND to_agent_id = ? "
+                "AND reason = ? AND sent_at IS NULL AND pointer = ?",
+                (
+                    row["agent_id"],
+                    row["agent_id"],
+                    testrun.WAKE_REASON,
+                    testrun.wake_pointer(row),
+                ),
+            )
+
+    def _record_reuse(
+        self, c: Caller, scope: str, target: str | None, earlier: sqlite3.Row
+    ) -> dict:
+        with write_tx(self.conn) as conn:
+            cur = conn.execute(
+                "INSERT INTO test_runs (run_id, agent_id, scope, target, command, exit_code, "
+                "passed, failed, skipped, errors, allowed_skipped, output, fingerprint, "
+                "reused_from, state, duration_ms, finished_at) "
+                f"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', 0, {NOW})",
+                (
+                    c.run_id,
+                    c.agent_id,
+                    scope,
+                    target,
+                    earlier["command"],
+                    earlier["exit_code"],
+                    earlier["passed"],
+                    earlier["failed"],
+                    earlier["skipped"],
+                    earlier["errors"],
+                    earlier["allowed_skipped"],
+                    earlier["output"],
+                    earlier["fingerprint"],
+                    earlier["test_run_id"],
+                ),
+            )
+        row = self.conn.execute(
+            "SELECT * FROM test_runs WHERE test_run_id = ?", (cur.lastrowid,)
+        ).fetchone()
+        return test_run_result(row)
 
     def _claimed_paths(self, run_id: int | None) -> list[str]:
         return [
@@ -371,14 +466,13 @@ class ReviewMixin(LedgerHost):
         ]
 
     def _reusable_run(
-        self, run_id: int | None, target: str | None, fingerprint: str | None
+        self, run_id: int | None, command: str, fingerprint: str | None
     ) -> sqlite3.Row | None:
-        if fingerprint is None or not self.settings.test_command:
+        if fingerprint is None:
             return None
-        command = build_command(self.settings.test_command, target)
         for row in self.conn.execute(
             "SELECT * FROM test_runs WHERE run_id = ? AND command = ? AND fingerprint = ? "
-            "AND reused_from IS NULL ORDER BY test_run_id DESC",
+            "AND reused_from IS NULL AND state = 'done' ORDER BY test_run_id DESC",
             (run_id, command, fingerprint),
         ):
             if test_run_passed(row):
@@ -393,7 +487,7 @@ class ReviewMixin(LedgerHost):
         ).fetchone()
         if row is None:
             raise LedgerError(f"no test run {test_run_id} in this run")
-        return dict(row)
+        return {**dict(row), "ok": test_run_passed(row)}
 
     # -- Code graph -----------------------------------------------------------
 
@@ -732,6 +826,12 @@ class ReviewMixin(LedgerHost):
         test_run_id = None
         if file_row["test_path"]:
             test_result = self.tests_run(caller, agent_id, "file", file_row["test_path"])
+            if test_result["state"] == "running":
+                raise LedgerError(
+                    f"test run {test_result['test_run_id']} of {file_row['test_path']} is still "
+                    "running. End your turn; its wake-up names the result, and handoff_submit "
+                    "then uses it"
+                )
             if not test_result["ok"]:
                 raise LedgerError(f"tests are not passing: {test_result['reason']}")
             test_run_id = test_result["test_run_id"]
