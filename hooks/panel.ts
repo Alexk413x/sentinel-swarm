@@ -1,4 +1,4 @@
-import type { PanelAgent, PanelRunView, PanelTask } from '../types'
+import type { PanelAgent, PanelRequest, PanelRunView, PanelSessionWait, PanelTask } from '../types'
 
 export const MODEL = /(opus|sonnet|haiku|fable)/i
 export const SPANNING_ROLES: ReadonlySet<string> = new Set(['oracle', 'manager'])
@@ -10,6 +10,9 @@ export const ROLE_COLOR: Readonly<Record<string, string>> = {
   driver: 'yellow',
 }
 export const CODE_COLOR = 'suggestion'
+export const WAIT_GLYPH = '⚠'
+export const WAIT_COLOR = 'warning'
+export const ASK_COLOR = 'error'
 export const TASK_MARK: Readonly<Record<string, readonly [string, string | undefined]>> = {
   done: ['✓', 'success'],
   active: ['●', 'warning'],
@@ -32,10 +35,23 @@ export type AgentRow = {
 }
 export type TaskRow = { kind: 'task'; key: string; prefix: Segment[]; task: PanelTask; open: boolean }
 export type Row = AgentRow | TaskRow
+export type SessionWait = Omit<PanelSessionWait, 'request'>
+export type Attention = {
+  key: string
+  agent: string | null
+  title: string
+  lines: string[]
+  where: string
+  directiveId: number | null
+}
 
-export function mark(agent: PanelAgent): [string, string | undefined] {
+const INPUT_CHARS = 400
+
+export function mark(agent: PanelAgent, waiting = false): [string, string | undefined] {
   if (agent.ended_at !== null) return ['·', undefined]
-  if (agent.parked) return ['⏸', 'warning']
+  if (waiting) return [WAIT_GLYPH, WAIT_COLOR]
+  if (agent.queued) return ['○', undefined]
+  if (agent.parked || agent.state === 'parked') return ['⏸', 'warning']
   if (agent.session === 'gone') return ['✕', 'error']
   if (agent.session === 'idle') return ['○', undefined]
   return ['●', undefined]
@@ -94,8 +110,22 @@ export function continuation(prefix: readonly Segment[]): Segment[] {
   return prefix.map(part => ({ ...part, text: part.text === '├ ' ? '│ ' : part.text === '└ ' ? '  ' : part.text }))
 }
 
+export function dimmed(agent: PanelAgent): boolean {
+  return (
+    agent.queued ||
+    agent.ended_at !== null ||
+    agent.parked ||
+    agent.state === 'released' ||
+    agent.state === 'parked' ||
+    agent.session === 'gone' ||
+    agent.task?.state === 'approved' ||
+    (agent.role === 'manager' && agent.task?.state === 'planned')
+  )
+}
+
 export function taskDetail(task: PanelTask, room: number): Span[][] {
-  const lines = markdown(task.brief ?? 'No brief recorded.', room, task.brief === null)
+  const path = task.path === null ? [] : [...wrap([{ text: task.path, code: true }], room, ''), []]
+  const lines = [...path, ...markdown(task.brief ?? 'No brief recorded.', room, task.brief === null)]
   if (task.review !== null) {
     lines.push([])
     lines.push([{ text: `${task.review.kind} review: `, dim: true }, { text: task.review.outcome, bold: true }])
@@ -239,4 +269,144 @@ export function startHint(runs: readonly PanelRunView[], running: boolean): read
 export function samePath(a: string, b: string): boolean {
   const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
   return norm(a) === norm(b)
+}
+
+export function parseWaiting(stdout: string): SessionWait[] {
+  let listing: unknown
+  try {
+    listing = JSON.parse(stdout)
+  } catch {
+    return []
+  }
+  if (!Array.isArray(listing)) return []
+  return listing.flatMap(entry => {
+    if (typeof entry !== 'object' || entry === null) return []
+    const { sessionId, name, status, state, waitingFor } = entry as Record<string, unknown>
+    if (typeof sessionId !== 'string') return []
+    if (status !== 'waiting' && state !== 'waiting' && typeof waitingFor !== 'string') return []
+    return [{ sessionId, name: typeof name === 'string' ? name : '', waitingFor: typeof waitingFor === 'string' ? waitingFor : 'waiting' }]
+  })
+}
+
+export function liveAgents(views: readonly PanelRunView[]): PanelAgent[] {
+  const walk = (nodes: readonly PanelAgent[]): PanelAgent[] =>
+    nodes.flatMap(node => [...(node.ended_at === null && !node.queued ? [node] : []), ...walk(node.children)])
+  return views.filter(view => view.run.ended_at === null).flatMap(view => walk(view.agents))
+}
+
+export function waitOf<W extends SessionWait>(agent: PanelAgent, waits: readonly W[]): W | undefined {
+  return waits.find(wait => wait.sessionId === agent.agent_id || (agent.session_name !== null && wait.name === agent.session_name))
+}
+
+export function pendingRequest(transcript: string): PanelRequest | null {
+  const answered = new Set<string>()
+  const lines = transcript.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i] ?? ''
+    if (!line.includes('"tool_use"') && !line.includes('"tool_result"')) continue
+    let entry: unknown
+    try {
+      entry = JSON.parse(line)
+    } catch {
+      continue
+    }
+    const content = (entry as { message?: { content?: unknown } } | null)?.message?.content
+    if (!Array.isArray(content)) continue
+    for (const block of [...content].reverse()) {
+      if (typeof block !== 'object' || block === null) continue
+      const { type, id, tool_use_id, name, input } = block as Record<string, unknown>
+      if (type === 'tool_result' && typeof tool_use_id === 'string') answered.add(tool_use_id)
+      if (type === 'tool_use' && typeof id === 'string' && !answered.has(id)) return request(String(name ?? ''), input)
+    }
+  }
+  return null
+}
+
+function request(tool: string, input: unknown): PanelRequest {
+  const fields = typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : {}
+  if (tool === 'AskUserQuestion' && Array.isArray(fields.questions)) {
+    const questions = fields.questions.flatMap((q: unknown) => {
+      if (typeof q !== 'object' || q === null) return []
+      const { question, options } = q as Record<string, unknown>
+      const labels = Array.isArray(options) ? options.flatMap(label) : []
+      return [{ question: String(question ?? ''), options: labels }]
+    })
+    return { kind: 'question', questions }
+  }
+  const named = [fields.command, fields.file_path, fields.notebook_path, fields.path, fields.url].find(v => typeof v === 'string')
+  const text = typeof named === 'string' ? named : JSON.stringify(input ?? {})
+  return { kind: 'tool', tool, input: text.length > INPUT_CHARS ? `${text.slice(0, INPUT_CHARS - 1)}…` : text }
+}
+
+function label(option: unknown): string[] {
+  const value = typeof option === 'object' && option !== null ? (option as { label?: unknown }).label : undefined
+  return typeof value === 'string' ? [value] : []
+}
+
+export function requestLines(request: PanelRequest | null): string[] {
+  if (request === null) return ['Agent view shows the request.']
+  if (request.kind === 'tool') return [`${request.tool}: ${request.input}`]
+  return request.questions.flatMap(q => [q.question, ...q.options.map(option => `  • ${option}`)])
+}
+
+const WAIT_TITLE: Readonly<Record<string, string>> = {
+  'permission prompt': 'waits on a permission prompt',
+  'input needed': 'waits for your answer',
+}
+
+export function attention(view: PanelRunView, sessions: readonly PanelSessionWait[]): Attention[] {
+  if (view.run.ended_at !== null) return []
+  const run = view.run.run_id
+  const agents = liveAgents([view])
+  const items: Attention[] = []
+  const waiting = new Set<string>()
+  for (const agent of agents) {
+    const wait = waitOf(agent, sessions)
+    if (wait === undefined) continue
+    waiting.add(agent.name)
+    items.push({
+      key: `wait:${run}:${agent.name}`,
+      agent: agent.name,
+      title: WAIT_TITLE[wait.waitingFor] ?? `waits: ${wait.waitingFor}`,
+      lines: requestLines(wait.request),
+      where: `Answer it in agent view (claude agents), on session ${wait.name || agent.name}.`,
+      directiveId: null,
+    })
+  }
+  const oracle = agents.find(agent => agent.role === 'oracle')?.name ?? null
+  const asked = view.waiting ?? { questions: [], findings: [], paused: null }
+  for (const q of asked.questions) {
+    items.push({
+      key: `question:${run}:${q.directive_id}`,
+      agent: oracle,
+      title: `asks you (directive ${q.directive_id})`,
+      lines: q.question.split('\n'),
+      where: `Type the answer and press Enter: it goes to the Oracle as a reply to directive ${q.directive_id}.`,
+      directiveId: q.directive_id,
+    })
+  }
+  for (const f of asked.findings) {
+    if (f.kind === 'needs_user' && f.agent !== null && waiting.has(f.agent)) continue
+    const stalled = f.kind === 'run_stalled'
+    const agent = !stalled && agents.some(a => a.name === f.agent) ? f.agent : null
+    items.push({
+      key: `finding:${run}:${f.finding_id}`,
+      agent,
+      title: stalled ? 'the run has stalled' : `${f.agent ?? 'a session'} needs you`,
+      lines: f.detail.split('\n'),
+      where: stalled ? 'Check it with /sentinel-swarm:status, then message the Oracle.' : 'Answer it in agent view (claude agents).',
+      directiveId: null,
+    })
+  }
+  if (asked.paused !== null) {
+    items.push({
+      key: `paused:${run}`,
+      agent: null,
+      title: 'the run is paused',
+      lines: asked.paused.split('\n'),
+      where: 'Fix the cause, then message the Oracle in agent view or run /sentinel-swarm:resume.',
+      directiveId: null,
+    })
+  }
+  return items
 }

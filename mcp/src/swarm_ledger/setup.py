@@ -45,6 +45,11 @@ _HOOK_ITEM_LINE = re.compile(r"^    - ")
 _LEDGER_HOOK = re.compile(r"hook\.py hook (\w+)")
 _TOOLS_LINE = re.compile(r"^tools\s*:\s*\S")
 WHOLE_LEDGER = "mcp__swarm-ledger"
+RELOAD_NOTE = (
+    "A session loads plugin tools when it starts, and setup cannot run /reload-plugins: "
+    "after a fresh install, start a new session, or run /reload-plugins in this one, "
+    "before /sentinel-swarm:run"
+)
 
 
 class SetupError(Exception):
@@ -355,6 +360,7 @@ def run_setup(repo: Path) -> SetupReport:
     merge_settings_local(repo, report)
     quiet_codebase_kg_nudge(repo, report)
     ensure_excludes(repo, report)
+    report.add(RELOAD_NOTE)
     report.trusted = is_trusted(repo)
     report.trust_note = f"{repo} is trusted" if report.trusted else trust_instructions(repo)
     return report

@@ -2,28 +2,37 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionSendAddress, SessionSendResult } from 'claude-code'
 
 import {
+  ASK_COLOR,
   CODE_COLOR,
   MODEL,
   NO_LEDGER,
   ROLE_COLOR,
   SPANNING_ROLES,
   TASK_MARK,
+  WAIT_COLOR,
+  WAIT_GLYPH,
+  attention,
   closeSpan,
   continuation,
+  dimmed,
   duration,
   flatten,
   inline,
+  liveAgents,
   mark,
   markdown,
+  parseWaiting,
+  pendingRequest,
   samePath,
   sectionKeys,
   startHint,
   taskDetail,
   visible,
+  waitOf,
   wrap,
 } from './panel'
-import type { AgentRow, IsOpen, Row, Segment, Span, TaskRow } from './panel'
-import type { PanelFetch, PanelSnapshot, PanelTask, PanelRunView, SentinelSwarmSession } from '../types'
+import type { AgentRow, Attention, IsOpen, Row, Segment, Span, TaskRow } from './panel'
+import type { PanelFetch, PanelSessionWait, PanelSnapshot, PanelTask, PanelRunView, SentinelSwarmSession } from '../types'
 
 type Answer = Record<string, unknown> | null
 type Owed = {
@@ -92,8 +101,8 @@ const REPO_INPUT = {
 
 const fetched = atom(
   { plugin: 'sentinel-swarm', key: 'panelFetch' } as const,
-  { snapshot: null, running: false, problem: null, at: null } as PanelFetch,
-  { shape: 'fetch-2' },
+  { snapshot: null, sessions: [], running: false, problem: null, at: null } as PanelFetch,
+  { shape: 'fetch-3' },
 )
 const showEnded = atom({ plugin: 'sentinel-swarm', key: 'panelShowEnded' } as const, false, { shape: 'show-ended-1' })
 const chosenRepo = atom({ plugin: 'sentinel-swarm', key: 'panelRepo' } as const, '', { shape: 'repo-1' })
@@ -218,12 +227,16 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const elements = $.ui.resolve(e)
+    const { Box, Text, Button } = elements
+    const Input = 'Input' in elements ? elements.Input : undefined
     const width = Math.max(20, e.props.bodyColumns)
-    const { snapshot, running, problem, at } = await read($, fetched)
+    const { snapshot, sessions, running, problem, at } = await read($, fetched)
     const withEnded = await read($, showEnded)
     const open = await read($, opened)
     const runs = snapshot?.runs ?? []
+    const asks = runs.map(view => attention(view, sessions ?? []))
+    const asksOf = (name: string, index: number) => (asks[index] ?? []).filter(item => item.agent === name)
     const shownTask = await read($, openTask)
     const isOpen: IsOpen = (key, fallback) => (key.includes('#') ? key === shownTask : (open[key] ?? fallback))
     const closeTask = () => void update($, openTask, () => '')
@@ -301,14 +314,20 @@ export const register: Register = on => {
       const [glyph, color] = TASK_MARK[task.status] ?? ['○', undefined]
       const waiting = color === undefined
       return (
-        <Box flexShrink={0} flexDirection="row" marginLeft={2}>
-          <Button key={key} plain onPress={() => toggleTask(key)}>
-            <Text dimColor={waiting}>{task.name}</Text>
-          </Button>
-          <Text color={color} dimColor={waiting}>
-            {' '}
-            {glyph}
-          </Text>
+        <Box flexShrink={1} minWidth={4} flexDirection="row" marginLeft={2}>
+          <Box flexShrink={1} minWidth={1}>
+            <Button key={key} plain onPress={() => toggleTask(key)}>
+              <Text dimColor={waiting} wrap="truncate-start">
+                {task.name}
+              </Text>
+            </Button>
+          </Box>
+          <Box flexShrink={0}>
+            <Text color={color} dimColor={waiting}>
+              {' '}
+              {glyph}
+            </Text>
+          </Box>
         </Box>
       )
     }
@@ -351,15 +370,52 @@ export const register: Register = on => {
       </Box>
     )
 
-    const line = (row: AgentRow, dimEnded: boolean) => {
+    const askBox = (item: Attention, indent: number) => {
+      const where =
+        item.directiveId === null || Input !== undefined
+          ? item.where
+          : `Answer it with the directive command in /sentinel-swarm:run, with --reply-to ${item.directiveId}.`
+      return (
+        <Box
+          key={item.key}
+          flexDirection="column"
+          marginLeft={indent}
+          borderStyle="round"
+          borderColor={ASK_COLOR}
+          paddingX={1}
+        >
+          <Text bold color={WAIT_COLOR}>
+            {WAIT_GLYPH} {item.title}
+          </Text>
+          {item.lines.map((text, i) => (
+            <Text key={String(i)}>{text === '' ? ' ' : text}</Text>
+          ))}
+          <Text dimColor>{where}</Text>
+          {item.directiveId !== null && Input !== undefined && (
+            <Input
+              key={`answer:${item.key}`}
+              label="answer: "
+              placeholder="type the answer"
+              submitLabel="send"
+              onSubmit={value => void replyTo($, item.directiveId ?? 0, value)}
+            />
+          )}
+        </Box>
+      )
+    }
+
+    const line = (row: AgentRow, index: number) => {
       const agent = row.agent
       const role = ROLE_COLOR[agent.role]
-      const [glyph, alert] = mark(agent)
+      const asked = agent.ended_at === null ? asksOf(agent.name, index) : []
+      const [glyph, alert] = mark(agent, asked.length > 0)
       const model = MODEL.exec(agent.model ?? '')?.[1]?.toLowerCase() ?? agent.model ?? 'model not recorded'
-      const card = `${model}${agent.effort ? ` · ${agent.effort} effort` : ''}`
+      const card = agent.queued
+        ? `queued: ${agent.park_reason ?? 'waits to start'}`
+        : `${model}${agent.effort ? ` · ${agent.effort} effort` : ''}`
       const badges = `${agent.unread ? ` ✉${agent.unread}` : ''}${agent.owed ? ` ↯${agent.owed}` : ''}`
       const taskKey = `${row.key}#task`
-      const dim = dimEnded && agent.ended_at !== null
+      const dim = asked.length === 0 && dimmed(agent)
       const bold = agent.role === 'oracle' || agent.role === 'manager'
       const title =
         row.toggle === null ? (
@@ -397,11 +453,12 @@ export const register: Register = on => {
             {agent.task !== null && taskButton(taskKey, agent.task)}
           </Box>
           {agent.task !== null && row.taskOpen && detailLines(taskKey, agent.task, lead)}
+          {asked.map(item => askBox(item, lead.reduce((n, part) => n + part.text.length, 0)))}
         </Box>
       )
     }
 
-    const rowElements = (rows: readonly Row[], dimEnded: boolean) =>
+    const rowElements = (rows: readonly Row[], index: number) =>
       rows.flatMap(row => {
         if (row.kind === 'task') return [taskLine(row)]
         const gap =
@@ -412,7 +469,7 @@ export const register: Register = on => {
                   {segments(row.gap)}
                 </Text>,
               ]
-        return [...gap, line(row, dimEnded)]
+        return [...gap, line(row, index)]
       })
 
     const section = (view: PanelRunView, index: number) => {
@@ -425,7 +482,8 @@ export const register: Register = on => {
       const outcome = run.outcome?.split(':')[0]?.trim()
       const tally = live
         ? `${counts.live ?? 0} live · ${counts.working ?? 0} working` +
-          `${counts.parked ? ` · ${counts.parked} parked` : ''}${counts.gone ? ` · ${counts.gone} gone` : ''} · ${counts.ended ?? 0} ended`
+          `${counts.parked ? ` · ${counts.parked} parked` : ''}${counts.gone ? ` · ${counts.gone} gone` : ''}` +
+          `${counts.queued ? ` · ${counts.queued} queued` : ''} · ${counts.ended ?? 0} ended`
         : `${counts.ended ?? 0} agents`
       return (
         <Box key={key} flexDirection="column" borderStyle="round" borderColor={ROLE_COLOR.oracle} borderDimColor={!live} paddingX={1}>
@@ -444,18 +502,53 @@ export const register: Register = on => {
             </Text>
           </Box>
           {shown && rows.length === 0 && <Text dimColor>No live agents. Show ended to see the whole run.</Text>}
-          {shown && rowElements(rows, live)}
+          {shown && rowElements(rows, index)}
         </Box>
       )
     }
 
+    const waitingItems = runs.flatMap((view, i) => (asks[i] ?? []).map(item => ({ item, run: view.run.run_id })))
+    const waitingOnYou = waitingItems.length > 0 && (
+      <Box flexDirection="column" borderStyle="round" borderColor={ASK_COLOR} paddingX={1}>
+        <Text bold color={WAIT_COLOR}>
+          {WAIT_GLYPH} Waiting on you ({waitingItems.length})
+        </Text>
+        {waitingItems.map(({ item, run }) => (
+          <Box key={`top:${item.key}`} flexDirection="column">
+            <Text wrap="truncate-end">
+              <Text bold>{item.agent ?? `Run ${run}`}</Text> {item.title}
+            </Text>
+            {item.agent === null ? (
+              [...item.lines, item.where].map((text, i) => (
+                <Text key={String(i)} dimColor>
+                  {'  '}
+                  {text}
+                </Text>
+              ))
+            ) : (
+              <Text dimColor wrap="truncate-end">
+                {'  '}
+                {item.lines[0] ?? ''} · details under its row
+              </Text>
+            )}
+          </Box>
+        ))}
+      </Box>
+    )
+
     return (
       <Box flexDirection="column">
         {controls}
+        {waitingOnYou}
         <Box flexDirection="column" borderStyle="round" borderColor="inactive" paddingX={1}>
-          <Text dimColor wrap="truncate-end">agents ● busy ○ idle ⏸ parked ✕ gone · ended ✉ unread ↯ wake-up owed</Text>
+          <Text dimColor wrap="truncate-end">
+            agents ● busy ○ idle ⏸ parked ✕ gone · ended <Text color={WAIT_COLOR}>{WAIT_GLYPH}</Text> waiting on you ✉ unread ↯ wake-up owed
+          </Text>
           <Text dimColor wrap="truncate-end">
             work ○ waiting <Text color="warning">●</Text> in progress <Text color="success">✓</Text> done <Text color="error">!</Text> incomplete
+          </Text>
+          <Text dimColor wrap="truncate-end">
+            dimmed: ended or not started
           </Text>
         </Box>
         {howToStart}
@@ -732,9 +825,10 @@ async function refresh($: EngineInterface): Promise<void> {
       fetchSnapshot($, `${$.plugin.root}/mcp/launch/ledger.py`, repo).catch((err: unknown) => (err instanceof Error ? err : new Error(String(err)))),
       isRunning($, repo),
     ])
+    const sessions = snapshot instanceof Error ? [] : await waitingSessions($, snapshot).catch(() => [])
     const at = new Date().toISOString()
     await update($, fetched, held =>
-      snapshot instanceof Error ? { ...held, running, problem: snapshot.message, at } : { snapshot, running, problem: null, at },
+      snapshot instanceof Error ? { ...held, running, problem: snapshot.message, at } : { snapshot, sessions, running, problem: null, at },
     ).catch(() => undefined)
   } finally {
     refreshing = false
@@ -742,20 +836,52 @@ async function refresh($: EngineInterface): Promise<void> {
 }
 
 async function fetchSnapshot($: EngineInterface, launcher: string, repo: string): Promise<PanelSnapshot> {
+  return JSON.parse(await launch($, launcher, ['panel', '--repo', repo])) as PanelSnapshot
+}
+
+async function launch($: EngineInterface, launcher: string, args: readonly string[]): Promise<string> {
   let reason = 'no Python interpreter ran the launcher'
   for (const python of LAUNCH_PYTHONS) {
-    const ran = await $.process
-      .run([...python, '-I', '-S', launcher, 'panel', '--repo', repo], { timeoutMs: RUN_MS })
-      .catch((err: unknown) => {
-        reason = err instanceof Error ? err.message : String(err)
-        return undefined
-      })
+    const ran = await $.process.run([...python, '-I', '-S', launcher, ...args], { timeoutMs: RUN_MS }).catch((err: unknown) => {
+      reason = err instanceof Error ? err.message : String(err)
+      return undefined
+    })
     if (ran === undefined) continue
     if (ran.exitCode !== 0) {
       reason = `${python.join(' ')} exited with status ${ran.exitCode}: ${ran.stderr.trim().split('\n').pop() ?? ''}`
       continue
     }
-    return JSON.parse(ran.stdout) as PanelSnapshot
+    return ran.stdout
   }
   throw new Error(reason)
+}
+
+async function waitingSessions($: EngineInterface, snapshot: PanelSnapshot): Promise<PanelSessionWait[]> {
+  const agents = liveAgents(snapshot.runs)
+  if (agents.length === 0) return []
+  const ran = await $.process.run(['claude', 'agents', '--json'], { timeoutMs: RUN_MS }).catch(() => undefined)
+  if (ran === undefined || ran.exitCode !== 0) return []
+  const waits = parseWaiting(ran.stdout)
+  return Promise.all(
+    agents.flatMap(agent => {
+      const wait = waitOf(agent, waits)
+      if (wait === undefined) return []
+      const path = agent.transcript_path
+      const text = path === null ? Promise.resolve(null) : $.fs.read(path).catch(() => null)
+      return [text.then(body => ({ ...wait, request: body === null ? null : pendingRequest(body) }))]
+    }),
+  )
+}
+
+async function replyTo($: EngineInterface, directiveId: number, text: string): Promise<void> {
+  if (text.trim() === '') return
+  const repo = await repoOf($)
+  const args = ['directive', '--repo', repo, '--source', 'user_chat', '--sender', 'run panel', '--reply-to', String(directiveId), '--', text]
+  try {
+    await launch($, `${$.plugin.root}/mcp/launch/ledger.py`, args)
+    $.ui.toast(`Sent your answer to directive ${directiveId}.`)
+  } catch (err) {
+    $.ui.toast(`Your answer to directive ${directiveId} was not sent: ${errorText(err)}`)
+  }
+  await refresh($)
 }

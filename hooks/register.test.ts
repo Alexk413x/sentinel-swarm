@@ -1,8 +1,8 @@
 import type { On, SessionSendResult } from 'claude-code'
 import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 
-import { startHint } from './panel'
-import type { PanelRunView } from '../types'
+import { attention, dimmed, mark, parseWaiting, pendingRequest, startHint, taskDetail } from './panel'
+import type { PanelAgent, PanelRunView, PanelSessionWait, PanelSnapshot, PanelTask } from '../types'
 
 const CWD = 'C:/host'
 const TOKEN = 'a'.repeat(40)
@@ -379,5 +379,272 @@ describe('the run panel', () => {
     expect(startHint([view(true)], false)).toEqual(['No run is active.', 'To start a run, run /sentinel-swarm:run with a PRD.'])
     expect(startHint([view(false)], false)[1]).toBe('To continue it, run /sentinel-swarm:resume.')
     expect(startHint([view(false)], true)).toEqual([])
+  })
+})
+
+function task(overrides: Partial<PanelTask> = {}): PanelTask {
+  return { id: 'file_id:1', name: 'a.py', path: null, state: 'claimed', status: 'active', owners: [], summary: null, brief: null, review: null, ...overrides }
+}
+
+function agent(overrides: Partial<PanelAgent> = {}): PanelAgent {
+  return {
+    agent_id: 'sess-coder',
+    name: 'coder-a',
+    role: 'coder',
+    model: 'sonnet',
+    effort: null,
+    state: 'working',
+    queued: false,
+    session_name: 'host-r3-coder-a',
+    transcript_path: 'C:/t/coder.jsonl',
+    session: 'busy',
+    parked: false,
+    park_reason: null,
+    ended_at: null,
+    end_reason: null,
+    phase: null,
+    module: null,
+    file: null,
+    activity: null,
+    heartbeat_at: null,
+    started_at: '2026-10-28T00:00:00Z',
+    owed: 0,
+    unread: 0,
+    task: task(),
+    tasks: [],
+    children: [],
+    ...overrides,
+  }
+}
+
+function runView(overrides: Partial<PanelRunView> = {}): PanelRunView {
+  const oracle = agent({
+    agent_id: 'sess-oracle',
+    name: 'oracle',
+    role: 'oracle',
+    session_name: 'host-oracle',
+    transcript_path: null,
+    task: task({ id: 'run:3', name: 'all phases', state: 'active' }),
+  })
+  return {
+    run: { run_id: 3, state: 'active', outcome: null, branch: null, started_at: '2026-10-28T00:00:00Z', ended_at: null, elapsed_s: 60 },
+    agents: [{ ...oracle, children: [agent()] }],
+    counts: { live: 2 },
+    waiting: { questions: [], findings: [], paused: null },
+    ...overrides,
+  }
+}
+
+const SESSION_WAIT: PanelSessionWait = {
+  sessionId: 'sess-coder',
+  name: 'host-r3-coder-a',
+  waitingFor: 'permission prompt',
+  request: { kind: 'tool', tool: 'Write', input: '.claude/scratch/x.py' },
+}
+
+describe('which rows the panel dims', () => {
+  test('ended, released, parked, gone, approved and not-started rows dim; working rows do not', () => {
+    expect(dimmed(agent())).toBe(false)
+    expect(dimmed(agent({ ended_at: '2026-10-28T01:00:00Z' }))).toBe(true)
+    expect(dimmed(agent({ state: 'released' }))).toBe(true)
+    expect(dimmed(agent({ state: 'parked' }))).toBe(true)
+    expect(dimmed(agent({ parked: true, park_reason: 'waiting for memory to resume it for a wake-up' }))).toBe(true)
+    expect(dimmed(agent({ session: 'gone' }))).toBe(true)
+    expect(dimmed(agent({ task: task({ state: 'approved' }) }))).toBe(true)
+    expect(dimmed(agent({ queued: true, state: 'queued', session: null }))).toBe(true)
+    expect(dimmed(agent({ role: 'manager', task: task({ state: 'planned' }) }))).toBe(true)
+    expect(dimmed(agent({ role: 'lead', task: task({ state: 'planned' }) }))).toBe(false)
+  })
+
+  test('a waiting agent shows the warning glyph and a queued one the idle glyph', () => {
+    expect(mark(agent(), true)).toEqual(['⚠', 'warning'])
+    expect(mark(agent({ queued: true, session: null }))).toEqual(['○', undefined])
+    expect(mark(agent({ state: 'parked' }))).toEqual(['⏸', 'warning'])
+  })
+})
+
+describe('a file task', () => {
+  test('its detail starts with the full path', () => {
+    const lines = taskDetail(task({ path: 'src/pkg/a.py', brief: 'Write it.' }), 40)
+    expect(lines[0]?.map(span => span.text).join('')).toBe('src/pkg/a.py')
+    expect(lines[0]?.some(span => span.code)).toBe(true)
+    expect(lines[1]).toEqual([])
+  })
+
+  test('a task without a path starts with its brief', () => {
+    const lines = taskDetail(task({ brief: 'Write it.' }), 40)
+    expect(lines[0]?.map(span => span.text).join('')).toBe('Write it.')
+  })
+})
+
+describe('sessions waiting on a person', () => {
+  test('the agents listing keeps only waiting sessions', () => {
+    const listing = [
+      { sessionId: 'a', name: 'host-r3-coder-a', status: 'waiting', waitingFor: 'permission prompt' },
+      { sessionId: 'b', name: 'host-oracle', kind: 'background', state: 'waiting', waitingFor: 'input needed' },
+      { sessionId: 'c', name: 'busy-one', status: 'busy' },
+      { name: 'no-id', status: 'waiting' },
+    ]
+    expect(parseWaiting(JSON.stringify(listing))).toEqual([
+      { sessionId: 'a', name: 'host-r3-coder-a', waitingFor: 'permission prompt' },
+      { sessionId: 'b', name: 'host-oracle', waitingFor: 'input needed' },
+    ])
+    expect(parseWaiting('not json')).toEqual([])
+  })
+
+  const line = (entry: unknown) => JSON.stringify(entry)
+  const use = (id: string, name: string, input: unknown) => line({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } })
+  const result = (id: string) => line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] } })
+
+  test('the pending request is the last tool use with no result', () => {
+    const transcript = [use('t1', 'Read', { file_path: 'a.py' }), result('t1'), use('t2', 'Write', { file_path: '.claude/scratch/x.py', content: 'x' }), ''].join('\n')
+    expect(pendingRequest(transcript)).toEqual({ kind: 'tool', tool: 'Write', input: '.claude/scratch/x.py' })
+    expect(pendingRequest([use('t1', 'Read', {}), result('t1')].join('\n'))).toBeNull()
+  })
+
+  test('a pending question carries its options', () => {
+    const asked = use('q1', 'AskUserQuestion', {
+      questions: [
+        {
+          question: 'Which branch?',
+          header: 'Branch',
+          multiSelect: false,
+          options: [
+            { label: 'main', description: '' },
+            { label: 'new', description: '' },
+          ],
+        },
+      ],
+    })
+    expect(pendingRequest(asked)).toEqual({ kind: 'question', questions: [{ question: 'Which branch?', options: ['main', 'new'] }] })
+  })
+
+  test('a shell command shows its command line', () => {
+    expect(pendingRequest(use('b1', 'Bash', { command: 'rm -rf build' }))).toEqual({ kind: 'tool', tool: 'Bash', input: 'rm -rf build' })
+  })
+})
+
+describe('what waits on you', () => {
+  test('a waiting session sits under its agent and says where to answer', () => {
+    const [item, ...rest] = attention(runView(), [SESSION_WAIT])
+    expect(rest).toEqual([])
+    expect(item).toMatchObject({ agent: 'coder-a', title: 'waits on a permission prompt', lines: ['Write: .claude/scratch/x.py'], directiveId: null })
+    expect(item?.where).toContain('agent view')
+    expect(item?.where).toContain('host-r3-coder-a')
+  })
+
+  test('a session matches by its name when its id changed', () => {
+    const items = attention(runView(), [{ ...SESSION_WAIT, sessionId: 'other-id' }])
+    expect(items.map(i => i.agent)).toEqual(['coder-a'])
+  })
+
+  test('a session outside the run is not listed', () => {
+    expect(attention(runView(), [{ ...SESSION_WAIT, sessionId: 'x', name: 'someone-else' }])).toEqual([])
+  })
+
+  test('a question sits under the Oracle, a stall and a pause sit at the top', () => {
+    const view = runView({
+      run: { ...runView().run, state: 'paused' },
+      waiting: {
+        questions: [{ directive_id: 7, question: 'Which branch?', asked_at: 'T' }],
+        findings: [
+          { finding_id: 1, kind: 'run_stalled', agent: 'oracle', detail: 'No agent has worked for 30 minutes.', since: 'T' },
+          { finding_id: 2, kind: 'needs_user', agent: 'coder-a', detail: 'coder-a waits on a permission prompt', since: 'T' },
+        ],
+        paused: 'the build needs a licence key',
+      },
+    })
+    const items = attention(view, [])
+    expect(items.map(i => [i.agent, i.title])).toEqual([
+      ['oracle', 'asks you (directive 7)'],
+      [null, 'the run has stalled'],
+      ['coder-a', 'coder-a needs you'],
+      [null, 'the run is paused'],
+    ])
+    expect(items[0]?.directiveId).toBe(7)
+  })
+
+  test('the session wait replaces the watchdog finding for the same agent', () => {
+    const view = runView({
+      waiting: { questions: [], findings: [{ finding_id: 2, kind: 'needs_user', agent: 'coder-a', detail: 'waits', since: 'T' }], paused: null },
+    })
+    expect(attention(view, [SESSION_WAIT]).map(i => i.key)).toEqual(['wait:3:coder-a'])
+  })
+
+  test('an ended run waits on nobody', () => {
+    const view = runView({
+      run: { ...runView().run, ended_at: '2026-10-28T02:00:00Z' },
+      waiting: { questions: [{ directive_id: 7, question: '?', asked_at: 'T' }], findings: [], paused: null },
+    })
+    expect(attention(view, [SESSION_WAIT])).toEqual([])
+  })
+})
+
+describe('the panel draws what waits on you', () => {
+  const PANE_PROPS = { title: 'Swarm', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } as const
+  const TRANSCRIPT = JSON.stringify({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'w1', name: 'Write', input: { file_path: '.claude/scratch/x.py' } }] },
+  })
+  const LISTING = JSON.stringify([{ sessionId: 'sess-coder', name: 'host-r3-coder-a', status: 'waiting', waitingFor: 'permission prompt' }])
+
+  test('the top section and the red box show the request, and an answer goes back as a directive reply', async ($, on) => {
+    const launched: string[][] = []
+    const toasts: string[] = []
+    const base = runView({ waiting: { questions: [{ directive_id: 7, question: 'Which branch?', asked_at: 'T' }], findings: [], paused: null } })
+    const gone = agent({ agent_id: 'sess-b', name: 'coder-b', session_name: 'host-r3-coder-b', session: 'gone', task: task({ id: 'file_id:2', name: 'b.py' }) })
+    const oracle = base.agents[0] as PanelAgent
+    const view = { ...base, agents: [{ ...oracle, children: [...oracle.children, gone] }] }
+    const snapshot: PanelSnapshot = { repo: CWD, generated_at: '', runs: [view] }
+    const clock = mock.clock(on, { now: 1_000 })
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('ui.panes', () => ({ value: [] }))
+    on('ui.toast', (_$, e) => {
+      toasts.push(String((e as { text?: unknown }).text ?? ''))
+      return { value: undefined }
+    })
+    on('fs.read', (_$, e) => {
+      if (e.path.replace(/\\/g, '/') === 'C:/t/coder.jsonl') return { value: TRANSCRIPT }
+      throw new Error(`ENOENT: ${e.path}`)
+    })
+    on('process.run', (_$, e) => {
+      launched.push([...e.argv])
+      const stdout = e.argv[0] === 'claude' ? LISTING : e.argv.includes('directive') ? '{}' : JSON.stringify(snapshot)
+      return { value: { ...RAN_OK, exitCode: 0, stdout } }
+    })
+    await $.tool.call({ tool: 'mcp__sentinel-swarm__open_panel', repo: CWD } as never)
+    await clock.settle()
+
+    const ui = await $.ui.mount({ plugin: 'sentinel-swarm', component: 'Pane', requestId: 'swarm-run', surface: 'terminal', props: PANE_PROPS } as never)
+    expect(await ui.find({ type: 'Text', text: /Waiting on you \(2\)/ })).toBeDefined()
+    const box = await ui.find({ key: 'wait:3:coder-a' })
+    expect(box?.props.borderColor).toBe('error')
+    expect(box?.text).toContain('Write: .claude/scratch/x.py')
+    expect(box?.text).toContain('host-r3-coder-a')
+    expect((await ui.find({ key: 'question:3:7' }))?.text).toContain('Which branch?')
+    expect((await ui.find({ type: 'Text', text: /^a\.py$/ }))?.props.wrap).toBe('truncate-start')
+    const nameOf = async (name: string) => (await ui.findAll({ type: 'Text', text: new RegExp(`^${name}$`) })).find(t => t.props.color === '#ff8700')
+    expect((await nameOf('coder-b'))?.props.dimColor).toBe(true)
+    expect((await nameOf('coder-a'))?.props.dimColor).toBe(false)
+    expect(await ui.find({ type: 'Text', text: /dimmed: ended or not started/ })).toBeDefined()
+
+    await (ui as unknown as { input: (target: { key: string; text: string }) => Promise<unknown> }).input({ key: 'answer:question:3:7', text: 'use main' })
+    await clock.settle()
+    const reply = launched.find(argv => argv.includes('directive')) ?? []
+    expect(reply.slice(reply.indexOf('directive'))).toEqual([
+      'directive',
+      '--repo',
+      CWD,
+      '--source',
+      'user_chat',
+      '--sender',
+      'run panel',
+      '--reply-to',
+      '7',
+      '--',
+      'use main',
+    ])
+    expect(toasts).toEqual(['Sent your answer to directive 7.'])
+    await ui.unmount()
   })
 })

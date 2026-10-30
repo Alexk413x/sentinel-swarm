@@ -7,11 +7,15 @@ export type SentinelSwarmSession = {
 }
 
 export type PanelAgent = {
+  agent_id: string | null
   name: string
   role: string
   model: string | null
   effort: string | null
   state: string
+  queued: boolean
+  session_name: string | null
+  transcript_path: string | null
   session: 'busy' | 'idle' | 'running' | 'gone' | null
   parked: boolean
   park_reason: string | null
@@ -35,6 +39,7 @@ export type PanelReview = { kind: string; outcome: string; notes: string | null 
 export type PanelTask = {
   id: string
   name: string
+  path: string | null
   state: string
   status: 'done' | 'active' | 'waiting' | 'problem'
   owners: string[]
@@ -53,9 +58,21 @@ export type PanelRun = {
   elapsed_s: number | null
 }
 
-export type PanelCounts = { live?: number; working?: number; parked?: number; gone?: number; ended?: number }
+export type PanelCounts = { live?: number; working?: number; parked?: number; gone?: number; queued?: number; ended?: number }
 
-export type PanelRunView = { run: PanelRun; agents: PanelAgent[]; counts: PanelCounts }
+export type PanelQuestion = { directive_id: number; question: string; asked_at: string }
+
+export type PanelFinding = { finding_id: number; kind: string; agent: string | null; detail: string; since: string }
+
+export type PanelRunWaiting = { questions: PanelQuestion[]; findings: PanelFinding[]; paused: string | null }
+
+export type PanelRunView = { run: PanelRun; agents: PanelAgent[]; counts: PanelCounts; waiting?: PanelRunWaiting }
+
+export type PanelRequest =
+  | { kind: 'tool'; tool: string; input: string }
+  | { kind: 'question'; questions: { question: string; options: string[] }[] }
+
+export type PanelSessionWait = { sessionId: string; name: string; waitingFor: string; request: PanelRequest | null }
 
 export type PanelSnapshot = {
   repo: string
@@ -64,7 +81,13 @@ export type PanelSnapshot = {
   error?: string
 }
 
-export type PanelFetch = { snapshot: PanelSnapshot | null; running: boolean; problem: string | null; at: string | null }
+export type PanelFetch = {
+  snapshot: PanelSnapshot | null
+  sessions: PanelSessionWait[]
+  running: boolean
+  problem: string | null
+  at: string | null
+}
 
 declare module 'claude-code' {
   interface PluginState {
