@@ -21,6 +21,9 @@ else
 fi
 run_dir="$root/runs/hello"
 host="$run_dir/host"
+# Each run installs from its own marketplace, so smoke runs of two hosts never share one.
+market="sentinel-swarm-smoke-$(date +%s)-$$"
+market_file="$run_dir/marketplace"
 claude_bin="${CLAUDE_BIN:-claude}"
 config_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 export SENTINEL_SWARM_CLAUDE="${SENTINEL_SWARM_CLAUDE:-$claude_bin}"
@@ -43,15 +46,16 @@ def load(name):
             return json.load(f)
     except (OSError, ValueError):
         return {}
-source = (load("known_marketplaces.json").get("sentinel-swarm") or {}).get("source") or {}
+market = sys.argv[2]
+source = (load("known_marketplaces.json").get(market) or {}).get("source") or {}
 path = str(source.get("path") or "").rstrip("/\\")
-if source.get("source") != "directory" or not os.path.basename(path).startswith("sentinel-swarm-plugin-"):
+if source.get("source") != "directory" or os.path.basename(path) != market:
     sys.exit()
 installed = load("installed_plugins.json")
-records = installed.get("plugins", installed).get("sentinel-swarm@sentinel-swarm") or []
+records = installed.get("plugins", installed).get("sentinel-swarm@" + market) or []
 users = [str(r.get("projectPath") or r.get("scope")) for r in records if isinstance(r, dict)]
 print("kept " + ", ".join(users) if users else "remove")
-' "$(win "$config_dir/plugins")"
+' "$(win "$config_dir/plugins")" "$1"
 }
 
 run_live() {
@@ -70,25 +74,34 @@ sys.exit(0 if row is not None and row[0] is None else 1)
 # The marketplace goes only once no install uses it: removing it uninstalls every plugin from it,
 # in every project.
 teardown() {
+  local old state
+  old="$(cat "$market_file" 2>/dev/null || true)"
   if [ -d "$host/.claude" ]; then
-    (cd "$host" && "$claude_bin" plugin uninstall sentinel-swarm@sentinel-swarm \
-      --scope project) >/dev/null 2>&1 || true
+    if [ -n "$old" ]; then
+      (cd "$host" && "$claude_bin" plugin uninstall "sentinel-swarm@$old" \
+        --scope project) >/dev/null 2>&1 || true
+    fi
     (cd "$host" && "$claude_bin" plugin uninstall codebase-kg@alexk413x \
       --scope project --keep-data) >/dev/null 2>&1 || true
   fi
-  local state
-  state="$(marketplace_state)"
+  [ -n "$old" ] || return 0
+  state="$(marketplace_state "$old")"
   case "$state" in
     remove)
       (cd "$host" 2>/dev/null || cd "$root"
-        "$claude_bin" plugin marketplace remove sentinel-swarm) >/dev/null 2>&1 || true
-      if [ "$(marketplace_state)" = remove ]; then
-        echo "teardown: could not remove the sentinel-swarm marketplace;" \
-          "run: claude plugin marketplace remove sentinel-swarm" >&2
+        "$claude_bin" plugin marketplace remove "$old") >/dev/null 2>&1 || true
+      if [ "$(marketplace_state "$old")" = remove ]; then
+        echo "teardown: could not remove the $old marketplace;" \
+          "run: claude plugin marketplace remove $old" >&2
       fi
       ;;
-    kept*) echo "teardown: the sentinel-swarm marketplace stays: ${state#kept } still uses it" >&2 ;;
+    kept*)
+      echo "teardown: the $old marketplace stays: ${state#kept } still uses it" >&2
+      return 0
+      ;;
   esac
+  # Skips a file a live session still has open instead of forcing the removal.
+  rm -rf "${TMPDIR:-/tmp}/$old" "$config_dir/plugins/cache/$old" 2>/dev/null || true
 }
 
 # Uninstalling while the run goes on would break its sessions' hooks, which find the plugin
@@ -141,14 +154,9 @@ teardown
 
 # The run installs the plugin from a clean copy of its files. Installing from the repo would
 # copy runs/ and mcp/.venv into the plugin cache.
-# A fresh folder per run: an open session can hold files in an earlier copy.
-for old in "${TMPDIR:-/tmp}"/sentinel-swarm-plugin*; do rm -rf "$old" 2>/dev/null || true; done
-# Same reasoning for the dev copies this run's own install left in the plugin cache: skip
-# one a live session still has open instead of forcing the removal.
-for old in "$config_dir/plugins/cache/sentinel-swarm/sentinel-swarm"/*-dev.*; do
-  rm -rf "$old" 2>/dev/null || true
-done
-plugin_dir="${TMPDIR:-/tmp}/sentinel-swarm-plugin-$(date +%s)"
+# A fresh folder per run, named after its marketplace: an open session can hold files in an
+# earlier copy.
+plugin_dir="${TMPDIR:-/tmp}/$market"
 mkdir -p "$plugin_dir"
 (cd "$root" && tar cf - --exclude=.venv --exclude=__pycache__ --exclude=.pytest_cache \
   --exclude=.ruff_cache .claude-plugin assets skills hooks templates types mcp) |
@@ -164,9 +172,9 @@ json.dump(d, open(p, 'w'), indent=2)" \
 
 # A one-plugin directory marketplace for the copy. The codebase-kg dependency comes from the
 # alexk413x marketplace, which this marketplace must allow.
-cat > "$plugin_dir/.claude-plugin/marketplace.json" <<'EOF'
+cat > "$plugin_dir/.claude-plugin/marketplace.json" <<EOF
 {
-  "name": "sentinel-swarm",
+  "name": "$market",
   "owner": { "name": "Alexk413x" },
   "allowCrossMarketplaceDependenciesOn": ["codebase-kg", "accessibility-tools", "cartographer"],
   "plugins": [{ "name": "sentinel-swarm", "source": "./" }]
@@ -177,6 +185,7 @@ EOF
 mkdir -p "$run_dir"
 find "$run_dir" -mindepth 1 ! -path "$host" -delete
 mkdir -p "$host/.claude" "$host/knowledge"
+echo "$market" > "$market_file"
 cd "$host"
 
 cat > README.md <<'EOF'
@@ -242,12 +251,10 @@ uv run --no-project --quiet "$kg_dir/mcp/launch/kg_cli.py" build "$(win "$run_di
 # installed copy lives in the plugin cache, outside host/, so Claude Code does not ask before a
 # Coder's writes.
 "$claude_bin" plugin marketplace add --scope project "$(win "$plugin_dir")" >/dev/null
-"$claude_bin" plugin uninstall sentinel-swarm@sentinel-swarm --scope project \
-  >/dev/null 2>&1 || true
-"$claude_bin" plugin install sentinel-swarm@sentinel-swarm --scope project -y >/dev/null
+"$claude_bin" plugin install "sentinel-swarm@$market" --scope project -y >/dev/null
 version=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['version'])" \
   "$(win "$plugin_dir/.claude-plugin/plugin.json")")
-installed="$config_dir/plugins/cache/sentinel-swarm/sentinel-swarm/$version"
+installed="$config_dir/plugins/cache/$market/sentinel-swarm/$version"
 
 swarm() {
   local module="$1"

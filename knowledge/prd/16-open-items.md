@@ -79,4 +79,10 @@ Each item below is marked **(needs implementation)** in its document.
 
 - **The device-queue broker** ([05-sessions.md](05-sessions.md)). Needs a new plan on
   the mod's delivery path.
+- **Answering a permission prompt in the run panel**
+  ([17-run-panel.md](17-run-panel.md)). A `tool.check` hook in each role session would hold
+  an `ask` verdict on a long poll to the ledger until the panel answers, and fall back
+  to Claude Code's prompt at its own deadline. It needs a `permission_request` table, a
+  long-poll route, the panel's Allow and Deny buttons, and a watchdog check of open
+  requests, since a session held by the hook does not show as waiting.
 - **Run panel payload.** The panel reads every brief on each 5-second refresh, about 240 KB for a run of 100 agents. Fetch a brief only when its task opens, and read the snapshot over the ledger server's HTTP route while it runs.

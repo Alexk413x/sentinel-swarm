@@ -47,8 +47,9 @@ user asks for a change.
 ## 3. Confirm codebase-kg
 
 codebase-kg is a required dependency. Check that the plugin is installed and its MCP
-server is loaded. A fresh install sometimes needs `/reload-plugins` before the server
-appears.
+server is loaded. A session loads plugin tools when it starts, and you cannot run
+`/reload-plugins` yourself: after a fresh install, tell the user to start a new session,
+or to run `/reload-plugins` in this one, before the server and the swarm's tools appear.
 
 ## 4. Build the code graph
 

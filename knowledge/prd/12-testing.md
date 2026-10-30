@@ -56,13 +56,16 @@ run `/reload-plugins`.
   `<plugin version>-dev.<epoch seconds>`, for example `0.1.0-dev.1790650000`, installs it at project scope under that
   version, runs setup, commits, and starts the Oracle through the installed copy's launcher.
   The repo has no marketplace of its own, so the script writes a one-plugin
-  `marketplace.json` named `sentinel-swarm` into the copy, with `source: "./"` and
+  `marketplace.json` into the copy, with `source: "./"` and
   `allowCrossMarketplaceDependenciesOn` for codebase-kg, accessibility-tools, and
-  cartographer, and adds the copy as a `directory` marketplace. The smoke install is
-  `sentinel-swarm@sentinel-swarm`. Every ledger step runs `python -I -S
-  <plugin>/mcp/launch/ledger.py <module>`, so the run needs no venv. Each run
-  also removes any older `*-dev.*` copy from the plugin cache, skipping one a live
-  session still has open, so a run never replaces a cached copy another session holds.
+  cartographer, and adds the copy as a `directory` marketplace.
+- Each run has its own marketplace, `sentinel-swarm-smoke-<epoch seconds>-<shell pid>`,
+  so two hosts can run the smoke test at the same time. The temp folder carries the same
+  name, the smoke install is `sentinel-swarm@<that name>`, and the installed copy sits in
+  `~/.claude/plugins/cache/<that name>/`. The script writes the name to
+  `runs/hello/marketplace`, where the next run's teardown and `--results` read it. Every
+  ledger step runs `python -I -S <plugin>/mcp/launch/ledger.py <module>`, so the run
+  needs no venv.
 - No flag opens an interactive Oracle. `--bg` checks trust first, then starts a
   background session; `bash scripts/smoke.sh --results` prints the results and then the
   automated checklist below, with a non-zero exit if a check fails. `--headless` checks trust
@@ -80,19 +83,20 @@ run `/reload-plugins`.
   host's `.claude/agents/swarm-oracle.md` to the first entry, because the launcher
   starts the Oracle on that file's model before the approved list.
 - The run tears down its plugin records when it ends. It runs `claude plugin uninstall
-  sentinel-swarm@sentinel-swarm --scope project` from the host folder, then
+  sentinel-swarm@<marketplace> --scope project` from the host folder, then
   `claude plugin uninstall codebase-kg@alexk413x --scope project --keep-data` from the
-  host folder, then `claude plugin marketplace remove sentinel-swarm`. Teardown never
-  removes the `alexk413x` marketplace. Teardown runs at the end of the
+  host folder, then `claude plugin marketplace remove <marketplace>`, and deletes the
+  run's temp folder and plugin cache folder, skipping a file a live session still has
+  open. Teardown touches only the marketplace named in `runs/hello/marketplace`, never
+  another host's, and never the `alexk413x` marketplace. Teardown runs at the end of the
   interactive and `--headless` modes and in `--results` mode, never in `--bg` mode,
-  which returns while the run goes on. Each run also tears down an earlier run's records
+  which returns while the run goes on. Each run also tears down its clone's earlier run
   before it installs, since Windows empties the temp folder the marketplace record
-  points at. After teardown, `~/.claude/plugins/known_marketplaces.json` has no
-  `sentinel-swarm` entry that points at the temp folder. Teardown never deletes a
-  session.
+  points at. After teardown, `~/.claude/plugins/known_marketplaces.json` has no entry for
+  the run's marketplace. Teardown never deletes a session.
   - Teardown removes the marketplace only when its record is a smoke copy (a
-    `directory` source named `sentinel-swarm-plugin-*`) and no install uses it any
-    more. `claude plugin marketplace remove` uninstalls every plugin from the
+    `directory` source whose folder has the marketplace's name) and no install uses it
+    any more. `claude plugin marketplace remove` uninstalls every plugin from the
     marketplace in every project and deletes their data, so while another host still
     has the plugin installed, teardown leaves the marketplace and prints that host.
   - Teardown is skipped while the ledger's latest run has no `ended_at`, and the
@@ -306,8 +310,8 @@ Then confirm that nothing is left running:
 - The run's sessions are stopped in `claude agents`. Do not `claude rm` them: Alex
   reviews them in agent view.
 - Teardown ran: `claude plugin list` shows no project-scope `sentinel-swarm` or
-  `codebase-kg@alexk413x` install for the host, and `~/.claude/plugins/known_marketplaces.json` has no `sentinel-swarm`
-  entry that points at the temp folder. A `teardown:` line on stderr names what stayed.
+  `codebase-kg@alexk413x` install for the host, and `~/.claude/plugins/known_marketplaces.json` has no entry for
+  the marketplace named in `runs/hello/marketplace`. A `teardown:` line on stderr names what stayed.
 - No codebase-kg `--serve` process from the run is left. One keeps running from
   the `codebase-kg@alexk413x` install folder in `~/.claude/plugins/cache/` after the run, and on
   Windows it makes the next run's install fail with `EPERM` when that install replaces

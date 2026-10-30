@@ -407,6 +407,14 @@ def test_trust_is_read_from_claude_json(repo: Path, config_dir: Path):
     assert setup.is_trusted(repo)
 
 
+def test_setup_says_a_fresh_install_needs_a_new_session(repo: Path):
+    report = setup.run_setup(repo)
+
+    assert report.lines[-1] == setup.RELOAD_NOTE
+    assert "/reload-plugins" in report.text()
+    assert "new session" in report.text()
+
+
 def test_untrusted_repo_gets_the_trust_command(repo: Path):
     report = setup.run_setup(repo)
 

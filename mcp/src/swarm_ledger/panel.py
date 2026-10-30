@@ -20,6 +20,7 @@ STATUS_STATES = {
     "active": ("working", "handed_up", "claimed", "returned"),
     "problem": ("incomplete", "released"),
 }
+ATTENTION_FINDINGS = ("needs_user", "run_stalled")
 
 
 def live_sessions(sessions_dir: Path | None = None) -> dict[str, dict]:
@@ -143,13 +144,14 @@ def _task_lists(
     }
     status_of = {"phase_id": phase_status, "module_id": module_status, "file_id": file_status}
 
-    def item(column: str, key: int, name: str, state: str) -> dict:
+    def item(column: str, key: int, name: str, state: str, path: str | None = None) -> dict:
         brief = briefs.get((column, key))
         review = reviews.get((column, key))
         body = brief["body"] if brief is not None else None
         return {
             "id": f"{column}:{key}",
             "name": name,
+            "path": path,
             "state": state,
             "status": status_of[column][key],
             "owners": owners.get((column, key), []),
@@ -170,7 +172,9 @@ def _task_lists(
             for m in modules
         },
         **{
-            ("file_id", f["file_id"]): item("file_id", f["file_id"], f["path"], f["state"])
+            ("file_id", f["file_id"]): item(
+                "file_id", f["file_id"], _file_name(f["path"]), f["state"], f["path"]
+            )
             for f in files
         },
     }
@@ -185,11 +189,12 @@ def _task_lists(
     whole_run = {
         "id": f"run:{run['run_id']}",
         "name": "all phases",
+        "path": None,
         "state": run["state"],
         "status": _combine(list(phase_status.values())) if phase_status else "waiting",
         "owners": [],
         "summary": None,
-        "brief": run["outcome"],
+        "brief": run["outcome"] or run["prd"],
         "review": None,
     }
 
@@ -224,6 +229,10 @@ def _latest_by_subject(
                 latest[(column, row[column])] = row
                 break
     return latest
+
+
+def _file_name(path: str) -> str:
+    return path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] or path
 
 
 def _summary(body: str | None) -> str | None:
@@ -288,16 +297,22 @@ def _run_snapshot(conn: sqlite3.Connection, sessions: dict[str, dict], run: sqli
 
     nodes: dict[str, dict] = {}
     rows = [dict(row) for row in conn.execute("SELECT * FROM agents WHERE run_id = ?", (run_id,))]
-    tasks = _task_lists(conn, run, rows)
-    for agent in rows:
+    queued = _queued_children(conn, run_id, {a["name"] for a in rows if a["ended_at"] is None})
+    tasks = _task_lists(conn, run, rows + queued)
+    for agent in rows + queued:
         own_task, waiting = tasks(agent)
+        is_queued = agent["state"] == "queued"
         nodes[agent["agent_id"]] = {
+            "agent_id": None if is_queued else agent["agent_id"],
             "name": agent["name"],
             "role": agent["role"],
             "model": agent.get("model"),
             "effort": agent.get("effort"),
             "state": agent["state"],
-            "session": _session_state(agent, sessions, by_name),
+            "queued": is_queued,
+            "session_name": agent.get("session_name"),
+            "transcript_path": agent.get("transcript_path"),
+            "session": None if is_queued else _session_state(agent, sessions, by_name),
             "parked": agent.get("parked_at") is not None,
             "park_reason": agent.get("park_reason"),
             "ended_at": agent["ended_at"],
@@ -316,7 +331,7 @@ def _run_snapshot(conn: sqlite3.Connection, sessions: dict[str, dict], run: sqli
         }
 
     roots: list[dict] = []
-    for agent in rows:
+    for agent in rows + queued:
         node = nodes[agent["agent_id"]]
         parent = nodes.get(agent.get("parent_agent_id") or "")
         (parent["children"] if parent is not None else roots).append(node)
@@ -330,7 +345,8 @@ def _run_snapshot(conn: sqlite3.Connection, sessions: dict[str, dict], run: sqli
             sort(node["children"])
 
     sort(roots)
-    live = [n for n in nodes.values() if n["ended_at"] is None]
+    started = [n for n in nodes.values() if not n["queued"]]
+    live = [n for n in started if n["ended_at"] is None]
     return {
         "run": {
             "run_id": run_id,
@@ -345,11 +361,93 @@ def _run_snapshot(conn: sqlite3.Connection, sessions: dict[str, dict], run: sqli
         "counts": {
             "live": len(live),
             "working": sum(1 for n in live if n["state"] == "working"),
-            "parked": sum(1 for n in live if n["parked"]),
-            "gone": sum(1 for n in live if n["session"] == "gone" and not n["parked"]),
-            "ended": len(nodes) - len(live),
+            "parked": sum(1 for n in live if n["parked"] or n["state"] == "parked"),
+            "gone": sum(
+                1
+                for n in live
+                if n["session"] == "gone" and not n["parked"] and n["state"] != "parked"
+            ),
+            "queued": len(queued),
+            "ended": len(started) - len(live),
         },
+        "waiting": _waiting(conn, run),
     }
+
+
+def _queued_children(conn: sqlite3.Connection, run_id: int, live_names: set[str]) -> list[dict]:
+    try:
+        rows = conn.execute(
+            "SELECT q.queue_id, q.child_name, q.role, q.parent_agent_id, q.reason, q.queued_at, "
+            "b.model, b.effort, b.phase_id, b.module_id, b.file_id FROM spawn_queue q "
+            "JOIN briefs b ON b.brief_id = q.brief_id "
+            "WHERE q.run_id = ? AND q.state = 'queued' ORDER BY q.queue_id",
+            (run_id,),
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    return [
+        {
+            "agent_id": f"queue:{row['queue_id']}",
+            "name": row["child_name"],
+            "role": row["role"],
+            "model": row["model"],
+            "effort": row["effort"],
+            "state": "queued",
+            "parent_agent_id": row["parent_agent_id"],
+            "phase_id": row["phase_id"],
+            "module_id": row["module_id"],
+            "file_id": row["file_id"],
+            "parked_at": None,
+            "park_reason": row["reason"],
+            "ended_at": None,
+            "started_at": row["queued_at"],
+        }
+        for row in rows
+        if row["child_name"] not in live_names
+    ]
+
+
+def _waiting(conn: sqlite3.Connection, run: sqlite3.Row) -> dict:
+    run_id = run["run_id"]
+    questions = [
+        {
+            "directive_id": row["directive_id"],
+            "question": row["question"] or row["resolution"] or row["body"],
+            "asked_at": row["created_at"],
+        }
+        for row in conn.execute(
+            "SELECT directive_id, question, resolution, body, created_at FROM directives "
+            "WHERE run_id = ? AND state = 'open' AND outcome = 'needs_user' "
+            "ORDER BY directive_id",
+            (run_id,),
+        )
+    ]
+    marks = ", ".join("?" for _ in ATTENTION_FINDINGS)
+    findings = [
+        {
+            "finding_id": row["finding_id"],
+            "kind": row["kind"],
+            "agent": row["name"],
+            "detail": row["detail"],
+            "since": row["first_seen_at"],
+        }
+        for row in conn.execute(
+            "SELECT f.finding_id, f.kind, f.detail, f.first_seen_at, a.name FROM "
+            "watchdog_findings f LEFT JOIN agents a ON a.agent_id = f.agent_id "
+            f"WHERE f.run_id = ? AND f.cleared_at IS NULL AND f.kind IN ({marks}) "
+            "ORDER BY f.finding_id",
+            (run_id, *ATTENTION_FINDINGS),
+        )
+    ]
+    paused = None
+    if run["state"] == "paused":
+        row = conn.execute(
+            "SELECT e.reason FROM agent_events e JOIN agents a ON a.agent_id = e.agent_id "
+            "WHERE a.run_id = ? AND e.to_state = 'paused' ORDER BY e.event_id DESC LIMIT 1",
+            (run_id,),
+        ).fetchone()
+        paused = (row["reason"] if row is not None else None) or "no reason recorded"
+    return {"questions": questions, "findings": findings, "paused": paused}
 
 
 def document(repo_root: Path, run_id: int | None = None, sessions_dir: Path | None = None) -> dict:

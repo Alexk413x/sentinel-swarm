@@ -109,6 +109,11 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
 The role files take effect in the next session. A session loads agent files once, at
 startup.
 
+Setup ends its report with a line that says a fresh install needs a new session before
+its tools load. A session loads plugin tools when it starts, and setup cannot run
+`/reload-plugins`, so the line tells the user to start a new session, or to run
+`/reload-plugins` in the current one, before `/sentinel-swarm:run`.
+
 ## Plugin detection
 
 The ledger counts a plugin (`codebase-kg`, a11y, cartographer, a driver plugin) as
@@ -217,6 +222,13 @@ descriptions stay out of every session's context.
 | `max_workers` | 8 | Worker processes for the ledger server's tool calls, and as many again for its hooks. `0` runs every call in the server process, one at a time. A negative value reads as `0`; a value that is not a whole number reads as 8. The server reads it at start. See [06-ledger-server.md](06-ledger-server.md) |
 
 `-p no:cacheprovider` keeps parallel pytest runs from contending on `.pytest_cache`.
+
+A Coder's shell gate allows only a command that starts with `test_command`,
+`build_command`, or `lint_command`, read-only git, and the host commands the settings
+name in `commands`; see `pre_shell` in
+[07-hooks-and-enforcement.md](07-hooks-and-enforcement.md). Any other step the work
+needs, such as an export, edit, and build loop over data files, goes in `commands`
+under its own name, not behind `build_command`.
 
 ## Plugin features
 
