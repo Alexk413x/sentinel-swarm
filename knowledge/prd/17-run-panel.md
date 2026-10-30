@@ -35,8 +35,9 @@ goes in as a directive reply.
   `agent_spawn` queued in `spawn_queue` has a brief but no session yet; it sits in the
   tree under its parent as a queued row, with its brief's task and the queue's reason.
 - When the snapshot has a live run, the mod also runs `claude agents --json` through
-  `$.process`. A session whose `status` or `state` is `waiting`, or that carries
-  `waitingFor`, is waiting on a person. The mod matches it to a live agent by session
+  `$.process`. A session whose `status` or `state` is `waiting` or `blocked`, or that
+  carries `waitingFor`, is waiting on a person. A `blocked` session with no `waitingFor`
+  shows as "is blocked on you". The mod matches it to a live agent by session
   id, or by session name when the id changed. For each match it reads the agent's
   transcript through `$.fs` and takes the last tool use that has no tool result: the
   tool and its input (a shell command, a file path, or the input as JSON, cut at 400

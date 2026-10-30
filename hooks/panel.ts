@@ -283,8 +283,9 @@ export function parseWaiting(stdout: string): SessionWait[] {
     if (typeof entry !== 'object' || entry === null) return []
     const { sessionId, name, status, state, waitingFor } = entry as Record<string, unknown>
     if (typeof sessionId !== 'string') return []
-    if (status !== 'waiting' && state !== 'waiting' && typeof waitingFor !== 'string') return []
-    return [{ sessionId, name: typeof name === 'string' ? name : '', waitingFor: typeof waitingFor === 'string' ? waitingFor : 'waiting' }]
+    const held = [status, state].find(value => value === 'waiting' || value === 'blocked')
+    if (held === undefined && typeof waitingFor !== 'string') return []
+    return [{ sessionId, name: typeof name === 'string' ? name : '', waitingFor: typeof waitingFor === 'string' ? waitingFor : (held ?? 'waiting') }]
   })
 }
 
@@ -352,6 +353,7 @@ export function requestLines(request: PanelRequest | null): string[] {
 const WAIT_TITLE: Readonly<Record<string, string>> = {
   'permission prompt': 'waits on a permission prompt',
   'input needed': 'waits for your answer',
+  blocked: 'is blocked on you',
 }
 
 export function attention(view: PanelRunView, sessions: readonly PanelSessionWait[]): Attention[] {

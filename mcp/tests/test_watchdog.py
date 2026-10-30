@@ -250,6 +250,7 @@ def test_a_session_waiting_on_a_permission_prompt_needs_the_user(
         {"status": "waiting", "waitingFor": "MCP server prompt"},
         {"status": "waiting"},
         {"status": None, "state": "waiting"},
+        {"status": "idle", "state": "blocked"},
     ],
 )
 def test_any_waiting_status_needs_the_user(
@@ -263,8 +264,9 @@ def test_any_waiting_status_needs_the_user(
     findings = _scan(ledger, claude, now)
 
     assert _kinds(findings) == [("asking", "needs_user")]
+    default = "the user (blocked)" if extra.get("state") == "blocked" else "input"
     assert findings[0].detail.startswith(
-        f"its session host-r1-asking waits on {extra.get('waitingFor') or 'input'}"
+        f"its session host-r1-asking waits on {extra.get('waitingFor') or default}"
     )
 
 

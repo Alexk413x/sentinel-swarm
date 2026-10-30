@@ -146,6 +146,10 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   (2026-10-30)
 - `claude agents --json` shows a background session waiting on `AskUserQuestion` as
   `status: waiting` with `waitingFor: "input needed"`. (2026-10-28, run B)
+- Claude Code 2.1.314: `claude agents --json` showed a paused run's background Oracle,
+  idle after `run_pause` until someone said continue, as `status: idle` with
+  `state: blocked` and no `waitingFor`. A busy-then-idle role session in the same run
+  showed `state: working`. (2026-10-30, textstats smoke run)
 - Before the plugin relays, one swarm session ran 4 MCP server processes for codebase-kg
   0.7.0, or 14 with both a11y servers in their `uvx` form, and 15 to 20 MCP-related
   processes in all. (2026-09-25)

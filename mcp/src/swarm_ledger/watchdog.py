@@ -137,6 +137,8 @@ def waiting_on_user(entry: dict | None) -> str | None:
     states = {str(entry.get(key) or "").lower() for key in ("status", "state")}
     if "waiting" in states:
         return waiting or "input"
+    if "blocked" in states:
+        return waiting or "the user (blocked)"
     if any(word in waiting.lower() for word in _USER_WAITS):
         return waiting
     return None
