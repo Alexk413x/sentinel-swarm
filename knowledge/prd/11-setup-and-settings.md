@@ -101,6 +101,13 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
 - Adds `.sentinel-swarm/`, `.claude/agents/swarm-*.md`, `.claude/codebase-kg.local.md`,
   and `.claude/sentinel-swarm.local.md` to `.git/info/exclude`, so the settings file the
   setup skill writes stays out of `git status`.
+- Proposes host commands for the `commands` setting. It reads the repo's top-level
+  Markdown files, `.claude/*.md`, and `docs/` two levels deep (60 files at most), and
+  finds each inline code span or line that runs a script that exists in the repo
+  through `python`, `python3`, `py`, `py -3`, `node`, `bash`, `sh`, or `uv run`. It
+  skips a script whose name contains `test` and one the settings already list, and
+  prints one "Proposed host command" line per script, with its name, run, cwd, and
+  interpreter. It writes nothing: the setup skill asks the user which to add.
 - Reports whether the repo is trusted, from `~/.claude.json` (or
   `$CLAUDE_CONFIG_DIR/.claude.json`), and prints the command that trusts it.
   `--check-trust` only checks, and exits 1 with the command when the repo is not
@@ -205,6 +212,7 @@ descriptions stay out of every session's context.
 | `watchdog.*` | See "Watchdog" in [08-watchdog.md](08-watchdog.md) | Watchdog timing, thresholds, and server idle exit |
 | `test_command` | empty | Must contain `{target}`, for example `python -m pytest -q -p no:cacheprovider {target}` |
 | `build_command`, `lint_command` | empty | Optional; the Coder's shell gate allows them, and the Driver's allows `build_command` only |
+| `commands` | empty | Named host commands outside test, build, and lint, such as the rebuild of a derived file. Each entry has `name`, `run`, `cwd` (default `.`), and `interpreter`; an entry with no `name` or `run` is dropped. The Coder's and the Manager's shell gates allow each exactly as `cd <cwd> && <interpreter> <run>`, or `<interpreter> <run>` when `cwd` is `.`. A failing `tests_run` whose output names a command's `name` or `run` lists that command in its result's `commands`. See "pre_shell" in [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md) |
 | `memory.headroom_mb` | 1500 | Megabytes of free memory the ledger keeps. `agent_spawn` queues a session whose role's estimate would take free memory below it, the watchdog starts it once memory frees, and a parked agent's resume follows the same rule. Empty admits every spawn. See "Memory" in [05-sessions.md](05-sessions.md) |
 | `memory.park_idle_parents` | `true` | Under memory pressure, the watchdog stops an idle Manager or Lead whose children still work and resumes it when a wake-up is owed to it. `false` leaves idle parents to the daemon |
 | `parallelism_cap` | empty | No limit when empty; also counts other swarms' live sessions on the machine |

@@ -4,6 +4,7 @@ import json
 import sqlite3
 from typing import Literal
 
+from . import settle
 from .db import NOW, dict_rows, in_clause, row_dict, write_tx
 from .host import LedgerHost
 from .identity import ROLE_RANK, Caller, LedgerError, caller_of, parent_chain, require_role, resolve
@@ -96,9 +97,13 @@ class AgreementsMixin(LedgerHost):
     # -- Gates called from review.py and ledger.py ---------------------------
 
     def _block_handoff_for_open_cr(self, conn: sqlite3.Connection, file_id: int) -> None:
+        # A file with no test_path has no test run to close its change request; its next
+        # handoff is the evidence, so that handoff must not wait on the request.
         rows = conn.execute(
             "SELECT cr.cr_id FROM change_requests cr JOIN agents a ON a.agent_id = cr.to_agent_id "
-            "WHERE cr.file_id = ? AND cr.state = 'accepted' AND a.role = 'coder'",
+            "JOIN files f ON f.file_id = cr.file_id "
+            "WHERE cr.file_id = ? AND cr.state = 'accepted' AND a.role = 'coder' "
+            "AND f.test_path IS NOT NULL",
             (file_id,),
         ).fetchall()
         if rows:
@@ -330,6 +335,27 @@ class AgreementsMixin(LedgerHost):
 
     def _cr_evidence(
         self, conn: sqlite3.Connection, cr_row: sqlite3.Row, recipient_role: str, c: Caller
+    ) -> tuple[int | None, int | None]:
+        file_row = conn.execute(
+            "SELECT test_path FROM files WHERE file_id = ?", (cr_row["file_id"],)
+        ).fetchone()
+        if file_row is not None and not file_row["test_path"]:
+            handoff = conn.execute(
+                "SELECT handoff_id FROM handoffs WHERE file_id = ? AND created_at > ? "
+                "AND state IN ('submitted', 'approved') ORDER BY handoff_id DESC LIMIT 1",
+                (cr_row["file_id"], cr_row["accepted_at"]),
+            ).fetchone()
+            if handoff is None:
+                raise LedgerError(
+                    f"{cr_row['path']} has no test_path, so its evidence is a handoff of the "
+                    "file submitted since acceptance, and none exists; the file's Coder makes "
+                    "the change and calls handoff_submit first"
+                )
+            return None, handoff["handoff_id"]
+        return self._cr_test_evidence(conn, cr_row, recipient_role, c), None
+
+    def _cr_test_evidence(
+        self, conn: sqlite3.Connection, cr_row: sqlite3.Row, recipient_role: str, c: Caller
     ) -> int:
         targets = self._cr_targets(conn, cr_row)
         placeholders = in_clause(targets)
@@ -389,11 +415,12 @@ class AgreementsMixin(LedgerHost):
             if row["state"] != "accepted":
                 raise LedgerError(f"change request {cr_id} is {row['state']}, not accepted")
 
-            evidence_id = self._cr_evidence(conn, row, c.role, c)
+            test_run_id, handoff_id = self._cr_evidence(conn, row, c.role, c)
             conn.execute(
                 f"UPDATE change_requests SET state = 'completed', completed_at = {NOW}, "
-                "completion_notes = ?, evidence_test_run_id = ? WHERE cr_id = ?",
-                (notes, evidence_id, cr_id),
+                "completion_notes = ?, evidence_test_run_id = ?, evidence_handoff_id = ? "
+                "WHERE cr_id = ?",
+                (notes, test_run_id, handoff_id, cr_id),
             )
             wakeup = self._owe_wakeup(
                 conn,
@@ -766,6 +793,7 @@ class AgreementsMixin(LedgerHost):
                 "UPDATE files SET state = 'returned', released_at = NULL WHERE file_id = ?",
                 (file_row["file_id"],),
             )
+            settle.sync_products(conn, file_row["file_id"], "returned", released="clear")
             return None
         submitted = conn.execute(
             "SELECT handoff_id FROM handoffs WHERE file_id = ? AND state = 'submitted' "
@@ -782,6 +810,7 @@ class AgreementsMixin(LedgerHost):
         conn.execute(
             "UPDATE files SET state = 'returned' WHERE file_id = ?", (file_row["file_id"],)
         )
+        settle.sync_products(conn, file_row["file_id"], "returned")
         return submitted["handoff_id"]
 
     def _resume_chain(

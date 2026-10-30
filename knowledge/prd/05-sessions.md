@@ -442,6 +442,8 @@ than keep an alias.
 | `agent_release` of a Driver by the Oracle, or the Oracle's `drive_unavailable` | The Driver's session; its open exploration becomes `abandoned` |
 | `drive_request` | An earlier Driver still live after its exploration ended |
 | `run_finish` | Every agent still live except the Oracle |
+| `file_accept_incomplete` | The file's Coder |
+| `run_close` | Every agent still live. Called by the Oracle, the server then stops the Oracle's background session and exits as after `run_finish`; from `ledger.py close`, it stops a background Oracle session at once, and the server exits after `idle_exit_minutes` |
 | About 3 seconds after `run_finish` | The server waits up to 5 minutes for the Oracle's last turn to end, stops the Oracle's background session, and exits. An interactive Oracle is the user's terminal and keeps running |
 | `idle_exit_minutes` with no active run, or a paused run, no session of the run running, and no ledger tool call | The ledger server |
 | A run that is not `active`, or a newer listener | The watchdog listener |
@@ -487,8 +489,11 @@ for the measured figures.
   memory, or an empty `headroom_mb`, admits the spawn.
 - **Start queued spawns.** Each watchdog pass starts queued spawns oldest first, while
   they fit. It skips one whose phase is paused or that a parallelism cap holds back,
-  and drops one whose brief was acknowledged, whose parent ended, or whose start failed,
-  with a ledger message to the parent that says why. While a spawn is queued, the
+  and drops one whose brief was acknowledged, whose parent ended, whose start failed, or
+  that is a Coder whose file has no live claim for it, with a ledger message to the
+  parent that says why. A parent cancels a queued spawn with `agent_release(<child
+  name>)`, which keeps the brief and the claim; `release_file` on the queued Coder's
+  path drops its spawn too. While a spawn is queued, the
   Oracle's Stop hook does not block for pending work, and the watchdog reports no stall.
 - **Capacity.** `run_status` returns `capacity`: `free_mb`, `headroom_mb`,
   `estimate_mb` per role, `spawn_slots` per role (how many more sessions fit under the

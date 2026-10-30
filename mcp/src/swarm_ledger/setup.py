@@ -347,6 +347,59 @@ def trust_instructions(repo: Path) -> str:
     )
 
 
+_DOC_GLOBS = ("*.md", ".claude/*.md", "docs/*.md", "docs/*/*.md")
+_DOC_LIMIT = 60
+_SCRIPT_COMMAND = re.compile(
+    r"^(?:\$\s+)?(?P<interpreter>python3?|py -3|py|node|bash|sh|uv run python|uv run)\s+"
+    r"(?P<run>(?P<script>[\w./\-]+\.(?:py|js|mjs|cjs|sh|ts))(?:\s+[^`|;&<>]*)?)$"
+)
+
+
+def doc_commands(repo: Path) -> list[dict[str, str]]:
+    seen: set[str] = set()
+    found: list[dict[str, str]] = []
+    docs = sorted({p for pattern in _DOC_GLOBS for p in repo.glob(pattern) if p.is_file()})
+    for doc in docs[:_DOC_LIMIT]:
+        try:
+            text = doc.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        candidates = re.findall(r"`([^`\n]+)`", text) + text.splitlines()
+        for raw in candidates:
+            match = _SCRIPT_COMMAND.match(raw.strip())
+            if match is None or "test" in Path(match["script"]).name.lower():
+                continue
+            run = " ".join(match["run"].split())
+            if run in seen or not (repo / match["script"]).is_file():
+                continue
+            seen.add(run)
+            found.append(
+                {
+                    "name": Path(match["script"]).stem.replace("_", "-"),
+                    "run": run,
+                    "cwd": ".",
+                    "interpreter": match["interpreter"],
+                    "source": doc.relative_to(repo).as_posix(),
+                }
+            )
+    return found
+
+
+def propose_commands(repo: Path, report: SetupReport) -> None:
+    from .settings import load_settings
+
+    known = {c["run"] for c in load_settings(repo).commands}
+    for command in doc_commands(repo):
+        if command["run"] in known:
+            continue
+        report.add(
+            f"Proposed host command from {command['source']}: name: {command['name']}, "
+            f"run: {command['run']}, cwd: {command['cwd']}, interpreter: "
+            f"{command['interpreter']}. Add it to commands in {SETTINGS_PATH.as_posix()} "
+            "when the swarm should run it."
+        )
+
+
 def run_setup(repo: Path) -> SetupReport:
     repo = repo.resolve()
     report = SetupReport()
@@ -355,6 +408,7 @@ def run_setup(repo: Path) -> SetupReport:
     merge_settings_local(repo, report)
     quiet_codebase_kg_nudge(repo, report)
     ensure_excludes(repo, report)
+    propose_commands(repo, report)
     report.trusted = is_trusted(repo)
     report.trust_note = f"{repo} is trusted" if report.trusted else trust_instructions(repo)
     return report

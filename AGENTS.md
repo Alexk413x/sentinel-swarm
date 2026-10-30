@@ -26,8 +26,8 @@ report, setup, and testing. The code graph maps every document, so codebase-kg's
   The plugin declares no MCP server: each host repo runs its own HTTP ledger server.
   `mcp/launch/ledger.py <module>` runs a ledger module on the base interpreter with
   `-I -S`: `setup` prepares a host repo, `launch` starts the Oracle session,
-  `directive` steers a live run from an ordinary session, and `panel` prints the run
-  panel's snapshot.
+  `directive` steers a live run from an ordinary session, `close` closes a run the
+  ledger cannot finish, and `panel` prints the run panel's snapshot.
 - `knowledge/` — `code_graph.db`, the codebase-kg map of this repo, and `prd/`, the
   source-of-truth documents with their index in `prd/README.md`. Both committed.
 - `scripts/smoke.sh` — the smoke test. It rebuilds `runs/hello/` (git-ignored) on each run,

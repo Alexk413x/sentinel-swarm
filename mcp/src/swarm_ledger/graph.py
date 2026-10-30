@@ -268,6 +268,18 @@ def stale_files(repo_root: Path, rel_paths: list[str] | None = None) -> dict[str
         conn.close()
 
 
+def _source_text(path: Path) -> str | None:
+    if not path.is_file():
+        return ""
+    data = path.read_bytes()
+    if b"\0" in data:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
 def graph_current_for(repo_root: Path, rel_path: str) -> tuple[bool, list[str]]:
     graph_path = repo_root / "knowledge" / "code_graph.db"
     if not graph_path.is_file():
@@ -284,7 +296,9 @@ def graph_current_for(repo_root: Path, rel_path: str) -> tuple[bool, list[str]]:
             return False, [f"no node anchors on {rel_path}"]
 
         full_path = repo_root / rel_path
-        source_text = full_path.read_text(encoding="utf-8") if full_path.is_file() else ""
+        source_text = _source_text(full_path)
+        if source_text is None:
+            return True, []
 
         reasons: list[str] = []
         mapped_symbols: set[str] = set()

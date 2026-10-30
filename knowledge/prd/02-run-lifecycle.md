@@ -116,8 +116,19 @@ message. The Oracle then calls, in order:
 
 - A Lead claims each file with `claim_file(path, test_path, for_name)` before it writes
   the Coder's brief. The claim is the file lock.
+- A Manager may claim a path no module owns into one of its own modules with
+  `claim_file(path, test_path, for_name, module_id=<the module>)`. `for_name` is a new
+  Coder name of that module, and the module's Lead briefs the Coder. A Lead's claim
+  stays in its own module.
 - One Coder owns one file. The ledger refuses a second live claim on a path, and a
   second live claim for one Coder name.
+- A generated file, such as a build output, is claimed as a product of the file it is
+  built from: `claim_file(path, None, for_name=<the source's Coder>,
+  product_of=<source file_id>)`. A product has no test path and no Coder of its own.
+  The source's Coder writes it, and the write gate allows it. The source's handoff saves
+  its version, and the product takes the source's state through the handoff, the
+  approval, a return, and an accepted incomplete. A write to the product marks the
+  source stale.
 - `test_path` is optional for a file with no code, such as a README, a config file, or
   an empty package marker. Its handoff runs no tests, and the reviews judge it. The
   ledger reads the strings `""`, `"none"`, and `"null"` as no test file. The Oracle's
@@ -125,10 +136,24 @@ message. The Oracle then calls, in order:
   class.
 - A re-claim of a released path in the same run supersedes the old claim. The old row
   becomes `superseded`, and every gate treats it as settled.
-- `release_file(path)` drops a claim that is no longer needed. `who_owns(path)` names
-  the live owner.
+- `release_file(path)` drops a claim that is no longer needed, with its products. It
+  refuses while the owning Coder is live: release the Coder first with
+  `agent_release`. When the owner is a queued spawn, it drops that spawn, so a Coder
+  never starts on a released claim. `who_owns(path)` names the live owner.
+- `agent_release(<child name>)` on a queued child cancels its spawn and keeps its brief
+  and its claim.
+- `agent_spawn`, and the queue when memory frees, refuse a Coder whose file has no live
+  claim for it; the queue drops the spawn and tells the parent why.
+- Nothing else ends a claim early. Parking a parent under memory pressure, releasing
+  it, or replacing it keeps every claim of its queued and live children.
 - File states: `claimed`, `handed_up`, `returned`, `approved`, `incomplete`,
   `released`, `superseded`.
+- A file is settled when it is `approved`, `incomplete`, or `superseded`; when it is
+  `released` and its path does not exist; or when a deferral of kind `phase`, `plan`,
+  or `prd` on it is agreed, which moves its remaining work out of the plan. A `file` or
+  `module` deferral does not settle a file: it trims the task while the Coder works.
+  `module_review(accepted)` sets a stray released claim to `superseded` and a deferred
+  file to `incomplete`, and releases it.
 
 ## Handoff
 
@@ -139,20 +164,30 @@ refuses unless:
 2. No change request on the file that a Coder accepted is still uncompleted.
 3. When the file has a `test_path`, the ledger runs `tests_run(scope="file")` on it
    and the run passes: exit code 0, at least one test passed, and zero failed, errored,
-   or skipped.
+   or skipped. A deleted file whose test file is deleted too runs no tests.
 4. The code graph is current for the file, and neither the file nor its test file is stale against its recorded baseline. See "The code graph" in [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
+   A binary file is read as bytes: its anchors need no symbol check. A deleted file
+   needs the opposite: no node may still anchor on it.
 5. A self review exists and is newer than the Coder's last edit of either path.
 6. After a returned handoff of the file, the Coder has read its brief with `brief_get`
    since the latest return. This is principle 9 in [01-roles.md](01-roles.md).
 
-On success it saves a version of the file and the test file in
-`.sentinel-swarm/versions/`, records the handoff as `submitted`, writes each string in
+On success it saves a version of the file, the test file, and each product in
+`.sentinel-swarm/versions/`, hashing the bytes as they are, so a binary file hands off
+like any other. A path that no longer exists is saved as a deletion version
+(`versions.deleted` 1, empty content, no stored copy). It records the handoff as
+`submitted`, writes each string in
 `departures` as a departure row, sets the file and the Coder to `handed_up`, and owes
 the Lead a wake-up. It also sets every earlier `submitted` handoff of the file to
 `superseded` and closes their open departures; see "Departures" in
 [04-agreements.md](04-agreements.md). `review_compare`, `approve`, `return_work`, and
 `accept_incomplete` refuse a superseded handoff, and the watchdog and the Oracle's Stop
 hook do not count it as work awaiting review.
+
+A Coder deletes its own file, test file, or product with `file_delete(path)`, or with
+`git rm <path>` through its shell gate. Either marks the file stale. The Coder then
+scores and hands off as for an edit, and the Lead reviews the deletion. Restoring a
+deletion version with `version_restore` deletes the file again.
 
 ## Lead review
 
@@ -196,8 +231,8 @@ The ledger enforces this order:
 `module_review(module_id, outcome, notes, disagreement_notes, scores)` belongs to the
 Manager of the module's phase.
 
-- `accepted` refuses unless every file of the module is `approved`, `incomplete`, or
-  `superseded`; a passing test run of scope `module` for the module, or of scope
+- `accepted` refuses unless every file of the module is settled (see "Files and
+  claims"); a passing test run of scope `module` for the module, or of scope
   `phase` in the phase, exists after the module's last file decision; `disagreement_notes`
   holds a non-empty note, keyed by `file_id`, for each approved file whose self and
   Lead scores disagreed; and `scores` rates completeness, integration, and open items
@@ -247,6 +282,28 @@ open, while a change request on a file of the phase is not verified or declined,
 without an accepted `phase_review` since the hand-up. It approves the
 phase, then releases the Manager and every live agent under it and stops their
 sessions.
+
+## Settling a file and closing a run by the Oracle
+
+- `file_accept_incomplete(file_id, reason, evidence)` is the Oracle's. It settles a file
+  that cannot hand off but is verified another way, such as a binary file covered by an
+  approved export and its round-trip tests. `evidence` is a non-empty list of passing
+  test run ids of the run. It refuses a file that is already settled. It marks the file
+  and its products `incomplete` and releases them, marks a submitted handoff
+  `incomplete`, releases the file's Coder, closes the waits on the path, and records an
+  agreed deferral of kind `file` with the reason and the evidence. `module_review`
+  counts the file as settled, and the module is approved when no file of it is pending.
+- `run_close(outcome, files_incomplete)` closes a run that `run_finish` cannot. The
+  Oracle calls it, or the run's owner runs `mcp/launch/ledger.py close [--file
+  ID=REASON ...] <outcome>` from a terminal. `files_incomplete` names every unsettled
+  file as `{"file_id", "reason"}`; it refuses an unnamed unsettled file, a settled one,
+  and an empty reason. It skips every other gate. It settles stray releases and
+  deferred files, records each named file as incomplete with its reason, drops the
+  queued spawns, sets the run to `closed` with `outcome` and `closed_by` (`oracle` or
+  `launcher`), releases every agent and stops their sessions, writes the report, and
+  releases the run lock. Called by the Oracle, the server then stops the Oracle's
+  session and exits, as after `run_finish`. From the launcher it also stops a
+  background Oracle session, and the server exits after `idle_exit_minutes`.
 
 ## Finish
 

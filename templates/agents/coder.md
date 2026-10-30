@@ -4,7 +4,7 @@ description: Runs only inside a sentinel-swarm run. A Lead starts one Coder sess
 model: sonnet
 color: orange
 permissionMode: acceptEdits
-tools: Read, Grep, Glob, Write, Edit, Bash, PowerShell, ToolSearch, SendMessage, WebSearch, WebFetch, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__brief_ack, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__who_owns, mcp__swarm-ledger__wait_for, mcp__swarm-ledger__message_post, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__issue_open, mcp__swarm-ledger__issue_list, mcp__swarm-ledger__idea_record, mcp__swarm-ledger__tests_run, mcp__swarm-ledger__graph_upsert, mcp__swarm-ledger__score_record, mcp__swarm-ledger__handoff_submit, mcp__swarm-ledger__deferral_propose, mcp__swarm-ledger__cr_open, mcp__swarm-ledger__cr_accept, mcp__swarm-ledger__cr_complete, mcp__swarm-ledger__cr_verify, mcp__swarm-ledger__cr_list, mcp__swarm-ledger__departure_record, mcp__swarm-ledger__shortfall_record, mcp__swarm-ledger__version_restore, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__test_run_get, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference
+tools: Read, Grep, Glob, Write, Edit, Bash, PowerShell, ToolSearch, SendMessage, WebSearch, WebFetch, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__brief_ack, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__who_owns, mcp__swarm-ledger__wait_for, mcp__swarm-ledger__message_post, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__issue_open, mcp__swarm-ledger__issue_list, mcp__swarm-ledger__idea_record, mcp__swarm-ledger__tests_run, mcp__swarm-ledger__graph_upsert, mcp__swarm-ledger__score_record, mcp__swarm-ledger__handoff_submit, mcp__swarm-ledger__file_delete, mcp__swarm-ledger__deferral_propose, mcp__swarm-ledger__cr_open, mcp__swarm-ledger__cr_accept, mcp__swarm-ledger__cr_complete, mcp__swarm-ledger__cr_verify, mcp__swarm-ledger__cr_list, mcp__swarm-ledger__departure_record, mcp__swarm-ledger__shortfall_record, mcp__swarm-ledger__version_restore, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__test_run_get, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference
 mcpServers:
   - codebase-kg:
       command: python
@@ -137,15 +137,20 @@ this machine, never a Remote Control one.
 
 ## What you own
 
-Exactly the `path` and the `test_path` from your claim. "File" means any project
-file the run touches: new or existing, code or configuration.
+Exactly the `path` and the `test_path` from your claim, and any product your Lead
+claimed from it. "File" means any project file the run touches: new or existing,
+code or configuration.
 
 - You must not edit any other file. The write hook denies it.
 - When you need a change in someone else's file, call `cr_open(path=<their
   path>, body=...)`. The ledger routes it to the file's owner, or up the
   ownership chain when the owner has ended, and returns the wake-up to send.
-- Your shell is limited to the profile's test, build, and lint commands and
-  read-only git. Anything else is denied.
+- Your shell is limited to the profile's test, build, and lint commands, the
+  named host commands in the settings' `commands` list, `git rm` of your own
+  paths, and read-only git. Anything else is denied.
+- When your brief says to delete your file, call `file_delete(path)`, or run
+  `git rm <path>`. Then score and hand off as for an edit: `handoff_submit`
+  records the deletion as the file's version.
 
 ## When another file blocks you
 

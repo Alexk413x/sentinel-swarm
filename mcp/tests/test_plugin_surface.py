@@ -347,11 +347,11 @@ def test_only_coder_writes_and_edits(repo_root: Path):
             assert (tool in tools) == (role == "coder"), f"{role} and {tool}"
 
 
-def test_only_the_coder_and_driver_run_a_shell(repo_root: Path):
+def test_only_the_coder_driver_and_manager_run_a_shell(repo_root: Path):
     for role in ROLES:
         tools = _tools(_split(_template(repo_root, role))[0])
-        assert ("Bash" in tools) == (role in ("coder", "driver")), role
-        assert ("PowerShell" in tools) == (role in ("coder", "driver")), role
+        assert ("Bash" in tools) == (role in ("coder", "driver", "manager")), role
+        assert ("PowerShell" in tools) == (role in ("coder", "driver", "manager")), role
 
 
 @pytest.mark.parametrize("role", ROLES)

@@ -96,6 +96,36 @@ def normalize_memory(raw: object) -> MemorySettings:
     return MemorySettings(headroom_mb=headroom, park_idle_parents=park not in _FALSE_WORDS)
 
 
+def normalize_commands(raw: object) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+    commands: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        run = str(item.get("run") or "").strip()
+        if not name or not run:
+            continue
+        commands.append(
+            {
+                "name": name,
+                "run": run,
+                "cwd": str(item.get("cwd") or ".").strip() or ".",
+                "interpreter": str(item.get("interpreter") or "").strip(),
+            }
+        )
+    return commands
+
+
+def command_line(command: dict[str, str]) -> str:
+    line = " ".join(part for part in (command["interpreter"], command["run"]) if part)
+    cwd = command["cwd"]
+    if cwd in ("", "."):
+        return line
+    return f"cd {cwd} && {line}"
+
+
 _Section = TypeVar("_Section", Thresholds, EscalationSettings, WatchdogSettings)
 
 
@@ -112,6 +142,9 @@ class Settings:
     test_command: str | None = None
     build_command: str | None = None
     lint_command: str | None = None
+    # Named host commands the Coder's and Manager's shell gates allow, each with its working
+    # directory and interpreter: {"name", "run", "cwd", "interpreter"}.
+    commands: list[dict[str, str]] = field(default_factory=list)
     parallelism_cap: int | None = None
     time_budget_minutes: int | None = None
     # Empty means repo_check tries main, then master, then reports no base branch.
@@ -210,6 +243,7 @@ def load_settings(repo_root: Path) -> Settings:
         test_command=data.get("test_command") or defaults.test_command,
         build_command=data.get("build_command") or defaults.build_command,
         lint_command=data.get("lint_command") or defaults.lint_command,
+        commands=normalize_commands(data.get("commands")),
         parallelism_cap=data.get("parallelism_cap") or defaults.parallelism_cap,
         time_budget_minutes=normalize_budget(data.get("time_budget_minutes")),
         base_branch=data.get("base_branch") or defaults.base_branch,

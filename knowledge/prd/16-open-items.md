@@ -66,6 +66,12 @@
 - **A wake-up during a deliberate park.** A wake-up sent between the watchdog's decision
   to park an idle parent and its `claude stop` can be lost. The `wake_unsent` finding
   reports it after `unsent_wakeup_minutes`.
+- **Closing a run, live.** `run_close`, `ledger.py close`, `file_accept_incomplete`,
+  `file_delete`, product claims, and the `commands` shell rule are built and
+  unit-tested against a faked CLI. No live run has used them. A live run should show
+  `ledger.py close` stopping every role session and the server exiting after
+  `idle_exit_minutes`, and a Coder's `git rm` and a Manager's named host command
+  passing the shell gate.
 - **Other platforms.** An exploration of running a Coder on a non-Claude CLI through
   ide-agent-tabs, not a build. The plan is `plans/other-platforms.md`.
 - **The Oracle's wake of a waiting agent.** `pre_send_message` lets the Oracle wake any
