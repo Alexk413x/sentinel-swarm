@@ -2,6 +2,59 @@
 
 All notable changes to the `sentinel-swarm` plugin.
 
+## [0.5.0] — 2026-10-30 — fixes for the stalls in the 0.4.0 runs
+
+Fixes every issue that the two 0.4.0 runs of 2026-10-28 and 2026-10-29 found. See
+`plans/swarm-run-issues.md` for the evidence and `knowledge/prd/16-open-items.md` for
+what still needs a live run.
+
+### Added
+
+- The watchdog files a `needs_user` finding when a role session waits on a permission
+  prompt or a question, with the request text from its transcript. It files a
+  `run_stalled` finding when no agent works and no wake-up is owed. Both notify the user.
+- `user_ask`, the Oracle's way to ask the user in a background run. The mod's `pre_ask`
+  gate denies `AskUserQuestion` in a background session.
+- A `permission_mode.<role>` setting. Role sessions inherit the user's permission mode
+  by default, and setup reports each role's starting mode.
+- `run_pause(clear_check=...)`: the watchdog resumes a paused run once its check passes.
+  Every pause and `needs_user` directive notifies the user, with reminders every
+  `watchdog.remind_minutes`.
+- A detached test runner (`ledger.py testrun`). `tests_run` returns within 20 s with the
+  result or a `running` state, and the caller gets a wake-up when the result is recorded.
+  Settings `test_timeout_s`, `full_target`, `test_command_by_scope`, `allowed_skips` and
+  `slow_tests`.
+- `file_delete`, `file_accept_incomplete`, `run_close` and `ledger.py close`, product
+  claims for generated files (`claim_file(product_of=)`), and a `commands` setting of
+  named host commands the Coder's and Manager's shell gates allow.
+- `brief_create(replaces=)`, and re-pointing of live children to any replacement parent.
+- The `parked` agent state, release of parked Managers and Leads whose work is done, and
+  release of a released session's process tree with a `stray_process` finding.
+- Machine-wide spawn admission across every live swarm, and a `parallelism_cap` default
+  from total memory.
+- A "Waiting on you" section in the run panel, with the request under the agent's row
+  and an answer field for the Oracle's questions.
+
+### Changed
+
+- The role templates carry no `permissionMode`.
+- A Lead may update a graph node whose files are its module's or unclaimed. The Oracle
+  holds `graph_upsert` for nodes no module owns, and a Coder may anchor its own file on
+  any node. `graph_upsert` refuses a description over 240 characters.
+- `release_file` refuses while the owning Coder is live.
+- The run panel dims ended, parked and not-started rows, shows a file task by its file
+  name, and shows the run's PRD on the Oracle's row until the run has an outcome.
+- `scripts/smoke.sh` uses its own marketplace name on each run.
+
+### Fixed
+
+- Method anchors (`path#Class.method`) pass the handoff graph check.
+- A binary file hands off without being decoded.
+- A released claim on a missing path, and a change request on a file with no tests, no
+  longer hold a module open.
+- Spawns, resumes and wake-ups retry when `~/.claude.json` fails to parse, and the run
+  pauses only if it still fails.
+
 ## [0.4.0] — 2026-10-27 — run panel
 
 ### Added

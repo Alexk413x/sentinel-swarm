@@ -66,24 +66,62 @@ Neither run was failing. Each was waiting, and nothing outside agent view showed
 
 ## Issues
 
-| # | Issue | Run | Order of work |
+| # | Issue | Run | Status in 0.5.0 |
 |---|---|---|---|
-| 1 | A session waiting on a person looks idle to the swarm | A, B | 1 |
-| 2 | Role files override the user's permission mode | A, B | 1 |
-| 3 | A paused run tells nobody and does not resume by itself | A, B | 1 |
-| 4 | Two runs on one machine exceed its memory | A, B | 4 |
-| 5 | Concurrent sessions corrupt `~/.claude.json` | A, B | 5 |
-| 6 | A full test run cannot finish inside the ledger | A, B | 2 |
-| 7 | A full test run that can never count as clean | B | 2 |
-| 8 | Claims and change requests that can never close | B | 6 |
-| 9 | A binary file can never hand off | A | 2 |
-| 10 | The graph gate blocks handoffs | A, B | 2 and 3 |
-| 11 | A replacement parent cannot reach its children | A, B | 2 |
-| 12 | The ledger shows closed sessions as live | B | 3 |
-| 13 | A released agent's processes keep running | B | 3 |
-| 14 | The roles lack tools the work needs | A, B | 2 and 3 |
-| 15 | Setup friction | A, B | 7 |
-| 16 | The run panel hides the rows that matter | A, B | 1 and 7 |
+| 1 | A session waiting on a person looks idle to the swarm | A, B | [x] Built and tested; live check open |
+| 2 | Role files override the user's permission mode | A, B | [x] Built and tested |
+| 3 | A paused run tells nobody and does not resume by itself | A, B | [x] Built and tested; live check open |
+| 4 | Two runs on one machine exceed its memory | A, B | [x] Built and tested; live check open |
+| 5 | Concurrent sessions corrupt `~/.claude.json` | A, B | [x] Retry and pause built and tested; upstream report open |
+| 6 | A full test run cannot finish inside the ledger | A, B | [x] Built and tested; live check open |
+| 7 | A full test run that can never count as clean | B | [x] Built and tested |
+| 8 | Claims and change requests that can never close | B | [x] Built and tested |
+| 9 | A binary file can never hand off | A | [x] Built and tested |
+| 10 | The graph gate blocks handoffs | A, B | [x] Built and tested |
+| 11 | A replacement parent cannot reach its children | A, B | [x] Built and tested |
+| 12 | The ledger shows closed sessions as live | B | [x] Built and tested |
+| 13 | A released agent's processes keep running | B | [x] Built and tested; live check open |
+| 14 | The roles lack tools the work needs | A, B | [x] Built and tested; live check open |
+| 15 | Setup friction | A, B | [x] Built and tested |
+| 16 | The run panel hides the rows that matter | A, B | [x] Part 1 built and tested; part 2 open |
+
+### What shipped, and what stays open
+
+Every issue has a fix in 0.5.0, covered by unit tests. The checks on the merged branch:
+`uv run pytest` 1,462 passed and 6 skipped, `pyright` 0 errors, `ruff check` and
+`ruff format --check` clean, `claude plugin test .` 46 passed, and
+`claude plugin validate --strict` passed.
+
+What differs from the fixes below:
+
+- **Issue 6:** `tests_run` waits up to 20 s before it returns, so a short file run comes
+  back with its result. A detached runner process, `ledger.py testrun`, owns the run, so
+  the run outlives the tool call, the worker and the server.
+- **Issue 7:** per-scope commands are a `test_command_by_scope` mapping, and
+  `test_command` stays a string. A skip is clean when its pytest skip line contains an
+  `allowed_skips` text.
+- **Issue 8:** run B's released claims were not released by parking. The Lead released
+  them itself after its Manager told it to cancel queued Coders. `release_file` now
+  refuses while the owner is live, and `agent_release` cancels a queued child.
+- **Issue 10:** the method-anchor refusal was the ledger's own check, which searched for
+  `Engine.start` as one word. It now matches segment by segment, as codebase-kg does, so
+  the interim "accept as incomplete" rule was not needed.
+- **Issue 11:** the `SendMessage` hook already read the parent from the ledger. The fault
+  was the ledger row, which re-pointing fixes.
+- **Issue 1:** the Oracle asks with the new `user_ask` tool. The mod's `pre_ask` gate
+  denies `AskUserQuestion` in a background session.
+
+These items are open in `knowledge/prd/16-open-items.md`:
+
+- Live checks of waiting sessions, the write deny before the prompt, `pre_ask`, a
+  running Oracle with no listener, clear-check resume, asynchronous test runs,
+  process-tree release, machine-wide admission, config retry, and closing a run.
+- The upstream report of the `~/.claude.json` corruption (issue 5).
+- Answering a permission prompt in the run panel (issue 16, part 2). A hook that holds
+  the call keeps Claude Code from showing the prompt, so agent view and the watchdog
+  would see the session as busy, not waiting.
+
+Delete this plan once those open items are confirmed in a live run.
 
 ### 1. A session waiting on a person looks idle to the swarm
 
