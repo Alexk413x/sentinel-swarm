@@ -32,7 +32,7 @@ listing again for the scan. See "Parked agents" and "Memory" in
 
 | Kind | Condition | Next step the report names |
 |---|---|---|
-| `needs_user` | Any live agent's session, the Oracle's included, shows a `waitingFor` in `claude agents --json` that names a permission, input, a question, or an approval (`"permission prompt"`, `"input needed"`). Reported at once, with no second pass. The detail names the session, what it waits on, and the pending request from the end of its transcript: the tool and its file path, command, path, or URL, or for `AskUserQuestion` each question and its options, cut to 300 characters. A waiting Manager, Lead, Coder, or Driver is not also reported as crashed, stuck, or overdue. Notifies the user | Tell the user to open that session in agent view and answer it, and keep the rest of the run moving |
+| `needs_user` | Any live agent's session, the Oracle's included, shows `status` or `state` `waiting` in `claude agents --json`, whatever its `waitingFor` says, or a `waitingFor` that names a permission, input, a question, or an approval (`"permission prompt"`, `"input needed"`). `waiting` means the session waits on a person, unlike `idle`. Reported at once, with no second pass. The detail names the session, what it waits on, and the pending request from the end of its transcript: the tool and its file path, command, path, or URL, or for `AskUserQuestion` each question and its options, cut to 300 characters. A waiting Manager, Lead, Coder, or Driver is not also reported as crashed, stuck, or overdue. Notifies the user | Tell the user to open that session in agent view and answer it, and keep the rest of the run moving |
 | `crashed` | A Manager, Lead, Coder, or Driver is `working`, or `registered` for more than 2 minutes, and its session is missing or not running. For a `parked` agent, the state it had before it was parked counts. An `idle` or `handed_up` agent whose session exited is normal. A Driver whose exploration is closed but that the ledger has not released yet is reported whatever its state, since a closed Driver stays live only until its last wake-up goes out. | `agent_resume(target_name=...)`. For a Driver whose exploration is closed: read its result in the ledger, then `agent_release` it |
 | `stuck` | The session runs, the agent is `working`, and its last heartbeat is older than `stuck_minutes`. Does not apply to a Driver: see `driver_overdue` below | Message it, or have its parent replace it |
 | `driver_overdue` | The Driver's session runs, it is `working`, and its open exploration's last check-in (or its start, with none yet) is older than 30 minutes plus a 5-minute grace | Message it, or have the Oracle stop it and start a fix for whatever blocked it. |
@@ -141,11 +141,14 @@ listing again for the scan. See "Parked agents" and "Memory" in
 
 ## Reminders
 
-Every `remind_minutes`, while the run is paused or an open directive waits on the user
-(`needs_user`), the watchdog shows the OS notification again: the pause message, and
-"<n> question(s) wait on you: <first question>". The first reminder comes one interval
-after the pause or after the watchdog first sees the question, since `run_pause`,
-`user_ask`, and `directive_resolve(needs_user)` notify at once. `runs.reminded_at`
+Every `remind_minutes`, while the run is paused, an open directive waits on the user
+(`needs_user`), or a session waits on the user (an open `needs_user` finding), the
+watchdog shows the OS notification again: the pause message, "<n> question(s) wait on
+you: <first question>", and "<n> session(s) wait on you: <agent>, <detail>". A session
+blocked on a person is a blocker, so it is reminded until it clears, not reported once.
+The first reminder comes one interval after the pause or after the watchdog first sees
+the question or the waiting session, since `run_pause`, `user_ask`,
+`directive_resolve(needs_user)`, and a new `needs_user` finding notify at once. `runs.reminded_at`
 records the last one, and clears when nothing waits. Reminders show only the OS
 notification and owe no `PushNotification`. With `notify` lacking `os`, or
 `remind_minutes: 0`, there are none.

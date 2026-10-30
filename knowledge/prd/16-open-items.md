@@ -113,10 +113,12 @@ Each item below is marked **(needs implementation)** in its document.
   long-poll route, the panel's Allow and Deny buttons, and a watchdog check of open
   requests, since a session held by the hook does not show as waiting.
 - **Run panel payload.** The panel reads every brief on each 5-second refresh, about 240 KB for a run of 100 agents. Fetch a brief only when its task opens, and read the snapshot over the ledger server's HTTP route while it runs.
-- **Waiting sessions, live.** The `needs_user` finding, its transcript request text, and
-  its notification are unit-tested against a faked `claude agents --json`. A live run
-  should show a role session at a permission prompt and a background Oracle at an
-  `AskUserQuestion` each reported within one watchdog interval, with an OS notification.
+- **Waiting sessions, live.** The `needs_user` finding, its transcript request text, its
+  notification, and its reminders are unit-tested against a faked `claude agents --json`.
+  A live run should show a role session at a permission prompt and a background Oracle at
+  an `AskUserQuestion` each reported within one watchdog interval, with an OS
+  notification, and reminded every `remind_minutes` until answered. It should also record
+  every `waitingFor` value a live session shows in [13-platform-facts.md](13-platform-facts.md).
 - **Write denies before the prompt, live.** The mod's `tool.call` gate runs before Claude
   Code's permission check by the mod API's documentation. A live Coder in
   `bypassPermissions` should be denied a `Write` under `.claude/scratch/` with the
