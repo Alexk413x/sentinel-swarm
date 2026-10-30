@@ -2,6 +2,15 @@
 
 All notable changes to the `sentinel-swarm` plugin.
 
+## [0.5.2] — 2026-10-30 — notice a blocked session
+
+### Fixed
+
+- The watchdog and the run panel treat a session whose `claude agents --json` status or
+  state is `blocked` as waiting on the user, as they treat `waiting`. A background
+  session idle on a question to the user showed `state: blocked` and raised no
+  notification.
+
 ## [0.5.1] — 2026-10-30 — notice every session that waits on you
 
 ### Fixed

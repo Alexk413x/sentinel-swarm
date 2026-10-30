@@ -548,10 +548,13 @@ describe('sessions waiting on a person', () => {
       { sessionId: 'b', name: 'host-oracle', kind: 'background', state: 'waiting', waitingFor: 'input needed' },
       { sessionId: 'c', name: 'busy-one', status: 'busy' },
       { name: 'no-id', status: 'waiting' },
+      { sessionId: 'd', name: 'host-oracle-2', kind: 'background', status: 'idle', state: 'blocked' },
+      { sessionId: 'e', name: 'idle-one', status: 'idle', state: 'working' },
     ]
     expect(parseWaiting(JSON.stringify(listing))).toEqual([
       { sessionId: 'a', name: 'host-r3-coder-a', waitingFor: 'permission prompt' },
       { sessionId: 'b', name: 'host-oracle', waitingFor: 'input needed' },
+      { sessionId: 'd', name: 'host-oracle-2', waitingFor: 'blocked' },
     ])
     expect(parseWaiting('not json')).toEqual([])
   })
