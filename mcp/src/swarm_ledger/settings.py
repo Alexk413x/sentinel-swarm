@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, TypeVar
 
-from . import frontmatter
+from . import frontmatter, memory
 from .permissions import PERMISSION_MODES
 from .rubric import Thresholds
 
@@ -80,6 +80,16 @@ def normalize_scope_commands(raw: object) -> dict[str, str]:
         for scope in TEST_SCOPES
         if raw.get(scope) is not None and str(raw[scope]).strip()
     }
+
+
+def normalize_parallelism_cap(raw: object) -> int | None:
+    if raw is None or isinstance(raw, bool) or str(raw).strip() == "":
+        return memory.default_parallelism_cap(memory.total_mb())
+    try:
+        cap = int(str(raw).strip())
+    except ValueError:
+        return memory.default_parallelism_cap(memory.total_mb())
+    return cap if cap > 0 else None
 
 
 def normalize_notify(raw: object) -> list[str]:
@@ -299,7 +309,7 @@ def load_settings(repo_root: Path) -> Settings:
         allowed_skips=normalize_text_list(data.get("allowed_skips")),
         slow_tests=normalize_text_list(data.get("slow_tests")),
         commands=normalize_commands(data.get("commands")),
-        parallelism_cap=data.get("parallelism_cap") or defaults.parallelism_cap,
+        parallelism_cap=normalize_parallelism_cap(data.get("parallelism_cap")),
         time_budget_minutes=normalize_budget(data.get("time_budget_minutes")),
         base_branch=data.get("base_branch") or defaults.base_branch,
         effort=effort,

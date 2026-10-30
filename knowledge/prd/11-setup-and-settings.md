@@ -134,6 +134,10 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
   skips a script whose name contains `test` and one the settings already list, and
   prints one "Proposed host command" line per script, with its name, run, cwd, and
   interpreter. It writes nothing: the setup skill asks the user which to add.
+- Prints the `parallelism_cap` the ledger will use, whether it is the default for the
+  machine's total memory, and that it counts this run's live sessions plus every other
+  swarm's running sessions on the machine. See "Parallelism" in
+  [05-sessions.md](05-sessions.md).
 - Reports whether the repo is trusted, from `~/.claude.json` (or
   `$CLAUDE_CONFIG_DIR/.claude.json`), and prints the command that trusts it.
   `--check-trust` only checks, and exits 1 with the command when the repo is not
@@ -276,7 +280,7 @@ descriptions stay out of every session's context.
 | `commands` | empty | Named host commands outside test, build, and lint, such as the rebuild of a derived file. Each entry has `name`, `run`, `cwd` (default `.`), and `interpreter`; an entry with no `name` or `run` is dropped. The Coder's and the Manager's shell gates allow each exactly as `cd <cwd> && <interpreter> <run>`, or `<interpreter> <run>` when `cwd` is `.`. A failing `tests_run` whose output names a command's `name` or `run` lists that command in its result's `commands`. See "pre_shell" in [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md) |
 | `memory.headroom_mb` | 1500 | Megabytes of free memory the ledger keeps. `agent_spawn` queues a session whose role's estimate would take free memory below it, the watchdog starts it once memory frees, and a parked agent's resume follows the same rule. Empty admits every spawn. See "Memory" in [05-sessions.md](05-sessions.md) |
 | `memory.park_idle_parents` | `true` | Under memory pressure, the watchdog stops an idle Manager or Lead whose children still work and resumes it when a wake-up is owed to it. `false` leaves idle parents to the daemon |
-| `parallelism_cap` | empty | No limit when empty; also counts other swarms' live sessions on the machine |
+| `parallelism_cap` | empty | The most sessions at once: the run's live agents plus other swarms' running sessions on the machine. Empty sets it from total memory, half of it at 600 MB a session and at least 4; `0` turns it off. See "Parallelism" in [05-sessions.md](05-sessions.md) |
 | `time_budget_minutes` | empty | Advisory minutes for the run. Each wake-up and watchdog line for the Oracle or a Manager ends with `elapsed <n>s / <budget>s`, or `elapsed <n>s` when empty. A value that is not a positive whole number reads as empty. See "Time signal" in [05-sessions.md](05-sessions.md) |
 | `base_branch` | empty | `repo_check` tries `main`, then `master` |
 | `effort.<role>` | `medium` for every role | `--effort <level>` for that role's sessions. A settings file with no `effort` key gets `medium` for every role; a role left empty runs at its model's default. A brief's own `effort` overrides it |

@@ -2,8 +2,9 @@
 
 The watchdog is a background job, not a role. It detects and reports. It never replaces a
 Manager, Lead, or Coder. Its only resumes and stops serve memory: it resumes a parked
-agent that is owed a wake-up once memory allows, starts queued spawns, and stops an
-idle parent under memory pressure; see "Memory" in [05-sessions.md](05-sessions.md). It
+agent that is owed a wake-up once memory allows, starts queued spawns, stops an idle
+parent under memory pressure, and releases a parked parent whose work is done; see
+"Memory" and "Parked agents" in [05-sessions.md](05-sessions.md). It
 resumes the Oracle when the Oracle's session is not running, so that a report can reach
 the Oracle at all, and it resumes a paused run whose clear-check passes. What only the
 user can answer, it reports to the user as well, with an OS notification. For any
@@ -23,15 +24,16 @@ outlives the tool call" in [06-ledger-server.md](06-ledger-server.md).
 
 Before the scan, each pass of an active run runs the memory steps in this order, each
 on its own so a failure in one is logged and the next still runs: sample each session's
-memory, park agents whose session is gone, resume parked agents that are owed a
-wake-up, start queued spawns, and park idle parents. When a step changed anything, the
-pass reads the listing again for the scan. See "Parked agents" and "Memory" in
+memory and record each running session's pid, park agents whose session is gone,
+resume parked agents that are owed a wake-up, start queued spawns, park idle parents,
+and release finished parked parents. When a step changed anything, the pass reads the
+listing again for the scan. See "Parked agents" and "Memory" in
 [05-sessions.md](05-sessions.md).
 
 | Kind | Condition | Next step the report names |
 |---|---|---|
 | `needs_user` | Any live agent's session, the Oracle's included, shows a `waitingFor` in `claude agents --json` that names a permission, input, a question, or an approval (`"permission prompt"`, `"input needed"`). Reported at once, with no second pass. The detail names the session, what it waits on, and the pending request from the end of its transcript: the tool and its file path, command, path, or URL, or for `AskUserQuestion` each question and its options, cut to 300 characters. A waiting Manager, Lead, Coder, or Driver is not also reported as crashed, stuck, or overdue. Notifies the user | Tell the user to open that session in agent view and answer it, and keep the rest of the run moving |
-| `crashed` | A Manager, Lead, Coder, or Driver is `working`, or `registered` for more than 2 minutes, and its session is missing or not running. An `idle` or `handed_up` agent whose session exited is normal. A Driver whose exploration is closed but that the ledger has not released yet is reported whatever its state, since a closed Driver stays live only until its last wake-up goes out. | `agent_resume(target_name=...)`. For a Driver whose exploration is closed: read its result in the ledger, then `agent_release` it |
+| `crashed` | A Manager, Lead, Coder, or Driver is `working`, or `registered` for more than 2 minutes, and its session is missing or not running. For a `parked` agent, the state it had before it was parked counts. An `idle` or `handed_up` agent whose session exited is normal. A Driver whose exploration is closed but that the ledger has not released yet is reported whatever its state, since a closed Driver stays live only until its last wake-up goes out. | `agent_resume(target_name=...)`. For a Driver whose exploration is closed: read its result in the ledger, then `agent_release` it |
 | `stuck` | The session runs, the agent is `working`, and its last heartbeat is older than `stuck_minutes`. Does not apply to a Driver: see `driver_overdue` below | Message it, or have its parent replace it |
 | `driver_overdue` | The Driver's session runs, it is `working`, and its open exploration's last check-in (or its start, with none yet) is older than 30 minutes plus a 5-minute grace | Message it, or have the Oracle stop it and start a fix for whatever blocked it. |
 | `driver_unsent` | The Driver's exploration is closed, the ledger has not released it, its session runs but sits idle, and it has owed a live agent an unsent wake-up for more than 2 minutes. This is the Driver ignoring its Stop hook block twice: `stop_hook_active` lets the second stop through idle. Not also reported as `crashed`, which covers a dead session instead. | Read its result in the ledger, then `agent_release` it. |
@@ -39,6 +41,7 @@ pass reads the listing again for the scan. See "Parked agents" and "Memory" in
 | `wake_unsent` | A wake-up a live agent owes a live Manager, Lead, Coder, or Driver has been unsent for `unsent_wakeup_minutes`. One finding per target, from its oldest such wake-up. Not reported for a Driver's debt, which `driver_unsent` covers, or for a test result an agent owes itself | The wake call (`SendMessage` or `agent_resume`) for the target. For a parked target: the ledger resumes it once memory allows, or wake it now with that call |
 | `spawn_queued` | A spawn `agent_spawn` queued for memory has waited `queued_spawn_minutes`. Reported on the parent, one finding per queued spawn | Free memory on the machine, lower `memory.headroom_mb`, or `run_pause` and tell the user the run waits on memory |
 | `phase_unmanaged` | A phase is `unlocked` or `working`, not paused, has had a Manager, and has no live one: its Manager released itself or was released before the phase handed up. Reported on the Oracle, one finding for every such phase | Brief and spawn a new Manager for the phase, settle the file that blocks it with `file_accept_incomplete`, or `run_close` a run that cannot finish |
+| `stray_process` | A process recorded at a release, or started under one, still runs a minute after the release: the session's own process, or one its tool shells started. One finding per released agent, listing each process by name and pid. See "Liveness, resume, and release" in [05-sessions.md](05-sessions.md) | Tell the user to stop them: `taskkill /F /T /PID <pid>` on Windows, `kill <pid>` elsewhere |
 | `spinning` | The agent's last `spin_failures` test runs for one scope and target all failed. Does not apply to a Driver, which runs no `tests_run` | Ask its parent to `return_work` or `issue_escalate` |
 | `context_high` | The latest request of the agent, the Oracle included, fills `context_pct` of its window | Have its parent replace it. For the Oracle: `run_pause`, then resume in a fresh session |
 | `stalled` | No session of the run runs; or sessions run, but no member session is busy, no member is `working`, and nothing changed for 2 minutes. Not reported while a directive waits on the user, or while a spawn is queued for memory, which `spawn_queued` reports | Wake the agent whose work is pending: the reviewer of a submitted handoff, an agent with unread messages, or the Lead of a file with an open issue. With no such agent: resume or spawn the owner of the pending work, or, with nothing pending, continue the plan or call `run_finish` |
@@ -151,7 +154,8 @@ notification and owe no `PushNotification`. With `notify` lacking `os`, or
 
 Under `watchdog` in `.claude/sentinel-swarm.local.md`: `interval_seconds` (30),
 `stuck_minutes` (15), `spin_failures` (5), `context_pct` (80), `context_window` (unset:
-taken from the model), `idle_exit_minutes` (15), `unsent_wakeup_minutes` (5; 0 turns
+taken from the model), `idle_exit_minutes` (15; also how long a finished parent stays
+parked before the watchdog releases it), `unsent_wakeup_minutes` (5; 0 turns
 `wake_unsent` off), `queued_spawn_minutes` (10; 0 turns `spawn_queued` off),
 `remind_minutes` (30; 0 shows each notification once). `stuck_minutes` also sets
 `run_stalled`'s window. The memory steps read `memory.headroom_mb` and

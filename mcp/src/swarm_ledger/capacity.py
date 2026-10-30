@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from . import memory, sessions
+from . import lock, memory, procs, sessions
 from .clock import parse_stamp, stamp
 from .db import NOW, dict_rows, in_clause, write_tx
 from .host import LedgerHost
 from .identity import LedgerError
-from .queries import unread_count
+from .queries import PARK_SET, UNPARK_SET, unread_count
 
 CHILD_ROLES = ("manager", "lead", "coder", "driver")
 _PARENT_ROLES = ("manager", "lead")
@@ -16,7 +16,8 @@ _MEMBER_ROLES = ("manager", "lead", "coder")
 _LIVE_CHILD_STATES = ("registered", "working")
 _RESUME_WINDOW = "'-120 seconds'"
 QUEUED_POINTER = (
-    "the ledger queued it: free memory minus its estimate is below the headroom. The ledger "
+    "the ledger queued it: free memory, less what sessions starting on this machine will "
+    "take, minus its estimate is below the headroom. The ledger "
     "starts it when memory frees, oldest first; do not call agent_spawn for it again"
 )
 PARK_PRESSURE = "the ledger stopped it under memory pressure while its children work"
@@ -26,9 +27,21 @@ class CapacityMixin(LedgerHost):
     def _headroom(self) -> int | None:
         return self.settings.memory.headroom_mb
 
-    def _fits(self, free: int | None, need: int) -> bool:
+    def _reserve(self, role: str, *, force: bool = False) -> str | None:
+        need = memory.estimate_mb(self.conn, role)
         headroom = self._headroom()
-        return free is None or headroom is None or free - need >= headroom
+        with lock.admission():
+            free = memory.free_mb()
+            pending = lock.reserved_mb()
+            if not force and free is not None and headroom is not None:
+                if free - pending - need < headroom:
+                    return (
+                        f"{free} MB free, less {pending} MB for sessions still starting on this "
+                        f"machine, minus the {role} estimate of {need} MB is below the "
+                        f"{headroom} MB headroom"
+                    )
+            lock.reserve(self.server_pid, self.repo_root, need)
+        return None
 
     def _queued(self, conn: sqlite3.Connection, run_id: int | None) -> list[dict]:
         return dict_rows(
@@ -45,18 +58,10 @@ class CapacityMixin(LedgerHost):
         return dict(row) if row is not None else None
 
     def _queue_reason(self, brief: sqlite3.Row) -> str | None:
-        role = brief["child_role"]
-        need = memory.estimate_mb(self.conn, role)
         ahead = len(self._queued(self.conn, brief["run_id"]))
-        free = memory.free_mb()
         if ahead:
             return f"{ahead} earlier spawn(s) wait for memory"
-        if self._fits(free, need):
-            return None
-        return (
-            f"{free} MB free minus the {role} estimate of {need} MB is below the "
-            f"{self._headroom()} MB headroom"
-        )
+        return self._reserve(brief["child_role"])
 
     def _queue_spawn(self, brief: sqlite3.Row, parent_id: str, reason: str) -> dict:
         with write_tx(self.conn) as conn:
@@ -94,7 +99,6 @@ class CapacityMixin(LedgerHost):
 
     def start_queued_spawns(self, listing: list[dict]) -> list[dict]:
         started: list[dict] = []
-        free = memory.free_mb()
         run = self.conn.execute("SELECT run_id FROM runs WHERE state = 'active'").fetchone()
         if run is None:
             return started
@@ -111,9 +115,6 @@ class CapacityMixin(LedgerHost):
             if parent["ended_at"] is not None:
                 self._drop_queued(entry, "its parent has ended")
                 continue
-            need = memory.estimate_mb(self.conn, entry["role"])
-            if not self._fits(free, need):
-                break
             try:
                 self._require_spawnable(brief, entry["child_name"])
                 self._require_spawn_slot(brief, listing)
@@ -122,12 +123,16 @@ class CapacityMixin(LedgerHost):
                     continue
                 self._drop_queued(entry, str(exc))
                 continue
+            if self._reserve(entry["role"]) is not None:
+                break
             try:
                 spawned = self._start_child(
                     brief,
                     entry["parent_agent_id"],
                     self.session_name(entry["run_id"], entry["child_name"]),
                 )
+            except sessions.ConfigParseError:
+                break
             except LedgerError as exc:
                 self._drop_queued(entry, f"the start failed: {exc}")
                 continue
@@ -138,8 +143,6 @@ class CapacityMixin(LedgerHost):
                     (spawned["agent_id"], entry["queue_id"]),
                 )
             started.append(spawned)
-            if free is not None:
-                free -= need
         return started
 
     def _drop_queued(self, entry: dict, reason: str) -> None:
@@ -165,6 +168,7 @@ class CapacityMixin(LedgerHost):
 
     def capacity(self, run_id: int) -> dict:
         free = memory.free_mb()
+        reserved = lock.reserved_mb()
         estimates = memory.estimates(self.conn, CHILD_ROLES)
         headroom = self._headroom()
         slots: dict[str, int | None] = {}
@@ -176,7 +180,7 @@ class CapacityMixin(LedgerHost):
         for role, need in estimates.items():
             fit: int | None = None
             if free is not None and headroom is not None:
-                fit = max(0, (free - headroom) // need) if need > 0 else None
+                fit = max(0, (free - reserved - headroom) // need) if need > 0 else None
             free_cap = None if cap is None else max(0, cap - live)
             limits = [n for n in (fit, free_cap) if n is not None]
             role_cap = self.settings.role_parallelism_cap.get(role)
@@ -195,6 +199,8 @@ class CapacityMixin(LedgerHost):
         ).fetchall()
         return {
             "free_mb": free,
+            "reserved_mb": reserved,
+            "other_swarms": lock.live_swarms(self.server_pid),
             "headroom_mb": headroom,
             "estimate_mb": estimates,
             "spawn_slots": slots,
@@ -208,10 +214,12 @@ class CapacityMixin(LedgerHost):
     def sample_memory(self, listing: list[dict]) -> None:
         pids = memory.session_pids()
         rows = self.conn.execute(
-            "SELECT agent_id, role FROM agents WHERE ended_at IS NULL AND parked_at IS NULL"
+            "SELECT agent_id, role, session_pid FROM agents WHERE ended_at IS NULL "
+            "AND parked_at IS NULL"
         ).fetchall()
         by_session = {str(e.get("sessionId")): e for e in listing if e.get("sessionId")}
         samples: list[tuple[str, int]] = []
+        seen: list[tuple[str, int, int | None]] = []
         for row in rows:
             entry = by_session.get(row["agent_id"])
             if entry is None or not sessions.is_running(entry):
@@ -219,13 +227,21 @@ class CapacityMixin(LedgerHost):
             pid = entry.get("pid") or pids.get(row["agent_id"])
             if not isinstance(pid, int) or pid <= 0:
                 continue
+            if pid != row["session_pid"]:
+                seen.append((row["agent_id"], pid, procs.created_of(pid)))
             rss = memory.process_rss_mb(pid)
             if rss is not None and rss > 0:
                 samples.append((row["role"], rss))
-        if samples:
+        if samples or seen:
             with write_tx(self.conn) as conn:
                 for role, rss in samples:
                     memory.record_sample(conn, role, rss)
+                for agent_id, pid, created in seen:
+                    conn.execute(
+                        "UPDATE agents SET session_pid = ?, session_pid_created = ? "
+                        "WHERE agent_id = ?",
+                        (pid, created, agent_id),
+                    )
 
     def mark_parked(self, listing: list[dict], now: datetime, grace_seconds: float) -> list[dict]:
         run = self.conn.execute("SELECT run_id FROM runs WHERE state = 'active'").fetchone()
@@ -247,8 +263,7 @@ class CapacityMixin(LedgerHost):
                 if agent["parked_at"] is not None:
                     with write_tx(self.conn) as conn:
                         conn.execute(
-                            "UPDATE agents SET parked_at = NULL, park_reason = NULL "
-                            "WHERE agent_id = ?",
+                            f"UPDATE agents SET {UNPARK_SET} WHERE agent_id = ?",
                             (agent["agent_id"],),
                         )
                         self._log_event(conn, agent["agent_id"], None, "unparked", "running")
@@ -281,7 +296,7 @@ class CapacityMixin(LedgerHost):
         with write_tx(self.conn) as conn:
             cur = conn.execute(
                 "UPDATE agents SET parked_at = COALESCE(?, strftime('%Y-%m-%dT%H:%M:%fZ','now')), "
-                "park_reason = ? WHERE agent_id = ? "
+                f"park_reason = ?, {PARK_SET} WHERE agent_id = ? AND ended_at IS NULL "
                 "AND (parked_at IS NULL OR park_reason IS NOT ?)",
                 (stamp(now) if now is not None else None, reason, agent_id, reason),
             )
@@ -327,9 +342,8 @@ class CapacityMixin(LedgerHost):
     def _row(self, agent_id: str) -> sqlite3.Row:
         return self.conn.execute("SELECT * FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
 
-    def _may_resume(self, agent: dict, listing: list[dict], free: int | None = None) -> bool:
-        free = memory.free_mb() if free is None else free
-        if self._fits(free, memory.estimate_mb(self.conn, agent["role"])):
+    def _may_resume(self, agent: dict, listing: list[dict]) -> bool:
+        if self._reserve(agent["role"]) is None:
             return True
         run_ids = {
             row["agent_id"]
@@ -339,7 +353,10 @@ class CapacityMixin(LedgerHost):
                 (agent["run_id"], *_MEMBER_ROLES),
             )
         }
-        return not any(e.get("sessionId") in run_ids and sessions.is_running(e) for e in listing)
+        if any(e.get("sessionId") in run_ids and sessions.is_running(e) for e in listing):
+            return False
+        self._reserve(agent["role"], force=True)
+        return True
 
     def resume_parked(self, listing: list[dict]) -> list[dict]:
         run = self.conn.execute("SELECT run_id FROM runs WHERE state = 'active'").fetchone()
@@ -360,11 +377,10 @@ class CapacityMixin(LedgerHost):
         )
         candidates.sort(key=lambda a: (a["busy"] > 0, a["ordinal"] or 0, a["owed_since"] or ""))
         resumed: list[dict] = []
-        free = memory.free_mb()
         for agent in candidates:
             if self._resuming(agent):
                 continue
-            if not self._may_resume(agent, listing, free):
+            if not self._may_resume(agent, listing):
                 break
             try:
                 result = self.resume_agent(
@@ -375,8 +391,6 @@ class CapacityMixin(LedgerHost):
                     self._log_event(conn, agent["agent_id"], None, "resume_failed", str(exc))
                 continue
             resumed.append(result)
-            if free is not None:
-                free -= memory.estimate_mb(self.conn, agent["role"])
         return resumed
 
     def park_idle_parents(self, listing: list[dict]) -> list[dict]:
@@ -388,7 +402,8 @@ class CapacityMixin(LedgerHost):
         if run is None or headroom is None or free is None:
             return []
         queued = self._queued(self.conn, run["run_id"])
-        need = headroom + sum(memory.estimate_mb(self.conn, q["role"]) for q in queued) - free
+        queued_mb = sum(memory.estimate_mb(self.conn, q["role"]) for q in queued)
+        need = headroom + queued_mb + lock.reserved_mb() - free
         if need <= 0:
             return []
         by_session = {str(e.get("sessionId")): e for e in listing if e.get("sessionId")}
@@ -417,7 +432,7 @@ class CapacityMixin(LedgerHost):
             except LedgerError as exc:
                 with write_tx(self.conn) as conn:
                     conn.execute(
-                        "UPDATE agents SET parked_at = NULL, park_reason = NULL WHERE agent_id = ?",
+                        f"UPDATE agents SET {UNPARK_SET} WHERE agent_id = ?",
                         (parent["agent_id"],),
                     )
                     self._log_event(conn, parent["agent_id"], None, "park_failed", str(exc))
@@ -435,10 +450,57 @@ class CapacityMixin(LedgerHost):
             if owed is not None or unread_count(conn, parent["run_id"], parent["name"]):
                 return False
             cur = conn.execute(
-                f"UPDATE agents SET parked_at = {NOW}, park_reason = ? WHERE agent_id = ? "
-                "AND parked_at IS NULL AND state = 'idle'",
+                f"UPDATE agents SET parked_at = {NOW}, park_reason = ?, {PARK_SET} "
+                "WHERE agent_id = ? AND parked_at IS NULL AND state = 'idle'",
                 (PARK_PRESSURE, parent["agent_id"]),
             )
             if cur.rowcount:
                 self._log_event(conn, parent["agent_id"], "idle", "parked", PARK_PRESSURE)
             return bool(cur.rowcount)
+
+    def release_finished_parked(self, now: datetime) -> list[dict]:
+        run = self.conn.execute("SELECT run_id FROM runs WHERE state = 'active'").fetchone()
+        if run is None:
+            return []
+        minutes = self.settings.watchdog.idle_exit_minutes
+        cutoff = stamp(now - timedelta(minutes=minutes))
+        candidates = dict_rows(
+            self.conn.execute(
+                "SELECT a.*, p.state AS phase_state, m.state AS module_state, "
+                "(SELECT r.outcome FROM reviews r WHERE r.module_id = a.module_id "
+                "AND r.kind = 'module' ORDER BY r.review_id DESC LIMIT 1) AS module_review "
+                "FROM agents a LEFT JOIN phases p ON p.phase_id = a.phase_id "
+                "LEFT JOIN modules m ON m.module_id = a.module_id "
+                "WHERE a.run_id = ? AND a.ended_at IS NULL AND a.state = 'parked' "
+                f"AND a.role IN ({in_clause(_PARENT_ROLES)}) AND a.parked_at <= ? "
+                "AND NOT EXISTS (SELECT 1 FROM agents c WHERE c.parent_agent_id = a.agent_id "
+                "AND c.ended_at IS NULL) "
+                "AND NOT EXISTS (SELECT 1 FROM wakeups w WHERE w.to_agent_id = a.agent_id "
+                "AND w.sent_at IS NULL) ORDER BY a.parked_at",
+                (run["run_id"], *_PARENT_ROLES, cutoff),
+            )
+        )
+        released: list[dict] = []
+        for agent in candidates:
+            done = _finished_scope(agent)
+            if done is None or unread_count(self.conn, agent["run_id"], agent["name"]):
+                continue
+            reason = (
+                f"the watchdog released it: parked over {minutes} minutes "
+                f"({agent['park_reason']}), and {done}"
+            )
+            with self._release_tx() as conn:
+                self._release_agent(conn, agent["agent_id"], reason)
+            released.append(agent | {"release_reason": reason})
+        return released
+
+
+def _finished_scope(agent: dict) -> str | None:
+    if agent["role"] == "manager" and agent["phase_state"] in ("handed_up", "approved"):
+        return f"its phase is {agent['phase_state']}"
+    if agent["role"] == "lead":
+        if agent["module_state"] == "approved":
+            return "its module is approved"
+        if agent["module_review"] == "accepted":
+            return "its module_review is accepted"
+    return None

@@ -33,6 +33,16 @@ if run is None:
     sys.exit("the ledger has no run")
 print(f"run {run['run_id']}: {run['state']} outcome={run['outcome']} started={run['started_at']}")
 
+queued = q("SELECT * FROM spawn_queue WHERE run_id=? AND state='queued' ORDER BY queue_id", run["run_id"])
+print(f"queued spawns: {len(queued)}")
+for s in queued:
+    print(f"  {s['child_name']} ({s['role']}) since {s['queued_at']}: {s['reason']}")
+parked = q("SELECT * FROM agents WHERE run_id=? AND ended_at IS NULL AND state='parked' "
+           "ORDER BY parked_at", run["run_id"])
+print(f"parked, session closed: {len(parked)}")
+for a in parked:
+    print(f"  {a['name']} ({a['role']}) since {a['parked_at']}: {a['park_reason']}")
+
 print("\nwaiting on you")
 waiting = []
 if run["state"] == "paused":
@@ -67,7 +77,7 @@ for f in q("""SELECT f.*, m.name AS module FROM files f
 
 print("\nagents")
 for a in q("SELECT * FROM agents WHERE run_id=? ORDER BY started_at", run["run_id"]):
-    live = f"ended {a['ended_at']}" if a["ended_at"] else "live"
+    live = f"ended {a['ended_at']}" if a["ended_at"] else "closed" if a["state"] == "parked" else "live"
     print(f"  {a['name']:<28} {a['role']:<8} {a['state']:<10} {live:<28} "
           f"model={a['model']} heartbeat={a['last_heartbeat_at']} doing={a['current_activity']}")
 
@@ -125,6 +135,9 @@ PY
 - A file whose `state` is `working` and whose lock names a Coder is being written
   now. `handed_up` means it waits on its Lead. `approved` means the claim is
   released.
+- The first lines name the spawns that wait for memory and the parked agents. A
+  `parked` agent's session is closed: the daemon retired it, or the ledger stopped it
+  under memory pressure. The ledger resumes it when a wake-up is owed to it.
 - An agent whose `last_heartbeat_at` has not moved is what the watchdog reports to
   the Oracle.
 - An issue at round 3 is with the Oracle.

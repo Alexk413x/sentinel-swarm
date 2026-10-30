@@ -11,13 +11,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import testing
+from . import memory, testing
 from .agentfiles import agent_file_path as role_file
 from .agentfiles import driver_available
 from .db import append_git_excludes, main_git_dir
 from .frontmatter import FrontmatterError
 from .frontmatter import split_document as _split_document
-from .paths import config_override
+from .paths import claude_json_path, config_override
 from .permissions import bypass_disabled, start_mode
 from .settings import SETTINGS_PATH, Settings, load_settings
 
@@ -357,8 +357,24 @@ def ensure_excludes(repo: Path, report: SetupReport) -> None:
     report.add(f"added to .git/info/exclude: {', '.join(missing)}")
 
 
-def claude_json_path() -> Path:
-    return (config_override() or Path.home()) / ".claude.json"
+def report_parallelism(repo: Path, report: SetupReport) -> None:
+    cap = load_settings(repo).parallelism_cap
+    where = f"parallelism_cap in {SETTINGS_PATH.as_posix()}"
+    if cap is None:
+        report.add(
+            f"parallelism_cap is off: the ledger starts every session the plan asks for ({where})"
+        )
+        return
+    total = memory.total_mb()
+    source = (
+        f"the default for {total} MB of memory"
+        if cap == memory.default_parallelism_cap(total)
+        else where
+    )
+    report.add(
+        f"parallelism_cap is {cap} ({source}). It counts this run's live sessions plus every "
+        f"other swarm's running sessions on this machine. Set {where} to change it; 0 turns it off"
+    )
 
 
 def _path_key(raw: str) -> str:
@@ -556,6 +572,7 @@ def run_setup(repo: Path, time_full_run: bool = False) -> SetupReport:
     report_permission_modes(repo, report)
     check_tests(repo, report, time_full_run)
     propose_commands(repo, report)
+    report_parallelism(repo, report)
     report.add(RELOAD_NOTE)
     report.trusted = is_trusted(repo)
     report.trust_note = f"{repo} is trusted" if report.trusted else trust_instructions(repo)

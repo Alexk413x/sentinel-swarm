@@ -3,8 +3,25 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Mapping
+from typing import Any
 
 LIVE_RUN_STATES = "state IN ('active', 'paused')"
+PARKED = "parked"
+PARK_SET = (
+    "state_before_park = CASE WHEN state = 'parked' THEN state_before_park ELSE state END, "
+    "state = 'parked'"
+)
+UNPARK_SET = (
+    "state = CASE WHEN state = 'parked' THEN COALESCE(state_before_park, 'idle') ELSE state END, "
+    "state_before_park = NULL, parked_at = NULL, park_reason = NULL"
+)
+
+
+def logical_state(agent: Mapping[str, Any] | sqlite3.Row) -> str:
+    if agent["state"] == PARKED and agent["state_before_park"]:
+        return str(agent["state_before_park"])
+    return str(agent["state"])
 
 
 def live_run(conn: sqlite3.Connection) -> sqlite3.Row | None:

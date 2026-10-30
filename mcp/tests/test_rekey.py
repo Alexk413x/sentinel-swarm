@@ -40,6 +40,7 @@ AGENT_ID_COLUMNS = [
     ("issues", "closed_by_agent_id"),
     ("issues", "opened_by_agent_id"),
     ("mod_sessions", "session_id"),
+    ("released_processes", "agent_id"),
     ("reviews", "reviewer_agent_id"),
     ("reviews", "subject_agent_id"),
     ("spawn_queue", "agent_id"),

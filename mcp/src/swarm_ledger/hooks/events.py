@@ -23,7 +23,13 @@ from ..identity import (
     unbound_reason,
 )
 from ..ledger import Ledger
-from ..queries import latest_live_oracle, live_run, submitted_handoffs, unread_count
+from ..queries import (
+    latest_live_oracle,
+    live_run,
+    logical_state,
+    submitted_handoffs,
+    unread_count,
+)
 from ..settings import command_line
 from ..watchdog import MONITOR_CALL, REGISTER_GRACE, WATCH_COMMAND
 
@@ -943,7 +949,7 @@ def _wake_lines(ledger: Ledger, run_id: int, live: list[dict]) -> list[str]:
     ).fetchall()
     for cr in open_crs:
         recipient = waiting.get(cr["to_agent_id"])
-        if recipient is None or recipient["state"] != "idle":
+        if recipient is None or logical_state(recipient) != "idle":
             continue
         lines.append(
             f"change request {cr['cr_id']} for {cr['path']} waits on {recipient['name']}, "
@@ -961,7 +967,7 @@ def _wake_lines(ledger: Ledger, run_id: int, live: list[dict]) -> list[str]:
         if verifier is None:
             continue
         agent = waiting.get(verifier["agent_id"])
-        if agent is None or agent["state"] != "idle":
+        if agent is None or logical_state(agent) != "idle":
             continue
         lines.append(
             f"change request {cr['cr_id']} for {cr['path']} is completed and waits on "
@@ -980,7 +986,9 @@ def _wake_lines(ledger: Ledger, run_id: int, live: list[dict]) -> list[str]:
     covered: set[str] = set()
     for agent_id in named:
         covered |= ancestors(agent_id)
-    idle = [a for a in waiting.values() if a["state"] == "idle" and a["agent_id"] not in named]
+    idle = [
+        a for a in waiting.values() if logical_state(a) == "idle" and a["agent_id"] not in named
+    ]
     for agent in sorted(idle, key=lambda a: len(ancestors(a["agent_id"])), reverse=True):
         if agent["agent_id"] in covered:
             continue

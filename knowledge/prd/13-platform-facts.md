@@ -235,6 +235,17 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   `~/.claude/daemon.log`, in lines such as `bg retire <id>: idle-prompt, idle 6m [low
   memory]` (other reasons: `settled`, `stale-spare`) and `bg: low memory (685MB free) —
   retiring settled workers before spawning <id>`. (2026-10-27)
+- Claude Code 2.1.314 on Windows: `~/.claude/sessions/<pid>.json` holds the session's
+  `pid`, `sessionId`, and `procStart`, the process start time as a Windows FILETIME
+  (100 ns units since 1601), which equals `GetProcessTimes`'s creation time for that pid.
+  Seen for interactive sessions; not yet checked for a background one. (2026-10-30)
+- With two runs live on one machine, `~/.claude.json` failed to parse ("JSON Parse
+  error: Unexpected EOF") for several hours on 2026-10-28. Claude Code wrote whole-size
+  `.claude.json.corrupted.<time>` copies to `~/.claude/backups/` at 08:25, 08:44, and
+  08:55 UTC, and every `claude` command failed while the file was truncated. The file
+  parsed again by about 14:30 UTC without a manual restore. The cause is not verified
+  in Claude Code's source; many sessions writing the file at once is the likely one.
+  (2026-10-28)
 - On a 31.7 GB Windows machine, the daemon retired idle background sessions at 600 to
   800 MB free. A `claude` process averaged about 210 to 225 MB, the largest 390 to 570
   MB. A Coder's test and type-check processes were short-lived and small. With about 20

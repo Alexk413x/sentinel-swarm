@@ -17,11 +17,12 @@ from test_sessions import (
     host,
 )
 
-from swarm_ledger import memory, watchdog
+from swarm_ledger import lock, memory, watchdog
 from swarm_ledger.clock import utcnow
 from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import events
 from swarm_ledger.ledger import Ledger
+from swarm_ledger.queries import PARK_SET
 from swarm_ledger.settings import Settings, WatchdogSettings, load_settings
 
 __all__ = ["claude", "host"]
@@ -40,6 +41,11 @@ def free(monkeypatch: pytest.MonkeyPatch) -> dict[str, int | None]:
     box: dict[str, int | None] = {"mb": 64_000}
     monkeypatch.setattr(memory, "free_mb", lambda: box["mb"])
     return box
+
+
+def _reservations_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(lock, "RESERVATION_S", 60.0)
+    lock._reservations_path().unlink(missing_ok=True)
 
 
 def _daemon_log(text: str) -> None:
@@ -62,7 +68,7 @@ def _park_manager(ledger: Ledger, claude: MovingClaude, ctx: Ctx) -> None:
     with write_tx(ledger.conn) as conn:
         conn.execute(
             "UPDATE agents SET parked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
-            "park_reason = 'retired' WHERE agent_id = ?",
+            f"park_reason = 'retired', {PARK_SET} WHERE agent_id = ?",
             (ctx.manager[1],),
         )
 
@@ -159,7 +165,7 @@ def test_a_spawn_behind_a_queued_one_waits_its_turn(
 
 
 def test_queued_spawns_start_oldest_first_when_memory_frees(
-    ledger: Ledger, claude: MovingClaude, free: dict
+    ledger: Ledger, claude: MovingClaude, free: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ctx = _bootstrap(ledger, claude)
     first = _brief_coder(ledger, ctx, "c1")
@@ -170,6 +176,7 @@ def test_queued_spawns_start_oldest_first_when_memory_frees(
 
     assert ledger.start_queued_spawns(claude.listing) == []
     free["mb"] = 1_500 + 600 + 100
+    _reservations_on(monkeypatch)
     started = ledger.start_queued_spawns(claude.listing)
 
     assert [s["name"] for s in started] == [first]
@@ -235,7 +242,7 @@ def test_a_live_agent_whose_session_is_gone_is_parked_with_the_daemons_reason(
     row = _row(ledger, ctx.manager[1])
     assert row["park_reason"] == "the daemon retired its session: idle-prompt, idle 6m [low memory]"
     assert row["ended_at"] is None
-    assert row["state"] == "idle"
+    assert (row["state"], row["state_before_park"]) == ("parked", "idle")
     assert ledger.run_status(*ctx.oracle)["capacity"]["parked"] == [
         {"name": "mgr-p1-phase-1", "reason": row["park_reason"]}
     ]
@@ -332,7 +339,7 @@ def test_a_resume_waits_for_memory_while_other_sessions_of_the_run_run(
 
 
 def test_parked_agents_resume_parents_of_finished_children_first(
-    ledger: Ledger, claude: MovingClaude, free: dict
+    ledger: Ledger, claude: MovingClaude, free: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ctx = _bootstrap(ledger, claude)
     _spawn_coder(ledger, ctx, "c1")
@@ -342,15 +349,11 @@ def test_parked_agents_resume_parents_of_finished_children_first(
     for agent_id in (ctx.lead[1], lead2["agent_id"]):
         claude.stop_session(agent_id)
         ledger.agent_idle(agent_id, "stop")
-        with write_tx(ledger.conn) as conn:
-            conn.execute(
-                "UPDATE agents SET parked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') "
-                "WHERE agent_id = ?",
-                (agent_id,),
-            )
+        ledger._park(agent_id, "retired")
     ledger.message_post(*ctx.manager, ctx.lead[0], "first, but its Coder still works")
     ledger.message_post(*ctx.manager, second, "second, with no working child")
     free["mb"] = 1_500 + 300 + 100
+    _reservations_on(monkeypatch)
 
     resumed = ledger.resume_parked(claude.listing)
 

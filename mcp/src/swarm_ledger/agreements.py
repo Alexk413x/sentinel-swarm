@@ -757,6 +757,12 @@ class AgreementsMixin(LedgerHost):
                     "UPDATE agents SET state = 'idle' WHERE agent_id = ?", (agent["agent_id"],)
                 )
                 self._log_event(conn, agent["agent_id"], agent["state"], "idle", reason)
+            elif agent["state"] == "parked" and agent["state_before_park"] == "handed_up":
+                conn.execute(
+                    "UPDATE agents SET state_before_park = 'idle' WHERE agent_id = ?",
+                    (agent["agent_id"],),
+                )
+                self._log_event(conn, agent["agent_id"], "parked", "parked", reason)
             return
         clash = conn.execute(
             "SELECT 1 FROM agents WHERE name = ? AND ended_at IS NULL AND agent_id != ?",
@@ -768,7 +774,8 @@ class AgreementsMixin(LedgerHost):
             )
         conn.execute(
             "UPDATE agents SET state = 'idle', ended_at = NULL, end_reason = NULL, "
-            "phase_at_end = NULL WHERE agent_id = ?",
+            "phase_at_end = NULL, parked_at = NULL, park_reason = NULL, "
+            "state_before_park = NULL WHERE agent_id = ?",
             (agent["agent_id"],),
         )
         self._log_event(conn, agent["agent_id"], agent["state"], "idle", reason)

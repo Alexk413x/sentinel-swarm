@@ -69,6 +69,21 @@
   with the reason from `daemon.log`, parked agents resumed for their wake-ups, and idle
   parents parked on purpose. It must also confirm where a background session's pid comes
   from (`~/.claude/sessions/<pid>.json`), which the resident-memory samples need.
+- **Report the `~/.claude.json` corruption upstream.** File a Claude Code issue with the
+  2026-10-28 evidence: the parse errors from 07:49 UTC, the `.claude.json.corrupted.*`
+  backups at 08:25, 08:44, and 08:55 UTC, and the file parsing again by about 14:30 UTC
+  with no manual restore. See "An unreadable ~/.claude.json" in
+  [05-sessions.md](05-sessions.md). The retry and the pause are built; the cause is
+  Claude Code's.
+- **Process-tree release, live.** Built and unit-tested with a faked process table. A
+  live run must show that a background session's pid in `~/.claude/sessions/<pid>.json`
+  is the process whose children are the Bash and PowerShell tools' shells, that a
+  release stops a long `pytest` a Coder started, and that no shared MCP server stops.
+- **Machine-wide admission, live.** Two runs on one machine must show each run's
+  spawns queued against the other's starting sessions, with no low-memory retirements.
+- **Config retry, live.** No live run has shown the retry riding out a truncated
+  `~/.claude.json`, or the mod's `session.send` refusal text for one; the mod matches
+  "JSON Parse error" and "`.claude.json` is corrupted".
 - **A wake-up during a deliberate park.** A wake-up sent between the watchdog's decision
   to park an idle parent and its `claude stop` can be lost. The `wake_unsent` finding
   reports it after `unsent_wakeup_minutes`.

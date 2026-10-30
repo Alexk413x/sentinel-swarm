@@ -15,6 +15,8 @@ from .paths import config_dir, unlink_quiet
 
 _GIT_TIMEOUT_S = 10
 _FILE_LOCK_POLL_S = 0.05
+# A session takes its memory over its first minute; until then free memory does not show it.
+RESERVATION_S = 60.0
 
 
 class LockHeldError(LedgerError):
@@ -107,6 +109,62 @@ def acquire(repo_root: Path, run_id: int, server_pid: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"repo": str(repo_identity(repo_root)), "run_id": run_id, "server_pid": server_pid}
     path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def live_swarms(own_server_pid: int | None = None) -> list[dict]:
+    swarms: list[dict] = []
+    for path in sorted(_locks_dir().glob("*.json")):
+        try:
+            entry = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (
+            isinstance(entry, dict)
+            and holder_alive(entry)
+            and entry.get("server_pid") != own_server_pid
+        ):
+            swarms.append({key: entry.get(key) for key in ("repo", "run_id", "server_pid")})
+    return swarms
+
+
+@contextmanager
+def admission() -> Iterator[None]:
+    with file_lock(_locks_dir() / "memory.lock"):
+        yield
+
+
+def _reservations_path() -> Path:
+    return _locks_dir() / "memory.json"
+
+
+def _live_reservations(now: float) -> list[dict]:
+    try:
+        data = json.loads(_reservations_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    entries = data if isinstance(data, list) else []
+    return [
+        e
+        for e in entries
+        if isinstance(e, dict)
+        and isinstance(e.get("mb"), int)
+        and isinstance(e.get("at"), (int, float))
+        and now - e["at"] < RESERVATION_S
+        and holder_alive(e)
+    ]
+
+
+def reserved_mb(now: float | None = None) -> int:
+    return sum(e["mb"] for e in _live_reservations(time.time() if now is None else now))
+
+
+def reserve(server_pid: int, repo_root: Path, mb: int, now: float | None = None) -> None:
+    at = time.time() if now is None else now
+    entries = _live_reservations(at)
+    entries.append({"server_pid": server_pid, "repo": str(repo_root), "mb": mb, "at": at})
+    path = _reservations_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(entries), encoding="utf-8")
 
 
 def release(repo_root: Path, run_id: int | None = None) -> None:

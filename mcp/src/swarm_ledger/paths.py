@@ -14,6 +14,10 @@ def config_dir() -> Path:
     return config_override() or Path.home() / ".claude"
 
 
+def claude_json_path() -> Path:
+    return (config_override() or Path.home()) / ".claude.json"
+
+
 def same_path(raw: object, root: Path) -> bool:
     if not isinstance(raw, str) or not raw:
         return False
