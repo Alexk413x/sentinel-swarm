@@ -2,6 +2,16 @@
 
 All notable changes to the `sentinel-swarm` plugin.
 
+## [0.5.1] — 2026-10-30 — notice every session that waits on you
+
+### Fixed
+
+- The watchdog reports a session as waiting on the user whenever `claude agents --json`
+  shows its `status` or `state` as `waiting`, whatever its `waitingFor` text says. A
+  prompt type the watchdog did not know raised no notification before.
+- A session blocked on the user repeats its OS notification every `remind_minutes` until
+  it stops waiting. It notified once before.
+
 ## [0.5.0] — 2026-10-30 — fixes for the stalls in the 0.4.0 runs
 
 Fixes every issue that the two 0.4.0 runs of 2026-10-28 and 2026-10-29 found. See
