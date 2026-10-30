@@ -310,7 +310,8 @@ def run_hook(event: str, payload: bytes) -> bytes:
     output = fast_hook(event, payload, repo, fast_timeout)
     if output is not None:
         return output
-    return run_ledger_hook(event, payload, max(deadline - time.monotonic(), 0.1))
+    remaining = min(deadline - time.monotonic(), HOOK_TIMEOUT_SECONDS)
+    return run_ledger_hook(event, payload, max(remaining, 0.1))
 
 
 def run_ledger_hook(event: str, payload: bytes, timeout: float = HOOK_TIMEOUT_SECONDS) -> bytes:

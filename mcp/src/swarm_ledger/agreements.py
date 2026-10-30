@@ -342,7 +342,7 @@ class AgreementsMixin(LedgerHost):
         ).fetchone()
         if file_row is not None and not file_row["test_path"]:
             handoff = conn.execute(
-                "SELECT handoff_id FROM handoffs WHERE file_id = ? AND created_at > ? "
+                "SELECT handoff_id FROM handoffs WHERE file_id = ? AND created_at >= ? "
                 "AND state IN ('submitted', 'approved') ORDER BY handoff_id DESC LIMIT 1",
                 (cr_row["file_id"], cr_row["accepted_at"]),
             ).fetchone()
