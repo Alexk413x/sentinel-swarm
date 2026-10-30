@@ -244,6 +244,30 @@ def test_a_session_waiting_on_a_permission_prompt_needs_the_user(
     assert "open the session host-r1-asking in agent view" in findings[0].next_step
 
 
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"status": "waiting", "waitingFor": "MCP server prompt"},
+        {"status": "waiting"},
+        {"status": None, "state": "waiting"},
+    ],
+)
+def test_any_waiting_status_needs_the_user(
+    ledger: Ledger, claude: FakeClaude, now: datetime, extra: dict
+) -> None:
+    _run_id(ledger)
+    _oracle_running(claude)
+    _agent(ledger, "sess-asking", "coder", "working", started=now, heartbeat=now)
+    claude.run("sess-asking", **extra)
+
+    findings = _scan(ledger, claude, now)
+
+    assert _kinds(findings) == [("asking", "needs_user")]
+    assert findings[0].detail.startswith(
+        f"its session host-r1-asking waits on {extra.get('waitingFor') or 'input'}"
+    )
+
+
 def test_an_oracle_waiting_on_its_own_question_needs_the_user(
     ledger: Ledger, claude: FakeClaude, now: datetime, tmp_path: Path
 ) -> None:
@@ -1301,6 +1325,35 @@ def test_an_open_question_is_reminded_and_zero_turns_reminders_off(
         watchdog.reminder(ledger.conn, ledger.conn.execute("SELECT * FROM runs").fetchone(), None)
         == "1 question(s) wait on you: Which database?"
     )
+
+
+def test_a_session_blocked_on_the_user_is_reminded_until_it_clears(
+    ledger: Ledger, claude: FakeClaude, now: datetime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shown: list[str] = []
+    monkeypatch.setattr(notify, "show", lambda message, **_: shown.append(message))
+    _run_id(ledger)
+    _oracle_running(claude)
+    _agent(ledger, "sess-asking", "coder", "working", started=now, heartbeat=now)
+    entry = claude.run("sess-asking", status="waiting", waitingFor="permission prompt")
+    dog = _dog(ledger, Exits(), remind_minutes=30)
+    reminder = (
+        "1 session(s) wait on you: asking, its session host-r1-asking waits on permission prompt"
+    )
+
+    dog.tick(now)
+    [notice] = shown
+    assert notice.startswith("The swarm needs you: asking")
+
+    dog.tick(now + timedelta(minutes=31))
+    assert [m for m in shown if "wait on you" in m] == [reminder]
+
+    del entry["waitingFor"]
+    entry["status"] = "busy"
+    dog.tick(now + timedelta(minutes=32))
+    dog.tick(now + timedelta(minutes=70))
+    assert [m for m in shown if "wait on you" in m] == [reminder]
+    assert ledger.conn.execute("SELECT reminded_at FROM runs").fetchone()[0] is None
 
 
 def test_the_watchdogs_own_pause_notifies_the_user(

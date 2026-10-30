@@ -134,6 +134,9 @@ def waiting_on_user(entry: dict | None) -> str | None:
     if entry is None:
         return None
     waiting = " ".join(str(entry.get("waitingFor") or "").split())
+    states = {str(entry.get(key) or "").lower() for key in ("status", "state")}
+    if "waiting" in states:
+        return waiting or "input"
     if any(word in waiting.lower() for word in _USER_WAITS):
         return waiting
     return None
@@ -1026,13 +1029,29 @@ def waiting_questions(conn: sqlite3.Connection, run_id: int) -> list[str]:
     ]
 
 
+def blocked_sessions(conn: sqlite3.Connection, run_id: int) -> list[str]:
+    return [
+        f"{row['name'] or row['agent_id']}, {row['detail']}"
+        for row in conn.execute(
+            "SELECT f.agent_id, f.detail, a.name FROM watchdog_findings f "
+            "LEFT JOIN agents a ON a.agent_id = f.agent_id "
+            "WHERE f.run_id = ? AND f.kind = 'needs_user' AND f.cleared_at IS NULL "
+            "ORDER BY f.finding_id",
+            (run_id,),
+        )
+    ]
+
+
 def reminder(conn: sqlite3.Connection, run: sqlite3.Row, pause_reason: str | None) -> str | None:
     questions = waiting_questions(conn, run["run_id"])
+    blocked = blocked_sessions(conn, run["run_id"])
     parts: list[str] = []
     if run["state"] == "paused":
         parts.append(pauses.pause_message(pause_reason or "no reason recorded", run["pause_check"]))
     if questions:
         parts.append(f"{len(questions)} question(s) wait on you: {questions[0]}")
+    if blocked:
+        parts.append(f"{len(blocked)} session(s) wait on you: {blocked[0]}")
     return " ".join(parts) or None
 
 
