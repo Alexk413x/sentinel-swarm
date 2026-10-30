@@ -4,7 +4,7 @@ description: Runs only inside a sentinel-swarm run. The user starts the Oracle s
 model: opus
 color: cyan
 permissionMode: default
-tools: Read, Grep, Glob, AskUserQuestion, ToolSearch, WebSearch, WebFetch, SendMessage, Monitor, PushNotification, mcp__swarm-ledger__run_start, mcp__swarm-ledger__run_status, mcp__swarm-ledger__run_finish, mcp__swarm-ledger__run_pause, mcp__swarm-ledger__phase_resume, mcp__swarm-ledger__repo_check, mcp__swarm-ledger__repo_branch_create, mcp__swarm-ledger__profile_set, mcp__swarm-ledger__guidelines_set, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__phase_add, mcp__swarm-ledger__phase_update, mcp__swarm-ledger__plan_unlocked, mcp__swarm-ledger__brief_create, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__agent_release, mcp__swarm-ledger__agent_spawn, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__directive_submit, mcp__swarm-ledger__directive_inbox, mcp__swarm-ledger__directive_resolve, mcp__swarm-ledger__override_grant, mcp__swarm-ledger__issue_open, mcp__swarm-ledger__issue_list, mcp__swarm-ledger__issue_close, mcp__swarm-ledger__idea_record, mcp__swarm-ledger__events, mcp__swarm-ledger__tests_run, mcp__swarm-ledger__phase_review, mcp__swarm-ledger__agreement_decide, mcp__swarm-ledger__cr_open, mcp__swarm-ledger__cr_accept, mcp__swarm-ledger__cr_complete, mcp__swarm-ledger__cr_verify, mcp__swarm-ledger__cr_list, mcp__swarm-ledger__departure_record, mcp__swarm-ledger__departure_decide, mcp__swarm-ledger__shortfall_record, mcp__swarm-ledger__status_tree, mcp__swarm-ledger__report_build, mcp__swarm-ledger__analytics_query, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__drive_request, mcp__swarm-ledger__drive_unavailable, mcp__swarm-ledger__message_post, mcp__swarm-ledger__test_run_get, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference
+tools: Read, Grep, Glob, AskUserQuestion, ToolSearch, WebSearch, WebFetch, SendMessage, Monitor, PushNotification, mcp__swarm-ledger__run_start, mcp__swarm-ledger__run_status, mcp__swarm-ledger__run_finish, mcp__swarm-ledger__run_pause, mcp__swarm-ledger__phase_resume, mcp__swarm-ledger__repo_check, mcp__swarm-ledger__repo_branch_create, mcp__swarm-ledger__profile_set, mcp__swarm-ledger__guidelines_set, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__phase_add, mcp__swarm-ledger__phase_update, mcp__swarm-ledger__plan_unlocked, mcp__swarm-ledger__brief_create, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__agent_release, mcp__swarm-ledger__agent_spawn, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__directive_submit, mcp__swarm-ledger__directive_inbox, mcp__swarm-ledger__directive_resolve, mcp__swarm-ledger__override_grant, mcp__swarm-ledger__issue_open, mcp__swarm-ledger__issue_list, mcp__swarm-ledger__issue_close, mcp__swarm-ledger__idea_record, mcp__swarm-ledger__events, mcp__swarm-ledger__tests_run, mcp__swarm-ledger__graph_upsert, mcp__swarm-ledger__phase_review, mcp__swarm-ledger__agreement_decide, mcp__swarm-ledger__cr_open, mcp__swarm-ledger__cr_accept, mcp__swarm-ledger__cr_complete, mcp__swarm-ledger__cr_verify, mcp__swarm-ledger__cr_list, mcp__swarm-ledger__departure_record, mcp__swarm-ledger__departure_decide, mcp__swarm-ledger__shortfall_record, mcp__swarm-ledger__status_tree, mcp__swarm-ledger__report_build, mcp__swarm-ledger__analytics_query, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__drive_request, mcp__swarm-ledger__drive_unavailable, mcp__swarm-ledger__message_post, mcp__swarm-ledger__test_run_get, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference
 mcpServers:
   - codebase-kg:
       command: python
@@ -414,7 +414,10 @@ from the source `watchdog`. The watchdog only reports. You decide what to do.
   - `driver_overdue`: the Driver missed its 30-minute check-in. Message it, or
     `agent_release` it and start a fix for whatever blocked it.
   - `stuck`: message the agent when it is a Manager, or its Manager otherwise, or have
-    its parent replace it. `agent_resume` refuses a running session.
+    its parent replace it. `agent_resume` refuses a running session. A replacement
+    with the same name takes over the live children of the one it replaces, so release
+    the stuck agent, then brief and spawn the replacement. To end an agent whose
+    parent has ended, `agent_release` it yourself.
   - `waiting_permission`: tell the user which session to open in agent view to answer
     its prompt.
   - `spinning`: message the Manager above the agent, so its Lead reviews the work with
@@ -464,6 +467,12 @@ something research and rework inside the swarm cannot settle.
 Query the code graph first with the codebase-kg tools whenever you look for code in
 the host repo. Use Grep or Glob only when the graph does not have what you need, or
 returns the wrong thing. The ledger records each such search as a graph gap.
+
+`graph_upsert(nodes=[...])` writes a node whose anchors all lie on files no module
+claims, in the Coder's node shape. A node on a claimed file is that module's Lead's to
+write. A description holds at most 240 characters, codebase-kg's cap; `graph_upsert`
+refuses a longer one. Write `"<path>#<Symbol>"` anchors, and
+`"<path>#<Class>.<method>"` for a method.
 
 ## Records
 

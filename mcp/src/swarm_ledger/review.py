@@ -51,6 +51,32 @@ def agent_name(conn: sqlite3.Connection, agent_id: str | None) -> str:
     return row["name"] if row is not None else agent_id
 
 
+def _anchor_key(anchor: object) -> tuple[str, str]:
+    if isinstance(anchor, str):
+        path, _, symbol = anchor.strip().strip("`").strip().partition("#")
+        return path.strip().replace("\\", "/"), symbol.strip()
+    if isinstance(anchor, dict):
+        path = str(anchor.get("path") or "").strip().replace("\\", "/")
+        return path, str(anchor.get("symbol") or "").strip()
+    raise LedgerError(f"anchor {anchor!r} must be a string or an object")
+
+
+def _lead_may_upsert(
+    file_of: dict[str, int], claimed: set[str], touched: set[str], after: set[str]
+) -> None:
+    foreign = sorted(p for p in touched if p not in file_of and p in claimed)
+    if foreign:
+        raise LedgerError(
+            "a Lead updates only nodes whose anchors lie on its own module's files or on files "
+            f"no module claims; {', '.join(foreign)} belongs to another module's claim"
+        )
+    if all(p in file_of for p in after) and len({file_of[p] for p in after}) < 2:
+        raise LedgerError(
+            "a Lead updates only nodes that span two or more files; a node on one of its "
+            "module's files belongs to that file's Coder"
+        )
+
+
 def _criterion_text(dimension: str, criterion: str) -> str:
     return _CRITERION_TEXT.get((dimension, criterion), f"{dimension}.{criterion}")
 
@@ -399,7 +425,9 @@ class ReviewMixin(LedgerHost):
 
     def graph_upsert(self, caller: str, agent_id: str, nodes: list[dict]) -> dict:
         c = resolve(self.conn, caller, agent_id)
-        require_role(c, "coder", "lead")
+        require_role(c, "coder", "lead", "oracle")
+        claims = self._live_claims(c.run_id) if c.role != "coder" else set()
+        own: set[str] = set()
         file_of: dict[str, int] = {}
         if c.role == "lead":
             for row in self.conn.execute(
@@ -410,9 +438,7 @@ class ReviewMixin(LedgerHost):
                 for p in (row["path"], row["test_path"]):
                     if p:
                         file_of[p] = row["file_id"]
-            allowed_paths = set(file_of)
-            refusal = "a Lead updates only nodes that anchor on its own module's files"
-        else:
+        elif c.role == "coder":
             if c.file_id is None:
                 raise LedgerError(f"{caller!r} has no claimed file")
             file_row = self.conn.execute(
@@ -420,35 +446,25 @@ class ReviewMixin(LedgerHost):
             ).fetchone()
             if file_row is None:
                 raise LedgerError(f"{caller!r} has no claimed file")
-            allowed_paths = {file_row["path"], file_row["test_path"]}
-            refusal = (
-                "a Coder updates only the nodes that anchor on its own file; ask your Lead "
-                "to update a node that spans files"
-            )
+            own = {p for p in (file_row["path"], file_row["test_path"]) if p}
 
         for node in nodes:
-            anchored_files: set[int] = set()
-            supplied: list[str] = []
-            for anchor in node.get("anchors") or []:
-                if isinstance(anchor, str):
-                    supplied.append(anchor.split("#", 1)[0].strip())
-                elif isinstance(anchor, dict):
-                    supplied.append(str(anchor.get("path", "")).strip())
-                else:
-                    raise LedgerError(f"anchor {anchor!r} must be a string or an object")
-            stored = graph.node_anchor_paths(self.repo_root, str(node.get("id")))
-            anchor_paths = supplied if "anchors" in node else stored
-            for anchor_path in (*anchor_paths, *stored):
-                if anchor_path not in allowed_paths:
-                    raise LedgerError(refusal)
-            for anchor_path in anchor_paths:
-                if anchor_path in file_of:
-                    anchored_files.add(file_of[anchor_path])
-            if c.role == "lead" and len(anchored_files) < 2:
-                raise LedgerError(
-                    "a Lead updates only nodes that span two or more of its module's files; "
-                    "a single-file node belongs to that file's Coder"
-                )
+            node_id = str(node.get("id"))
+            supplied = [_anchor_key(a) for a in node.get("anchors") or []]
+            stored = graph.node_anchors(self.repo_root, node_id)
+            after = supplied if "anchors" in node else stored
+            touched = {p for p, _ in (*supplied, *stored)}
+            if c.role == "coder":
+                self._coder_may_upsert(node, own, supplied, stored, touched)
+            elif c.role == "lead":
+                _lead_may_upsert(file_of, claims, touched, {p for p, _ in after})
+            else:
+                owned = sorted(p for p in touched if p in claims)
+                if owned:
+                    raise LedgerError(
+                        f"the Oracle updates only nodes that no module owns; {node_id!r} anchors "
+                        f"{', '.join(owned)}, which a module claims. That module's Lead updates it"
+                    )
 
         result = graph.graph_upsert(self.repo_root, nodes)
 
@@ -460,6 +476,53 @@ class ReviewMixin(LedgerHost):
             self._log_event(conn, agent_id, state, state or "working", "graph_upsert")
 
         return result
+
+    def _live_claims(self, run_id: int | None) -> set[str]:
+        claimed: set[str] = set()
+        for row in self.conn.execute(
+            "SELECT files.path, files.test_path FROM files "
+            "JOIN modules ON modules.module_id = files.module_id "
+            "JOIN phases ON phases.phase_id = modules.phase_id "
+            "WHERE phases.run_id = ? AND files.released_at IS NULL "
+            "AND files.state NOT IN ('released', 'superseded')",
+            (run_id,),
+        ):
+            claimed.update(p for p in (row["path"], row["test_path"]) if p)
+        return claimed
+
+    def _coder_may_upsert(
+        self,
+        node: dict,
+        own: set[str],
+        supplied: list[tuple[str, str]],
+        stored: list[tuple[str, str]],
+        touched: set[str],
+    ) -> None:
+        if touched <= own:
+            return
+        refusal = (
+            "a Coder updates only the nodes that anchor on its own file; ask your Lead to "
+            "update a node that spans files. On a node that also anchors other files, a Coder "
+            "may only add anchors on its own file, or re-record its baseline, with a node "
+            'that carries just "id" and "anchors": every anchor the node has, plus its new ones'
+        )
+        if set(node) - {"id", "anchors"}:
+            raise LedgerError(refusal)
+        if "anchors" in node:
+            if not set(stored) <= set(supplied):
+                raise LedgerError(refusal)
+            if any(path not in own for path, _ in set(supplied) - set(stored)):
+                raise LedgerError(refusal)
+        after = {p for p, _ in (supplied if "anchors" in node else stored)}
+        if not after & own:
+            raise LedgerError(refusal)
+        stale = graph.stale_files(self.repo_root, sorted(after - own))
+        if stale:
+            raise LedgerError(
+                f"node {node.get('id')!r} also anchors {', '.join(stale)}, which changed since "
+                "its baseline and is not your file; a write would re-record that baseline too. "
+                "Ask your Lead to update the node"
+            )
 
     # -- Scoring --------------------------------------------------------------
 

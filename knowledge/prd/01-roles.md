@@ -141,7 +141,8 @@
 - **Tools:** Read, Grep, Glob, AskUserQuestion, ToolSearch, WebSearch, WebFetch,
   SendMessage, Monitor (the watchdog call only), PushNotification (the notifications
   the ledger records for the user), its ledger tools, and the
-  codebase-kg read tools. No write tool and no shell.
+  codebase-kg read tools. No write tool and no shell. Of the graph write tools, it holds
+  only `graph_upsert`, for nodes whose anchors lie on files no module claims.
 
 ### Manager
 
@@ -170,7 +171,8 @@
   and starts it. Scores each handoff blind, compares, and approves, returns, or accepts
   it as incomplete. Classifies each fix attempt. Decides departures first. Runs the
   module's tests when every file is settled, and reports to its Manager. Writes the
-  graph nodes that anchor on several files of its module with `graph_upsert`.
+  graph nodes that anchor on several files with `graph_upsert`, when each file is one of
+  its module's or one no module claims.
 - **Owns:** the module, the file assignments inside it, the contracts between its files,
   and the approval of each Coder's work.
 - **Arbitrates:** disputes between its Coders about contracts and about where a shared
@@ -179,14 +181,15 @@
   own.
 - **Done when:** its Manager accepts the module with `module_review` and releases it.
 - **Tools:** the same as the Manager. Of the graph write tools, it holds only
-  `graph_upsert`, for nodes that span its module's files.
+  `graph_upsert`, for nodes that span two or more files, each its module's or unclaimed.
 
 ### Coder
 
 - **Does:** searches the code graph for existing code before it writes. Writes the test
   file first when it can, then the source file. Test-first is the expected practice,
   not a gate. Runs its tests through `tests_run` until they pass. Updates the code graph
-  for its file with `graph_upsert`. Scores its own work with `score_record(kind="self")`
+  for its file with `graph_upsert`, and adds anchors on its file to a node that spans
+  files. Scores its own work with `score_record(kind="self")`
   and fixes what the score shows; that fix is not an escalation attempt. The template
   sets no review loop of its own: the self score, the `tests_run` gate, and the Lead's
   blind review are the checks. Hands off. Works with its Lead and other Coders on contracts, through the ledger.

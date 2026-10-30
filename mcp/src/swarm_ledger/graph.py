@@ -26,6 +26,8 @@ _BASE_UPSERT_SCRIPT = (
     "import json,sys; sys.path.insert(0, sys.argv[1]); from codebase_kg import edits; "
     "print(json.dumps(edits.upsert_node(sys.argv[2], json.loads(sys.stdin.read()))))"
 )
+# codebase-kg's schema.MAX_DESCRIPTION; the ledger does not import codebase-kg in-process.
+MAX_DESCRIPTION = 240
 _DEFAULT_FLOOR = (3, 10)
 _FLOOR_RE = re.compile(r'requires-python\s*=\s*"\s*>=\s*(\d+)\.(\d+)')
 _NO_DEPENDENCIES = re.compile(r"^dependencies\s*=\s*\[\s*\]", re.MULTILINE)
@@ -66,6 +68,17 @@ def _check_edges(graph_path: Path, nodes: list[dict]) -> None:
                     f"node {node.get('id')!r} has an edge to {target!r}, which is not in the "
                     "graph; drop the edge or name an existing node id"
                 )
+
+
+def _check_descriptions(nodes: list[dict]) -> None:
+    for node in nodes:
+        description = node.get("description")
+        if isinstance(description, str) and len(description) > MAX_DESCRIPTION:
+            raise LedgerError(
+                f"node {node.get('id')!r} has a {len(description)}-character description; "
+                f"codebase-kg caps a description at {MAX_DESCRIPTION} characters. Shorten it "
+                "to what the code is, in the present tense"
+            )
 
 
 def _pyproject(kg_root: Path) -> str:
@@ -122,6 +135,7 @@ def _tail(text: str, lines: int = 20) -> str:
 
 def graph_upsert(repo_root: Path, nodes: list[dict]) -> dict:
     graph_path = repo_root / "knowledge" / "code_graph.db"
+    _check_descriptions(nodes)
     _check_edges(graph_path, nodes)
     kg_root = codebase_kg_root(repo_root)
     # A write states that the caller re-read each node against its files, so it re-baselines them.
@@ -155,8 +169,17 @@ def graph_upsert(repo_root: Path, nodes: list[dict]) -> dict:
         raise LedgerError(f"graph_upsert produced unparsable output: {tail}") from exc
 
 
-def _whole_word(symbol: str, text: str) -> bool:
-    return re.search(rf"\b{re.escape(symbol)}\b", text) is not None
+def _symbol_in_source(symbol: str, text: str) -> bool:
+    # codebase-kg's tools._symbol_in_source: a `Type.method` anchor never appears literally, so
+    # each dotted segment must appear on its own, with a word boundary only at a word character.
+    for segment in symbol.split("."):
+        if not segment:
+            continue
+        head = r"\b" if re.match(r"\w", segment[0]) else ""
+        tail = r"\b" if re.match(r"\w", segment[-1]) else ""
+        if re.search(head + re.escape(segment) + tail, text) is None:
+            return False
+    return True
 
 
 def _top_level_py_symbols(source: str) -> list[str]:
@@ -207,6 +230,26 @@ def anchored_paths(repo_root: Path, rel_paths: list[str]) -> set[str]:
         }
     except sqlite3.Error:
         return set()
+    finally:
+        conn.close()
+
+
+def node_anchors(repo_root: Path, node_id: str) -> list[tuple[str, str]]:
+    graph_path = repo_root / "knowledge" / "code_graph.db"
+    if not graph_path.is_file():
+        return []
+    conn = open_readonly(graph_path)
+    try:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(anchor)")}
+        symbol = "COALESCE(symbol, '')" if "symbol" in columns else "''"
+        return [
+            (row[0], row[1])
+            for row in conn.execute(
+                f"SELECT path, {symbol} FROM anchor WHERE node_id = ? ORDER BY ord", (node_id,)
+            )
+        ]
+    except sqlite3.Error:
+        return []
     finally:
         conn.close()
 
@@ -268,6 +311,11 @@ def stale_files(repo_root: Path, rel_paths: list[str] | None = None) -> dict[str
         conn.close()
 
 
+def _anchors_to_add(rel_path: str, names: list[str]) -> str:
+    anchors = [f"{rel_path}#{name}" for name in names] or [rel_path]
+    return f"add the anchors {', '.join(anchors)} to a node with graph_upsert"
+
+
 def graph_current_for(repo_root: Path, rel_path: str) -> tuple[bool, list[str]]:
     graph_path = repo_root / "knowledge" / "code_graph.db"
     if not graph_path.is_file():
@@ -280,11 +328,15 @@ def graph_current_for(repo_root: Path, rel_path: str) -> tuple[bool, list[str]]:
             raise LedgerError("the code graph's anchor table has no 'path' column")
 
         anchors = conn.execute("SELECT * FROM anchor WHERE path = ?", (rel_path,)).fetchall()
-        if not anchors:
-            return False, [f"no node anchors on {rel_path}"]
-
         full_path = repo_root / rel_path
         source_text = full_path.read_text(encoding="utf-8") if full_path.is_file() else ""
+        public = (
+            _top_level_py_symbols(source_text)
+            if rel_path.endswith(".py") and full_path.is_file()
+            else []
+        )
+        if not anchors:
+            return False, [f"no node anchors on {rel_path}; {_anchors_to_add(rel_path, public)}"]
 
         reasons: list[str] = []
         mapped_symbols: set[str] = set()
@@ -293,14 +345,15 @@ def graph_current_for(repo_root: Path, rel_path: str) -> tuple[bool, list[str]]:
             symbol = anchor["symbol"] if has_symbol_column else None
             if symbol:
                 mapped_symbols.add(symbol)
-                if not _whole_word(symbol, source_text):
+                mapped_symbols.add(symbol.split(".", 1)[0])
+                if not _symbol_in_source(symbol, source_text):
                     reasons.append(f"anchor symbol {symbol} not found")
 
-        if rel_path.endswith(".py") and full_path.is_file():
-            reasons.extend(
-                f"symbol {name} is unmapped"
-                for name in _top_level_py_symbols(source_text)
-                if name not in mapped_symbols
+        unmapped = [name for name in public if name not in mapped_symbols]
+        if unmapped:
+            reasons.append(
+                f"{', '.join(unmapped)} {'is' if len(unmapped) == 1 else 'are'} unmapped; "
+                f"{_anchors_to_add(rel_path, unmapped)}"
             )
 
         return (len(reasons) == 0, reasons)

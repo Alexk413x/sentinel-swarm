@@ -127,6 +127,9 @@ CREATE TABLE IF NOT EXISTS briefs (
     -- The public contract of the child's file or module. A dependent's brief needs one on
     -- each dependency's latest brief.
     contract TEXT,
+    -- The ended agent this brief's child replaces. brief_ack moves that agent's live children
+    -- and briefs to the child, as it does for an ended agent of the same name.
+    replaces_agent_id TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
     -- Set by the pre_ledger hook when the child's own session calls brief_get.
     last_read_by_child_at TEXT,
     acked_by_agent_id TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,

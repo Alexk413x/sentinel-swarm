@@ -6,7 +6,9 @@ from pathlib import Path
 import pytest
 from helpers import bootstrap_module, insert_passing_test_run, register_agent, review_scores
 
+from swarm_ledger import sessions
 from swarm_ledger.db import write_tx
+from swarm_ledger.hooks import events
 from swarm_ledger.identity import LedgerError
 from swarm_ledger.ledger import Ledger
 from swarm_ledger.settings import load_settings
@@ -1163,3 +1165,181 @@ def test_override_grant_still_allows_a_non_oracle_target(ledger: Ledger) -> None
         "oracle", ctx["oracle_id"], "write", "coder-1", "src/a.py", "urgent fix"
     )
     assert granted["target_agent_name"] == "coder-1"
+
+
+# -- A replacement parent reaches the children of the agent it replaced -------------------------
+
+
+def _replace_manager(
+    ledger: Ledger,
+    ctx: dict,
+    name: str,
+    new_id: str,
+    phase_id: int | None = None,
+    replaces: str | None = None,
+) -> None:
+    ledger.agent_release("oracle", ctx["oracle_id"], ctx["manager"]["agent_id"])
+    ledger.brief_create(
+        "oracle",
+        ctx["oracle_id"],
+        name,
+        "manager",
+        "opus",
+        "Own the phase.",
+        phase_id=phase_id or ctx["phase_id"],
+        replaces=replaces,
+    )
+    register_agent(ledger, new_id, "manager", parent_agent_id=ctx["oracle_id"])
+    ledger.brief_ack(name, new_id)
+
+
+def _other_phase(ledger: Ledger, ctx: dict) -> tuple[str, int]:
+    phase = ledger.phase_add("oracle", ctx["oracle_id"], "phase-2")
+    ledger.phase_update("oracle", ctx["oracle_id"], phase["phase_id"], "unlocked")
+    return f"mgr-{phase['name']}", phase["phase_id"]
+
+
+def _parent_of(ledger: Ledger, agent_id: str) -> str:
+    row = ledger.conn.execute(
+        "SELECT parent_agent_id FROM agents WHERE agent_id = ?", (agent_id,)
+    ).fetchone()
+    return row["parent_agent_id"]
+
+
+def test_a_replacement_manager_reaches_the_live_lead_of_the_one_it_replaced(
+    ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = bootstrap_module(ledger)
+    lead_id = ctx["lead"]["agent_id"]
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET session_name = 'host-r1-' || name WHERE agent_id IN (?, ?)",
+            (lead_id, ctx["manager"]["agent_id"]),
+        )
+
+    _replace_manager(ledger, ctx, "mgr-p1-phase-1", "mgr-agent-2")
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET session_name = 'host-r1-mgr-p1-phase-1' WHERE agent_id = ?",
+            ("mgr-agent-2",),
+        )
+
+    assert _parent_of(ledger, lead_id) == "mgr-agent-2"
+    lead_brief = ledger.conn.execute(
+        "SELECT parent_agent_id FROM briefs WHERE child_name = 'lead-p1-module-1'"
+    ).fetchone()
+    assert lead_brief["parent_agent_id"] == "mgr-agent-2"
+
+    posted = ledger.message_post("mgr-p1-phase-1", "mgr-agent-2", "lead-p1-module-1", "go on")
+    assert posted["to_name"] == "lead-p1-module-1"
+    ledger.message_post("lead-p1-module-1", lead_id, "mgr-p1-phase-1", "back")
+
+    to_lead = {"session_id": "mgr-agent-2", "tool_input": {"to": "host-r1-lead-p1-module-1"}}
+    assert events.handle_pre_send_message(ledger, to_lead) is None
+    to_manager = {"session_id": lead_id, "tool_input": {"to": "host-r1-mgr-p1-phase-1"}}
+    assert events.handle_pre_send_message(ledger, to_manager) is None
+
+    resumed: list[list[str]] = []
+    back = {"id": lead_id[:8], "sessionId": lead_id, "name": "host-r1-lead-p1-module-1"}
+
+    def fake_run(args: list[str], cwd: Path | None = None) -> str:
+        del cwd
+        resumed.append(args)
+        if args[:2] == ["agents", "--json"]:
+            came_back = any(a[0] == "--resume" for a in resumed)
+            return json.dumps([back | {"kind": "background"}] if came_back else [])
+        return f"backgrounded · {lead_id[:8]} · lead\n"
+
+    monkeypatch.setattr(sessions, "_run", fake_run)
+    result = ledger.agent_resume("mgr-p1-phase-1", "mgr-agent-2", "lead-p1-module-1")
+    assert result["reachable"] is True
+    assert ["--resume", lead_id] == next(a for a in resumed if a[0] == "--resume")[:2]
+
+
+def test_a_brief_that_names_replaces_moves_the_children_of_a_differently_named_agent(
+    ledger: Ledger,
+) -> None:
+    ctx = bootstrap_module(ledger)
+    old_id = ctx["manager"]["agent_id"]
+    name, phase_id = _other_phase(ledger, ctx)
+    _replace_manager(ledger, ctx, name, "mgr-agent-2", phase_id, replaces=old_id)
+
+    assert _parent_of(ledger, ctx["lead"]["agent_id"]) == "mgr-agent-2"
+    briefs = ledger.conn.execute(
+        "SELECT DISTINCT parent_agent_id FROM briefs WHERE child_role = 'lead'"
+    ).fetchall()
+    assert [b["parent_agent_id"] for b in briefs] == ["mgr-agent-2"]
+
+
+def test_a_new_agent_with_another_name_leaves_the_released_agents_children_alone(
+    ledger: Ledger,
+) -> None:
+    ctx = bootstrap_module(ledger)
+    name, phase_id = _other_phase(ledger, ctx)
+    _replace_manager(ledger, ctx, name, "mgr-agent-2", phase_id)
+
+    assert _parent_of(ledger, ctx["lead"]["agent_id"]) == ctx["manager"]["agent_id"]
+
+
+def test_replaces_must_name_an_ended_agent_of_the_childs_role(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    name, phase_id = _other_phase(ledger, ctx)
+
+    def brief(replaces: str) -> dict:
+        return ledger.brief_create(
+            "oracle",
+            ctx["oracle_id"],
+            name,
+            "manager",
+            "opus",
+            "Own phase-2.",
+            phase_id=phase_id,
+            replaces=replaces,
+        )
+
+    with pytest.raises(LedgerError, match="still live; release it first"):
+        brief(ctx["manager"]["agent_id"])
+    ledger.agent_release("mgr-p1-phase-1", ctx["manager"]["agent_id"], ctx["lead"]["agent_id"])
+    with pytest.raises(LedgerError, match="a lead, not a manager"):
+        brief(ctx["lead"]["agent_id"])
+    with pytest.raises(LedgerError, match="no agent of this run"):
+        brief("nobody")
+
+
+def test_the_oracle_releases_an_agent_whose_parent_has_ended(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    lead_id = ctx["lead"]["agent_id"]
+    with pytest.raises(LedgerError, match="is not the parent"):
+        ledger.agent_release("oracle", ctx["oracle_id"], lead_id)
+
+    ledger.agent_release("oracle", ctx["oracle_id"], ctx["manager"]["agent_id"])
+    released = ledger.agent_release("oracle", ctx["oracle_id"], lead_id)
+    assert released["state"] == "released"
+
+
+def test_only_the_oracle_releases_an_orphan(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    ledger.brief_create(
+        "mgr-p1-phase-1",
+        ctx["manager"]["agent_id"],
+        "lead-p1-module-2",
+        "lead",
+        "sonnet",
+        "Own module-2.",
+        module_id=_second_module(ledger, ctx),
+    )
+    register_agent(ledger, "lead-agent-2", "lead", parent_agent_id=ctx["manager"]["agent_id"])
+    ledger.brief_ack("lead-p1-module-2", "lead-agent-2")
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET state = 'released', ended_at = '2026-01-01T00:00:00.000Z' "
+            "WHERE agent_id = ?",
+            (ctx["lead"]["agent_id"],),
+        )
+        conn.execute(
+            "UPDATE agents SET parent_agent_id = ? WHERE agent_id = ?",
+            (ctx["lead"]["agent_id"], "lead-agent-2"),
+        )
+
+    with pytest.raises(LedgerError, match="is not the parent"):
+        ledger.agent_release("mgr-p1-phase-1", ctx["manager"]["agent_id"], "lead-agent-2")

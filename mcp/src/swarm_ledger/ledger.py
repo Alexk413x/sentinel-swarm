@@ -116,6 +116,43 @@ def require_slug(label: str, value: str) -> None:
         )
 
 
+def _require_replaceable(
+    conn: sqlite3.Connection, c: Caller, child_role: str, replaces: str
+) -> None:
+    row = conn.execute(
+        "SELECT name, role, ended_at FROM agents WHERE agent_id = ? AND run_id = ?",
+        (replaces, c.run_id),
+    ).fetchone()
+    if row is None:
+        raise LedgerError(f"replaces names {replaces!r}, which is no agent of this run")
+    if row["role"] != child_role:
+        raise LedgerError(f"replaces names {row['name']!r}, a {row['role']}, not a {child_role}")
+    if row["ended_at"] is None:
+        raise LedgerError(f"replaces names {row['name']!r}, which is still live; release it first")
+
+
+def _replaced_ids(conn: sqlite3.Connection, brief: sqlite3.Row, new_id: str) -> list[str]:
+    ids = [
+        row["agent_id"]
+        for row in conn.execute(
+            "SELECT agent_id FROM agents WHERE run_id = ? AND name = ? AND agent_id != ? "
+            "AND ended_at IS NOT NULL ORDER BY started_at",
+            (brief["run_id"], brief["child_name"], new_id),
+        )
+    ]
+    replaces = brief["replaces_agent_id"]
+    if replaces and replaces != new_id and replaces not in ids:
+        ids.append(replaces)
+    return ids
+
+
+def _parent_ended(conn: sqlite3.Connection, target: sqlite3.Row) -> bool:
+    parent = conn.execute(
+        "SELECT ended_at FROM agents WHERE agent_id = ?", (target["parent_agent_id"],)
+    ).fetchone()
+    return parent is not None and parent["ended_at"] is not None
+
+
 class Ledger(
     CapacityMixin,
     AgreementsMixin,
@@ -335,14 +372,7 @@ class Ledger(
                     session_name,
                 ),
             )
-            conn.execute(
-                "UPDATE agents SET parent_agent_id = ? WHERE parent_agent_id = ?",
-                (session_id, old_id),
-            )
-            conn.execute(
-                "UPDATE briefs SET parent_agent_id = ? WHERE parent_agent_id = ?",
-                (session_id, old_id),
-            )
+            self._repoint_children(conn, old_id, session_id)
             self._log_event(conn, session_id, oracle["state"], "working", f"resumed from {old_id}")
         if run["state"] == "paused":
             conn.execute("UPDATE runs SET state = 'active' WHERE run_id = ?", (run["run_id"],))
@@ -352,6 +382,27 @@ class Ledger(
             "oracle": self._agent_dict(session_id),
             "resumed": True,
         }
+
+    def _repoint_children(self, conn: sqlite3.Connection, old_id: str, new_id: str) -> None:
+        children = conn.execute(
+            "SELECT agent_id, state FROM agents WHERE parent_agent_id = ? AND ended_at IS NULL",
+            (old_id,),
+        ).fetchall()
+        conn.execute(
+            "UPDATE agents SET parent_agent_id = ? WHERE parent_agent_id = ? AND ended_at IS NULL",
+            (new_id, old_id),
+        )
+        conn.execute(
+            "UPDATE briefs SET parent_agent_id = ? WHERE parent_agent_id = ?", (new_id, old_id)
+        )
+        for child in children:
+            self._log_event(
+                conn,
+                child["agent_id"],
+                child["state"],
+                child["state"],
+                f"parent {old_id} replaced by {new_id}",
+            )
 
     def run_pause(
         self, caller: str, agent_id: str, reason: str, phases: list[int] | None = None
@@ -838,6 +889,7 @@ class Ledger(
         finding_ids: list[int] | None = None,
         effort: str | None = None,
         contract: str | None = None,
+        replaces: str | None = None,
     ) -> dict:
         if child_role == "driver":
             raise LedgerError(
@@ -857,6 +909,7 @@ class Ledger(
             finding_ids,
             effort,
             contract,
+            replaces,
         )
 
     def _write_brief(
@@ -873,6 +926,7 @@ class Ledger(
         finding_ids: list[int] | None = None,
         effort: str | None = None,
         contract: str | None = None,
+        replaces: str | None = None,
     ) -> dict:
         if effort is not None and effort not in EFFORT_LEVELS:
             raise LedgerError(f"unknown effort {effort!r}; use one of {list(EFFORT_LEVELS)}")
@@ -905,6 +959,8 @@ class Ledger(
                 is not None
             ):
                 raise LedgerError(f"an unacked brief already exists for {child_name!r}")
+            if replaces is not None:
+                _require_replaceable(conn, c, child_role, replaces)
             if finding_ids is None:
                 if c.role == "oracle" and c.run_id is not None:
                     self._require_finding_ids(conn, c.run_id)
@@ -917,8 +973,8 @@ class Ledger(
             cur = conn.execute(
                 "INSERT INTO briefs "
                 "(run_id, parent_agent_id, child_name, child_role, model, effort, body, "
-                "phase_id, module_id, file_id, finding_ids_json, contract) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "phase_id, module_id, file_id, finding_ids_json, contract, replaces_agent_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     c.run_id,
                     c.agent_id,
@@ -932,6 +988,7 @@ class Ledger(
                     file_id if file_id is not None else c.file_id,
                     json.dumps(finding_ids) if finding_ids else None,
                     contract.strip() if contract and contract.strip() else None,
+                    replaces,
                 ),
             )
             brief_id = cur.lastrowid
@@ -1170,6 +1227,8 @@ class Ledger(
                 (agent_id, brief_row["brief_id"]),
             )
             self._log_event(conn, agent_id, from_state, "working", "brief_ack")
+            for old_id in _replaced_ids(conn, brief_row, agent_id):
+                self._repoint_children(conn, old_id, agent_id)
 
         return self._agent_dict(agent_id)
 
@@ -1240,8 +1299,13 @@ class Ledger(
             ).fetchone()
             if target is None:
                 raise LedgerError(f"unknown agent_id {target_agent_id!r}")
-            if target["parent_agent_id"] != c.agent_id:
-                raise LedgerError(f"{caller!r} is not the parent of {target_agent_id!r}")
+            if target["parent_agent_id"] != c.agent_id and not (
+                c.role == "oracle" and _parent_ended(conn, target)
+            ):
+                raise LedgerError(
+                    f"{caller!r} is not the parent of {target_agent_id!r}; the Oracle may also "
+                    "release an agent whose parent has ended"
+                )
             self._release_agent(conn, target_agent_id, "agent_release")
 
         return self._agent_dict(target_agent_id)
