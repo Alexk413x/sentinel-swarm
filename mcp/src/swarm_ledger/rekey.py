@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from .queries import UNPARK_SET
+
 # Session-id columns that neither end in agent_id nor reference agents.
 SESSION_COLUMNS = frozenset({("mod_sessions", "session_id")})
 
@@ -57,7 +59,7 @@ def adopt(conn: sqlite3.Connection, old_id: str, new_id: str) -> None:
     if transcript and Path(transcript).stem == old_id:
         transcript = str(Path(transcript).with_name(f"{new_id}.jsonl"))
     conn.execute(
-        "UPDATE agents SET resume_started_at = NULL, parked_at = NULL, park_reason = NULL, "
+        f"UPDATE agents SET resume_started_at = NULL, {UNPARK_SET}, "
         "bg_id = ?, transcript_path = ? WHERE agent_id = ?",
         (new_id[:8], transcript, new_id),
     )

@@ -101,9 +101,98 @@
    }
   },
   {
+   "name": "run_close",
+   "title": "Run Close",
+   "description": "Closes a run the ledger cannot finish; the Oracle calls this. Every unsettled file\nmust be named with its reason; each is recorded incomplete. It records the outcome,\nreleases every agent, stops their sessions, and the server exits.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "outcome": {
+      "type": "string"
+     },
+     "files_incomplete": {
+      "anyOf": [
+       {
+        "items": {
+         "additionalProperties": true,
+         "type": "object"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "Each unsettled file, as {\"file_id\": <id>, \"reason\": <why it stops short>}."
+     }
+    },
+    "required": [
+     "caller",
+     "outcome"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "file_accept_incomplete",
+   "title": "File Accept Incomplete",
+   "description": "Settles a file verified another way as incomplete; the Oracle calls this with the\nreason and the passing test run ids that cover it. module_review counts it settled.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "file_id": {
+      "type": "integer"
+     },
+     "reason": {
+      "type": "string"
+     },
+     "evidence": {
+      "items": {
+       "type": "integer"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "caller",
+     "file_id",
+     "reason",
+     "evidence"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
    "name": "run_pause",
    "title": "Run Pause",
-   "description": "Pauses the run, or just the named phases, on a blocker only the user can fix; the Oracle\ncalls this. With phases, the run stays active: agent_spawn refuses those phases until\nphase_resume clears them, and the others keep going.",
+   "description": "Pauses the run, or just the named phases, on a blocker only the user can fix; the Oracle\ncalls this. With phases, the run stays active: agent_spawn refuses those phases until\nphase_resume clears them, and the others keep going. A whole-run pause notifies the user\nwith the reason. clear_check names the check the watchdog tries on its timer to resume the\nrun by itself: config_parses, the config file ~/.claude.json parses.",
    "inputSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -122,6 +211,18 @@
          "type": "integer"
         },
         "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "clear_check": {
+      "anyOf": [
+       {
+        "const": "config_parses",
+        "type": "string"
        },
        {
         "type": "null"
@@ -636,6 +737,18 @@
       ],
       "default": null,
       "description": "The public contract of the child's file or module. Required before a file or module that depends on it can be briefed."
+     },
+     "replaces": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "The agent_id of an ended agent the child replaces. brief_ack moves that agent's live children and briefs to the child; an ended agent of the same name needs no replaces."
      }
     },
     "required": [
@@ -720,7 +833,7 @@
   {
    "name": "agent_release",
    "title": "Agent Release",
-   "description": "Releases an agent it directly parented; any parent role calls this for its own child.",
+   "description": "Releases an agent it directly parented; any parent role calls this for its own child. The\nOracle may also release an agent whose parent has ended. Passed a queued child's name, it\ncancels that queued spawn and keeps its brief and claim.",
    "inputSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -813,7 +926,7 @@
   {
    "name": "claim_file",
    "title": "Claim File",
-   "description": "Claims a file path for a coder under the caller's module; a Lead calls this. for_name is\ncoder-p<phase ordinal>-<module>-<file slug>.",
+   "description": "Claims a file path for a coder under the caller's module; a Lead calls this, or a\nManager for an unowned path, with the module_id of one of its modules. for_name is\ncoder-p<phase ordinal>-<module>-<file slug>.",
    "inputSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -852,6 +965,30 @@
       ],
       "default": null,
       "description": "File ids of this module that this file uses; brief those first."
+     },
+     "module_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "A Manager's claim: the module of its phase that takes the path. A Lead leaves it unset."
+     },
+     "product_of": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "For a generated file, such as a build output: the file_id of the live claim it is built from. for_name is that file's Coder, and the product rides its handoff."
      }
     },
     "required": [
@@ -874,7 +1011,7 @@
   {
    "name": "release_file",
    "title": "Release File",
-   "description": "Releases a live claim on a file path; a Lead calls this.",
+   "description": "Releases a live claim on a file path; a Lead calls this. It refuses while the owning\nCoder is live, and drops the owner's queued spawn.",
    "inputSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -1146,6 +1283,37 @@
      "directive_id",
      "outcome",
      "resolution"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "user_ask",
+   "title": "User Ask",
+   "description": "Asks the user a question as an open needs_user directive and notifies the user; the\nOracle calls this in place of AskUserQuestion. The answer arrives in directive_inbox as a\ndirective that replies to it.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "question": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "question"
     ]
    },
    "outputSchema": {
@@ -1451,7 +1619,7 @@
   {
    "name": "tests_run",
    "title": "Tests Run",
-   "description": "Runs the profile's test command for a scope; the required role scales Coder to Oracle.\n\nThe result's output is a summary: the tail of a pass, or the first traceback and the\nshort test summary of a failure. test_run_get returns the full output. When a passing\nrun in this run used the same command on an unchanged working tree, the ledger records\na copy of it instead of running again and returns reused: true with reused_from.",
+   "description": "Starts the profile's test command for a scope; the required role scales Coder to Oracle.\n\nThe suite runs in its own process under the ledger server, bounded by test_timeout_s. The\ncall returns the recorded result when the run ends within about 20 seconds; otherwise it\nreturns state: running with the test_run_id, and a wake-up names the result once it is\nrecorded. test_run_get reads a run, with its full output. The result's output is a\nsummary: the tail of a pass, or the first traceback and the short test summary of a\nfailure. When a passing run in this run used the same command on an unchanged working\ntree, the ledger records a copy of it instead of running again and returns reused: true\nwith reused_from.",
    "inputSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -1484,6 +1652,11 @@
       "default": false,
       "description": "Run the tests even when an earlier passing run can be reused.",
       "type": "boolean"
+     },
+     "include_slow": {
+      "default": false,
+      "description": "Also run the settings' slow_tests; only when your brief asks.",
+      "type": "boolean"
      }
     },
     "required": [
@@ -1504,7 +1677,7 @@
   {
    "name": "test_run_get",
    "title": "Test Run Get",
-   "description": "Returns one recorded test run of this run, with its full output.",
+   "description": "Returns one test run of this run, with its state and full output once it is recorded.",
    "inputSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -1538,7 +1711,7 @@
   {
    "name": "graph_upsert",
    "title": "Graph Upsert",
-   "description": "Upserts code graph nodes. A Coder's nodes anchor only on its own claimed file; a Lead's\nmay span the files of its module.",
+   "description": "Upserts code graph nodes, each description at most 240 characters. A Coder's nodes anchor\nonly on its own claimed file, and on a node that spans files it may only add anchors on its\nown file or re-record its baseline. A Lead's nodes span two or more files, each its module's\nor claimed by no module. The Oracle's nodes anchor only on files no module claims.",
    "inputSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -2777,6 +2950,37 @@
    }
   },
   {
+   "name": "file_delete",
+   "title": "File Delete",
+   "description": "Deletes the Coder's own claimed file, test file, or product from disk; a Coder calls\nthis. handoff_submit records the deletion as the file's version for review.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "path": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "path"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
    "name": "status_tree",
    "title": "Status Tree",
    "description": "Returns the run's phase, module, and file status tree with live agents; any agent may.\n`open_findings` lists the Driver findings not yet fixed or stopped, and `fixes` lists each\nbrief that names findings, with their ids and titles. The run's PRD text is left out\nunless include_prd is true.",
@@ -3149,6 +3353,8 @@
   "drive_issue",
   "drive_request",
   "drive_unavailable",
+  "file_accept_incomplete",
+  "file_delete",
   "graph_upsert",
   "guidelines_get",
   "guidelines_set",
@@ -3175,6 +3381,7 @@
   "report_build",
   "return_work",
   "review_compare",
+  "run_close",
   "run_finish",
   "run_pause",
   "run_start",
@@ -3184,6 +3391,7 @@
   "status_tree",
   "test_run_get",
   "tests_run",
+  "user_ask",
   "version_restore",
   "wait_for"
  ]

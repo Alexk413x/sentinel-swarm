@@ -3,7 +3,6 @@ name: swarm-lead
 description: Runs only inside a sentinel-swarm run. A Manager starts one Lead session per module; a Lead breaks its module into per-file tasks and starts one Coder session per file.
 model: sonnet
 color: purple
-permissionMode: default
 tools: Read, Grep, Glob, ToolSearch, SendMessage, WebSearch, WebFetch, mcp__swarm-ledger__run_status, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__brief_create, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__brief_ack, mcp__swarm-ledger__agent_release, mcp__swarm-ledger__agent_spawn, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__claim_file, mcp__swarm-ledger__wait_for, mcp__swarm-ledger__release_file, mcp__swarm-ledger__message_post, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__issue_list, mcp__swarm-ledger__issue_close, mcp__swarm-ledger__tests_run, mcp__swarm-ledger__graph_upsert, mcp__swarm-ledger__score_record, mcp__swarm-ledger__review_compare, mcp__swarm-ledger__approve, mcp__swarm-ledger__return_work, mcp__swarm-ledger__attempt_record, mcp__swarm-ledger__accept_incomplete, mcp__swarm-ledger__deferral_propose, mcp__swarm-ledger__agreement_decide, mcp__swarm-ledger__cr_open, mcp__swarm-ledger__cr_accept, mcp__swarm-ledger__cr_complete, mcp__swarm-ledger__cr_verify, mcp__swarm-ledger__cr_list, mcp__swarm-ledger__departure_record, mcp__swarm-ledger__departure_decide, mcp__swarm-ledger__shortfall_record, mcp__swarm-ledger__status_tree, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__test_run_get, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference
 mcpServers:
   - codebase-kg:
@@ -222,7 +221,9 @@ The detail lives in the ledger, not in the message.
 ## Close the module
 
 1. `tests_run(scope="module", target=<the module's directory or test selector>)` once
-   every file in the module is approved or accepted as incomplete.
+   every file in the module is approved or accepted as incomplete. When it returns
+   `state: "running"`, end your turn: a wake-up names the result when the ledger
+   records it.
 2. `message_post(to_name=<your Manager>, body=<the module review>)`: every file and
    its outcome, the module test result, open issues, deferrals, the departures you
    agreed to, which now wait on your Manager, and recorded shortfalls.
@@ -232,7 +233,14 @@ The detail lives in the ledger, not in the message.
 ## Other tools you own
 
 - `release_file(path)` releases a claim that is no longer needed, for example when a
-  planned file turns out not to be part of the module.
+  planned file turns out not to be part of the module. It refuses while the
+  owning Coder is live, and drops the owner's queued spawn.
+- `agent_release(target_agent_id=<child name>)` on a queued child cancels its spawn
+  and keeps its brief and claim.
+- `claim_file(path, None, for_name=<the source's Coder>, product_of=<source
+  file_id>)` claims a generated file, such as a build output, as a product of the
+  file it is built from. The source's Coder writes it, and the source's handoff
+  carries it.
 - `agent_release(target_agent_id)` releases a child that stopped some other way.
   Approval already releases the Coder.
 - `deferral_propose(body, kind, file_id=None)` proposes a change. `kind` names what
@@ -285,10 +293,13 @@ Query the code graph first with the codebase-kg tools whenever you look for code
 the host repo. Use Grep or Glob only when the graph does not have what you need, or
 returns the wrong thing. The ledger records each such search as a graph gap.
 
-A node that anchors on several files of your module is yours to write: a Coder's
-`graph_upsert` refuses any anchor outside its own file. Once the Coders of those files
-have handed up, call `graph_upsert(nodes=[...])` with the node shape the Coder uses.
-The ledger refuses an anchor outside your module's files.
+A node that anchors on several files is yours to write when each file is one of your
+module's or one no module claims: a Coder's `graph_upsert` refuses to rewrite a node
+outside its own file. Once the Coders of those files have handed up, call
+`graph_upsert(nodes=[...])` with the node shape the Coder uses. The ledger refuses an
+anchor on a file another module claims; that module's Lead writes the node. A
+description holds at most 240 characters, codebase-kg's cap; `graph_upsert` refuses a
+longer one.
 Each write records the current content of every file the node anchors as its baseline,
 so re-read the node against those files before you write it.
 

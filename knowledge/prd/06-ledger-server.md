@@ -18,8 +18,8 @@
   tool catalog, and sends the call to a worker. Each worker is a Python process that
   holds its own `Ledger` and SQLite connection and runs one call at a time.
 - `max_workers` in `.claude/sentinel-swarm.local.md` caps the tool-call pool, default
-  8. Hooks run on a second pool with the same cap, so a long tool call such as
-  `tests_run` never holds up a hook. A pool starts a worker when a call finds none free,
+  8. Hooks run on a second pool with the same cap, so a long tool call never holds up a
+  hook. A pool starts a worker when a call finds none free,
   up to the cap, and stops one after 60 seconds idle; past the cap a call waits for the
   next free worker. `max_workers: 0` starts no workers: tool calls run in the front one
   at a time under one lock on one connection, and each hook runs in the front on its own
@@ -197,13 +197,13 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
 
 | Group | Tools |
 |---|---|
-| Run and plan | `run_start`, `run_status`, `run_pause`, `phase_resume`, `run_finish`, `profile_set`, `guidelines_set`, `guidelines_get`, `phase_add`, `phase_update`, `plan_unlocked`, `module_add` |
+| Run and plan | `run_start`, `run_status`, `run_pause`, `phase_resume`, `run_finish`, `run_close`, `profile_set`, `guidelines_set`, `guidelines_get`, `phase_add`, `phase_update`, `plan_unlocked`, `module_add` |
 | Repo | `repo_check`, `repo_branch_create` |
 | Briefs and agents | `brief_create`, `brief_get`, `brief_ack`, `agent_spawn`, `agent_resume`, `agent_release` |
-| Ownership | `claim_file`, `release_file`, `who_owns`, `wait_for` (Coder, Lead) |
-| Messages and directives | `message_post`, `message_inbox`, `directive_submit`, `directive_inbox`, `directive_resolve` |
+| Ownership | `claim_file` (Lead, Manager), `release_file`, `who_owns`, `wait_for` (Coder, Lead), `file_delete` (Coder) |
+| Messages and directives | `message_post`, `message_inbox`, `directive_submit`, `directive_inbox`, `directive_resolve`, `user_ask` |
 | Tests and graph | `tests_run`, `test_run_get`, `graph_upsert` |
-| Review | `score_record`, `handoff_submit`, `review_compare`, `approve`, `return_work`, `attempt_record`, `accept_incomplete`, `version_restore`, `module_review`, `phase_review` |
+| Review | `score_record`, `handoff_submit`, `review_compare`, `approve`, `return_work`, `attempt_record`, `accept_incomplete`, `file_accept_incomplete` (Oracle), `version_restore`, `module_review`, `phase_review` |
 | Issues | `issue_open`, `issue_list`, `issue_close`, `idea_record`, `issue_escalate` |
 | Agreements | `cr_open`, `cr_accept`, `cr_complete`, `cr_verify`, `cr_list`, `departure_record`, `departure_decide`, `shortfall_record`, `deferral_propose`, `agreement_decide`, `override_grant` |
 | Reporting | `status_tree`, `report_build`, `analytics_query` (one read-only SELECT, Oracle only), `events(target_agent_id, limit)`, `ledger_info` |
@@ -217,7 +217,8 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
 - `caller`, `targeted`, and `finding_ids` carry parameter descriptions in the schema, and
   so do `contract`, `depends_on`, `parties`, and `directive_id`.
 - Signatures that carry a gate: `module_add(phase_id, name, depends_on)`,
-  `claim_file(path, test_path, for_name, depends_on)`, `brief_create(..., contract)`,
+  `claim_file(path, test_path, for_name, depends_on, module_id, product_of)`,
+  `brief_create(..., contract)`,
   `deferral_propose(body, kind, file_id, parties)`, and
   `agreement_decide(deferral_id, decision, reason, directive_id)`. `brief_get` returns
   `depends_on_contracts`, and `deferral_propose` with `parties` returns `arbiter` and
@@ -243,20 +244,57 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
   `plan_unlocked`, `events`, `analytics_query`, and `test_run_get`. A tool that marks a row is not
   read-only: `message_inbox` marks its messages read, and `directive_inbox` sets
   `notified_at`. Mark a new tool read-only only when it writes no row, file, or session.
-- `tests_run(scope, target)` is role-bound: `file` to the Coder (its own path or test
-  path only), `module` to the Lead, `phase` to the Manager, `full` to the Oracle. It
-  runs the profile's test command with `{target}` replaced, or removed for no target,
-  in the ledger's environment, with a 600-second timeout. It parses pytest and Go output. An agent never reports a test result itself.
+- `tests_run(scope, target, force, include_slow)` is role-bound: `file` to the Coder
+  (its own path or test path only), `module` to the Lead, `phase` to the Manager, `full`
+  to the Oracle. It builds the scope's command: `test_command_by_scope.<scope>`, else the
+  profile's `test_command`, with `{target}` replaced, or removed for no target. A full
+  run with no target takes `full_target`; when the command holds `{target}` and
+  `full_target` is empty, the call refuses, so a full run never collects from the repo
+  root. A pytest command gets `--deselect <id>` for each of `slow_tests` unless
+  `include_slow` is true. It parses pytest and Go output. An agent never reports a test
+  result itself.
+- **A test run outlives the tool call.** `tests_run` inserts the `test_runs` row in
+  state `running` and starts `mcp/launch/ledger.py testrun` (`testrun.py`) on the base
+  interpreter as its own detached process: a new process group with a hidden console on
+  Windows (`CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`), a new session elsewhere, so
+  no console window opens and no Claude Code shell or pool worker owns it. The runner
+  runs the command with `shell=True` in the repo root, writes its output to
+  `.sentinel-swarm/test-runs/<test_run_id>.log`, kills the process tree at
+  `test_timeout_s` (default 600), parses the result, records it on the row, and deletes
+  the log. The run survives the tool call, the worker that took it, and a restart of the
+  ledger server.
+- `tests_run` waits up to 20 seconds for the run to end. A run that ends in time comes
+  back as its result. A longer one returns `state: "running"` with its `test_run_id`
+  and a `next` that says to end the turn. When the runner records the result, it owes
+  the caller a wake-up from itself (`from_agent_id` = `to_agent_id`, reason
+  `test_run`) whose pointer names the run, its outcome, and `test_run_get`. See "Test
+  results" in [05-sessions.md](05-sessions.md). A call that finds its own run of the
+  same command on the same tree still running waits on that run instead of starting
+  another.
+- A row's `state` is `running`, `done`, `stale`, or `abandoned`. A full run compares the
+  working tree's fingerprint at its end with the one at its start; when they differ it
+  records `stale`, with the reason, and the run counts for nothing. Other scopes keep the
+  start fingerprint only. A row whose runner process is gone without a result, or that
+  runs past `test_timeout_s` plus 120 seconds, or that has no runner pid 60 seconds after
+  it started, becomes `abandoned`, and the caller is owed the wake-up. The server sweeps
+  for these at start and on each watchdog pass, and `tests_run` sweeps before it starts
+  a run, so a server restart never leaves a row `running` with nothing behind it.
+- A run counts as clean when its state is `done`, its exit code is 0, nothing failed,
+  at least one test passed, and every skip matched `allowed_skips`
+  (`allowed_skipped` = `skipped`). `handoff_submit`, `cr_complete`, `module_review`, and
+  `phase_review` read clean runs only.
 - `tests_run` stores the last 20,000 characters of output in the ledger, and returns a
   summary of at most 4,000: the last 500 characters of a pass, or the first traceback
   from the `FAILURES` section and the `short test summary info` section of a failure.
   Output in another format returns its last 4,000 characters. `output_chars` gives the
-  stored length, and `test_run_get(test_run_id)` returns the stored run with its full
-  output to any agent of the run.
+  stored length, and `test_run_get(test_run_id)` returns the run, with its state and
+  full output once recorded, and `ok`, to any agent of the run. A large suite fits the
+  cap by sharding: `pytest -n auto` from pytest-xdist, set in
+  `test_command_by_scope.full`.
 - `tests_run` reuses a passing run instead of running again when an earlier run of the
   same run used the same command on the same working tree: the same `HEAD`, the same
   tracked changes (`git status --untracked-files=no`), and the same contents of every
-  file and test file claimed in the run. It records a new row that copies the earlier
+  file and test file claimed in the run. Only a `done` run is reused. It records a new row that copies the earlier
   result, with `reused_from` naming it and `duration_ms` 0, and returns `reused: true`.
   Every gate then reads the new row as it reads any run. `force=true` always runs. Any
   edit, shell change, or hand-up that changed a claimed or tracked file changes the
@@ -265,10 +303,15 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
   `branch`, `plugin_version`, `started_at`, and the decoded `repo_check`), not the run
   row. The PRD text comes back only with `include_prd=true`, and the settings snapshot
   never does. Their agent lists carry names, not session ids (`parent` is the parent's
-  name), and leave out empty fields; a file's `owner` is the owner's name. `run_status`
-  also lists the open `file_waits`.
+  name), and leave out empty fields; a file's `owner` is the owner's name. A `parked`
+  agent carries its `park_reason` and `session: "closed"`: it is live in the ledger,
+  but its session is closed. `run_status` also lists the open `file_waits`.
   `agent_spawn` leaves empty fields and the settings snapshot out of its result.
-- `version_restore(version_id)` restores a saved version onto the Coder's own file.
+- `version_restore(version_id)` restores a saved version onto the Coder's own file. A
+  deletion version deletes the file.
+- `mcp/launch/ledger.py close [--repo <root>] [--file ID=REASON ...] <outcome>` runs
+  `run_close` from a terminal, outside any session, for the run's owner. See "Settling
+  a file and closing a run by the Oracle" in [02-run-lifecycle.md](02-run-lifecycle.md).
 - The server itself shows a desktop notification for each notification it records:
   a Driver event or an issue that ends round 3 below the floor. It runs from
   `notify.py`, in a background thread, when the settings' `notify` list includes `os`.

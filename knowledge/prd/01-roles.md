@@ -138,10 +138,15 @@
   Managers and the Driver.
 - **Done when:** every phase is approved, the full suite passes, the evidence is on
   file, and `run_finish` accepts the run.
-- **Tools:** Read, Grep, Glob, AskUserQuestion, ToolSearch, WebSearch, WebFetch,
+- **Tools:** Read, Grep, Glob, AskUserQuestion (in an interactive session only;
+  `pre_ask` denies it in a background session), ToolSearch, WebSearch, WebFetch,
   SendMessage, Monitor (the watchdog call only), PushNotification (the notifications
-  the ledger records for the user), its ledger tools, and the
-  codebase-kg read tools. No write tool and no shell.
+  the ledger records for the user), its ledger tools, `user_ask` among them, and the
+  codebase-kg read tools. No write tool and no shell. Of the graph write tools, it holds
+  only `graph_upsert`, for nodes whose anchors lie on files no module claims.
+- **Asks the user:** in a background run, with `user_ask(question)`, which posts an
+  open `needs_user` directive and notifies the user, and keeps every part of the run
+  that does not need the answer moving.
 
 ### Manager
 
@@ -160,8 +165,10 @@
   through the Coder's Lead. `message_post` refuses a Coder, and `pre_send_message`
   refuses a `SendMessage` to one unless the ledger owes it a wake-up from the Manager.
 - **Done when:** the Oracle approves the phase.
-- **Tools:** Read, Grep, Glob, ToolSearch, SendMessage, WebSearch, WebFetch, its
-  ledger tools, and the codebase-kg read tools.
+- **Tools:** Read, Grep, Glob, Bash and PowerShell (limited to the named host commands
+  in the settings' `commands` list), ToolSearch, SendMessage, WebSearch, WebFetch, its
+  ledger tools, and the codebase-kg read tools. Its `claim_file` claims a path no module
+  owns into one of its modules.
 
 ### Lead
 
@@ -170,7 +177,8 @@
   and starts it. Scores each handoff blind, compares, and approves, returns, or accepts
   it as incomplete. Classifies each fix attempt. Decides departures first. Runs the
   module's tests when every file is settled, and reports to its Manager. Writes the
-  graph nodes that anchor on several files of its module with `graph_upsert`.
+  graph nodes that anchor on several files with `graph_upsert`, when each file is one of
+  its module's or one no module claims.
 - **Owns:** the module, the file assignments inside it, the contracts between its files,
   and the approval of each Coder's work.
 - **Arbitrates:** disputes between its Coders about contracts and about where a shared
@@ -178,15 +186,17 @@
 - **Must not:** write a project file, or read a Coder's scores before it records its
   own.
 - **Done when:** its Manager accepts the module with `module_review` and releases it.
-- **Tools:** the same as the Manager. Of the graph write tools, it holds only
-  `graph_upsert`, for nodes that span its module's files.
+- **Tools:** the same as the Manager, without the shell. Of the graph write tools, it
+  holds only `graph_upsert`, for nodes that span two or more files, each its module's or
+  unclaimed.
 
 ### Coder
 
 - **Does:** searches the code graph for existing code before it writes. Writes the test
   file first when it can, then the source file. Test-first is the expected practice,
   not a gate. Runs its tests through `tests_run` until they pass. Updates the code graph
-  for its file with `graph_upsert`. Scores its own work with `score_record(kind="self")`
+  for its file with `graph_upsert`, and adds anchors on its file to a node that spans
+  files. Scores its own work with `score_record(kind="self")`
   and fixes what the score shows; that fix is not an escalation attempt. The template
   sets no review loop of its own: the self score, the `tests_run` gate, and the Lead's
   blind review are the checks. Hands off. Works with its Lead and other Coders on contracts, through the ledger.

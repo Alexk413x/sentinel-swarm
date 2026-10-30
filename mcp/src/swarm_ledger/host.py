@@ -19,6 +19,8 @@ class LedgerHost:
     conn: sqlite3.Connection
     settings: Settings
     repo_root: Path
+    db_path: Path
+    server_pid: int
     _pending_stops: list[tuple[str, str]]
 
     def _log_event(
@@ -33,6 +35,10 @@ class LedgerHost:
     def _active_run(self, conn: sqlite3.Connection) -> sqlite3.Row: ...
 
     def adopt_run_profile(self, run_id: int | None) -> None: ...
+
+    def test_command_for(
+        self, scope: str, target: str | None, include_slow: bool = False
+    ) -> str: ...
 
     def pause_reason(self, run_id: int) -> str | None: ...
 
@@ -71,6 +77,7 @@ class LedgerHost:
         finding_ids: list[int] | None = None,
         effort: str | None = None,
         contract: str | None = None,
+        replaces: str | None = None,
     ) -> dict: ...
 
     def agent_spawn(self, caller: str, agent_id: str, child_name: str) -> dict: ...
@@ -114,3 +121,5 @@ class LedgerHost:
     def resume_agent(self, target: sqlite3.Row, reason: str) -> dict: ...
 
     def adopt_resumed(self, old_id: str, new_id: str) -> str: ...
+
+    def write_report(self, run_id: int) -> dict: ...

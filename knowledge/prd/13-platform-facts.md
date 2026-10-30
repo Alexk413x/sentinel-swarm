@@ -139,6 +139,13 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   starts. (2026-09-25)
 - A `--bg` session in the default permission mode stalls for good on a file write.
   `--permission-mode acceptEdits` clears it. (2026-09-25)
+- A mod's `tool.call` hook runs before Claude Code's permission check and its prompt:
+  each `next(e)` runs the hooks beneath, then core, which is the permission prompt and
+  then the tool, and a `{ deny }` refuses the call before either. From the mod API's
+  type documentation for Claude Code 2.1.314, not yet checked in a live session.
+  (2026-10-30)
+- `claude agents --json` shows a background session waiting on `AskUserQuestion` as
+  `status: waiting` with `waitingFor: "input needed"`. (2026-10-28, run B)
 - Before the plugin relays, one swarm session ran 4 MCP server processes for codebase-kg
   0.7.0, or 14 with both a11y servers in their `uvx` form, and 15 to 20 MCP-related
   processes in all. (2026-09-25)
@@ -184,6 +191,9 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   lists, the sessions file's, and `$.session.id()` are the same value. (2026-10-08)
 - `$.clock.every` keeps firing in an idle `--bg` session for at least 18 minutes, and
   `$.prompt.submit` from a timer starts a turn there. (2026-10-08)
+- A plugin's `$.prompt.submit` runs once the session is idle: it never enters a running
+  turn, and its `prompt.submit` event carries no `turnId`. From the Claude Code 2.1.314
+  mod API types, not checked in a live session. (2026-10-30)
 - `$.session.send` runs as a `SendMessage` tool call through the sending session's own
   `tool.call` hooks. The call's `to` is the target's `uds:\.\pipe\LOCAL\cc-msg-...`
   address, not the session id or name, and its `tool_use_id` starts with
@@ -225,6 +235,17 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   `~/.claude/daemon.log`, in lines such as `bg retire <id>: idle-prompt, idle 6m [low
   memory]` (other reasons: `settled`, `stale-spare`) and `bg: low memory (685MB free) —
   retiring settled workers before spawning <id>`. (2026-10-27)
+- Claude Code 2.1.314 on Windows: `~/.claude/sessions/<pid>.json` holds the session's
+  `pid`, `sessionId`, and `procStart`, the process start time as a Windows FILETIME
+  (100 ns units since 1601), which equals `GetProcessTimes`'s creation time for that pid.
+  Seen for interactive sessions; not yet checked for a background one. (2026-10-30)
+- With two runs live on one machine, `~/.claude.json` failed to parse ("JSON Parse
+  error: Unexpected EOF") for several hours on 2026-10-28. Claude Code wrote whole-size
+  `.claude.json.corrupted.<time>` copies to `~/.claude/backups/` at 08:25, 08:44, and
+  08:55 UTC, and every `claude` command failed while the file was truncated. The file
+  parsed again by about 14:30 UTC without a manual restore. The cause is not verified
+  in Claude Code's source; many sessions writing the file at once is the likely one.
+  (2026-10-28)
 - On a 31.7 GB Windows machine, the daemon retired idle background sessions at 600 to
   800 MB free. A `claude` process averaged about 210 to 225 MB, the largest 390 to 570
   MB. A Coder's test and type-check processes were short-lived and small. With about 20

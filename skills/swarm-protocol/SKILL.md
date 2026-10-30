@@ -22,9 +22,11 @@ Every role runs as its own Claude Code session, with its own row in agent view. 
 role starts a subagent: no role has the `Agent` tool, and the `pre_agent` hook denies
 an `Agent` call from any swarm session.
 
-- Each role's model, tools, permission mode, MCP servers, and hooks live in its
-  project agent file, `.claude/agents/swarm-<role>.md` in the host repo. `setup`
-  writes the files from the plugin's templates, and the user edits them.
+- Each role's model, tools, and MCP servers live in its project agent file,
+  `.claude/agents/swarm-<role>.md` in the host repo. `setup` writes the files from the
+  plugin's templates, and the user edits them. Its permission mode comes from
+  `permission_mode.<role>` in `.claude/sentinel-swarm.local.md`, and is the user's own
+  `permissions.defaultMode` when that is empty.
 - Every session runs in the host repo root, in one shared working tree.
 - Every session starts with the repo's shared ledger server over HTTP and codebase-kg,
   plus the a11y servers when the host has a11y installed. The launcher and
@@ -185,6 +187,11 @@ keeps every gate.
   reworked.
 - `tests_run` scopes are role-bound: file to the Coder, module to the Lead, phase to
   the Manager, full to the Oracle.
+- `tests_run` starts the suite in its own process under the ledger server, bounded by
+  `test_timeout_s`. It returns the result when the run ends within about 20 seconds,
+  else `state: "running"` with the `test_run_id`; end the turn, and a wake-up names the
+  result once it is recorded. A run counts as clean only with every skip named in
+  `allowed_skips`, and a full run whose working tree changed counts for nothing.
 - `override_grant` is the Oracle's alone.
 - `agent_spawn` refuses to start a Manager until the run has a recorded `repo_check`.
   It does not require `obvious_start`; a not-obvious start is the Oracle's call to
@@ -320,9 +327,12 @@ on a regression.
 
 Every role queries the codebase-kg code graph first. Grep and Glob are the fallback
 for when the graph does not have the answer or returns the wrong thing. The ledger
-records each Grep and Glob a role runs as a graph gap, and the report lists them. Only the
-Coder and the Lead write to the graph, and only through the ledger's `graph_upsert`: a
-Coder for nodes on its own file, a Lead for nodes that span files of its module.
+records each Grep and Glob a role runs as a graph gap, and the report lists them. The
+Coder, the Lead, and the Oracle write to the graph, and only through the ledger's
+`graph_upsert`: a Coder for nodes on its own file, plus anchors on its file added to a
+node that spans files; a Lead for nodes that span files of its module or files no
+module claims; the Oracle for nodes on files no module claims. A node description holds
+at most 240 characters, codebase-kg's cap, and `graph_upsert` refuses a longer one.
 
 ## Steering a live run from an ordinary session
 

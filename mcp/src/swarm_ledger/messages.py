@@ -3,9 +3,10 @@ from __future__ import annotations
 import secrets
 import sqlite3
 
+from . import notify
 from .db import NOW, dict_rows, in_clause, row_dict, write_tx
 from .host import LedgerHost
-from .identity import Caller, LedgerError, require_role, resolve
+from .identity import Caller, LedgerError, require_role, require_run, resolve
 
 _DIRECTIVE_SOURCES = ("user_chat", "outside_session", "skill", "watchdog", "driver")
 _DIRECTIVE_OUTCOMES = ("applied", "scheduled", "declined", "needs_user")
@@ -233,17 +234,56 @@ class MessagesMixin(LedgerHost):
                 is None
             ):
                 raise LedgerError(f"unknown directive_id {directive_id!r}")
+            notice = None
             if outcome == "needs_user":
                 conn.execute(
                     "UPDATE directives SET state = 'open', outcome = ?, resolution = ?, "
                     "resolved_at = NULL, question = ? WHERE directive_id = ?",
                     (outcome, resolution, resolution, directive_id),
                 )
+                notice = self._needs_user_notice(conn, c.run_id, directive_id, resolution)
             else:
                 conn.execute(
                     f"UPDATE directives SET state = 'resolved', outcome = ?, resolution = ?, "
                     f"resolved_at = {NOW} WHERE directive_id = ?",
                     (outcome, resolution, directive_id),
                 )
+        notify.deliver(notice, self.settings.notify)
 
         return row_dict(self.conn, "directives", "directive_id", directive_id)
+
+    def user_ask(self, caller: str, agent_id: str, question: str) -> dict:
+        if not question.strip():
+            raise LedgerError("user_ask needs the question for the user")
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            run_id = require_run(c, "oracle")
+            cur = conn.execute(
+                "INSERT INTO directives (run_id, source, sender_name, body, outcome, resolution, "
+                "question) VALUES (?, 'oracle', ?, ?, 'needs_user', ?, ?)",
+                (run_id, c.name, question, question, question),
+            )
+            directive_id = int(cur.lastrowid or 0)
+            notice = self._needs_user_notice(conn, run_id, directive_id, question)
+        notify.deliver(notice, self.settings.notify)
+
+        return row_dict(self.conn, "directives", "directive_id", directive_id) | {
+            "next": (
+                "The user is notified. Keep every part of the run that does not need the answer "
+                "moving. The answer comes back in directive_inbox() as a reply to this directive."
+            )
+        }
+
+    def _needs_user_notice(
+        self, conn: sqlite3.Connection, run_id: int | None, directive_id: int, question: str
+    ) -> dict | None:
+        if run_id is None:
+            return None
+        return notify.record(
+            conn,
+            run_id,
+            kind="warning",
+            event_key=f"needs_user:{directive_id}",
+            message=f"The swarm needs you (directive {directive_id}): {question}",
+            channels=self.settings.notify,
+        )

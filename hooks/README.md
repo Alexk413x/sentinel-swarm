@@ -23,9 +23,10 @@ Oracle unless `claude plugin list` shows sentinel-swarm enabled, and the ledger 
 
 The mod posts each hook's input to `POST /hook/<event>` itself, with the token and
 the repo header, and falls back to running the shim when the post fails. It also
-posts `owed`, `wake_sent`, `inbox_take`, `inbox_ack`, and `inbox_release`: it pays the
-session's owed wake-ups with `$.session.send` and reads the inbox into a delivered
-wake-up. Its `session.send` hook posts `send_target` for each `SendMessage` the
+posts `owed`, `wake_sent`, `self_owed`, `inbox_take`, `inbox_ack`, and `inbox_release`:
+it pays the session's owed wake-ups with `$.session.send`, submits a recorded test
+result to its own idle session with `$.prompt.submit`, and reads the inbox into a
+delivered wake-up. Its `session.send` hook posts `send_target` for each `SendMessage` the
 session's model makes, and sends one addressed to a swarm session name to that
 session's id instead, since a stale or Remote Control session can carry the same name.
 
@@ -63,6 +64,7 @@ The per-event behavior lives in `mcp/src/swarm_ledger/hooks/events.py`, as funct
 |---|---|---|---|
 | `SessionStart` | all | `session_start` | all |
 | `PreToolUse` | `Agent` | `pre_agent`, which denies, except a Driver's `map-driver` and `map-reviewer` calls | all |
+| `PreToolUse` | `AskUserQuestion` | `pre_ask`, which denies it in a background session and names `user_ask` | all |
 | `PreToolUse` | `Write\|Edit\|MultiEdit\|NotebookEdit` | `pre_write` | all |
 | `PreToolUse` | `Bash\|PowerShell` | `pre_shell`, build-command only for a Driver | all |
 | `PreToolUse` | `Monitor` | `pre_monitor` | all |
@@ -76,8 +78,8 @@ The per-event behavior lives in `mcp/src/swarm_ledger/hooks/events.py`, as funct
 | `Stop` | all | `stop` | all |
 | `SessionEnd` | all | `session_end` | all |
 
-`pre_agent`, `pre_write`, `pre_shell`, `pre_monitor`, `pre_send_message`, `pre_skill`, and
-`pre_ledger` are the gating events.
+`pre_agent`, `pre_ask`, `pre_write`, `pre_shell`, `pre_monitor`, `pre_send_message`,
+`pre_skill`, and `pre_ledger` are the gating events.
 
 `post_any` stays synchronous after the tools whose records the Stop hook and
 `handoff_submit` read: owed wake-ups, notifications, the watchdog arm time, and stale

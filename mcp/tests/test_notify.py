@@ -21,9 +21,7 @@ from swarm_ledger.identity import LedgerError
 from swarm_ledger.ledger import Ledger
 from swarm_ledger.settings import WatchdogSettings, load_settings
 
-_ROLE_FILE = role_template(
-    tools="Read, SendMessage, mcp__swarm-ledger", permission_mode="default", codebase_kg=False
-)
+_ROLE_FILE = role_template(tools="Read, SendMessage, mcp__swarm-ledger", codebase_kg=False)
 
 _FINDING = {
     "fingerprint": "contrast:login-button:2.1",

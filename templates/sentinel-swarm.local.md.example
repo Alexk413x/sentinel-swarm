@@ -57,12 +57,16 @@ watchdog:
   # Sonnet, Opus, and Fable, 200000 for Haiku. A value here applies to every session.
   # context_window: 1000000
   # The ledger server exits after this many minutes with no active run, or a paused
-  # run, and no session of the run running.
+  # run, and no session of the run running. A parked Manager or Lead whose work is done
+  # is released after this many minutes parked.
   idle_exit_minutes: 15
   # A wake-up still unsent this many minutes after it was owed is reported to the Oracle.
   unsent_wakeup_minutes: 5
   # A spawn still queued for memory this many minutes after agent_spawn is reported.
   queued_spawn_minutes: 10
+  # While the run is paused or a question waits on the user, the ledger server shows the
+  # OS notification again every this many minutes. 0 shows it once.
+  remind_minutes: 30
 
 memory:
   # Megabytes of free memory the ledger keeps. agent_spawn queues a session whose role's
@@ -77,12 +81,46 @@ memory:
 # Left empty; the setup skill fills this in from the plugin's test_command option, set
 # at install, or else the detected stack.
 test_command:
+# A command per scope (file, module, phase, full) in place of test_command, such as a full
+# run sharded with pytest -n auto. A scope left empty uses test_command.
+test_command_by_scope:
+  file:
+  module:
+  phase:
+  full:
+# Seconds one test run's process may take; the ledger kills it at the cap. A full run that
+# takes more than half of it needs sharding (pytest -n auto) or a higher cap.
+test_timeout_s: 600
+# What a full run puts in {target}, such as tests. Left empty, a full run whose command
+# holds {target} refuses: pytest run from the repo root with no path collects every
+# test_*.py in the tree.
+full_target:
+# Texts that mark a skip the environment causes on purpose, matched against pytest's
+# "SKIPPED [n] <path>:<line>: <reason>" lines (add -rs to the command). Any other skip
+# fails the run and blocks every handoff.
+allowed_skips: []
+# pytest node ids or folders left out of every run (--deselect) unless a brief asks for
+# them with tests_run(include_slow=true).
+slow_tests: []
 # Left empty; the setup skill fills this in from the detected stack.
 build_command:
 # Left empty; the setup skill fills this in from the detected stack.
 lint_command:
 
-# Left empty; no default parallelism cap is set yet.
+# Named host commands outside test, build, and lint, such as the rebuild of a derived file.
+# The Coder's and the Manager's shell gates allow each one exactly as
+# "cd <cwd> && <interpreter> <run>", or "<interpreter> <run>" when cwd is ".". A failing
+# test whose output names a command's name or run is reported with that command. Setup
+# proposes the ones the repo's docs name. For example:
+#   - name: build-recipes
+#     run: scripts/recipes/build_recipes.py
+#     cwd: .
+#     interpreter: python
+commands:
+
+# The most sessions that run at once on this machine: this run's live agents, the Oracle
+# included, plus every other swarm's running sessions. Left empty, the ledger sets it from
+# total memory: half of it, at about 600 MB a session, and at least 4. 0 turns the cap off.
 parallelism_cap:
 
 # Left empty; no time budget. Minutes the run should take. Each wake-up and watchdog line
@@ -118,6 +156,20 @@ prompt_cache_ttl:
   manager:
   lead:
   coder: 5m
+  driver:
+
+# The permission mode each role's session starts in: default, acceptEdits, plan, auto,
+# dontAsk, or bypassPermissions. Leave a role empty to inherit your own
+# permissions.defaultMode. A Coder that would inherit default starts in acceptEdits, since a
+# background session in default stalls on its first file write. When policy sets
+# permissions.disableBypassPermissionsMode, a role that would start in bypassPermissions
+# starts in acceptEdits. The swarm's hooks gate writes, the shell, and SendMessage in every
+# mode.
+permission_mode:
+  oracle:
+  manager:
+  lead:
+  coder:
   driver:
 
 # Left empty for every role; agent_spawn also caps that role's own live sessions in the run,

@@ -10,6 +10,7 @@ from . import frontmatter
 from .auth import ledger_entry
 from .identity import ROLES, LedgerError
 from .paths import config_dir, same_path
+from .permissions import start_mode
 
 LEDGER_SERVER = "swarm-ledger"
 SESSION_SETTINGS = '{"worktree":{"bgIsolation":"none"}}'
@@ -332,6 +333,7 @@ def session_options(
     *,
     effort: str | None = None,
     prompt_cache_ttl: str | None = None,
+    permission_mode: str | None = None,
 ) -> list[str]:
     agent_file = read_agent_file(repo_root, role)
     extra = optional_servers(repo_root, role)
@@ -348,9 +350,9 @@ def session_options(
         options += ["--model", model]
     if effort:
         options += ["--effort", effort]
-    permission_mode = agent_file.get("permissionMode")
-    if permission_mode:
-        options += ["--permission-mode", str(permission_mode)]
+    flag = start_mode(repo_root, role, permission_mode).flag
+    if flag:
+        options += ["--permission-mode", flag]
     options += ["--strict-mcp-config", "--mcp-config", json.dumps(config)]
     tools = tool_list(agent_file)
     if tools:

@@ -9,12 +9,13 @@ with verified evidence.
 |---|---|---|
 | `cr_open(path, body)` | Any role | Routes to the file's live owner, else its module's live Lead, else its phase's live Manager, else the Oracle. Refuses a path no module plans, and a caller who is the recipient. Owes the recipient a wake-up |
 | `cr_accept(cr_id, accept, reason)` | The recipient | `open` to `accepted` or `declined`. A decline needs a reason. Owes the requester a wake-up |
-| `cr_complete(cr_id, notes)` | The recipient, or, once the recipient has ended, its nearest live ancestor | `accepted` to `completed`. A Coder recipient needs its own passing file-scope test run of the path or its test file since acceptance. Any other recipient, and an ancestor standing in, needs such a run by anyone, or an approved handoff of the file since acceptance. Owes the requester a wake-up |
+| `cr_complete(cr_id, notes)` | The recipient, or, once the recipient has ended, its nearest live ancestor | `accepted` to `completed`. A Coder recipient needs its own passing file-scope test run of the path or its test file since acceptance. Any other recipient, and an ancestor standing in, needs such a run by anyone, or an approved handoff of the file since acceptance. For a file with no `test_path`, any recipient needs instead the file's latest handoff submitted since acceptance, `submitted` or `approved`, recorded as `evidence_handoff_id`. Owes the requester a wake-up |
 | `cr_verify(cr_id, ok, notes)` | The requester while it is live, else its nearest live ancestor | `completed` to `verified`, or back to `accepted` with the notes and a wake-up to the recipient |
 | `cr_list(state)` | Any role | The requests the caller opened or received. The Oracle sees every request in the run |
 
 - `handoff_submit` refuses while a Coder's accepted request on the file is not
-  completed. `approve`, `phase_update(approved)`, and `run_finish` refuse while a
+  completed, except on a file with no `test_path`: there the handoff is the request's
+  evidence, so it must not wait on the request. `approve`, `phase_update(approved)`, and `run_finish` refuse while a
   request in their scope is `open`, `accepted`, or `completed`.
 - Releasing an agent, by `agent_release` or automatically (`approve`,
   `accept_incomplete`, `phase_update(approved)`, `run_finish`), hands every `open` or
@@ -91,6 +92,12 @@ outside the run.
 - Any agent can suggest that work happens later, or that the scope changes, with
   `deferral_propose(body, kind, file_id, parties)`. `kind` is required and names what
   changes, from the table below. `accept_incomplete` opens one of kind `file`.
+  `file_accept_incomplete` and `run_close` record one of kind `file`, already agreed,
+  with the Oracle's or the owner's reason.
+- An agreed deferral of kind `phase`, `plan`, or `prd` on a file moves its remaining
+  work out of the plan, so the file counts as settled: `module_review(accepted)` marks
+  it `incomplete` and releases it. See "Files and claims" in
+  [02-run-lifecycle.md](02-run-lifecycle.md).
 - A suggestion takes effect only when the responsible level agrees.
   `agreement_decide(deferral_id, "agreed" | "denied", reason, directive_id)` needs a
   caller whose role ranks at or above both the proposer's parent role and the kind's
@@ -175,7 +182,18 @@ The responsible level:
   value. The report lists each directive with its source and outcome.
 - A `needs_user` outcome keeps the directive open, and its resolution states the
   question for the user. While a directive waits on the user, the Oracle's Stop hook
-  lets the Oracle stop, and the watchdog reports no stall.
+  lets the Oracle stop, and the watchdog reports no `stalled` (it still reports
+  `run_stalled`; see [08-watchdog.md](08-watchdog.md)).
+- Every `needs_user` directive notifies the user once, with the question:
+  `directive_resolve(..., "needs_user", question)` and `user_ask(question)` record a
+  `needs_user:<directive_id>` notification at level warning, "The swarm needs you
+  (directive <id>): <question>", shown and owed like a Driver notification. The
+  watchdog repeats it every `watchdog.remind_minutes` while it stays open.
+- `user_ask(question)` is the Oracle's way to ask the user something no directive
+  carries. It inserts an open directive with source `oracle`, the Oracle as sender, the
+  question as body, resolution, and `question`, and outcome `needs_user`. It refuses an
+  empty question and any role but the Oracle. The user answers with a directive whose
+  `reply_to` names it, or in the Oracle's session.
 - A directive whose `reply_to` names any open directive of the run resolves that
   directive, whatever its outcome, not only a `needs_user` one. The outcome column is
   left as it was, so a `needs_user` question stays readable on the row after the reply
@@ -192,8 +210,9 @@ The responsible level:
 | Only the user can unblock it, and the run can continue afterwards | Notifies the user now, with `run_pause` |
 | An issue ends round 3 below the floor | Notifies the user now: `attempt_record` records the notification, the ledger server shows an OS notification, and the Oracle's Stop hook blocks until the Oracle sends the `PushNotification` it owes. See "Escalation" in [03-scoring-and-review.md](03-scoring-and-review.md). |
 | The Driver finishes, or hits an error | Notifies the user now: the ledger server shows an OS notification itself, and the Oracle's Stop hook blocks until the Oracle sends the `PushNotification` it owes. See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md) |
-| Only the user can answer a directive | Resolves it `needs_user` and asks the user once, in its session. |
-| The watchdog reports a session waiting on a permission prompt | Tells the user which session to open in agent view. |
+| Only the user can answer a directive | Resolves it `needs_user`; the ledger notifies the user with the question. |
+| Only the user can answer a question no directive carries | `user_ask(question)` in a background run, never `AskUserQuestion`; the ledger notifies the user. The Oracle keeps the rest of the run moving. |
+| The watchdog reports a session waiting on the user (`needs_user`) or a stalled run (`run_stalled`) | The ledger has notified the user already. The Oracle keeps the rest of the run moving. |
 | It works, but nobody found better: a shortfall or a signed-off departure | Lists it in the final report |
 
 A pause notification states what the user must fix, and that saying "continue" or

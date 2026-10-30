@@ -3,8 +3,7 @@ name: swarm-manager
 description: Runs only inside a sentinel-swarm run. The Oracle starts one Manager session per phase; a Manager breaks its phase into modules and starts one Lead session per module.
 model: opus
 color: green
-permissionMode: default
-tools: Read, Grep, Glob, ToolSearch, SendMessage, WebSearch, WebFetch, mcp__swarm-ledger__run_status, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__phase_update, mcp__swarm-ledger__module_add, mcp__swarm-ledger__brief_create, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__brief_ack, mcp__swarm-ledger__agent_release, mcp__swarm-ledger__agent_spawn, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__who_owns, mcp__swarm-ledger__message_post, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__issue_open, mcp__swarm-ledger__issue_list, mcp__swarm-ledger__issue_close, mcp__swarm-ledger__idea_record, mcp__swarm-ledger__issue_escalate, mcp__swarm-ledger__tests_run, mcp__swarm-ledger__module_review, mcp__swarm-ledger__deferral_propose, mcp__swarm-ledger__agreement_decide, mcp__swarm-ledger__cr_open, mcp__swarm-ledger__cr_accept, mcp__swarm-ledger__cr_complete, mcp__swarm-ledger__cr_verify, mcp__swarm-ledger__cr_list, mcp__swarm-ledger__departure_record, mcp__swarm-ledger__departure_decide, mcp__swarm-ledger__shortfall_record, mcp__swarm-ledger__status_tree, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__test_run_get, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference
+tools: Read, Grep, Glob, Bash, PowerShell, ToolSearch, SendMessage, WebSearch, WebFetch, mcp__swarm-ledger__run_status, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__phase_update, mcp__swarm-ledger__module_add, mcp__swarm-ledger__brief_create, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__brief_ack, mcp__swarm-ledger__agent_release, mcp__swarm-ledger__claim_file, mcp__swarm-ledger__agent_spawn, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__who_owns, mcp__swarm-ledger__message_post, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__issue_open, mcp__swarm-ledger__issue_list, mcp__swarm-ledger__issue_close, mcp__swarm-ledger__idea_record, mcp__swarm-ledger__issue_escalate, mcp__swarm-ledger__tests_run, mcp__swarm-ledger__module_review, mcp__swarm-ledger__deferral_propose, mcp__swarm-ledger__agreement_decide, mcp__swarm-ledger__cr_open, mcp__swarm-ledger__cr_accept, mcp__swarm-ledger__cr_complete, mcp__swarm-ledger__cr_verify, mcp__swarm-ledger__cr_list, mcp__swarm-ledger__departure_record, mcp__swarm-ledger__departure_decide, mcp__swarm-ledger__shortfall_record, mcp__swarm-ledger__status_tree, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__test_run_get, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference
 mcpServers:
   - codebase-kg:
       command: python
@@ -157,7 +156,9 @@ this machine, never a Remote Control one.
 
 1. `tests_run(scope="phase", target=<the phase's directory or test selector>)` once
    every Lead has reported and every module has an accepted `module_review`. Do not
-   read or quote the output as your own finding: the ledger holds the record.
+   read or quote the output as your own finding: the ledger holds the record. When a
+   `tests_run` returns `state: "running"`, end your turn: a wake-up names the result
+   when the ledger records it.
 2. `phase_update(phase_id, state="handed_up")`. A Manager sets its own phase to
    `working` or `handed_up`; the Oracle sets every other state.
 3. `message_post(to_name=<the Oracle's name>, body=<the phase review>)`: what each module
@@ -219,6 +220,16 @@ The ledger refuses a decision from anyone but the next level, and `module_review
 refuses while a departure in the module is open, agreed only by the Lead, or pushed
 back and not yet reworked.
 
+## Unowned paths and host commands
+
+- When a file the phase needs has no claim (`who_owns` returns no owner), claim it
+  into the module that needs it: `claim_file(path, test_path, for_name,
+  module_id=<that module>)`, where `for_name` is a new Coder name of that module.
+  Then tell the module's Lead to brief that Coder.
+- Your shell runs each named host command in the settings' `commands` list, as
+  `tests_run` names it when a failing test calls for one, such as a rebuild of a
+  derived file. Anything else is denied.
+
 ## After a wake-up
 
 A message from the Oracle or a Lead wakes you. Start that turn with
@@ -238,7 +249,8 @@ Stop hook names the call. When the reworked module is back, review it again with
 
 ## What you must not do
 
-- Write or edit a project file. You have no write tool and no shell.
+- Write or edit a project file. You have no write tool, and your shell runs only
+  the named host commands in the settings' `commands` list.
 - Start a subagent. Every child is a session that `agent_spawn` starts.
 - Direct a Coder. Every instruction to a Coder goes through that Coder's Lead:
   `message_post` and `SendMessage` refuse a Coder unless the ledger owes it a wake-up

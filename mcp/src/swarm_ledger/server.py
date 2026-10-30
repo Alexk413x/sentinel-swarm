@@ -69,8 +69,27 @@ _BRIEF_CREATE_CONTRACT = Field(
     description="The public contract of the child's file or module. Required before "
     "a file or module that depends on it can be briefed.",
 )
+_BRIEF_CREATE_REPLACES = Field(
+    default=None,
+    description="The agent_id of an ended agent the child replaces. brief_ack moves that agent's "
+    "live children and briefs to the child; an ended agent of the same name needs no replaces.",
+)
 _CLAIM_FILE_DEPENDS_ON = Field(
     default=None, description="File ids of this module that this file uses; brief those first."
+)
+_CLAIM_FILE_MODULE_ID = Field(
+    default=None,
+    description="A Manager's claim: the module of its phase that takes the path. A Lead "
+    "leaves it unset.",
+)
+_CLAIM_FILE_PRODUCT_OF = Field(
+    default=None,
+    description="For a generated file, such as a build output: the file_id of the live claim it "
+    "is built from. for_name is that file's Coder, and the product rides its handoff.",
+)
+_RUN_CLOSE_FILES = Field(
+    default=None,
+    description='Each unsettled file, as {"file_id": <id>, "reason": <why it stops short>}.',
 )
 _DEFERRAL_PROPOSE_PARTIES = Field(
     default=None,
@@ -174,15 +193,44 @@ def run_finish(
 
 
 @_tool()
+def run_close(
+    caller: CallerName,
+    outcome: str,
+    files_incomplete: list[dict[str, Any]] | None = _RUN_CLOSE_FILES,
+    agent_id: str | None = _STAMPED_AGENT_ID,
+) -> dict[str, Any]:
+    """Closes a run the ledger cannot finish; the Oracle calls this. Every unsettled file
+    must be named with its reason; each is recorded incomplete. It records the outcome,
+    releases every agent, stops their sessions, and the server exits."""
+    ...
+
+
+@_tool()
+def file_accept_incomplete(
+    caller: CallerName,
+    file_id: int,
+    reason: str,
+    evidence: list[int],
+    agent_id: str | None = _STAMPED_AGENT_ID,
+) -> dict[str, Any]:
+    """Settles a file verified another way as incomplete; the Oracle calls this with the
+    reason and the passing test run ids that cover it. module_review counts it settled."""
+    ...
+
+
+@_tool()
 def run_pause(
     caller: CallerName,
     reason: str,
     phases: list[int] | None = None,
+    clear_check: Literal["config_parses"] | None = None,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Pauses the run, or just the named phases, on a blocker only the user can fix; the Oracle
     calls this. With phases, the run stays active: agent_spawn refuses those phases until
-    phase_resume clears them, and the others keep going."""
+    phase_resume clears them, and the others keep going. A whole-run pause notifies the user
+    with the reason. clear_check names the check the watchdog tries on its timer to resume the
+    run by itself: config_parses, the config file ~/.claude.json parses."""
     ...
 
 
@@ -294,6 +342,7 @@ def brief_create(
     finding_ids: list[int] | None = _FINDING_IDS,
     effort: Literal["low", "medium", "high", "xhigh", "max"] | None = _BRIEF_CREATE_EFFORT,
     contract: str | None = _BRIEF_CREATE_CONTRACT,
+    replaces: str | None = _BRIEF_CREATE_REPLACES,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Creates a brief for the caller's child role (Oracle->Manager, Manager->Lead, Lead->Coder).
@@ -324,7 +373,9 @@ def brief_ack(caller: CallerName, agent_id: str | None = _STAMPED_AGENT_ID) -> d
 def agent_release(
     caller: CallerName, target_agent_id: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
-    """Releases an agent it directly parented; any parent role calls this for its own child."""
+    """Releases an agent it directly parented; any parent role calls this for its own child. The
+    Oracle may also release an agent whose parent has ended. Passed a queued child's name, it
+    cancels that queued spawn and keeps its brief and claim."""
     ...
 
 
@@ -351,9 +402,12 @@ def claim_file(
     test_path: str | None,
     for_name: str,
     depends_on: list[int] | None = _CLAIM_FILE_DEPENDS_ON,
+    module_id: int | None = _CLAIM_FILE_MODULE_ID,
+    product_of: int | None = _CLAIM_FILE_PRODUCT_OF,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
-    """Claims a file path for a coder under the caller's module; a Lead calls this. for_name is
+    """Claims a file path for a coder under the caller's module; a Lead calls this, or a
+    Manager for an unowned path, with the module_id of one of its modules. for_name is
     coder-p<phase ordinal>-<module>-<file slug>."""
     ...
 
@@ -362,7 +416,8 @@ def claim_file(
 def release_file(
     caller: CallerName, path: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
-    """Releases a live claim on a file path; a Lead calls this."""
+    """Releases a live claim on a file path; a Lead calls this. It refuses while the owning
+    Coder is live, and drops the owner's queued spawn."""
     ...
 
 
@@ -431,6 +486,16 @@ def directive_resolve(
     Outcomes: applied, scheduled, declined, needs_user. A needs_user directive stays open
     until a directive_submit with reply_to answers it, or the Oracle resolves it again.
     """
+    ...
+
+
+@_tool()
+def user_ask(
+    caller: CallerName, question: str, agent_id: str | None = _STAMPED_AGENT_ID
+) -> dict[str, Any]:
+    """Asks the user a question as an open needs_user directive and notifies the user; the
+    Oracle calls this in place of AskUserQuestion. The answer arrives in directive_inbox as a
+    directive that replies to it."""
     ...
 
 
@@ -519,14 +584,22 @@ def tests_run(
         bool,
         Field(description="Run the tests even when an earlier passing run can be reused."),
     ] = False,
+    include_slow: Annotated[
+        bool,
+        Field(description="Also run the settings' slow_tests; only when your brief asks."),
+    ] = False,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
-    """Runs the profile's test command for a scope; the required role scales Coder to Oracle.
+    """Starts the profile's test command for a scope; the required role scales Coder to Oracle.
 
-    The result's output is a summary: the tail of a pass, or the first traceback and the
-    short test summary of a failure. test_run_get returns the full output. When a passing
-    run in this run used the same command on an unchanged working tree, the ledger records
-    a copy of it instead of running again and returns reused: true with reused_from.
+    The suite runs in its own process under the ledger server, bounded by test_timeout_s. The
+    call returns the recorded result when the run ends within about 20 seconds; otherwise it
+    returns state: running with the test_run_id, and a wake-up names the result once it is
+    recorded. test_run_get reads a run, with its full output. The result's output is a
+    summary: the tail of a pass, or the first traceback and the short test summary of a
+    failure. When a passing run in this run used the same command on an unchanged working
+    tree, the ledger records a copy of it instead of running again and returns reused: true
+    with reused_from.
     """
     ...
 
@@ -535,7 +608,7 @@ def tests_run(
 def test_run_get(
     caller: CallerName, test_run_id: int, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
-    """Returns one recorded test run of this run, with its full output."""
+    """Returns one test run of this run, with its state and full output once it is recorded."""
     ...
 
 
@@ -543,8 +616,10 @@ def test_run_get(
 def graph_upsert(
     caller: CallerName, nodes: list[dict[str, Any]], agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
-    """Upserts code graph nodes. A Coder's nodes anchor only on its own claimed file; a Lead's
-    may span the files of its module."""
+    """Upserts code graph nodes, each description at most 240 characters. A Coder's nodes anchor
+    only on its own claimed file, and on a node that spans files it may only add anchors on its
+    own file or re-record its baseline. A Lead's nodes span two or more files, each its module's
+    or claimed by no module. The Oracle's nodes anchor only on files no module claims."""
     ...
 
 
@@ -791,6 +866,15 @@ def version_restore(
     caller: CallerName, version_id: int, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Restores a saved version onto the coder's own owned file; a Coder calls this."""
+    ...
+
+
+@_tool()
+def file_delete(
+    caller: CallerName, path: str, agent_id: str | None = _STAMPED_AGENT_ID
+) -> dict[str, Any]:
+    """Deletes the Coder's own claimed file, test file, or product from disk; a Coder calls
+    this. handoff_submit records the deletion as the file's version for review."""
     ...
 
 

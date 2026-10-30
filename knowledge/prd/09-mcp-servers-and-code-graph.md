@@ -125,12 +125,15 @@ find what exists while many agents change the code at once. The graph file,
   lists them. Why the graph fell short is not recorded in words; the pattern and the
   paths found are the structural record. A search scoped to a file the graph anchors is
   recorded too, and the report marks it.
-- Only the Coder and the Lead write to the graph, and only through
+- The Coder, the Lead, and the Oracle write to the graph, and only through
   `graph_upsert(nodes)`. It takes codebase-kg's `kg_upsert_node` node shape (`id`,
   `kind`, `section`, `description`, `anchors`, `edges`). The ledger refuses a Coder's
-  anchor outside its file and test file, a Lead's anchor outside the files and test
-  files its module claimed (released and superseded claims excluded), and an edge to a
-  node that does not exist. It applies the upsert under a lock, with the codebase-kg
+  anchor outside its file and test file (see "A Coder on a node that spans files"
+  below), a Lead's anchor on a file another module claims, an Oracle's anchor on any file
+  a module claims, a description over codebase-kg's 240-character cap, and an edge to a
+  node that does not exist. A claimed file is the file or test file of a live claim in
+  the run: not released, superseded, approved, or accepted as incomplete. The Lead's own
+  files are its module's claims that are not released or superseded. It applies the upsert under a lock, with the codebase-kg
   copy that `graph.codebase_kg_root(repo_root)` resolves, run as described above.
   That function reads the install of `codebase-kg@alexk413x` for the repo from
   `~/.claude/plugins/installed_plugins.json` and returns its `mcp` folder, by the rule
@@ -140,8 +143,21 @@ find what exists while many agents change the code at once. The graph file,
 - Setup sets `post_edit_nudge: false` in the host's `.claude/codebase-kg.local.md`, so
   codebase-kg's edit hook does not send a Coder to `/codebase-kg:refresh`.
 - A node that anchors on several files is updated through the Lead, once the Coders
-  of those files have handed up. A node on one file, with or without its test file,
-  belongs to that file's Coder, and the ledger refuses it from the Lead.
+  of those files have handed up. Each file is one of its module's or one no module
+  claims. A node on one of its module's files, with or without its test file, belongs to
+  that file's Coder, and the ledger refuses it from the Lead.
+- The Oracle updates a node whose anchors all lie on files no module claims.
+- **A Coder on a node that spans files** may add anchors on its own file and test file,
+  and re-record its file's baseline, because both belong to one file. The node it sends
+  carries only `id` and `anchors`: every anchor the node already has, plus the new ones.
+  A node of only `id` re-records the baseline. The ledger refuses a removed anchor, an
+  added anchor on another file, any other field, and a node that does not anchor the
+  Coder's file. Because a write re-baselines every file the node anchors, it also
+  refuses while another anchored file is stale, and names that file; the Lead updates
+  the node then.
+- **Description cap:** codebase-kg refuses a description over 240 characters
+  (`schema.MAX_DESCRIPTION`). `graph_upsert` refuses one up front with the cap in the
+  message, and every role's guidance states the cap.
 - Anchors are `"<path>#<Symbol>"` for every top-level function and class. A file with no
   functions or classes is anchored by its path alone: `"anchors": ["<path>"]`. A Coder
   never adds code only to have an anchor.
@@ -153,8 +169,12 @@ find what exists while many agents change the code at once. The graph file,
   states that the caller re-read the node against its files. An unchanged node that is
   not written again keeps its old baseline, which is how a reworked file goes stale.
 - **Graph current at handoff:** a node anchors on the file, each anchored symbol appears
-  in the file as a whole word, and, for a Python file, every public top-level function
-  and class is anchored. The file and its test file are also not stale: neither differs
+  in the file, and, for a Python file, every public top-level function and class is
+  anchored. A symbol appears when each of its dotted segments appears as a whole word,
+  which is codebase-kg's own rule (`tools._symbol_in_source`), so a
+  `path#Class.method` anchor resolves. A `Class.method` anchor also maps `Class`. The
+  refusal for a file with no anchors or an unmapped symbol lists the exact anchors to
+  add, as `path#Symbol`, or the bare path for a file with none. The file and its test file are also not stale: neither differs
   from its recorded baseline. A file with no baseline is not stale. `handoff_submit`
   refuses a stale file and names its nodes; the Coder re-reads each node against the
   file and calls `graph_upsert` for it again. A node that spans files is the Lead's to

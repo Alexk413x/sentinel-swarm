@@ -30,9 +30,32 @@ def _isolated_claude_config(
 
 
 @pytest.fixture(autouse=True)
+def _no_managed_settings(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The machine's real managed-settings.json would change the permission mode tests expect.
+    from swarm_ledger import permissions
+
+    missing = tmp_path_factory.mktemp("managed") / "managed-settings.json"
+    monkeypatch.setattr(permissions, "managed_settings_path", lambda platform=None: missing)
+
+
+@pytest.fixture(autouse=True)
 def _no_resume_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     # A resumed session that a fake listing never shows would hold each test for 15 seconds.
     monkeypatch.setattr(sessions, "_RESUME_WAIT_S", 0.0)
+
+
+@pytest.fixture(autouse=True)
+def _test_runs_in_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A detached runner process per tests_run would add a Python start to every handoff test;
+    # running it in-process records the same row before tests_run reads it.
+    from swarm_ledger import testrun
+
+    def launch(root: Path, db_path: Path, test_run_id: int) -> None:
+        testrun.run(root, db_path, test_run_id)
+
+    monkeypatch.setattr(testrun, "launcher", launch)
 
 
 @pytest.fixture(autouse=True)
@@ -43,6 +66,31 @@ def _plenty_of_memory(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(memory, "free_mb", lambda: 64_000)
     monkeypatch.setattr(memory, "process_rss_mb", lambda pid: None)
     monkeypatch.setattr(memory, "session_pids", dict)
+    monkeypatch.setattr(memory, "total_mb", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_processes(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A release stops the processes under a session; no test may touch the machine's own.
+    from swarm_ledger import procs
+
+    monkeypatch.setattr(procs, "snapshot", dict)
+    monkeypatch.setattr(procs, "created_of", lambda pid: None)
+    monkeypatch.setattr(procs, "terminate", lambda proc: False)
+
+
+@pytest.fixture(autouse=True)
+def _no_memory_reservations(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A fake free-memory figure never drops when a session starts, so a reservation would
+    # count each fake session twice. Tests of the reservations set their own window.
+    from swarm_ledger import lock
+
+    monkeypatch.setattr(lock, "RESERVATION_S", 0.0)
+
+
+@pytest.fixture(autouse=True)
+def _no_config_retry_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sessions, "_sleep", lambda seconds: None)
 
 
 @pytest.fixture(autouse=True)

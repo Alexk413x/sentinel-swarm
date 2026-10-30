@@ -52,7 +52,13 @@ def _build(ledger: Ledger) -> dict:
     ctx = bootstrap_module(ledger)
     coder = spawn_coder(ledger, ctx, "coder-p1-module-1-a", "src/a.py", "tests/test_a.py")
     ctx["file_id"] = coder["file_id"]
+    ctx["coder_id"] = coder["agent_id"]
     return ctx
+
+
+def _release_claim(ledger: Ledger, ctx: dict) -> None:
+    ledger.agent_release("lead-p1-module-1", ctx["lead"]["agent_id"], ctx["coder_id"])
+    ledger.release_file("lead-p1-module-1", ctx["lead"]["agent_id"], "src/a.py")
 
 
 def _approve_all(ledger: Ledger, ctx: dict) -> None:
@@ -85,7 +91,8 @@ def test_each_role_owns_its_own_task(ledger: Ledger) -> None:
     assert _node(run, "manager")["task"]["name"] == "p1-phase-1"
     assert _node(run, "lead")["task"]["name"] == "module-1"
     coder = _node(run, "coder")
-    assert coder["task"]["name"] == "src/a.py"
+    assert coder["task"]["name"] == "a.py"
+    assert coder["task"]["path"] == "src/a.py"
     assert coder["file"] == "src/a.py"
     assert coder["task"]["owners"] == [coder["name"]]
 
@@ -117,7 +124,7 @@ def test_an_incomplete_file_makes_module_phase_and_run_a_problem(ledger: Ledger)
 
 def test_a_released_file_is_a_problem(ledger: Ledger) -> None:
     ctx = _build(ledger)
-    ledger.release_file("lead-p1-module-1", ctx["lead"]["agent_id"], "src/a.py")
+    _release_claim(ledger, ctx)
 
     statuses = _statuses(_run_snapshot(ledger))
     assert statuses["file"] == "problem"
@@ -126,7 +133,7 @@ def test_a_released_file_is_a_problem(ledger: Ledger) -> None:
 
 def test_a_reclaimed_file_counts_the_superseded_version_as_done(ledger: Ledger) -> None:
     ctx = _build(ledger)
-    ledger.release_file("lead-p1-module-1", ctx["lead"]["agent_id"], "src/a.py")
+    _release_claim(ledger, ctx)
     new = ledger.claim_file(
         "lead-p1-module-1",
         ctx["lead"]["agent_id"],
@@ -152,7 +159,7 @@ def test_a_reclaimed_file_counts_the_superseded_version_as_done(ledger: Ledger) 
 
 def test_the_superseded_file_is_done_and_hidden_from_the_module(ledger: Ledger) -> None:
     ctx = _build(ledger)
-    ledger.release_file("lead-p1-module-1", ctx["lead"]["agent_id"], "src/a.py")
+    _release_claim(ledger, ctx)
     new = ledger.claim_file(
         "lead-p1-module-1",
         ctx["lead"]["agent_id"],
@@ -357,3 +364,145 @@ def test_agent_session_state_follows_the_session_listing(ledger: Ledger) -> None
     assert _node(runs[0], "oracle")["session"] == "busy"
     assert _node(runs[0], "manager")["session"] == "gone"
     assert _node(gone[0], "oracle")["session"] == "gone"
+
+
+def test_the_oracle_task_shows_the_prd_until_the_run_has_an_outcome(ledger: Ledger) -> None:
+    _build(ledger)
+    assert _node(_run_snapshot(ledger), "oracle")["task"]["brief"] == "Build X"
+
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE runs SET outcome = 'success: built'")
+    assert _node(_run_snapshot(ledger), "oracle")["task"]["brief"] == "success: built"
+
+
+def test_only_a_file_task_carries_a_path(ledger: Ledger) -> None:
+    _build(ledger)
+    run = _run_snapshot(ledger)
+
+    assert _node(run, "coder")["task"]["path"] == "src/a.py"
+    assert _node(run, "lead")["task"]["path"] is None
+    assert _node(run, "manager")["task"]["path"] is None
+    assert _node(run, "oracle")["task"]["path"] is None
+
+
+def test_file_name_keeps_the_last_part_of_either_separator() -> None:
+    assert panel._file_name("src/pkg/a.py") == "a.py"
+    assert panel._file_name(r"src\pkg\b.py") == "b.py"
+    assert panel._file_name("top.py") == "top.py"
+
+
+def test_an_agent_carries_its_session_name_and_transcript(ledger: Ledger) -> None:
+    _build(ledger)
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET session_name = 'host-r1-lead', transcript_path = '/t/lead.jsonl' "
+            "WHERE role = 'lead'"
+        )
+    lead = _node(_run_snapshot(ledger), "lead")
+
+    assert lead["agent_id"] == "lead-agent"
+    assert lead["session_name"] == "host-r1-lead"
+    assert lead["transcript_path"] == "/t/lead.jsonl"
+    assert lead["queued"] is False
+
+
+def _queue_coder(ledger: Ledger, ctx: dict, name: str, path: str) -> int:
+    claimed = ledger.claim_file("lead-p1-module-1", ctx["lead"]["agent_id"], path, None, name)
+    brief = ledger.brief_create(
+        "lead-p1-module-1",
+        ctx["lead"]["agent_id"],
+        name,
+        "coder",
+        "sonnet",
+        f"Write {path}.",
+        file_id=claimed["file_id"],
+    )
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "INSERT INTO spawn_queue (run_id, brief_id, child_name, role, parent_agent_id, reason) "
+            "VALUES (?, ?, ?, 'coder', ?, 'waits for memory')",
+            (ctx["run_id"], brief["brief_id"], name, ctx["lead"]["agent_id"]),
+        )
+    return claimed["file_id"]
+
+
+def test_a_queued_child_sits_under_its_parent_with_its_task(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    file_id = _queue_coder(ledger, ctx, "coder-p1-module-1-q", "src/q.py")
+    run = _run_snapshot(ledger)
+
+    lead = _node(run, "lead")
+    assert [c["name"] for c in lead["children"]] == ["coder-p1-module-1-q"]
+    queued = lead["children"][0]
+    assert queued["queued"] is True
+    assert queued["state"] == "queued"
+    assert queued["session"] is None
+    assert queued["agent_id"] is None
+    assert queued["park_reason"] == "waits for memory"
+    assert queued["task"]["id"] == f"file_id:{file_id}"
+    assert lead["tasks"] == []
+    assert run["counts"]["queued"] == 1
+    assert run["counts"]["live"] == 3
+
+
+def test_a_started_or_dropped_spawn_is_not_queued(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    _queue_coder(ledger, ctx, "coder-p1-module-1-q", "src/q.py")
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE spawn_queue SET state = 'dropped'")
+
+    run = _run_snapshot(ledger)
+    assert _node(run, "lead")["children"] == []
+    assert run["counts"]["queued"] == 0
+
+
+def test_a_needs_user_directive_waits_on_the_user_until_answered(ledger: Ledger) -> None:
+    ctx = _build(ledger)
+    asked = ledger.directive_submit(source="skill", sender_name="alex", body="Ship it?")
+    ledger.directive_resolve(
+        "oracle", ctx["oracle_id"], asked["directive_id"], "needs_user", "Which branch?"
+    )
+
+    waiting = _run_snapshot(ledger)["waiting"]
+    assert waiting["questions"] == [
+        {
+            "directive_id": asked["directive_id"],
+            "question": "Which branch?",
+            "asked_at": asked["created_at"],
+        }
+    ]
+
+    ledger.directive_submit(
+        source="user_chat", sender_name="run panel", body="main", reply_to=asked["directive_id"]
+    )
+    assert _run_snapshot(ledger)["waiting"]["questions"] == []
+
+
+def test_open_needs_user_and_stall_findings_wait_on_the_user(ledger: Ledger) -> None:
+    ctx = _build(ledger)
+    with write_tx(ledger.conn) as conn:
+        for agent_id, kind, cleared in (
+            ("lead-agent", "needs_user", None),
+            (ctx["oracle_id"], "run_stalled", None),
+            ("lead-agent", "stuck", None),
+            ("mgr-agent", "needs_user", "2026-10-28T00:00:00Z"),
+        ):
+            conn.execute(
+                "INSERT INTO watchdog_findings (run_id, agent_id, kind, detail, first_seen_at, "
+                "last_seen_at, cleared_at) VALUES (?, ?, ?, ?, 'T0', 'T0', ?)",
+                (ctx["run_id"], agent_id, kind, f"{kind} detail", cleared),
+            )
+
+    findings = _run_snapshot(ledger)["waiting"]["findings"]
+    assert [(f["kind"], f["agent"], f["detail"]) for f in findings] == [
+        ("needs_user", "lead-p1-module-1", "needs_user detail"),
+        ("run_stalled", "oracle", "run_stalled detail"),
+    ]
+
+
+def test_a_paused_run_carries_its_reason(ledger: Ledger) -> None:
+    ctx = _build(ledger)
+    assert _run_snapshot(ledger)["waiting"]["paused"] is None
+
+    ledger.run_pause("oracle", ctx["oracle_id"], "the build needs a licence key")
+    assert _run_snapshot(ledger)["waiting"]["paused"] == "the build needs a licence key"

@@ -619,7 +619,7 @@ class ReportMixin(LedgerHost):
 
     def _report_final_test_run(self, run_id: int) -> list[str]:
         final_run = self.conn.execute(
-            "SELECT * FROM test_runs WHERE run_id = ? AND scope = 'full' "
+            "SELECT * FROM test_runs WHERE run_id = ? AND scope = 'full' AND state != 'running' "
             "ORDER BY test_run_id DESC LIMIT 1",
             (run_id,),
         ).fetchone()

@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Literal
 
-from . import graph, notify, rubric, versions
+from . import graph, notify, rubric, settle, testrun, versions
 from .agreements import test_run_passed, work_scope
 from .db import NOW, dict_rows, in_clause, ledger_path, open_readonly, row_dict, write_tx
 from .drive import findings_named, open_findings
@@ -20,8 +21,10 @@ from .identity import (
     require_role,
     resolve,
 )
+from .queries import logical_state
 from .rubric import Rating
-from .testing import TestResult, build_command, run_tests, summarize_output, tree_fingerprint
+from .settings import command_line
+from .testing import build_command, summarize_output, tree_fingerprint
 
 _SCOPE_ROLE = {"file": "coder", "module": "lead", "phase": "manager", "full": "oracle"}
 _PARENT_ROLE = {"manager": "oracle", "lead": "manager", "coder": "lead"}
@@ -34,6 +37,8 @@ _DEFERRAL_LEVEL = {
     "prd": "oracle",
 }
 DEFERRAL_KINDS = tuple(_DEFERRAL_LEVEL)
+INLINE_WAIT_S = 20.0
+_WAIT_POLL_S = 0.2
 
 _SELECT_RE = re.compile(r"(?is)^\s*select\b")
 
@@ -49,6 +54,32 @@ def agent_name(conn: sqlite3.Connection, agent_id: str | None) -> str:
         return "unknown"
     row = conn.execute("SELECT name FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
     return row["name"] if row is not None else agent_id
+
+
+def _anchor_key(anchor: object) -> tuple[str, str]:
+    if isinstance(anchor, str):
+        path, _, symbol = anchor.strip().strip("`").strip().partition("#")
+        return path.strip().replace("\\", "/"), symbol.strip()
+    if isinstance(anchor, dict):
+        path = str(anchor.get("path") or "").strip().replace("\\", "/")
+        return path, str(anchor.get("symbol") or "").strip()
+    raise LedgerError(f"anchor {anchor!r} must be a string or an object")
+
+
+def _lead_may_upsert(
+    file_of: dict[str, int], claimed: set[str], touched: set[str], after: set[str]
+) -> None:
+    foreign = sorted(p for p in touched if p not in file_of and p in claimed)
+    if foreign:
+        raise LedgerError(
+            "a Lead updates only nodes whose anchors lie on its own module's files or on files "
+            f"no module claims; {', '.join(foreign)} belongs to another module's claim"
+        )
+    if all(p in file_of for p in after) and len({file_of[p] for p in after}) < 2:
+        raise LedgerError(
+            "a Lead updates only nodes that span two or more files; a node on one of its "
+            "module's files belongs to that file's Coder"
+        )
 
 
 def _criterion_text(dimension: str, criterion: str) -> str:
@@ -116,28 +147,54 @@ def fix_briefs(conn: sqlite3.Connection, run_id: int) -> list[dict]:
     ]
 
 
-def _reused_result(earlier: sqlite3.Row) -> TestResult:
-    return TestResult(
-        command=earlier["command"],
-        exit_code=earlier["exit_code"],
-        passed=earlier["passed"],
-        failed=earlier["failed"],
-        skipped=earlier["skipped"],
-        errors=0,
-        output=earlier["output"] or "",
-        duration_ms=0,
-        ok=True,
-        reason=None,
-    )
+def test_run_result(row: sqlite3.Row) -> dict:
+    ok = test_run_passed(row)
+    output = row["output"] or ""
+    result = {
+        "reused": row["reused_from"] is not None,
+        "test_run_id": row["test_run_id"],
+        "state": row["state"],
+        "scope": row["scope"],
+        "target": row["target"],
+        "command": row["command"],
+        "exit_code": row["exit_code"],
+        "passed": row["passed"],
+        "failed": row["failed"],
+        "skipped": row["skipped"],
+        "allowed_skipped": row["allowed_skipped"],
+        "errors": row["errors"],
+        "output": summarize_output(output, ok),
+        "output_chars": len(output),
+        "duration_ms": row["duration_ms"],
+        "ok": ok,
+        "reason": None if ok else row["reason"],
+    }
+    if row["reused_from"] is not None:
+        result["reused_from"] = row["reused_from"]
+    if row["state"] == "running":
+        result["reason"] = "still running"
+        result["next"] = (
+            f"The suite runs in its own process under the ledger server, bounded by "
+            f"test_timeout_s ({row['timeout_s']} s). End your turn: a wake-up names the result "
+            f"once it is recorded. test_run_get(test_run_id={row['test_run_id']}) reads it."
+        )
+    return result
 
 
 def _insert_version(
     conn: sqlite3.Connection, file_id: int, agent_id: str, saved: dict
 ) -> int | None:
     cur = conn.execute(
-        "INSERT INTO versions (file_id, agent_id, content, sha256, stored_path) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (file_id, agent_id, saved["content"], saved["sha256"], saved["stored_path"]),
+        "INSERT INTO versions (file_id, agent_id, content, sha256, stored_path, deleted) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            file_id,
+            agent_id,
+            saved["content"],
+            saved["sha256"],
+            saved["stored_path"],
+            saved["deleted"],
+        ),
     )
     return cur.lastrowid
 
@@ -199,7 +256,7 @@ def live_agents(conn: sqlite3.Connection, run_id: int) -> list[dict]:
     names = agent_names(conn, run_id)
     rows = conn.execute(
         "SELECT name, role, state, current_activity, parent_agent_id, model, effort, "
-        "session_name, last_heartbeat_at FROM agents "
+        "session_name, last_heartbeat_at, park_reason FROM agents "
         "WHERE run_id = ? AND ended_at IS NULL ORDER BY started_at",
         (run_id,),
     ).fetchall()
@@ -207,6 +264,8 @@ def live_agents(conn: sqlite3.Connection, run_id: int) -> list[dict]:
     for row in rows:
         agent = dict(row)
         agent["parent"] = names.get(agent.pop("parent_agent_id"))
+        if agent["state"] == "parked":
+            agent["session"] = "closed"
         agents.append({key: value for key, value in agent.items() if value is not None})
     return agents
 
@@ -261,8 +320,8 @@ class ReviewMixin(LedgerHost):
             return
         phase_name = _phase_name_at(conn, row["phase_id"])
         conn.execute(
-            f"UPDATE agents SET state = 'released', ended_at = {NOW}, phase_at_end = ? "
-            "WHERE agent_id = ?",
+            f"UPDATE agents SET state = 'released', ended_at = {NOW}, phase_at_end = ?, "
+            "state_before_park = NULL WHERE agent_id = ?",
             (phase_name, target_agent_id),
         )
         self._log_event(conn, target_agent_id, row["state"], "released", reason)
@@ -288,6 +347,7 @@ class ReviewMixin(LedgerHost):
         scope: Literal["file", "module", "phase", "full"],
         target: str | None = None,
         force: bool = False,
+        include_slow: bool = False,
     ) -> dict:
         if scope not in _SCOPE_ROLE:
             raise LedgerError(f"unknown test scope {scope!r}")
@@ -304,58 +364,145 @@ class ReviewMixin(LedgerHost):
                 raise LedgerError(f"{caller!r} may only run tests for its own file or test file")
 
         self.adopt_run_profile(c.run_id)
-        if not self.settings.test_command:
-            raise LedgerError("no test command in the profile")
-
-        fingerprint = tree_fingerprint(self.repo_root, self._claimed_paths(c.run_id))
-        earlier = None if force else self._reusable_run(c.run_id, target, fingerprint)
-        if earlier is not None:
-            result = _reused_result(earlier)
-        else:
-            result = run_tests(self.settings.test_command, target, self.repo_root)
+        if scope == "full" and target is None:
+            target = self.settings.full_target
+        command = self.test_command_for(scope, target, include_slow)
+        testrun.sweep(self.conn)
+        claimed = self._claimed_paths(c.run_id)
+        fingerprint = tree_fingerprint(self.repo_root, claimed)
+        if not force:
+            earlier = self._reusable_run(c.run_id, command, fingerprint)
+            if earlier is not None:
+                return self._record_reuse(c, scope, target, earlier)
+            running = self.conn.execute(
+                "SELECT test_run_id FROM test_runs WHERE run_id = ? AND agent_id = ? "
+                "AND command = ? AND fingerprint IS ? AND state = 'running' "
+                "ORDER BY test_run_id DESC LIMIT 1",
+                (c.run_id, c.agent_id, command, fingerprint),
+            ).fetchone()
+            if running is not None:
+                return self._await_run(running["test_run_id"])
 
         with write_tx(self.conn) as conn:
             cur = conn.execute(
-                "INSERT INTO test_runs (run_id, agent_id, scope, target, command, exit_code, "
-                "passed, failed, skipped, output, fingerprint, reused_from) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO test_runs (run_id, agent_id, scope, target, command, fingerprint, "
+                "state, skip_patterns_json, claimed_json, timeout_s) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)",
                 (
                     c.run_id,
                     c.agent_id,
                     scope,
                     target,
-                    result.command,
-                    result.exit_code,
-                    result.passed,
-                    result.failed,
-                    result.skipped,
-                    result.output,
+                    command,
                     fingerprint,
-                    earlier["test_run_id"] if earlier is not None else None,
+                    json.dumps(self.settings.allowed_skips),
+                    json.dumps(sorted(set(claimed))),
+                    self.settings.test_timeout_s,
                 ),
             )
-            test_run_id = cur.lastrowid
+            test_run_id = int(cur.lastrowid or 0)
+        self._launch_run(test_run_id)
+        return self._await_run(test_run_id)
 
-        reuse = (
-            {"reused": True, "reused_from": earlier["test_run_id"]}
-            if earlier is not None
-            else {"reused": False}
-        )
-        return {
-            **reuse,
-            "test_run_id": test_run_id,
-            "command": result.command,
-            "exit_code": result.exit_code,
-            "passed": result.passed,
-            "failed": result.failed,
-            "skipped": result.skipped,
-            "errors": result.errors,
-            "output": summarize_output(result.output, result.ok),
-            "output_chars": len(result.output),
-            "duration_ms": result.duration_ms,
-            "ok": result.ok,
-            "reason": result.reason,
-        }
+    def test_command_for(self, scope: str, target: str | None, include_slow: bool = False) -> str:
+        template = self.settings.test_template(scope)
+        if not template:
+            raise LedgerError("no test command in the profile")
+        if scope == "full" and target is None:
+            target = self.settings.full_target
+            if target is None and "{target}" in template:
+                raise LedgerError(
+                    "a full run needs a target, and full_target is not set: set full_target in "
+                    ".claude/sentinel-swarm.local.md to the folder that holds the tests, such "
+                    "as tests, or pass target"
+                )
+        return build_command(template, target, self.settings.slow_tests, include_slow)
+
+    def _launch_run(self, test_run_id: int) -> None:
+        try:
+            pid = testrun.launcher(self.repo_root, self.db_path, test_run_id)
+        except OSError as exc:
+            testrun.abandon(self.conn, test_run_id, f"the test runner did not start: {exc}")
+            return
+        if pid is not None:
+            with write_tx(self.conn) as conn:
+                conn.execute(
+                    "UPDATE test_runs SET runner_pid = ? WHERE test_run_id = ? "
+                    "AND state = 'running'",
+                    (pid, test_run_id),
+                )
+
+    def _await_run(self, test_run_id: int) -> dict:
+        deadline = time.monotonic() + INLINE_WAIT_S
+        while True:
+            row = self.conn.execute(
+                "SELECT * FROM test_runs WHERE test_run_id = ?", (test_run_id,)
+            ).fetchone()
+            if row["state"] != "running" or time.monotonic() >= deadline:
+                break
+            time.sleep(_WAIT_POLL_S)
+        if row["state"] != "running":
+            self._take_test_wakeup(row)
+        return self._test_result(row)
+
+    def _take_test_wakeup(self, row: sqlite3.Row) -> None:
+        with write_tx(self.conn) as conn:
+            conn.execute(
+                f"UPDATE wakeups SET sent_at = {NOW} WHERE from_agent_id = ? AND to_agent_id = ? "
+                "AND reason = ? AND sent_at IS NULL AND pointer = ?",
+                (
+                    row["agent_id"],
+                    row["agent_id"],
+                    testrun.WAKE_REASON,
+                    testrun.wake_pointer(row),
+                ),
+            )
+
+    def _record_reuse(
+        self, c: Caller, scope: str, target: str | None, earlier: sqlite3.Row
+    ) -> dict:
+        with write_tx(self.conn) as conn:
+            cur = conn.execute(
+                "INSERT INTO test_runs (run_id, agent_id, scope, target, command, exit_code, "
+                "passed, failed, skipped, errors, allowed_skipped, output, fingerprint, "
+                "reused_from, state, duration_ms, finished_at) "
+                f"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', 0, {NOW})",
+                (
+                    c.run_id,
+                    c.agent_id,
+                    scope,
+                    target,
+                    earlier["command"],
+                    earlier["exit_code"],
+                    earlier["passed"],
+                    earlier["failed"],
+                    earlier["skipped"],
+                    earlier["errors"],
+                    earlier["allowed_skipped"],
+                    earlier["output"],
+                    earlier["fingerprint"],
+                    earlier["test_run_id"],
+                ),
+            )
+        row = self.conn.execute(
+            "SELECT * FROM test_runs WHERE test_run_id = ?", (cur.lastrowid,)
+        ).fetchone()
+        return self._test_result(row)
+
+    def _test_result(self, row: sqlite3.Row) -> dict:
+        result = test_run_result(row)
+        if row["state"] != "running" and not result["ok"]:
+            named = self._named_commands(row["output"] or "")
+            if named:
+                result["commands"] = named
+        return result
+
+    def _named_commands(self, output: str) -> list[dict[str, str]]:
+        return [
+            {"name": command["name"], "command": command_line(command)}
+            for command in self.settings.commands
+            if command["name"] in output or command["run"] in output
+        ]
 
     def _claimed_paths(self, run_id: int | None) -> list[str]:
         return [
@@ -371,14 +518,13 @@ class ReviewMixin(LedgerHost):
         ]
 
     def _reusable_run(
-        self, run_id: int | None, target: str | None, fingerprint: str | None
+        self, run_id: int | None, command: str, fingerprint: str | None
     ) -> sqlite3.Row | None:
-        if fingerprint is None or not self.settings.test_command:
+        if fingerprint is None:
             return None
-        command = build_command(self.settings.test_command, target)
         for row in self.conn.execute(
             "SELECT * FROM test_runs WHERE run_id = ? AND command = ? AND fingerprint = ? "
-            "AND reused_from IS NULL ORDER BY test_run_id DESC",
+            "AND reused_from IS NULL AND state = 'done' ORDER BY test_run_id DESC",
             (run_id, command, fingerprint),
         ):
             if test_run_passed(row):
@@ -393,13 +539,19 @@ class ReviewMixin(LedgerHost):
         ).fetchone()
         if row is None:
             raise LedgerError(f"no test run {test_run_id} in this run")
-        return dict(row)
+        result = {**dict(row), "ok": test_run_passed(row)}
+        named = self._test_result(row).get("commands")
+        if named:
+            result["commands"] = named
+        return result
 
     # -- Code graph -----------------------------------------------------------
 
     def graph_upsert(self, caller: str, agent_id: str, nodes: list[dict]) -> dict:
         c = resolve(self.conn, caller, agent_id)
-        require_role(c, "coder", "lead")
+        require_role(c, "coder", "lead", "oracle")
+        claims = self._live_claims(c.run_id) if c.role != "coder" else set()
+        own: set[str] = set()
         file_of: dict[str, int] = {}
         if c.role == "lead":
             for row in self.conn.execute(
@@ -410,9 +562,7 @@ class ReviewMixin(LedgerHost):
                 for p in (row["path"], row["test_path"]):
                     if p:
                         file_of[p] = row["file_id"]
-            allowed_paths = set(file_of)
-            refusal = "a Lead updates only nodes that anchor on its own module's files"
-        else:
+        elif c.role == "coder":
             if c.file_id is None:
                 raise LedgerError(f"{caller!r} has no claimed file")
             file_row = self.conn.execute(
@@ -420,35 +570,25 @@ class ReviewMixin(LedgerHost):
             ).fetchone()
             if file_row is None:
                 raise LedgerError(f"{caller!r} has no claimed file")
-            allowed_paths = {file_row["path"], file_row["test_path"]}
-            refusal = (
-                "a Coder updates only the nodes that anchor on its own file; ask your Lead "
-                "to update a node that spans files"
-            )
+            own = {p for p in (file_row["path"], file_row["test_path"]) if p}
 
         for node in nodes:
-            anchored_files: set[int] = set()
-            supplied: list[str] = []
-            for anchor in node.get("anchors") or []:
-                if isinstance(anchor, str):
-                    supplied.append(anchor.split("#", 1)[0].strip())
-                elif isinstance(anchor, dict):
-                    supplied.append(str(anchor.get("path", "")).strip())
-                else:
-                    raise LedgerError(f"anchor {anchor!r} must be a string or an object")
-            stored = graph.node_anchor_paths(self.repo_root, str(node.get("id")))
-            anchor_paths = supplied if "anchors" in node else stored
-            for anchor_path in (*anchor_paths, *stored):
-                if anchor_path not in allowed_paths:
-                    raise LedgerError(refusal)
-            for anchor_path in anchor_paths:
-                if anchor_path in file_of:
-                    anchored_files.add(file_of[anchor_path])
-            if c.role == "lead" and len(anchored_files) < 2:
-                raise LedgerError(
-                    "a Lead updates only nodes that span two or more of its module's files; "
-                    "a single-file node belongs to that file's Coder"
-                )
+            node_id = str(node.get("id"))
+            supplied = [_anchor_key(a) for a in node.get("anchors") or []]
+            stored = graph.node_anchors(self.repo_root, node_id)
+            after = supplied if "anchors" in node else stored
+            touched = {p for p, _ in (*supplied, *stored)}
+            if c.role == "coder":
+                self._coder_may_upsert(node, own, supplied, stored, touched)
+            elif c.role == "lead":
+                _lead_may_upsert(file_of, claims, touched, {p for p, _ in after})
+            else:
+                owned = sorted(p for p in touched if p in claims)
+                if owned:
+                    raise LedgerError(
+                        f"the Oracle updates only nodes that no module owns; {node_id!r} anchors "
+                        f"{', '.join(owned)}, which a module claims. That module's Lead updates it"
+                    )
 
         result = graph.graph_upsert(self.repo_root, nodes)
 
@@ -460,6 +600,53 @@ class ReviewMixin(LedgerHost):
             self._log_event(conn, agent_id, state, state or "working", "graph_upsert")
 
         return result
+
+    def _live_claims(self, run_id: int | None) -> set[str]:
+        claimed: set[str] = set()
+        for row in self.conn.execute(
+            "SELECT files.path, files.test_path FROM files "
+            "JOIN modules ON modules.module_id = files.module_id "
+            "JOIN phases ON phases.phase_id = modules.phase_id "
+            "WHERE phases.run_id = ? AND files.released_at IS NULL "
+            "AND files.state NOT IN ('released', 'superseded')",
+            (run_id,),
+        ):
+            claimed.update(p for p in (row["path"], row["test_path"]) if p)
+        return claimed
+
+    def _coder_may_upsert(
+        self,
+        node: dict,
+        own: set[str],
+        supplied: list[tuple[str, str]],
+        stored: list[tuple[str, str]],
+        touched: set[str],
+    ) -> None:
+        if touched <= own:
+            return
+        refusal = (
+            "a Coder updates only the nodes that anchor on its own file; ask your Lead to "
+            "update a node that spans files. On a node that also anchors other files, a Coder "
+            "may only add anchors on its own file, or re-record its baseline, with a node "
+            'that carries just "id" and "anchors": every anchor the node has, plus its new ones'
+        )
+        if set(node) - {"id", "anchors"}:
+            raise LedgerError(refusal)
+        if "anchors" in node:
+            if not set(stored) <= set(supplied):
+                raise LedgerError(refusal)
+            if any(path not in own for path, _ in set(supplied) - set(stored)):
+                raise LedgerError(refusal)
+        after = {p for p, _ in (supplied if "anchors" in node else stored)}
+        if not after & own:
+            raise LedgerError(refusal)
+        stale = graph.stale_files(self.repo_root, sorted(after - own))
+        if stale:
+            raise LedgerError(
+                f"node {node.get('id')!r} also anchors {', '.join(stale)}, which changed since "
+                "its baseline and is not your file; a write would re-record that baseline too. "
+                "Ask your Lead to update the node"
+            )
 
     # -- Scoring --------------------------------------------------------------
 
@@ -672,6 +859,15 @@ class ReviewMixin(LedgerHost):
             if file_row["test_path"]
             else None
         )
+        product_versions = [
+            (
+                product["file_id"],
+                versions.save_version(
+                    records_dir, product["file_id"], agent_id, self.repo_root / product["path"]
+                ),
+            )
+            for product in self._products(file_id)
+        ]
 
         with write_tx(self.conn) as conn:
             version_id = _insert_version(conn, file_id, agent_id, path_version)
@@ -680,6 +876,10 @@ class ReviewMixin(LedgerHost):
                 if test_version is not None
                 else None
             )
+            product_version_ids = [
+                _insert_version(conn, product_id, agent_id, saved)
+                for product_id, saved in product_versions
+            ]
             cur = conn.execute(
                 "INSERT INTO handoffs (file_id, agent_id, test_run_id, version_id, "
                 "test_version_id, self_review_id, open_issues_json, departures_json, state) "
@@ -699,6 +899,7 @@ class ReviewMixin(LedgerHost):
             superseded_ids, closed_departures = _supersede_handoffs(conn, file_id, handoff_id)
             _attach_departures(conn, c, file_id, handoff_id, departures)
             conn.execute("UPDATE files SET state = 'handed_up' WHERE file_id = ?", (file_id,))
+            settle.sync_products(conn, file_id, "handed_up")
 
             agent_row = conn.execute(
                 "SELECT state FROM agents WHERE agent_id = ?", (agent_id,)
@@ -715,6 +916,10 @@ class ReviewMixin(LedgerHost):
             )
 
         handoff = row_dict(self.conn, "handoffs", "handoff_id", handoff_id)
+        if product_version_ids:
+            handoff["product_version_ids"] = product_version_ids
+        if path_version["deleted"]:
+            handoff["deleted"] = True
         if superseded_ids:
             handoff["superseded_handoff_ids"] = superseded_ids
         if closed_departures:
@@ -730,17 +935,33 @@ class ReviewMixin(LedgerHost):
         self, caller: str, agent_id: str, file_row: sqlite3.Row
     ) -> tuple[int | None, sqlite3.Row]:
         test_run_id = None
-        if file_row["test_path"]:
-            test_result = self.tests_run(caller, agent_id, "file", file_row["test_path"])
+        deleted = not (self.repo_root / file_row["path"]).exists()
+        test_path = file_row["test_path"]
+        if test_path and not (deleted and not (self.repo_root / test_path).exists()):
+            test_result = self.tests_run(caller, agent_id, "file", test_path)
+            if test_result["state"] == "running":
+                raise LedgerError(
+                    f"test run {test_result['test_run_id']} of {test_path} is still "
+                    "running. End your turn; its wake-up names the result, and handoff_submit "
+                    "then uses it"
+                )
             if not test_result["ok"]:
                 raise LedgerError(f"tests are not passing: {test_result['reason']}")
             test_run_id = test_result["test_run_id"]
 
-        graph_ok, graph_reasons = graph.graph_current_for(self.repo_root, file_row["path"])
-        if not graph_ok:
-            raise LedgerError(
-                f"code graph is not current for {file_row['path']}: {'; '.join(graph_reasons)}"
-            )
+        if deleted:
+            if graph.anchored_paths(self.repo_root, [file_row["path"]]):
+                raise LedgerError(
+                    f"{file_row['path']} is deleted, but the code graph still anchors nodes on "
+                    "it. Find them with kg_find_by_path, then call graph_upsert for each with "
+                    "anchors that leave the deleted path out"
+                )
+        else:
+            graph_ok, graph_reasons = graph.graph_current_for(self.repo_root, file_row["path"])
+            if not graph_ok:
+                raise LedgerError(
+                    f"code graph is not current for {file_row['path']}: {'; '.join(graph_reasons)}"
+                )
         paths = [p for p in (file_row["path"], file_row["test_path"]) if p]
         stale = graph.stale_files(self.repo_root, paths)
         if stale:
@@ -783,6 +1004,56 @@ class ReviewMixin(LedgerHost):
                 f"child_name={c.name!r}). The work came back at {returned}, and the brief, not "
                 "your memory of it, is the task"
             )
+
+    def _products(self, file_id: int) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT * FROM files WHERE source_file_id = ? AND released_at IS NULL ORDER BY file_id",
+            (file_id,),
+        ).fetchall()
+
+    def file_delete(self, caller: str, agent_id: str, path: str) -> dict:
+        c = resolve(self.conn, caller, agent_id)
+        require_role(c, "coder")
+        file_row = self.conn.execute(
+            "SELECT * FROM files WHERE file_id = ? AND released_at IS NULL", (c.file_id,)
+        ).fetchone()
+        owned = (
+            {
+                file_row["path"],
+                file_row["test_path"],
+                *(p["path"] for p in self._products(file_row["file_id"])),
+            }
+            if file_row is not None
+            else set()
+        )
+        if path not in owned:
+            raise LedgerError(
+                f"{caller!r} may delete only its own claimed file, test file, or products, "
+                f"not {path!r}"
+            )
+        target = self.repo_root / path
+        if not target.is_file():
+            raise LedgerError(f"{path!r} is not a file on disk")
+        target.unlink()
+        assert file_row is not None
+        with write_tx(self.conn) as conn:
+            conn.execute(
+                f"UPDATE files SET stale_since = {NOW} WHERE file_id = ?", (file_row["file_id"],)
+            )
+            row = conn.execute(
+                "SELECT state FROM agents WHERE agent_id = ?", (c.agent_id,)
+            ).fetchone()
+            state = row["state"] if row is not None else None
+            self._log_event(conn, c.agent_id, state, state or "working", f"file_delete: {path}")
+        return {
+            "file_id": file_row["file_id"],
+            "path": path,
+            "deleted": True,
+            "next": (
+                "handoff_submit records the deletion as the file's version, and the Lead "
+                "reviews it like an edit. Score the file with score_record(kind='self') first."
+            ),
+        }
 
     # -- Review -----------------------------------------------------------------
 
@@ -857,6 +1128,7 @@ class ReviewMixin(LedgerHost):
                 f"UPDATE files SET state = 'approved', released_at = {NOW} WHERE file_id = ?",
                 (file_row["file_id"],),
             )
+            settle.sync_products(conn, file_row["file_id"], "approved", released="set")
             for dimension in floor_dimensions:
                 conn.execute(
                     "INSERT INTO departures (run_id, agent_id, file_id, kind, state, body) "
@@ -872,12 +1144,7 @@ class ReviewMixin(LedgerHost):
             self._mark_departures_reworked(conn, file_row["file_id"], handoff_id)
             self._release_agent(conn, handoff_row["agent_id"], "approve")
             woken = self._wake_file_waiters(conn, c, file_row["path"], "approved")
-            pending = conn.execute(
-                "SELECT COUNT(*) AS n FROM files WHERE module_id = ? "
-                "AND state NOT IN ('approved', 'incomplete', 'superseded')",
-                (file_row["module_id"],),
-            ).fetchone()["n"]
-            if pending == 0:
+            if not settle.unsettled_files(conn, self.repo_root, file_row["module_id"]):
                 conn.execute(
                     "UPDATE modules SET state = 'approved' WHERE module_id = ?",
                     (file_row["module_id"],),
@@ -928,18 +1195,21 @@ class ReviewMixin(LedgerHost):
             conn.execute(
                 "UPDATE files SET state = 'returned' WHERE file_id = ?", (file_row["file_id"],)
             )
+            settle.sync_products(conn, file_row["file_id"], "returned")
             coder_row = conn.execute(
-                "SELECT state FROM agents WHERE agent_id = ?", (handoff_row["agent_id"],)
+                "SELECT state, state_before_park FROM agents WHERE agent_id = ?",
+                (handoff_row["agent_id"],),
             ).fetchone()
             # 'idle', not 'working': the Coder's turn ended at its handoff, and the Stop
             # hook reads 'working' as a turn in progress. Its next tool use marks it working.
             if coder_row is not None:
+                column = "state_before_park" if coder_row["state"] == "parked" else "state"
                 conn.execute(
-                    "UPDATE agents SET state = 'idle' WHERE agent_id = ?",
+                    f"UPDATE agents SET {column} = 'idle' WHERE agent_id = ?",
                     (handoff_row["agent_id"],),
                 )
                 self._log_event(
-                    conn, handoff_row["agent_id"], coder_row["state"], "idle", "return_work"
+                    conn, handoff_row["agent_id"], logical_state(coder_row), "idle", "return_work"
                 )
             cur = conn.execute(
                 "INSERT INTO attempts (file_id, handoff_id, issue_ids_json, targeted_json, "
@@ -1234,6 +1504,7 @@ class ReviewMixin(LedgerHost):
                 f"UPDATE files SET state = 'incomplete', released_at = {NOW} WHERE file_id = ?",
                 (file_row["file_id"],),
             )
+            settle.sync_products(conn, file_row["file_id"], "incomplete", released="set")
             self._mark_departures_reworked(conn, file_row["file_id"], handoff_id)
             self._release_agent(conn, handoff_row["agent_id"], "accept_incomplete")
             woken = self._wake_file_waiters(conn, c, file_row["path"], "incomplete")
@@ -1447,7 +1718,9 @@ class ReviewMixin(LedgerHost):
             raise LedgerError(f"{caller!r} does not own the file for version {version_id!r}")
 
         target_path = self.repo_root / file_row["path"]
-        if version_row["stored_path"]:
+        if version_row["deleted"]:
+            target_path.unlink(missing_ok=True)
+        elif version_row["stored_path"]:
             records_dir = ledger_path(self.repo_root).parent
             versions.restore_version(records_dir, version_row["stored_path"], target_path)
         else:

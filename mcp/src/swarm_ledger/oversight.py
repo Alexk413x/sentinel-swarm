@@ -5,13 +5,15 @@ import sqlite3
 from collections.abc import Callable
 from typing import Literal
 
-from . import graph, rubric
+from . import graph, rubric, settle
 from .db import dict_rows, in_clause, row_dict, write_tx
 from .host import LedgerHost
 from .identity import Caller, LedgerError, ledger_errors, require_role, resolve
 from .review import latest_lead_review
 
-_CLEAN_TEST_RUN = "t.exit_code = 0 AND t.failed = 0 AND t.skipped = 0"
+_CLEAN_TEST_RUN = (
+    "t.state = 'done' AND t.exit_code = 0 AND t.failed = 0 AND t.skipped = t.allowed_skipped"
+)
 
 
 def _review_scores_json(scores: list[dict] | None) -> list[dict]:
@@ -112,12 +114,11 @@ class OversightMixin(LedgerHost):
         phase_id: int,
         disagreement_notes: dict[str, str],
     ) -> None:
-        files = dict_rows(conn.execute("SELECT * FROM files WHERE module_id = ?", (module_id,)))
-        not_ready = [
-            f["path"] for f in files if f["state"] not in ("approved", "incomplete", "superseded")
-        ]
+        not_ready = [f["path"] for f in settle.unsettled_files(conn, self.repo_root, module_id)]
         if not_ready:
             raise LedgerError(f"file(s) are not approved or incomplete yet: {not_ready}")
+        settle.close_settled(conn, self.repo_root, module_id)
+        files = dict_rows(conn.execute("SELECT * FROM files WHERE module_id = ?", (module_id,)))
         self._block_module_review_for_departures(conn, module_id)
 
         last_change = self._module_last_decision(conn, module_id)
@@ -160,6 +161,34 @@ class OversightMixin(LedgerHost):
                 "change; call module_review first"
             )
 
+    def _full_run_needed(self, conn: sqlite3.Connection, phase_row: sqlite3.Row) -> str:
+        need = (
+            "phase_review needs a passing test run of scope 'full' by the Oracle, recorded "
+            "after the phase was handed up"
+        )
+        self.adopt_run_profile(phase_row["run_id"])
+        try:
+            need += f", of {self.test_command_for('full', None)!r}"
+        except LedgerError as exc:
+            need += f"; {exc}"
+        latest = conn.execute(
+            "SELECT t.* FROM test_runs t JOIN agents a ON a.agent_id = t.agent_id "
+            "WHERE t.run_id = ? AND t.scope = 'full' AND a.role = 'oracle' "
+            "AND (? IS NULL OR t.created_at >= ?) ORDER BY t.test_run_id DESC LIMIT 1",
+            (phase_row["run_id"], phase_row["handed_up_at"], phase_row["handed_up_at"]),
+        ).fetchone()
+        if latest is None:
+            return f"{need}. Call tests_run(scope='full')"
+        if latest["state"] == "running":
+            return (
+                f"{need}. Test run {latest['test_run_id']} is still running; end your turn, "
+                "and its wake-up names the result"
+            )
+        return (
+            f"{need}. The latest, test run {latest['test_run_id']}, is {latest['state']}: "
+            f"{latest['reason'] or 'not clean'}. Fix the cause, then call tests_run(scope='full')"
+        )
+
     def _require_phase_ready_for_review(
         self,
         conn: sqlite3.Connection,
@@ -169,10 +198,7 @@ class OversightMixin(LedgerHost):
         phase_id = phase_row["phase_id"]
         self._block_phase_review_for_departures(conn, phase_id)
         if not self._passing_full_test_after(conn, phase_row["run_id"], phase_row["handed_up_at"]):
-            raise LedgerError(
-                "no passing tests_run of scope 'full' by the Oracle exists after the phase was "
-                "handed up; call tests_run(scope='full')"
-            )
+            raise LedgerError(self._full_run_needed(conn, phase_row))
 
         untested = [
             f"file {f['file_id']} ({f['path']})"

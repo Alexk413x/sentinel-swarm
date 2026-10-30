@@ -5,7 +5,8 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, TypeVar
 
-from . import frontmatter
+from . import frontmatter, memory
+from .permissions import PERMISSION_MODES
 from .rubric import Thresholds
 
 _DEFAULT_RUNTIME = {
@@ -29,6 +30,8 @@ DEFAULT_MAX_WORKERS = 8
 DEFAULT_HEADROOM_MB = 1500
 _FALSE_WORDS = frozenset({"false", "no", "off", "0"})
 PROFILE_KEYS = ("test_command", "build_command", "lint_command")
+TEST_SCOPES = ("file", "module", "phase", "full")
+DEFAULT_TEST_TIMEOUT_S = 600
 
 
 def normalize_budget(raw: object) -> int | None:
@@ -49,6 +52,44 @@ def normalize_max_workers(raw: object) -> int:
     except ValueError:
         return DEFAULT_MAX_WORKERS
     return max(0, workers)
+
+
+def normalize_test_timeout(raw: object) -> int:
+    if raw is None or isinstance(raw, bool):
+        return DEFAULT_TEST_TIMEOUT_S
+    try:
+        seconds = int(str(raw).strip())
+    except ValueError:
+        return DEFAULT_TEST_TIMEOUT_S
+    return seconds if seconds > 0 else DEFAULT_TEST_TIMEOUT_S
+
+
+def normalize_text_list(raw: object) -> list[str]:
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    return [str(item).strip() for item in raw if item is not None and str(item).strip()]
+
+
+def normalize_scope_commands(raw: object) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        scope: str(raw[scope]).strip()
+        for scope in TEST_SCOPES
+        if raw.get(scope) is not None and str(raw[scope]).strip()
+    }
+
+
+def normalize_parallelism_cap(raw: object) -> int | None:
+    if raw is None or isinstance(raw, bool) or str(raw).strip() == "":
+        return memory.default_parallelism_cap(memory.total_mb())
+    try:
+        cap = int(str(raw).strip())
+    except ValueError:
+        return memory.default_parallelism_cap(memory.total_mb())
+    return cap if cap > 0 else None
 
 
 def normalize_notify(raw: object) -> list[str]:
@@ -76,6 +117,7 @@ class WatchdogSettings:
     idle_exit_minutes: int = 15
     unsent_wakeup_minutes: int = 5
     queued_spawn_minutes: int = 10
+    remind_minutes: int = 30
 
 
 @dataclass
@@ -96,6 +138,36 @@ def normalize_memory(raw: object) -> MemorySettings:
     return MemorySettings(headroom_mb=headroom, park_idle_parents=park not in _FALSE_WORDS)
 
 
+def normalize_commands(raw: object) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+    commands: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        run = str(item.get("run") or "").strip()
+        if not name or not run:
+            continue
+        commands.append(
+            {
+                "name": name,
+                "run": run,
+                "cwd": str(item.get("cwd") or ".").strip() or ".",
+                "interpreter": str(item.get("interpreter") or "").strip(),
+            }
+        )
+    return commands
+
+
+def command_line(command: dict[str, str]) -> str:
+    line = " ".join(part for part in (command["interpreter"], command["run"]) if part)
+    cwd = command["cwd"]
+    if cwd in ("", "."):
+        return line
+    return f"cd {cwd} && {line}"
+
+
 _Section = TypeVar("_Section", Thresholds, EscalationSettings, WatchdogSettings)
 
 
@@ -112,6 +184,14 @@ class Settings:
     test_command: str | None = None
     build_command: str | None = None
     lint_command: str | None = None
+    test_command_by_scope: dict[str, str] = field(default_factory=dict)
+    test_timeout_s: int = DEFAULT_TEST_TIMEOUT_S
+    full_target: str | None = None
+    allowed_skips: list[str] = field(default_factory=list)
+    slow_tests: list[str] = field(default_factory=list)
+    # Named host commands the Coder's and Manager's shell gates allow, each with its working
+    # directory and interpreter: {"name", "run", "cwd", "interpreter"}.
+    commands: list[dict[str, str]] = field(default_factory=list)
     parallelism_cap: int | None = None
     time_budget_minutes: int | None = None
     # Empty means repo_check tries main, then master, then reports no base branch.
@@ -121,6 +201,9 @@ class Settings:
     # Per-role promptCacheTtl ("5m" or "1h") for agent_spawn; a role with no entry keeps the
     # Claude Code default.
     prompt_cache_ttl: dict[str, str] = field(default_factory=dict)
+    # Per-role --permission-mode for every launch; a role with no entry inherits the user's
+    # permissions.defaultMode (see permissions.start_mode).
+    permission_mode: dict[str, str] = field(default_factory=dict)
     # Per-role cap on that role's own live sessions in the run, on top of parallelism_cap.
     role_parallelism_cap: dict[str, int] = field(default_factory=dict)
     notify: list[str] = field(default_factory=lambda: list(NOTIFY_CHANNELS))
@@ -141,6 +224,9 @@ class Settings:
                 "memory": MemorySettings(**(data.get("memory") or {})),
             }
         )
+
+    def test_template(self, scope: str) -> str | None:
+        return self.test_command_by_scope.get(scope) or self.test_command
 
     def adopt_profile(self, snapshot: str | None) -> None:
         try:
@@ -196,6 +282,11 @@ def load_settings(repo_root: Path) -> Settings:
     prompt_cache_ttl = {
         role: str(ttl) for role, ttl in (data.get("prompt_cache_ttl") or {}).items() if ttl
     }
+    permission_mode = {
+        role: str(mode).strip()
+        for role, mode in (data.get("permission_mode") or {}).items()
+        if mode and str(mode).strip() in PERMISSION_MODES
+    }
     role_parallelism_cap = {
         role: int(cap) for role, cap in (data.get("role_parallelism_cap") or {}).items() if cap
     }
@@ -210,11 +301,20 @@ def load_settings(repo_root: Path) -> Settings:
         test_command=data.get("test_command") or defaults.test_command,
         build_command=data.get("build_command") or defaults.build_command,
         lint_command=data.get("lint_command") or defaults.lint_command,
-        parallelism_cap=data.get("parallelism_cap") or defaults.parallelism_cap,
+        test_command_by_scope=normalize_scope_commands(data.get("test_command_by_scope")),
+        test_timeout_s=normalize_test_timeout(data.get("test_timeout_s")),
+        full_target=str(data["full_target"]).strip() or None
+        if data.get("full_target") is not None
+        else None,
+        allowed_skips=normalize_text_list(data.get("allowed_skips")),
+        slow_tests=normalize_text_list(data.get("slow_tests")),
+        commands=normalize_commands(data.get("commands")),
+        parallelism_cap=normalize_parallelism_cap(data.get("parallelism_cap")),
         time_budget_minutes=normalize_budget(data.get("time_budget_minutes")),
         base_branch=data.get("base_branch") or defaults.base_branch,
         effort=effort,
         prompt_cache_ttl=prompt_cache_ttl,
+        permission_mode=permission_mode,
         role_parallelism_cap=role_parallelism_cap,
         notify=normalize_notify(data.get("notify")),
         max_workers=normalize_max_workers(data.get("max_workers")),

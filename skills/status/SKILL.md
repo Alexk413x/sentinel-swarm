@@ -33,6 +33,34 @@ if run is None:
     sys.exit("the ledger has no run")
 print(f"run {run['run_id']}: {run['state']} outcome={run['outcome']} started={run['started_at']}")
 
+queued = q("SELECT * FROM spawn_queue WHERE run_id=? AND state='queued' ORDER BY queue_id", run["run_id"])
+print(f"queued spawns: {len(queued)}")
+for s in queued:
+    print(f"  {s['child_name']} ({s['role']}) since {s['queued_at']}: {s['reason']}")
+parked = q("SELECT * FROM agents WHERE run_id=? AND ended_at IS NULL AND state='parked' "
+           "ORDER BY parked_at", run["run_id"])
+print(f"parked, session closed: {len(parked)}")
+for a in parked:
+    print(f"  {a['name']} ({a['role']}) since {a['parked_at']}: {a['park_reason']}")
+
+print("\nwaiting on you")
+waiting = []
+if run["state"] == "paused":
+    why = conn.execute("""SELECT e.reason FROM agent_events e JOIN agents a ON a.agent_id=e.agent_id
+                          WHERE a.run_id=? AND e.to_state='paused' ORDER BY e.event_id DESC LIMIT 1""",
+                       (run["run_id"],)).fetchone()
+    check = f" (resumes by itself: {run['pause_check']})" if run["pause_check"] else ""
+    waiting.append(f"  run paused since {run['paused_at']}: {why['reason'] if why else '?'}{check}")
+for f in q("""SELECT f.detail, f.first_seen_at, a.name FROM watchdog_findings f
+              LEFT JOIN agents a ON a.agent_id=f.agent_id
+              WHERE f.run_id=? AND f.kind='needs_user' AND f.cleared_at IS NULL
+              ORDER BY f.first_seen_at""", run["run_id"]):
+    waiting.append(f"  {f['name']} since {f['first_seen_at']}: {f['detail']}")
+for d in q("""SELECT directive_id, question, body FROM directives WHERE run_id=? AND state='open'
+              AND outcome='needs_user' ORDER BY directive_id""", run["run_id"]):
+    waiting.append(f"  question, directive {d['directive_id']}: {d['question'] or d['body']}")
+print("\n".join(waiting) or "  nothing")
+
 print("\nphases")
 for p in q("SELECT * FROM phases WHERE run_id=? ORDER BY ordinal", run["run_id"]):
     deps = [str(d["depends_on_phase_id"]) for d in
@@ -49,7 +77,7 @@ for f in q("""SELECT f.*, m.name AS module FROM files f
 
 print("\nagents")
 for a in q("SELECT * FROM agents WHERE run_id=? ORDER BY started_at", run["run_id"]):
-    live = f"ended {a['ended_at']}" if a["ended_at"] else "live"
+    live = f"ended {a['ended_at']}" if a["ended_at"] else "closed" if a["state"] == "parked" else "live"
     print(f"  {a['name']:<28} {a['role']:<8} {a['state']:<10} {live:<28} "
           f"model={a['model']} heartbeat={a['last_heartbeat_at']} doing={a['current_activity']}")
 
@@ -97,9 +125,19 @@ PY
 
 ## Reading the output
 
+- The `waiting on you` section comes first. It lists a paused run and its reason, every
+  session the watchdog saw waiting on a permission prompt or a question (`needs_user`
+  findings), and every open question (`needs_user` directives). Answer a session's
+  prompt in its row in agent view. Answer a question in the Oracle's session, or with
+  `python "${CLAUDE_PLUGIN_ROOT}/mcp/launch/ledger.py" directive --reply-to <directive_id>
+  "<answer>"` from the host repo root.
+
 - A file whose `state` is `working` and whose lock names a Coder is being written
   now. `handed_up` means it waits on its Lead. `approved` means the claim is
   released.
+- The first lines name the spawns that wait for memory and the parked agents. A
+  `parked` agent's session is closed: the daemon retired it, or the ledger stopped it
+  under memory pressure. The ledger resumes it when a wake-up is owed to it.
 - An agent whose `last_heartbeat_at` has not moved is what the watchdog reports to
   the Oracle.
 - An issue at round 3 is with the Oracle.

@@ -62,7 +62,7 @@ step. Every entry point runs `<python> -I -S <plugin root>/mcp/launch/ledger.py 
 
 ## Setup
 
-`mcp/launch/ledger.py setup [--repo <root>] [--check-trust]`, or the
+`mcp/launch/ledger.py setup [--repo <root>] [--check-trust] [--time-full-run]`, or the
 `/sentinel-swarm:setup` skill, which also creates the settings file, fills in the
 commands from the detected stack, confirms codebase-kg, and builds the graph. Setup:
 
@@ -73,7 +73,11 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
   file setup keeps the user's frontmatter, adds any key the template has that the file
   lacks, and replaces the prompt body. It also strips any ledger command hook
   (`hook.py hook <event>`) from the file's frontmatter, keeps any hook of the user's own,
-  and reports "removed the ledger command hooks the mod runs: <events>".
+  and reports "removed the ledger command hooks the mod runs: <events>". It removes a
+  `permissionMode` key, since the `permission_mode` setting decides the mode, and
+  reports "removed permissionMode: <value> (set permission_mode.<role> in
+  .claude/sentinel-swarm.local.md to choose a mode)". The templates carry no
+  `permissionMode`.
   When the file's one-line `tools` value still lists the whole server,
   `mcp__swarm-ledger`, setup puts the template's `mcp__swarm-ledger__<tool>` names in
   its place and keeps every other tool the file lists. A `tools` value that already
@@ -101,6 +105,39 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
 - Adds `.sentinel-swarm/`, `.claude/agents/swarm-*.md`, `.claude/codebase-kg.local.md`,
   and `.claude/sentinel-swarm.local.md` to `.git/info/exclude`, so the settings file the
   setup skill writes stays out of `git status`.
+- Reports the mode each role it wrote starts in, with where the mode comes from, as
+  "swarm-<role> starts in <mode>: <source>". When policy sets
+  `permissions.disableBypassPermissionsMode`, it also says that a role that would start
+  in `bypassPermissions` starts in `acceptEdits`. See "Permission mode" below.
+- Checks the test command, through the same runner `tests_run` uses (`cmd.exe` with
+  `shell=True` on Windows, so a path that only a POSIX shell accepts fails here first):
+  - With no `test_command`, it reports that the command is not set.
+  - With a full command that contains `{target}` and no `full_target`, it warns that
+    `tests_run(scope="full")` refuses, and stops checking.
+  - For a pytest command, it dry-runs the full command with `--collect-only -q` and
+    reports the collected count, or warns with the exit code and the last 15 lines of
+    output: a collection error such as an import that raises `SystemExit`. Another stack
+    has no dry run, and the report says so.
+  - It warns that `slow_tests` has no effect when the command is not pytest.
+  - With `allowed_skips` empty, it notes that any skip fails its run and so blocks every
+    handoff and phase review. With `allowed_skips` set and a pytest command without `-rs`
+    or `-ra`, it warns that no skip can match.
+  - `--time-full-run` runs the full command once and reports its time against
+    `test_timeout_s`, its counts, and whether it counts as clean. It warns when the run
+    takes more than half the cap or times out, and names sharding (`pytest -n auto`, from
+    pytest-xdist) or a higher `test_timeout_s` as the fix. It also warns about each skip
+    `allowed_skips` does not name. Without the flag, the report names the flag.
+- Proposes host commands for the `commands` setting. It reads the repo's top-level
+  Markdown files, `.claude/*.md`, and `docs/` two levels deep (60 files at most), and
+  finds each inline code span or line that runs a script that exists in the repo
+  through `python`, `python3`, `py`, `py -3`, `node`, `bash`, `sh`, or `uv run`. It
+  skips a script whose name contains `test` and one the settings already list, and
+  prints one "Proposed host command" line per script, with its name, run, cwd, and
+  interpreter. It writes nothing: the setup skill asks the user which to add.
+- Prints the `parallelism_cap` the ledger will use, whether it is the default for the
+  machine's total memory, and that it counts this run's live sessions plus every other
+  swarm's running sessions on the machine. See "Parallelism" in
+  [05-sessions.md](05-sessions.md).
 - Reports whether the repo is trusted, from `~/.claude.json` (or
   `$CLAUDE_CONFIG_DIR/.claude.json`), and prints the command that trusts it.
   `--check-trust` only checks, and exits 1 with the command when the repo is not
@@ -108,6 +145,36 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
 
 The role files take effect in the next session. A session loads agent files once, at
 startup.
+
+Setup ends its report with a line that says a fresh install needs a new session before
+its tools load. A session loads plugin tools when it starts, and setup cannot run
+`/reload-plugins`, so the line tells the user to start a new session, or to run
+`/reload-plugins` in the current one, before `/sentinel-swarm:run`.
+
+## Permission mode
+
+Every role session starts in the user's own permission mode unless the settings file
+names one. On Alex's machine that is `bypassPermissions`. `permissions.start_mode`
+decides each launch's `--permission-mode`, for `agent_spawn`, `agent_resume`, the
+watchdog's Oracle resume, and the launcher:
+
+1. `permission_mode.<role>` in the settings file, when it names a mode Claude Code
+   knows (`default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions`), is
+   passed as the flag.
+2. Otherwise the role inherits: the launcher passes no flag, and the session takes
+   `permissions.defaultMode` from the highest of managed settings,
+   `.claude/settings.local.json`, `.claude/settings.json`, and the user's
+   `settings.json` that sets it, else `default`.
+3. A Coder that would inherit `default` gets `--permission-mode acceptEdits`, because a
+   background session in `default` stalls for good on a file write (see
+   [13-platform-facts.md](13-platform-facts.md)).
+4. When any of those files sets `permissions.disableBypassPermissionsMode: "disable"`,
+   a role that would start in `bypassPermissions` gets `--permission-mode acceptEdits`.
+
+The role file's `permissionMode` is never read; setup removes it. The swarm's limits
+hold in every mode: the write, shell, `SendMessage`, and `AskUserQuestion` gates are
+the mod's `tool.call` hooks, which run before Claude Code's permission check in every
+mode, `bypassPermissions` included. See [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md).
 
 ## Plugin detection
 
@@ -204,19 +271,33 @@ descriptions stay out of every session's context.
 | `escalation.attempts_per_round` | 3 | Non-improving attempts per round |
 | `watchdog.*` | See "Watchdog" in [08-watchdog.md](08-watchdog.md) | Watchdog timing, thresholds, and server idle exit |
 | `test_command` | empty | Must contain `{target}`, for example `python -m pytest -q -p no:cacheprovider {target}` |
+| `test_command_by_scope.<scope>` | empty | A command for one scope (`file`, `module`, `phase`, or `full`) in place of `test_command`, for example a sharded full run, or an environment variable that only the full run needs. A scope with no entry uses `test_command`. Unknown scopes are dropped |
+| `test_timeout_s` | 600 | Seconds a test run's process may take. The runner kills the process tree at the cap and records the run as `timed out`. It bounds the test process, not the tool call. A value that is not a positive whole number reads as 600 |
+| `full_target` | empty | What a full run puts in `{target}`, such as `tests`. A full run never runs with an empty target: when the full command contains `{target}` and this is empty, `tests_run(scope="full")` refuses, unless the call passes a target |
+| `allowed_skips` | `[]` | Texts that mark a skip as an environment skip the host expects. A skip whose pytest `-rs` line (`SKIPPED [n] <path>:<line>: <reason>`), or `-v` line, contains one of them counts as clean. Every other skip fails the run |
+| `slow_tests` | `[]` | pytest node ids or path prefixes that run only when a brief asks: the ledger appends `--deselect <id>` for each to a pytest command, and `tests_run(include_slow=true)` leaves them in. Another stack runs them every time |
 | `build_command`, `lint_command` | empty | Optional; the Coder's shell gate allows them, and the Driver's allows `build_command` only |
+| `commands` | empty | Named host commands outside test, build, and lint, such as the rebuild of a derived file. Each entry has `name`, `run`, `cwd` (default `.`), and `interpreter`; an entry with no `name` or `run` is dropped. The Coder's and the Manager's shell gates allow each exactly as `cd <cwd> && <interpreter> <run>`, or `<interpreter> <run>` when `cwd` is `.`. A failing `tests_run` whose output names a command's `name` or `run` lists that command in its result's `commands`. See "pre_shell" in [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md) |
 | `memory.headroom_mb` | 1500 | Megabytes of free memory the ledger keeps. `agent_spawn` queues a session whose role's estimate would take free memory below it, the watchdog starts it once memory frees, and a parked agent's resume follows the same rule. Empty admits every spawn. See "Memory" in [05-sessions.md](05-sessions.md) |
 | `memory.park_idle_parents` | `true` | Under memory pressure, the watchdog stops an idle Manager or Lead whose children still work and resumes it when a wake-up is owed to it. `false` leaves idle parents to the daemon |
-| `parallelism_cap` | empty | No limit when empty; also counts other swarms' live sessions on the machine |
+| `parallelism_cap` | empty | The most sessions at once: the run's live agents plus other swarms' running sessions on the machine. Empty sets it from total memory, half of it at 600 MB a session and at least 4; `0` turns it off. See "Parallelism" in [05-sessions.md](05-sessions.md) |
 | `time_budget_minutes` | empty | Advisory minutes for the run. Each wake-up and watchdog line for the Oracle or a Manager ends with `elapsed <n>s / <budget>s`, or `elapsed <n>s` when empty. A value that is not a positive whole number reads as empty. See "Time signal" in [05-sessions.md](05-sessions.md) |
 | `base_branch` | empty | `repo_check` tries `main`, then `master` |
 | `effort.<role>` | `medium` for every role | `--effort <level>` for that role's sessions. A settings file with no `effort` key gets `medium` for every role; a role left empty runs at its model's default. A brief's own `effort` overrides it |
 | `prompt_cache_ttl.<role>` | `5m` for the Coder, empty for the others | `promptCacheTtl` (`"5m"` or `"1h"`) for that role's sessions |
 | `role_parallelism_cap.<role>` | empty | Cap on that role's own live sessions in the run |
-| `notify` | `[os, push]` | How the user hears that the Driver finished or hit an error, or that an issue ended round 3 below the floor. `os`: the ledger server shows a desktop notification. `push`: the Oracle owes a `PushNotification` call. `[]` or `""` turns both off; a single value reads as a one-item list; unknown values are dropped; an unset key, or `notify:` with no value, keeps both. See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md) |
+| `permission_mode.<role>` | empty for every role | `--permission-mode <mode>` for that role's sessions. Empty inherits the user's `permissions.defaultMode`; an unknown value reads as empty. See "Permission mode" above |
+| `notify` | `[os, push]` | How the user hears that the Driver finished or hit an error, that an issue ended round 3 below the floor, that the run paused or resumed, that a session or the Oracle waits on the user (`needs_user`), or that the run stalled (`run_stalled`). `os`: the ledger server shows a desktop notification. `push`: the Oracle owes a `PushNotification` call. `[]` or `""` turns both off; a single value reads as a one-item list; unknown values are dropped; an unset key, or `notify:` with no value, keeps both. See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md) |
 | `max_workers` | 8 | Worker processes for the ledger server's tool calls, and as many again for its hooks. `0` runs every call in the server process, one at a time. A negative value reads as `0`; a value that is not a whole number reads as 8. The server reads it at start. See [06-ledger-server.md](06-ledger-server.md) |
 
 `-p no:cacheprovider` keeps parallel pytest runs from contending on `.pytest_cache`.
+
+A Coder's shell gate allows only a command that starts with `test_command`,
+`build_command`, or `lint_command`, read-only git, and the host commands the settings
+name in `commands`; see `pre_shell` in
+[07-hooks-and-enforcement.md](07-hooks-and-enforcement.md). Any other step the work
+needs, such as an export, edit, and build loop over data files, goes in `commands`
+under its own name, not behind `build_command`.
 
 ## Plugin features
 

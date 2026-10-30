@@ -5,6 +5,8 @@ CREATE TABLE IF NOT EXISTS runs (
     plugin_version TEXT,
     settings_json TEXT,
     outcome TEXT,
+    -- Set by run_close: 'oracle' or 'launcher'. A closed run's state is 'closed'.
+    closed_by TEXT,
     -- The Oracle's most recent repo_check result and the branch repo_branch_create made.
     repo_check_json TEXT,
     repo_checked_at TEXT,
@@ -13,7 +15,12 @@ CREATE TABLE IF NOT EXISTS runs (
     ended_at TEXT,
     watch_heartbeat_at TEXT,
     watch_expires_at TEXT,
-    watch_owner TEXT
+    watch_owner TEXT,
+    -- Set by a pause: when it began, the pauses.CHECKS name the watchdog tries on its timer
+    -- to resume the run by itself, and the last time the user was notified about it.
+    paused_at TEXT,
+    pause_check TEXT,
+    reminded_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS phases (
@@ -60,6 +67,9 @@ CREATE TABLE IF NOT EXISTS files (
     -- Set by hook 7 after a Coder's edit. handoff_submit refuses a self review
     -- older than this, so a stale review can never wave through a later edit.
     stale_since TEXT,
+    -- Set for a generated file claimed as a product of its source file: it has the source's
+    -- owner, rides the source's handoff, and takes the source's state.
+    source_file_id INTEGER REFERENCES files (file_id) ON DELETE RESTRICT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -101,9 +111,15 @@ CREATE TABLE IF NOT EXISTS agents (
     -- re-keys the agent to that id.
     resume_started_at TEXT,
     -- Set while the agent is live but its session is not running: the daemon retired it, or
-    -- the ledger stopped an idle parent under memory pressure. A parked agent keeps its state.
+    -- the ledger stopped an idle parent under memory pressure. Parking sets state to 'parked'
+    -- and keeps the state it had in state_before_park; unparking puts that state back.
     parked_at TEXT,
-    park_reason TEXT
+    park_reason TEXT,
+    state_before_park TEXT,
+    -- The session's process, as the watchdog last saw it running. A release stops the processes
+    -- its tool shells started, even after the session itself is gone.
+    session_pid INTEGER,
+    session_pid_created INTEGER
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_name_live
@@ -127,6 +143,9 @@ CREATE TABLE IF NOT EXISTS briefs (
     -- The public contract of the child's file or module. A dependent's brief needs one on
     -- each dependency's latest brief.
     contract TEXT,
+    -- The ended agent this brief's child replaces. brief_ack moves that agent's live children
+    -- and briefs to the child, as it does for an ended agent of the same name.
+    replaces_agent_id TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
     -- Set by the pre_ledger hook when the child's own session calls brief_get.
     last_read_by_child_at TEXT,
     acked_by_agent_id TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
@@ -205,6 +224,8 @@ CREATE TABLE IF NOT EXISTS change_requests (
     completed_at TEXT,
     completion_notes TEXT,
     evidence_test_run_id INTEGER REFERENCES test_runs (test_run_id) ON DELETE RESTRICT,
+    -- For a file with no test_path: the file's handoff submitted after acceptance.
+    evidence_handoff_id INTEGER REFERENCES handoffs (handoff_id) ON DELETE RESTRICT,
     verified_at TEXT,
     verify_notes TEXT,
     decided_at TEXT,
@@ -226,8 +247,24 @@ CREATE TABLE IF NOT EXISTS test_runs (
     -- The working tree's state when the run started, and the earlier run a reuse copies.
     fingerprint TEXT,
     reused_from INTEGER REFERENCES test_runs (test_run_id) ON DELETE RESTRICT,
+    -- running until the runner process records it; then done, stale (the working tree
+    -- changed during a full run), or abandoned (the runner died before it recorded).
+    state TEXT NOT NULL DEFAULT 'done',
+    reason TEXT,
+    errors INTEGER,
+    -- Skips that matched the settings' allowed_skips, which count as clean.
+    allowed_skipped INTEGER NOT NULL DEFAULT 0,
+    skip_patterns_json TEXT,
+    claimed_json TEXT,
+    timeout_s INTEGER,
+    runner_pid INTEGER,
+    duration_ms INTEGER,
+    finished_at TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+
+CREATE INDEX IF NOT EXISTS idx_test_runs_running
+    ON test_runs (run_id) WHERE state = 'running';
 
 CREATE TABLE IF NOT EXISTS guidelines (
     guideline_id INTEGER PRIMARY KEY,
@@ -279,6 +316,8 @@ CREATE TABLE IF NOT EXISTS versions (
     -- Path to the human-readable file copy, relative to the records folder.
     -- The BLOB above is authoritative; this is what version_restore reads.
     stored_path TEXT,
+    -- 1 when the version records the file's deletion: content is empty, stored_path NULL.
+    deleted INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -331,6 +370,8 @@ CREATE TABLE IF NOT EXISTS deferrals (
     issue_ids_json TEXT,
     -- For a prd deferral: the user_chat directive the decision rests on.
     directive_id INTEGER REFERENCES directives (directive_id) ON DELETE RESTRICT,
+    -- For file_accept_incomplete: the test run ids that cover the file, as a JSON list.
+    evidence_json TEXT,
     state TEXT NOT NULL DEFAULT 'open',
     decided_by TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
     decision_reason TEXT,
@@ -520,8 +561,9 @@ CREATE TABLE IF NOT EXISTS notifications (
     -- done, warning, or error.
     kind TEXT NOT NULL,
     -- One row per event: drive_done:<request_id>, directive:<directive_id>,
-    -- drive_unavailable:<directive_id>, or issue:<issue_id> for an issue that ended its
-    -- last round below the floor.
+    -- drive_unavailable:<directive_id>, issue:<issue_id> for an issue that ended its
+    -- last round below the floor, pause:<event_id>, needs_user:<directive_id>,
+    -- resumed:<event_id>, or oracle_unreachable:<directive_id>.
     event_key TEXT NOT NULL,
     message TEXT NOT NULL,
     -- 1 when the settings' notify list holds push: the run's Oracle owes a PushNotification.
@@ -575,4 +617,16 @@ CREATE TABLE IF NOT EXISTS memory_estimates (
     mean_mb INTEGER NOT NULL,
     samples INTEGER NOT NULL,
     updated_at TEXT NOT NULL
+);
+
+-- The processes a release found under the released agent's session: the session's own
+-- process and every process its tool shells started. The watchdog reports one still running.
+CREATE TABLE IF NOT EXISTS released_processes (
+    agent_id TEXT NOT NULL,
+    pid INTEGER NOT NULL,
+    created INTEGER,
+    name TEXT,
+    is_session INTEGER NOT NULL DEFAULT 0,
+    recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (agent_id, pid)
 );

@@ -3,6 +3,12 @@
 - **Mod tests on Linux.** `hooks/register.test.ts` builds Windows-style host paths, so 15 of
   its 18 tests fail on Ubuntu and CI skips `claude plugin test .`. Make the paths
   platform-neutral, then add the command to the `validate` job in `ci.yml`.
+- **Asynchronous test runs, live.** Built and unit-tested, including a real detached
+  runner that records its own row. No live run has shown a full suite of 25 minutes or
+  more finish under the runner while role sessions come and go, nor a recorded result
+  reach an idle `--bg` session through the mod's `self_owed` poll and `$.prompt.submit`.
+  Replay run A's saved ledger and run a `textstats` smoke run with a slow full command
+  to confirm both.
 - **macOS.** The code has POSIX branches, but no live run has happened on a Mac. Run one
   smoke test there.
 - **Watchdog rescue of a dropped API call.** The idle-stall check is built to catch a
@@ -63,9 +69,30 @@
   with the reason from `daemon.log`, parked agents resumed for their wake-ups, and idle
   parents parked on purpose. It must also confirm where a background session's pid comes
   from (`~/.claude/sessions/<pid>.json`), which the resident-memory samples need.
+- **Report the `~/.claude.json` corruption upstream.** File a Claude Code issue with the
+  2026-10-28 evidence: the parse errors from 07:49 UTC, the `.claude.json.corrupted.*`
+  backups at 08:25, 08:44, and 08:55 UTC, and the file parsing again by about 14:30 UTC
+  with no manual restore. See "An unreadable ~/.claude.json" in
+  [05-sessions.md](05-sessions.md). The retry and the pause are built; the cause is
+  Claude Code's.
+- **Process-tree release, live.** Built and unit-tested with a faked process table. A
+  live run must show that a background session's pid in `~/.claude/sessions/<pid>.json`
+  is the process whose children are the Bash and PowerShell tools' shells, that a
+  release stops a long `pytest` a Coder started, and that no shared MCP server stops.
+- **Machine-wide admission, live.** Two runs on one machine must show each run's
+  spawns queued against the other's starting sessions, with no low-memory retirements.
+- **Config retry, live.** No live run has shown the retry riding out a truncated
+  `~/.claude.json`, or the mod's `session.send` refusal text for one; the mod matches
+  "JSON Parse error" and "`.claude.json` is corrupted".
 - **A wake-up during a deliberate park.** A wake-up sent between the watchdog's decision
   to park an idle parent and its `claude stop` can be lost. The `wake_unsent` finding
   reports it after `unsent_wakeup_minutes`.
+- **Closing a run, live.** `run_close`, `ledger.py close`, `file_accept_incomplete`,
+  `file_delete`, product claims, and the `commands` shell rule are built and
+  unit-tested against a faked CLI. No live run has used them. A live run should show
+  `ledger.py close` stopping every role session and the server exiting after
+  `idle_exit_minutes`, and a Coder's `git rm` and a Manager's named host command
+  passing the shell gate.
 - **Other platforms.** An exploration of running a Coder on a non-Claude CLI through
   ide-agent-tabs, not a build. The plan is `plans/other-platforms.md`.
 - **The Oracle's wake of a waiting agent.** `pre_send_message` lets the Oracle wake any
@@ -79,4 +106,29 @@ Each item below is marked **(needs implementation)** in its document.
 
 - **The device-queue broker** ([05-sessions.md](05-sessions.md)). Needs a new plan on
   the mod's delivery path.
+- **Answering a permission prompt in the run panel**
+  ([17-run-panel.md](17-run-panel.md)). A `tool.check` hook in each role session would hold
+  an `ask` verdict on a long poll to the ledger until the panel answers, and fall back
+  to Claude Code's prompt at its own deadline. It needs a `permission_request` table, a
+  long-poll route, the panel's Allow and Deny buttons, and a watchdog check of open
+  requests, since a session held by the hook does not show as waiting.
 - **Run panel payload.** The panel reads every brief on each 5-second refresh, about 240 KB for a run of 100 agents. Fetch a brief only when its task opens, and read the snapshot over the ledger server's HTTP route while it runs.
+- **Waiting sessions, live.** The `needs_user` finding, its transcript request text, and
+  its notification are unit-tested against a faked `claude agents --json`. A live run
+  should show a role session at a permission prompt and a background Oracle at an
+  `AskUserQuestion` each reported within one watchdog interval, with an OS notification.
+- **Write denies before the prompt, live.** The mod's `tool.call` gate runs before Claude
+  Code's permission check by the mod API's documentation. A live Coder in
+  `bypassPermissions` should be denied a `Write` under `.claude/scratch/` with the
+  scratch-helper reason and no prompt in agent view.
+- **`pre_ask`, live.** It reads `kind: "background"` from `claude agents --json`. A live
+  background Oracle should be denied `AskUserQuestion` and call `user_ask`; an
+  interactive Oracle should still be allowed the dialog.
+- **A running Oracle with no listener.** When the Oracle's session runs but is not
+  `busy`, the watchdog cannot deliver a finding to it: `claude --resume` would start a
+  second copy, and the CLI has no command that sends input. It notifies the user
+  instead. A live run should show how often this happens and whether a mod-side
+  delivery can wake the Oracle.
+- **Clear-check resume, live.** `config_parses` is unit-tested. A live run should show a
+  run paused on a corrupt `~/.claude.json` resume by itself within one watchdog interval
+  of the file parsing again, and the Oracle continue from the watchdog directive.

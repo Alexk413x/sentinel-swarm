@@ -12,6 +12,7 @@ from contextlib import suppress
 from pathlib import Path
 
 from .identity import LedgerError
+from .paths import claude_json_path, config_dir
 
 CLAUDE_VAR = "SENTINEL_SWARM_CLAUDE"
 DEV_CHANNELS_VAR = "CLAUDE_DEV_CHANNELS"
@@ -45,9 +46,18 @@ _LABELS = ("agents", "plugin", "stop", "--resume", "--bg")
 # still runs and takes messages. Resuming it with --resume starts a second session.
 _DEAD = frozenset({"stopped", "exited", "crashed", "failed", "killed", "dead", "completed"})
 _TIMEOUT_S = 60.0
+# Many sessions starting and stopping at once can leave ~/.claude.json truncated for a while;
+# every claude command fails to read it until a later write completes it.
+_CONFIG_PARSE = re.compile(r"JSON Parse error|\.claude\.json\S*\s+is\s+corrupt", re.IGNORECASE)
+CONFIG_RETRY_DELAYS_S = (1.0, 2.0, 4.0, 8.0)
+CONFIG_PAUSE = "~/.claude.json does not parse"
 _SPAWN_WAIT_S = 15.0
 _RESUME_WAIT_S = 15.0
 _POLL_S = 0.5
+
+
+class ConfigParseError(LedgerError):
+    pass
 
 
 def child_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -99,6 +109,70 @@ def _run(args: list[str], cwd: Path | None = None) -> str:
     return stdout
 
 
+def is_config_failure(exc: BaseException) -> bool:
+    return _CONFIG_PARSE.search(str(exc)) is not None
+
+
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def _run_retrying(args: list[str], cwd: Path | None = None) -> str:
+    tries = 0
+    for delay in (*CONFIG_RETRY_DELAYS_S, None):
+        try:
+            return _run(args, cwd=cwd)
+        except LedgerError as exc:
+            if not is_config_failure(exc):
+                raise
+            tries += 1
+            if delay is None:
+                waited = sum(CONFIG_RETRY_DELAYS_S)
+                raise ConfigParseError(f"{exc} (tried {tries} times over {waited:.0f}s)") from exc
+            _sleep(delay)
+    raise AssertionError("unreachable")
+
+
+def claude_json_problem() -> str | None:
+    try:
+        json.loads(claude_json_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        return str(exc)
+    return None
+
+
+def newest_parsing_backup() -> Path | None:
+    folder = config_dir() / "backups"
+    try:
+        candidates = [
+            p for p in folder.glob(".claude.json*") if p.is_file() and "corrupt" not in p.name
+        ]
+        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return None
+    for path in candidates:
+        with suppress(OSError, ValueError):
+            json.loads(path.read_text(encoding="utf-8"))
+            return path
+    return None
+
+
+def config_pause_reason(detail: str) -> str:
+    backup = newest_parsing_backup()
+    target = claude_json_path()
+    fix = (
+        f"The newest backup that parses is {backup}: copy it over {target}"
+        if backup is not None
+        else f"No backup in {config_dir() / 'backups'} parses: repair {target} by hand"
+    )
+    return (
+        f"{CONFIG_PAUSE}, so the claude command fails: {detail}. {fix}, or wait for Claude "
+        "Code to rewrite it"
+    )
+
+
 def plugin_load_problem(repo: Path, name: str = "sentinel-swarm") -> str | None:
     try:
         output = _strip_ansi(_run(["plugin", "list"], cwd=repo))
@@ -134,8 +208,8 @@ def parse_bg_id(output: str) -> str | None:
     return match.group(1) if match else None
 
 
-def list_sessions() -> list[dict]:
-    raw = _run(["agents", "--json"])
+def list_sessions(*, retry: bool = False) -> list[dict]:
+    raw = (_run_retrying if retry else _run)(["agents", "--json"])
     try:
         data = json.loads(_strip_ansi(raw) or "[]")
     except json.JSONDecodeError as exc:
@@ -167,15 +241,16 @@ def live_names(sessions: list[dict]) -> set[str]:
 
 
 def spawn(prompt: str, name: str, options: list[str], cwd: Path) -> tuple[str, str]:
-    output = _run([prompt, "--bg", "--name", name, *options, *dev_channel_args()], cwd=cwd)
+    output = _run_retrying([prompt, "--bg", "--name", name, *options, *dev_channel_args()], cwd=cwd)
     bg_id = parse_bg_id(output)
     if bg_id is None:
         raise LedgerError(f"claude --bg printed no background id: {_strip_ansi(output).strip()!r}")
     deadline = time.monotonic() + _SPAWN_WAIT_S
     while True:
-        entry = next((s for s in list_sessions() if s.get("id") == bg_id), None)
-        if entry is not None and entry.get("sessionId"):
-            return bg_id, str(entry["sessionId"])
+        with suppress(LedgerError):
+            entry = next((s for s in list_sessions() if s.get("id") == bg_id), None)
+            if entry is not None and entry.get("sessionId"):
+                return bg_id, str(entry["sessionId"])
         if time.monotonic() >= deadline:
             break
         time.sleep(_POLL_S)
@@ -213,7 +288,7 @@ def wait_for_resumed(bg_id: str | None, name: str | None) -> str | None:
 
 
 def stop(bg_id: str) -> None:
-    _run(["stop", bg_id])
+    _run_retrying(["stop", bg_id])
 
 
 def resume(
@@ -227,4 +302,4 @@ def resume(
     # the session comes back under a generated name without its MCP config.
     named = ["--name", name] if name else []
     args = ["--resume", session_id, "--bg", message, *named, *options, *dev_channel_args()]
-    return parse_bg_id(_run(args, cwd=cwd))
+    return parse_bg_id(_run_retrying(args, cwd=cwd))

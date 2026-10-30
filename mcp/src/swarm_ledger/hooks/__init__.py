@@ -9,6 +9,7 @@ from . import events
 HANDLERS = {
     "session_start": events.handle_session_start,
     "pre_agent": events.handle_pre_agent,
+    "pre_ask": events.handle_pre_ask,
     "pre_write": events.handle_pre_write,
     "pre_shell": events.handle_pre_shell,
     "pre_monitor": events.handle_pre_monitor,
@@ -23,6 +24,7 @@ HANDLERS = {
     "session_end": events.handle_session_end,
     "owed": events.handle_owed,
     "wake_sent": events.handle_wake_sent,
+    "self_owed": events.handle_self_owed,
     "inbox_take": events.handle_inbox_take,
     "inbox_ack": events.handle_inbox_ack,
     "inbox_release": events.handle_inbox_release,
@@ -31,6 +33,8 @@ HANDLERS = {
 # A resumed session's first hooks: only these may afford a claude agents --json call to match
 # an unknown session id to the agent being resumed.
 LISTING_EVENTS = frozenset({"session_start", "pre_ledger"})
+# A session's last hooks can arrive after the daemon retired it, so they do not unpark it.
+CLOSING_EVENTS = frozenset({"stop", "session_end"})
 
 
 def run_event(event_name: str, raw: str, root: Path | None = None) -> tuple[str, str]:
@@ -46,7 +50,9 @@ def run_event(event_name: str, raw: str, root: Path | None = None) -> tuple[str,
         try:
             if isinstance(data, dict) and not data.get("agent_id"):
                 ledger.adopt_session(
-                    data.get("session_id"), use_listing=event_name in LISTING_EVENTS
+                    data.get("session_id"),
+                    use_listing=event_name in LISTING_EVENTS,
+                    unpark=event_name not in CLOSING_EVENTS,
                 )
             result = handler(ledger, data)
         finally:

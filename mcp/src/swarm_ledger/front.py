@@ -76,7 +76,7 @@ def call_method(tool: str | None, agent_id: str | None, method: str, kwargs: dic
         raise
     except Exception as exc:
         raise CallError(error_text(exc)) from exc
-    if method == "run_finish" and on_run_finish is not None:
+    if method in ("run_finish", "run_close") and on_run_finish is not None:
         on_run_finish(_oracle_of(result["run_id"]))
     return result
 
