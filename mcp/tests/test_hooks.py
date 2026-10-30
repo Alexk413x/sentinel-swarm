@@ -21,6 +21,7 @@ from helpers import (
     spawn_coder,
 )
 
+from swarm_ledger import notify
 from swarm_ledger.clock import stamp, utcnow
 from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import HANDLERS as _HANDLERS
@@ -172,6 +173,86 @@ def test_pre_write_allows_after_override_grant_and_consumes_it_once(ledger: Ledg
     third = events.handle_pre_write(ledger, data)
     assert third is not None
     assert third["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def _reason(result: dict | None) -> str:
+    assert result is not None
+    assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+    return result["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [".claude/scratch/stitched/test_emit_l4.py", "scratch_helper.py", "../outside.py"],
+)
+def test_a_coders_scratch_write_is_denied_and_names_its_test_file(ledger: Ledger, rel: str) -> None:
+    ctx = _bootstrap(ledger)
+    coder = _spawn_coder(ledger, ctx, "scr", "src/mine.py", "tests/test_mine.py")
+    data = {
+        "agent_id": coder["agent_id"],
+        "tool_input": {"file_path": str(ledger.repo_root / rel)},
+    }
+
+    reason = _reason(events.handle_pre_write(ledger, data))
+
+    assert "put a scratch helper or a throwaway check in your test file tests/test_mine.py" in (
+        reason
+    )
+    assert ".claude/ included" in reason
+
+
+def test_a_coder_in_bypass_permissions_is_still_refused_outside_its_claim_and_gate(
+    ledger: Ledger,
+) -> None:
+    ctx = _bootstrap(ledger)
+    coder = _spawn_coder(ledger, ctx, "byp", "src/mine.py", "tests/test_mine.py")
+    base = {"agent_id": coder["agent_id"], "permission_mode": "bypassPermissions"}
+
+    write = {**base, "tool_input": {"file_path": str(ledger.repo_root / "src" / "other.py")}}
+    shell = {**base, "tool_input": {"command": "rm -rf src"}}
+
+    assert "you own src/mine.py and tests/test_mine.py" in _reason(
+        events.handle_pre_write(ledger, write)
+    )
+    assert "command not allowed" in _reason(events.handle_pre_shell(ledger, shell))
+
+
+def test_a_swarm_session_the_ledger_does_not_know_writes_nothing(ledger: Ledger) -> None:
+    _bootstrap(ledger)
+    data = {
+        "session_id": "sess-unknown",
+        "agent_type": "swarm-coder",
+        "tool_input": {"file_path": str(ledger.repo_root / ".claude" / "scratch" / "x.py")},
+    }
+
+    assert "not a live agent of the run" in _reason(events.handle_pre_write(ledger, data))
+    assert events.handle_pre_write(ledger, {**data, "agent_type": "general-purpose"}) is None
+
+
+# -- pre_ask ----------------------------------------------------------------------------
+
+
+def test_pre_ask_denies_ask_user_question_in_a_background_session(
+    ledger: Ledger, claude_sessions: list[dict]
+) -> None:
+    ctx = _bootstrap(ledger)
+    claude_sessions.append({"sessionId": ctx["oracle_id"], "kind": "background", "pid": 1})
+    data = {"session_id": ctx["oracle_id"], "tool_input": {"questions": []}}
+
+    assert "user_ask(question)" in _reason(events.handle_pre_ask(ledger, data))
+
+    claude_sessions[0]["kind"] = "interactive"
+    assert events.handle_pre_ask(ledger, data) is None
+
+
+def test_pre_ask_passes_a_session_outside_the_swarm(
+    ledger: Ledger, claude_sessions: list[dict]
+) -> None:
+    _bootstrap(ledger)
+    claude_sessions.append({"sessionId": "sess-user", "kind": "background", "pid": 1})
+
+    assert events.handle_pre_ask(ledger, {"session_id": "sess-user"}) is None
+    assert "pre_ask" in _HANDLERS
 
 
 # -- pre_shell --------------------------------------------------------------------------
@@ -829,6 +910,11 @@ def test_stop_allows_when_the_run_is_paused(ledger: Ledger) -> None:
     for agent_id in (coder["agent_id"], ctx["lead"]["agent_id"], ctx["manager"]["agent_id"]):
         go_idle(ledger, agent_id)
     ledger.run_pause("oracle", ctx["oracle_id"], "waiting on the user")
+    owed = events.handle_stop(ledger, {"agent_id": ctx["oracle_id"]})
+    assert owed is not None
+    assert 'PushNotification(message="Run paused: waiting on the user.' in owed["reason"]
+
+    notify.mark_sent(ledger.conn, ctx["run_id"], "")
     assert events.handle_stop(ledger, {"agent_id": ctx["oracle_id"]}) is None
 
 
@@ -842,6 +928,10 @@ def test_stop_allows_while_a_directive_waits_on_the_user_until_the_reply(ledger:
     ledger.directive_resolve(
         "oracle", ctx["oracle_id"], asked["directive_id"], "needs_user", "Keep the flags?"
     )
+    owed = events.handle_stop(ledger, {"agent_id": ctx["oracle_id"]})
+    assert owed is not None
+    assert "The swarm needs you (directive 1): Keep the flags?" in owed["reason"]
+    notify.mark_sent(ledger.conn, ctx["run_id"], "")
     assert events.handle_stop(ledger, {"agent_id": ctx["oracle_id"]}) is None
 
     ledger.directive_submit("user_chat", "alex", "Keep them.", reply_to=asked["directive_id"])

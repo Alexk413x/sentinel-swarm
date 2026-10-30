@@ -138,10 +138,14 @@
   Managers and the Driver.
 - **Done when:** every phase is approved, the full suite passes, the evidence is on
   file, and `run_finish` accepts the run.
-- **Tools:** Read, Grep, Glob, AskUserQuestion, ToolSearch, WebSearch, WebFetch,
+- **Tools:** Read, Grep, Glob, AskUserQuestion (in an interactive session only;
+  `pre_ask` denies it in a background session), ToolSearch, WebSearch, WebFetch,
   SendMessage, Monitor (the watchdog call only), PushNotification (the notifications
-  the ledger records for the user), its ledger tools, and the
+  the ledger records for the user), its ledger tools, `user_ask` among them, and the
   codebase-kg read tools. No write tool and no shell.
+- **Asks the user:** in a background run, with `user_ask(question)`, which posts an
+  open `needs_user` directive and notifies the user, and keeps every part of the run
+  that does not need the answer moving.
 
 ### Manager
 

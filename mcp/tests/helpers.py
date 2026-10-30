@@ -80,17 +80,8 @@ def register_plugins(plugin_ids: Iterable[str]) -> None:
     write_registry(plugins)
 
 
-def role_template(
-    *, tools: str, permission_mode: str = "acceptEdits", codebase_kg: bool = True
-) -> str:
-    text = (
-        "---\n"
-        "name: swarm-{role}\n"
-        "description: The {role}.\n"
-        "model: sonnet\n"
-        f"permissionMode: {permission_mode}\n"
-        f"tools: {tools}\n"
-    )
+def role_template(*, tools: str, codebase_kg: bool = True) -> str:
+    text = f"---\nname: swarm-{{role}}\ndescription: The {{role}}.\nmodel: sonnet\ntools: {tools}\n"
     if codebase_kg:
         text += (
             "mcpServers:\n"

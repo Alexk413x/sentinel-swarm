@@ -63,6 +63,9 @@ watchdog:
   unsent_wakeup_minutes: 5
   # A spawn still queued for memory this many minutes after agent_spawn is reported.
   queued_spawn_minutes: 10
+  # While the run is paused or a question waits on the user, the ledger server shows the
+  # OS notification again every this many minutes. 0 shows it once.
+  remind_minutes: 30
 
 memory:
   # Megabytes of free memory the ledger keeps. agent_spawn queues a session whose role's
@@ -118,6 +121,20 @@ prompt_cache_ttl:
   manager:
   lead:
   coder: 5m
+  driver:
+
+# The permission mode each role's session starts in: default, acceptEdits, plan, auto,
+# dontAsk, or bypassPermissions. Leave a role empty to inherit your own
+# permissions.defaultMode. A Coder that would inherit default starts in acceptEdits, since a
+# background session in default stalls on its first file write. When policy sets
+# permissions.disableBypassPermissionsMode, a role that would start in bypassPermissions
+# starts in acceptEdits. The swarm's hooks gate writes, the shell, and SendMessage in every
+# mode.
+permission_mode:
+  oracle:
+  manager:
+  lead:
+  coder:
   driver:
 
 # Left empty for every role; agent_spawn also caps that role's own live sessions in the run,

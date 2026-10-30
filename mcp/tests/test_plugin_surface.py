@@ -106,22 +106,22 @@ def test_template_name_and_description(repo_root: Path, role: str):
 
 
 @pytest.mark.parametrize(
-    "role,color,model,mode",
+    "role,color,model",
     [
-        ("oracle", "cyan", "opus", "default"),
-        ("manager", "green", "opus", "default"),
-        ("lead", "purple", "sonnet", "default"),
-        ("coder", "orange", "sonnet", "acceptEdits"),
-        ("driver", "yellow", "sonnet", "default"),
+        ("oracle", "cyan", "opus"),
+        ("manager", "green", "opus"),
+        ("lead", "purple", "sonnet"),
+        ("coder", "orange", "sonnet"),
+        ("driver", "yellow", "sonnet"),
     ],
 )
-def test_template_color_model_and_permission_mode(
-    repo_root: Path, role: str, color: str, model: str, mode: str
+def test_template_color_model_and_no_permission_mode(
+    repo_root: Path, role: str, color: str, model: str
 ):
     fields, _ = _split(_template(repo_root, role))
     assert fields["color"] == color
     assert fields["model"] == model
-    assert fields["permissionMode"] == mode
+    assert "permissionMode" not in fields
 
 
 @pytest.mark.parametrize("role", ROLES)

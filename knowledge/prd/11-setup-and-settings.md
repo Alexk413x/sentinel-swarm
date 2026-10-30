@@ -73,7 +73,11 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
   file setup keeps the user's frontmatter, adds any key the template has that the file
   lacks, and replaces the prompt body. It also strips any ledger command hook
   (`hook.py hook <event>`) from the file's frontmatter, keeps any hook of the user's own,
-  and reports "removed the ledger command hooks the mod runs: <events>".
+  and reports "removed the ledger command hooks the mod runs: <events>". It removes a
+  `permissionMode` key, since the `permission_mode` setting decides the mode, and
+  reports "removed permissionMode: <value> (set permission_mode.<role> in
+  .claude/sentinel-swarm.local.md to choose a mode)". The templates carry no
+  `permissionMode`.
   When the file's one-line `tools` value still lists the whole server,
   `mcp__swarm-ledger`, setup puts the template's `mcp__swarm-ledger__<tool>` names in
   its place and keeps every other tool the file lists. A `tools` value that already
@@ -101,6 +105,10 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
 - Adds `.sentinel-swarm/`, `.claude/agents/swarm-*.md`, `.claude/codebase-kg.local.md`,
   and `.claude/sentinel-swarm.local.md` to `.git/info/exclude`, so the settings file the
   setup skill writes stays out of `git status`.
+- Reports the mode each role it wrote starts in, with where the mode comes from, as
+  "swarm-<role> starts in <mode>: <source>". When policy sets
+  `permissions.disableBypassPermissionsMode`, it also says that a role that would start
+  in `bypassPermissions` starts in `acceptEdits`. See "Permission mode" below.
 - Reports whether the repo is trusted, from `~/.claude.json` (or
   `$CLAUDE_CONFIG_DIR/.claude.json`), and prints the command that trusts it.
   `--check-trust` only checks, and exits 1 with the command when the repo is not
@@ -108,6 +116,31 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
 
 The role files take effect in the next session. A session loads agent files once, at
 startup.
+
+## Permission mode
+
+Every role session starts in the user's own permission mode unless the settings file
+names one. On Alex's machine that is `bypassPermissions`. `permissions.start_mode`
+decides each launch's `--permission-mode`, for `agent_spawn`, `agent_resume`, the
+watchdog's Oracle resume, and the launcher:
+
+1. `permission_mode.<role>` in the settings file, when it names a mode Claude Code
+   knows (`default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions`), is
+   passed as the flag.
+2. Otherwise the role inherits: the launcher passes no flag, and the session takes
+   `permissions.defaultMode` from the highest of managed settings,
+   `.claude/settings.local.json`, `.claude/settings.json`, and the user's
+   `settings.json` that sets it, else `default`.
+3. A Coder that would inherit `default` gets `--permission-mode acceptEdits`, because a
+   background session in `default` stalls for good on a file write (see
+   [13-platform-facts.md](13-platform-facts.md)).
+4. When any of those files sets `permissions.disableBypassPermissionsMode: "disable"`,
+   a role that would start in `bypassPermissions` gets `--permission-mode acceptEdits`.
+
+The role file's `permissionMode` is never read; setup removes it. The swarm's limits
+hold in every mode: the write, shell, `SendMessage`, and `AskUserQuestion` gates are
+the mod's `tool.call` hooks, which run before Claude Code's permission check in every
+mode, `bypassPermissions` included. See [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md).
 
 ## Plugin detection
 
@@ -213,7 +246,8 @@ descriptions stay out of every session's context.
 | `effort.<role>` | `medium` for every role | `--effort <level>` for that role's sessions. A settings file with no `effort` key gets `medium` for every role; a role left empty runs at its model's default. A brief's own `effort` overrides it |
 | `prompt_cache_ttl.<role>` | `5m` for the Coder, empty for the others | `promptCacheTtl` (`"5m"` or `"1h"`) for that role's sessions |
 | `role_parallelism_cap.<role>` | empty | Cap on that role's own live sessions in the run |
-| `notify` | `[os, push]` | How the user hears that the Driver finished or hit an error, or that an issue ended round 3 below the floor. `os`: the ledger server shows a desktop notification. `push`: the Oracle owes a `PushNotification` call. `[]` or `""` turns both off; a single value reads as a one-item list; unknown values are dropped; an unset key, or `notify:` with no value, keeps both. See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md) |
+| `permission_mode.<role>` | empty for every role | `--permission-mode <mode>` for that role's sessions. Empty inherits the user's `permissions.defaultMode`; an unknown value reads as empty. See "Permission mode" above |
+| `notify` | `[os, push]` | How the user hears that the Driver finished or hit an error, that an issue ended round 3 below the floor, that the run paused or resumed, that a session or the Oracle waits on the user (`needs_user`), or that the run stalled (`run_stalled`). `os`: the ledger server shows a desktop notification. `push`: the Oracle owes a `PushNotification` call. `[]` or `""` turns both off; a single value reads as a one-item list; unknown values are dropped; an unset key, or `notify:` with no value, keeps both. See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md) |
 | `max_workers` | 8 | Worker processes for the ledger server's tool calls, and as many again for its hooks. `0` runs every call in the server process, one at a time. A negative value reads as `0`; a value that is not a whole number reads as 8. The server reads it at start. See [06-ledger-server.md](06-ledger-server.md) |
 
 `-p no:cacheprovider` keeps parallel pytest runs from contending on `.pytest_cache`.

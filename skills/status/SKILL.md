@@ -33,6 +33,24 @@ if run is None:
     sys.exit("the ledger has no run")
 print(f"run {run['run_id']}: {run['state']} outcome={run['outcome']} started={run['started_at']}")
 
+print("\nwaiting on you")
+waiting = []
+if run["state"] == "paused":
+    why = conn.execute("""SELECT e.reason FROM agent_events e JOIN agents a ON a.agent_id=e.agent_id
+                          WHERE a.run_id=? AND e.to_state='paused' ORDER BY e.event_id DESC LIMIT 1""",
+                       (run["run_id"],)).fetchone()
+    check = f" (resumes by itself: {run['pause_check']})" if run["pause_check"] else ""
+    waiting.append(f"  run paused since {run['paused_at']}: {why['reason'] if why else '?'}{check}")
+for f in q("""SELECT f.detail, f.first_seen_at, a.name FROM watchdog_findings f
+              LEFT JOIN agents a ON a.agent_id=f.agent_id
+              WHERE f.run_id=? AND f.kind='needs_user' AND f.cleared_at IS NULL
+              ORDER BY f.first_seen_at""", run["run_id"]):
+    waiting.append(f"  {f['name']} since {f['first_seen_at']}: {f['detail']}")
+for d in q("""SELECT directive_id, question, body FROM directives WHERE run_id=? AND state='open'
+              AND outcome='needs_user' ORDER BY directive_id""", run["run_id"]):
+    waiting.append(f"  question, directive {d['directive_id']}: {d['question'] or d['body']}")
+print("\n".join(waiting) or "  nothing")
+
 print("\nphases")
 for p in q("SELECT * FROM phases WHERE run_id=? ORDER BY ordinal", run["run_id"]):
     deps = [str(d["depends_on_phase_id"]) for d in
@@ -96,6 +114,13 @@ PY
 ```
 
 ## Reading the output
+
+- The `waiting on you` section comes first. It lists a paused run and its reason, every
+  session the watchdog saw waiting on a permission prompt or a question (`needs_user`
+  findings), and every open question (`needs_user` directives). Answer a session's
+  prompt in its row in agent view. Answer a question in the Oracle's session, or with
+  `python "${CLAUDE_PLUGIN_ROOT}/mcp/launch/ledger.py" directive --reply-to <directive_id>
+  "<answer>"` from the host repo root.
 
 - A file whose `state` is `working` and whose lock names a Coder is being written
   now. `handed_up` means it waits on its Lead. `approved` means the claim is

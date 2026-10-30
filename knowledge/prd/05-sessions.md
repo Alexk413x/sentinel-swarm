@@ -12,10 +12,17 @@ see "Memory" below. It then runs, in the repo root:
 ```
 claude "You are <name>. Read your brief from the swarm ledger and follow it." --bg \
   --name <session name> --agent swarm-<role> --model <brief model> \
-  --permission-mode <file value> --strict-mcp-config --mcp-config <config> \
+  [--permission-mode <mode>] --strict-mcp-config --mcp-config <config> \
   --allowedTools <file tools> --settings '{"worktree":{"bgIsolation":"none"}}'
 ```
 
+- `--permission-mode` comes from the role's `permission_mode` setting, never from the
+  role file. A role with no setting inherits the user's `permissions.defaultMode`, and
+  the launcher passes no flag, except that a Coder that would inherit `default` gets
+  `acceptEdits`, and a role that would start in `bypassPermissions` while policy sets
+  `permissions.disableBypassPermissionsMode` gets `acceptEdits`. See "Permission mode"
+  in [11-setup-and-settings.md](11-setup-and-settings.md). The same rule applies to
+  `agent_resume`, the watchdog's Oracle resume, and the launcher.
 - The prompt goes before the options, because `--allowedTools` takes a space-separated
   list and swallows a prompt that follows it.
 - `<config>` holds the ledger's HTTP URL, the agent file's `mcpServers`, and the a11y

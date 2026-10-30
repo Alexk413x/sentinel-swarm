@@ -60,6 +60,7 @@ const PRE_TOOL_GATES: readonly {
   skip?: (e: object) => boolean
 }[] = [
   { tool: 'Agent', event: 'pre_agent' },
+  { tool: 'AskUserQuestion', event: 'pre_ask' },
   { tool: WRITE_TOOL, event: 'pre_write' },
   { tool: SHELL_TOOL, event: 'pre_shell' },
   { tool: 'Monitor', event: 'pre_monitor' },

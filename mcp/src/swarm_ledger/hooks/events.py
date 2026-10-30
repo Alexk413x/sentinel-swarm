@@ -299,7 +299,12 @@ def handle_pre_write(ledger: Ledger, data: dict) -> dict | None:
 
     caller = _data_caller(ledger, data)
     if caller is None:
-        return None
+        if _role_of(ledger, data) is None:
+            return None
+        return _deny(
+            "this swarm session is not a live agent of the run, so it writes no file. Call "
+            "ledger_info() to see whether the ledger knows it"
+        )
 
     target = rel if rel is not None else raw_path
     _deny_or_override = partial(_deny_unless_overridden, ledger, caller, "write", target)
@@ -308,10 +313,10 @@ def handle_pre_write(ledger: Ledger, data: dict) -> dict | None:
         return _deny_or_override(
             "only a Coder writes project files; file a change request with the owner"
         )
-    if rel is None:
-        return _deny_or_override(f"{raw_path} is outside the repo root")
 
     claim = _claim_row(ledger, caller)
+    if rel is None:
+        return _deny_or_override(f"{raw_path} is outside the repo root. {_scratch_hint(claim)}")
     if rel not in _owned_paths(claim):
         owner = ledger.who_owns(rel)["owner"] or "nobody"
         mine = (
@@ -319,9 +324,21 @@ def handle_pre_write(ledger: Ledger, data: dict) -> dict | None:
             if claim is not None
             else "nothing"
         )
-        return _deny_or_override(f"{rel} is owned by {owner}; you own {mine}")
+        return _deny_or_override(
+            f"{rel} is owned by {owner}; you own {mine}. {_scratch_hint(claim)}"
+        )
 
     return None
+
+
+def _scratch_hint(claim: sqlite3.Row | None) -> str:
+    if claim is None:
+        return "You write only the file and test file your Lead claimed for you."
+    home = claim["test_path"] or claim["path"]
+    return (
+        f"Write no scratch file anywhere else, .claude/ included: put a scratch helper or "
+        f"a throwaway check in your test file {home}, and run it with tests_run"
+    )
 
 
 def _allowed_templates(ledger: Ledger, role: str) -> list[str]:
@@ -370,6 +387,23 @@ def handle_pre_shell(ledger: Ledger, data: dict) -> dict | None:
     if caller["role"] == "coder":
         allowed.append("read-only git (status, diff, log, show, ls-files, branch)")
     return _deny_or_override(f"command not allowed; allowed: {'; '.join(allowed)}")
+
+
+def handle_pre_ask(ledger: Ledger, data: dict) -> dict | None:
+    if _active_run_row(ledger) is None or _role_of(ledger, data) is None:
+        return None
+    session_id = str(data.get("session_id") or "")
+    try:
+        entry = sessions.find_session(sessions.list_sessions(), session_id)
+    except LedgerError:
+        entry = None
+    if entry is None or entry.get("kind") != "background":
+        return None
+    return _deny(
+        "this is a background session, so nobody sees AskUserQuestion and the run would wait "
+        "on it. Ask with user_ask(question), which notifies the user, and keep every part of "
+        "the run that does not need the answer moving"
+    )
 
 
 def _role_of(ledger: Ledger, data: dict) -> str | None:

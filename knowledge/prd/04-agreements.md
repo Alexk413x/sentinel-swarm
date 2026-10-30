@@ -175,7 +175,18 @@ The responsible level:
   value. The report lists each directive with its source and outcome.
 - A `needs_user` outcome keeps the directive open, and its resolution states the
   question for the user. While a directive waits on the user, the Oracle's Stop hook
-  lets the Oracle stop, and the watchdog reports no stall.
+  lets the Oracle stop, and the watchdog reports no `stalled` (it still reports
+  `run_stalled`; see [08-watchdog.md](08-watchdog.md)).
+- Every `needs_user` directive notifies the user once, with the question:
+  `directive_resolve(..., "needs_user", question)` and `user_ask(question)` record a
+  `needs_user:<directive_id>` notification at level warning, "The swarm needs you
+  (directive <id>): <question>", shown and owed like a Driver notification. The
+  watchdog repeats it every `watchdog.remind_minutes` while it stays open.
+- `user_ask(question)` is the Oracle's way to ask the user something no directive
+  carries. It inserts an open directive with source `oracle`, the Oracle as sender, the
+  question as body, resolution, and `question`, and outcome `needs_user`. It refuses an
+  empty question and any role but the Oracle. The user answers with a directive whose
+  `reply_to` names it, or in the Oracle's session.
 - A directive whose `reply_to` names any open directive of the run resolves that
   directive, whatever its outcome, not only a `needs_user` one. The outcome column is
   left as it was, so a `needs_user` question stays readable on the row after the reply
@@ -192,8 +203,9 @@ The responsible level:
 | Only the user can unblock it, and the run can continue afterwards | Notifies the user now, with `run_pause` |
 | An issue ends round 3 below the floor | Notifies the user now: `attempt_record` records the notification, the ledger server shows an OS notification, and the Oracle's Stop hook blocks until the Oracle sends the `PushNotification` it owes. See "Escalation" in [03-scoring-and-review.md](03-scoring-and-review.md). |
 | The Driver finishes, or hits an error | Notifies the user now: the ledger server shows an OS notification itself, and the Oracle's Stop hook blocks until the Oracle sends the `PushNotification` it owes. See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md) |
-| Only the user can answer a directive | Resolves it `needs_user` and asks the user once, in its session. |
-| The watchdog reports a session waiting on a permission prompt | Tells the user which session to open in agent view. |
+| Only the user can answer a directive | Resolves it `needs_user`; the ledger notifies the user with the question. |
+| Only the user can answer a question no directive carries | `user_ask(question)` in a background run, never `AskUserQuestion`; the ledger notifies the user. The Oracle keeps the rest of the run moving. |
+| The watchdog reports a session waiting on the user (`needs_user`) or a stalled run (`run_stalled`) | The ledger has notified the user already. The Oracle keeps the rest of the run moving. |
 | It works, but nobody found better: a shortfall or a signed-off departure | Lists it in the final report |
 
 A pause notification states what the user must fix, and that saying "continue" or

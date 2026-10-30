@@ -497,6 +497,27 @@ tells the user" in [04-agreements.md](04-agreements.md).
   becomes `paused`, the Stop hook lets the Oracle stop once it owes the user no
   `PushNotification` call, and every gate still applies.
   The Oracle tells the user once what to fix.
+- Every whole-run pause notifies the user with its reason, the Oracle's and the
+  watchdog's own alike: `run_pause` records a `pause:<event_id>` notification at level
+  warning, "Run paused: <reason>. Say continue or run /sentinel-swarm:resume to continue
+  it.", shows the OS notification when `notify` includes `os`, and owes the Oracle's
+  `PushNotification` when it includes `push`. While the run stays paused, the watchdog
+  shows the OS notification again every `watchdog.remind_minutes`. See "Reminders" in
+  [08-watchdog.md](08-watchdog.md).
+- **Clear-checks.** A pause can name the check that clears it:
+  `run_pause(reason, clear_check=...)`. The run records the check in
+  `runs.pause_check`, with `runs.paused_at`. The watchdog tries the check on each pass
+  of the paused run, and when it passes, it sets the run back to `active`, records the
+  agent event "the watchdog resumed the run: <check>" from `paused` to `active`, files a
+  `watchdog` directive that tells the Oracle to arm its Monitor again and continue, and
+  notifies the user ("resumed:<paused_at>", level done). `run_pause` refuses a check
+  name it does not know. A paused run with a clear-check keeps the ledger server up past
+  `idle_exit_minutes`. The checks live in `pauses.CHECKS`, one `ClearCheck` each (a
+  name, a label, and a function of the repo root), so a new check is one entry:
+
+  | Check | Passes when |
+  |---|---|
+  | `config_parses` | the config file `~/.claude.json` (under `CLAUDE_CONFIG_DIR` when set) parses as a JSON object |
 - When only some phases are blocked, the Oracle calls `run_pause(reason, phases=[...])`
   instead. The run stays `active`; only the named phases get a `paused_at` and
   `pause_reason`. `agent_spawn` refuses a brief whose `phase_id` names a paused phase.
@@ -505,7 +526,7 @@ tells the user" in [04-agreements.md](04-agreements.md).
   so they neither nag the Oracle nor report a stall over it. `phase_resume(phase_ids)`
   clears the pause on named phases once the blocker is gone.
 - The user's next message, or `/sentinel-swarm:resume`, leads the Oracle to call
-  `run_start`, which sets the run back to `active`. A scoped pause does not touch the
+  `run_start`, which sets the run back to `active` and clears any clear-check. A scoped pause does not touch the
   run's own state, so it never needs `run_start` to clear it; only `phase_resume` does.
 - `run_start` on a live run whose Oracle session is gone binds the Oracle's name to the
   calling session, moves the live children and briefs to it, and returns the run with

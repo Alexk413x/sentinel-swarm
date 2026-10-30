@@ -178,11 +178,14 @@ def run_pause(
     caller: CallerName,
     reason: str,
     phases: list[int] | None = None,
+    clear_check: Literal["config_parses"] | None = None,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Pauses the run, or just the named phases, on a blocker only the user can fix; the Oracle
     calls this. With phases, the run stays active: agent_spawn refuses those phases until
-    phase_resume clears them, and the others keep going."""
+    phase_resume clears them, and the others keep going. A whole-run pause notifies the user
+    with the reason. clear_check names the check the watchdog tries on its timer to resume the
+    run by itself: config_parses, the config file ~/.claude.json parses."""
     ...
 
 
@@ -431,6 +434,16 @@ def directive_resolve(
     Outcomes: applied, scheduled, declined, needs_user. A needs_user directive stays open
     until a directive_submit with reply_to answers it, or the Oracle resolves it again.
     """
+    ...
+
+
+@_tool()
+def user_ask(
+    caller: CallerName, question: str, agent_id: str | None = _STAMPED_AGENT_ID
+) -> dict[str, Any]:
+    """Asks the user a question as an open needs_user directive and notifies the user; the
+    Oracle calls this in place of AskUserQuestion. The answer arrives in directive_inbox as a
+    directive that replies to it."""
     ...
 
 

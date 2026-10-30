@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from helpers import ledger_for, make_host
 
-from swarm_ledger import serve, sessions, wake, watch, watchdog
+from swarm_ledger import notify, serve, sessions, wake, watch, watchdog
 from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import HANDLERS as _HANDLERS
 from swarm_ledger.hooks import events
@@ -198,19 +198,149 @@ def test_a_running_agent_with_no_activity_is_stuck(
     assert _kinds(_scan(ledger, claude, now, stuck_minutes=30)) == []
 
 
-def test_a_session_waiting_on_a_permission_prompt_is_reported_once(
-    ledger: Ledger, claude: FakeClaude, now: datetime
+def _records(path: Path, *records: dict) -> Path:
+    path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+    return path
+
+
+def _tool_use(name: str, tool_input: dict) -> dict:
+    return {
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "toolu_1", "name": name, "input": tool_input}],
+        },
+    }
+
+
+_TOOL_RESULT = {
+    "type": "user",
+    "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1"}]},
+}
+
+
+def test_a_session_waiting_on_a_permission_prompt_needs_the_user(
+    ledger: Ledger, claude: FakeClaude, now: datetime, tmp_path: Path
 ) -> None:
     _run_id(ledger)
-    claude.run(ORACLE, status="waiting", waitingFor="permission prompt")
+    _oracle_running(claude)
     old = now - timedelta(minutes=30)
-    _agent(ledger, "sess-asking", "coder", "working", started=old, heartbeat=old)
+    transcript = _records(
+        tmp_path / "coder.jsonl",
+        _tool_use("Write", {"file_path": ".claude/scratch/stitched/test_emit_l4.py"}),
+    )
+    _agent(
+        ledger, "sess-asking", "coder", "working", started=old, heartbeat=old, transcript=transcript
+    )
     claude.run("sess-asking", status="waiting", waitingFor="permission prompt")
 
     findings = _scan(ledger, claude, now)
 
-    assert _kinds(findings) == [("asking", "waiting_permission")]
+    assert _kinds(findings) == [("asking", "needs_user")]
+    assert findings[0].detail == (
+        "its session host-r1-asking waits on permission prompt: "
+        "Write .claude/scratch/stitched/test_emit_l4.py"
+    )
     assert "open the session host-r1-asking in agent view" in findings[0].next_step
+
+
+def test_an_oracle_waiting_on_its_own_question_needs_the_user(
+    ledger: Ledger, claude: FakeClaude, now: datetime, tmp_path: Path
+) -> None:
+    _run_id(ledger)
+    question = {
+        "questions": [
+            {"question": "Which database?", "options": [{"label": "SQLite"}, {"label": "Postgres"}]}
+        ]
+    }
+    transcript = _records(tmp_path / "oracle.jsonl", _tool_use("AskUserQuestion", question))
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET transcript_path = ? WHERE agent_id = ?", (str(transcript), ORACLE)
+        )
+    claude.run(ORACLE, "host-oracle", status="waiting", waitingFor="input needed")
+
+    findings = _scan(ledger, claude, now)
+
+    assert _kinds(findings) == [("oracle", "needs_user")]
+    assert findings[0].detail.endswith(
+        "waits on input needed: AskUserQuestion: Which database? (options: SQLite, Postgres)"
+    )
+
+
+def test_a_tool_call_that_already_has_its_result_is_not_pending(tmp_path: Path) -> None:
+    transcript = _records(
+        tmp_path / "t.jsonl", _tool_use("Bash", {"command": "pytest"}), _TOOL_RESULT
+    )
+    assert watchdog.pending_request(str(transcript)) is None
+    assert watchdog.pending_request(str(tmp_path / "missing.jsonl")) is None
+    assert watchdog.pending_request(None) is None
+
+
+def _quiet_run(ledger: Ledger, claude: FakeClaude, now: datetime, minutes: int = 20) -> datetime:
+    _run_id(ledger)
+    old = now - timedelta(minutes=minutes)
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE runs SET started_at = ?", (watchdog.stamp(old),))
+        conn.execute("UPDATE agent_events SET at = ?", (watchdog.stamp(old),))
+        conn.execute("UPDATE agents SET state = 'idle'")
+    claude.run(ORACLE, "host-oracle", status="busy")
+    _agent(ledger, "sess-lead-1", "lead", "idle", started=old, heartbeat=old)
+    claude.run("sess-lead-1", status="idle")
+    return old
+
+
+def test_a_run_where_nobody_works_and_nothing_is_owed_is_run_stalled(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _quiet_run(ledger, claude, now)
+
+    findings = [f for f in _scan(ledger, claude, now) if f.kind == "run_stalled"]
+
+    assert _kinds(findings) == [("oracle", "run_stalled")]
+    assert findings[0].detail == (
+        "no agent of the run has worked and no wake-up has been owed for 20 minutes"
+    )
+    assert "run_stalled" not in [f.kind for f in _scan(ledger, claude, now, stuck_minutes=30)]
+
+
+def test_a_waiting_session_does_not_count_as_working_for_run_stalled(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _quiet_run(ledger, claude, now)
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE agents SET state = 'working' WHERE agent_id = ?", (ORACLE,))
+    claude.listing[0] |= {"status": "waiting", "waitingFor": "input needed"}
+    asked = ledger.directive_submit("user_chat", "alex", "Which database?")
+    ledger.directive_resolve("oracle", ORACLE, asked["directive_id"], "needs_user", "Ask Alex.")
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE directives SET created_at = ?", (watchdog.stamp(now - timedelta(minutes=20)),)
+        )
+
+    kinds = _kinds(_scan(ledger, claude, now))
+
+    assert ("oracle", "run_stalled") in kinds
+    assert ("oracle", "needs_user") in kinds
+
+
+def test_an_owed_wake_up_or_a_working_agent_is_not_run_stalled(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    old = _quiet_run(ledger, claude, now)
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "INSERT INTO wakeups (run_id, from_agent_id, to_agent_id, to_name, to_session_name, "
+            "reason, pointer, created_at) VALUES (1, ?, 'sess-lead-1', 'lead-1', "
+            "'host-r1-lead-1', 'review', 'wake', ?)",
+            (ORACLE, watchdog.stamp(old)),
+        )
+    assert "run_stalled" not in [f.kind for f in _scan(ledger, claude, now)]
+
+    with write_tx(ledger.conn) as conn:
+        conn.execute("DELETE FROM wakeups")
+        conn.execute("UPDATE agents SET state = 'working' WHERE agent_id = 'sess-lead-1'")
+    assert "run_stalled" not in [f.kind for f in _scan(ledger, claude, now)]
 
 
 def _test_runs(ledger: Ledger, agent_id: str, target: str, results: list[bool]) -> None:
@@ -655,6 +785,12 @@ def test_an_oracle_with_no_recorded_session_is_not_resumed(
     ]
 
 
+def _notifications(ledger: Ledger) -> list[dict]:
+    return [
+        dict(r) for r in ledger.conn.execute("SELECT * FROM notifications ORDER BY notification_id")
+    ]
+
+
 def test_no_wake_while_the_oracle_runs_or_after_the_listener_notified_it(
     ledger: Ledger, claude: FakeClaude, now: datetime
 ) -> None:
@@ -665,6 +801,11 @@ def test_no_wake_while_the_oracle_runs_or_after_the_listener_notified_it(
     dog.tick(now)
     dog.tick(now + timedelta(minutes=1))
     assert claude.resumed == []
+    unreachable = [n for n in _notifications(ledger) if n["event_key"].startswith("oracle_")]
+    assert len(unreachable) == 1
+    assert "sits idle with no watchdog listener" in unreachable[0]["message"]
+    dog.tick(now + timedelta(minutes=2))
+    assert len([n for n in _notifications(ledger) if n["event_key"].startswith("oracle_")]) == 1
 
     watch.poll(ledger.conn, now + timedelta(minutes=1))
     oracle["status"] = "stopped"
@@ -970,6 +1111,7 @@ def test_the_arm_rule_keeps_the_oracles_other_stop_rules(ledger: Ledger) -> None
     assert merged["reason"].endswith("whenever it expires.")
 
     ledger.run_pause("oracle", ORACLE, "waiting on the user")
+    notify.mark_sent(ledger.conn, 1, "")
     assert events.handle_stop(ledger, {"session_id": ORACLE}) is None
 
 
@@ -1007,3 +1149,209 @@ def test_watchdog_settings_come_from_the_local_settings_file(host: Path) -> None
     path.write_text(text, encoding="utf-8")
     assert load_settings(host).watchdog.stuck_minutes == 40
     assert load_settings(host).watchdog.context_window == 500_000
+
+
+def test_a_busy_oracle_is_left_to_its_listener(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _agent(ledger, "sess-coder-1", "coder", "working", started=now)
+    claude.run(ORACLE, status="busy")
+    dog = _dog(ledger, Exits())
+    dog.tick(now)
+    dog.tick(now + timedelta(minutes=1))
+
+    assert claude.resumed == []
+    assert _notifications(ledger) == []
+
+
+def test_needs_user_and_run_stalled_notify_the_user(
+    ledger: Ledger, claude: FakeClaude, now: datetime, os_notifications: list[list[str]]
+) -> None:
+    _quiet_run(ledger, claude, now)
+    claude.listing[1] |= {"status": "waiting", "waitingFor": "permission prompt"}
+
+    _dog(ledger, Exits()).tick(now)
+
+    messages = {n["message"] for n in _notifications(ledger)}
+    assert any(
+        m.startswith("The swarm needs you: lead-1, its session host-r1-lead-1") for m in messages
+    )
+    assert any(m.startswith("The swarm run stalled: no agent of the run") for m in messages)
+    assert all(n["push_owed"] == 1 for n in _notifications(ledger))
+    assert len(os_notifications) == 2
+
+
+def _claude_json(text: str) -> Path:
+    path = Path(os.environ["CLAUDE_CONFIG_DIR"]) / ".claude.json"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_run_pause_notifies_the_user_with_the_reason(
+    ledger: Ledger, now: datetime, os_notifications: list[list[str]]
+) -> None:
+    _run_id(ledger)
+
+    ledger.run_pause("oracle", ORACLE, "the API key is missing")
+
+    [notice] = _notifications(ledger)
+    assert notice["message"] == (
+        "Run paused: the API key is missing. Say continue or run /sentinel-swarm:resume to "
+        "continue it."
+    )
+    assert notice["kind"] == "warning"
+    assert len(os_notifications) == 1
+
+
+def test_run_pause_refuses_an_unknown_clear_check(ledger: Ledger) -> None:
+    _run_id(ledger)
+    with pytest.raises(LedgerError, match="unknown clear_check 'disk_free'"):
+        ledger.run_pause("oracle", ORACLE, "full disk", clear_check="disk_free")
+
+
+def test_the_watchdog_resumes_a_pause_once_its_clear_check_passes(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    claude.run(ORACLE, "host-oracle", status="idle")
+    _claude_json('{"projects": ')
+    ledger.run_pause("oracle", ORACLE, "~/.claude.json is corrupt", clear_check="config_parses")
+    assert (
+        "It resumes by itself once the config file ~/.claude.json parses."
+        in (_notifications(ledger)[0]["message"])
+    )
+    dog = _dog(ledger, Exits())
+
+    dog.tick(now)
+    assert ledger.conn.execute("SELECT state FROM runs").fetchone()[0] == "paused"
+
+    _claude_json('{"projects": {}}')
+    dog.tick(now + timedelta(seconds=30))
+
+    run = ledger.conn.execute("SELECT * FROM runs").fetchone()
+    assert (run["state"], run["pause_check"], run["paused_at"]) == ("active", None, None)
+    events_ = [
+        r["reason"]
+        for r in ledger.conn.execute(
+            "SELECT reason FROM agent_events WHERE from_state = 'paused' AND to_state = 'active'"
+        )
+    ]
+    assert events_ == ["the watchdog resumed the run: the config file ~/.claude.json parses"]
+    [directive] = _directives(ledger)
+    assert directive["source"] == "watchdog"
+    assert "Arm the watchdog Monitor again" in directive["body"]
+    assert any(n["event_key"].startswith("resumed:") for n in _notifications(ledger))
+
+
+def test_a_pause_with_a_clear_check_keeps_the_server(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _claude_json("not json")
+    ledger.run_pause("oracle", ORACLE, "~/.claude.json is corrupt", clear_check="config_parses")
+    exits = Exits()
+    dog = _dog(ledger, exits, idle_exit_minutes=15)
+
+    dog.tick(now)
+    dog.tick(now + timedelta(minutes=40))
+
+    assert exits.count == 0
+
+
+def test_a_paused_run_reminds_the_user_on_the_timer(
+    ledger: Ledger, claude: FakeClaude, now: datetime, os_notifications: list[list[str]]
+) -> None:
+    _run_id(ledger)
+    claude.run(ORACLE, "host-oracle", status="idle")
+    ledger.run_pause("oracle", ORACLE, "the API key is missing")
+    assert len(os_notifications) == 1
+    paused_at = watchdog.parse_stamp(
+        ledger.conn.execute("SELECT paused_at FROM runs").fetchone()[0]
+    )
+    assert paused_at is not None
+    dog = _dog(ledger, Exits(), remind_minutes=30)
+
+    dog.tick(paused_at + timedelta(minutes=10))
+    assert len(os_notifications) == 1
+    dog.tick(paused_at + timedelta(minutes=31))
+    assert len(os_notifications) == 2
+    dog.tick(paused_at + timedelta(minutes=40))
+    assert len(os_notifications) == 2
+    dog.tick(paused_at + timedelta(minutes=62))
+    assert len(os_notifications) == 3
+
+
+def test_an_open_question_is_reminded_and_zero_turns_reminders_off(
+    ledger: Ledger, claude: FakeClaude, now: datetime, os_notifications: list[list[str]]
+) -> None:
+    _run_id(ledger)
+    claude.run(ORACLE, "host-oracle", status="busy")
+    ledger.user_ask("oracle", ORACLE, "Which database?")
+    assert len(os_notifications) == 1
+
+    _dog(ledger, Exits(), remind_minutes=0).tick(now + timedelta(minutes=90))
+    assert len(os_notifications) == 1
+
+    dog = _dog(ledger, Exits(), remind_minutes=30)
+    dog.tick(now)
+    dog.tick(now + timedelta(minutes=31))
+    assert len(os_notifications) == 2
+    assert (
+        watchdog.reminder(ledger.conn, ledger.conn.execute("SELECT * FROM runs").fetchone(), None)
+        == "1 question(s) wait on you: Which database?"
+    )
+
+
+def test_the_watchdogs_own_pause_notifies_the_user(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _agent(ledger, "sess-coder-1", "coder", "working", started=now)
+    claude.run(ORACLE, status="stopped")
+    dog = _dog(ledger, Exits())
+    for minutes in (0, 1, 6, 12, 18):
+        dog.tick(now + timedelta(minutes=minutes))
+
+    assert ledger.conn.execute("SELECT state FROM runs").fetchone()[0] == "paused"
+    assert any(
+        n["message"].startswith("Run paused: the watchdog could not wake the Oracle.")
+        for n in _notifications(ledger)
+    )
+
+
+def test_user_ask_posts_an_open_needs_user_directive_and_notifies(
+    ledger: Ledger, now: datetime, os_notifications: list[list[str]]
+) -> None:
+    _run_id(ledger)
+    _agent(ledger, "sess-lead-1", "lead", "idle", started=now)
+
+    asked = ledger.user_ask("oracle", ORACLE, "Which database?")
+
+    assert (asked["source"], asked["state"], asked["outcome"]) == ("oracle", "open", "needs_user")
+    assert asked["question"] == "Which database?"
+    [notice] = _notifications(ledger)
+    assert notice["event_key"] == f"needs_user:{asked['directive_id']}"
+    assert notice["message"] == (
+        f"The swarm needs you (directive {asked['directive_id']}): Which database?"
+    )
+    assert len(os_notifications) == 1
+    with pytest.raises(LedgerError):
+        ledger.user_ask("lead-1", "sess-lead-1", "Me too?")
+    with pytest.raises(LedgerError, match="needs the question"):
+        ledger.user_ask("oracle", ORACLE, "  ")
+
+
+def test_resolving_a_directive_needs_user_notifies_once(
+    ledger: Ledger, os_notifications: list[list[str]]
+) -> None:
+    _run_id(ledger)
+    asked = ledger.directive_submit("user_chat", "alex", "Ship it?")
+
+    ledger.directive_resolve("oracle", ORACLE, asked["directive_id"], "needs_user", "Which tag?")
+    ledger.directive_resolve("oracle", ORACLE, asked["directive_id"], "needs_user", "Which tag?")
+
+    assert [n["event_key"] for n in _notifications(ledger)] == [
+        f"needs_user:{asked['directive_id']}"
+    ]
+    assert len(os_notifications) == 1

@@ -101,6 +101,20 @@ describe('gates', () => {
     })
   })
 
+  test("the Oracle's AskUserQuestion goes through pre_ask, whose deny names user_ask", async ($, on) => {
+    const w = world(on, { answers: { pre_ask: DENY('this is a background session; ask with user_ask(question)') } })
+    let asked = 0
+    on('tool.call', { tool: 'AskUserQuestion' }, () => {
+      asked += 1
+      return { result: { answers: {} } } as never
+    })
+    await start($, 'swarm-oracle', 'sess-oracle')
+    const result = await $.tool.call({ tool: 'AskUserQuestion', questions: [{ question: 'Which DB?' }] } as never)
+    expect(JSON.stringify(result)).toContain('user_ask(question)')
+    expect(asked).toBe(0)
+    expect(w.events()).toContain('pre_ask')
+  })
+
   test('an allow lets the tool run', async ($, on) => {
     const w = world(on)
     await start($)

@@ -13,7 +13,12 @@ CREATE TABLE IF NOT EXISTS runs (
     ended_at TEXT,
     watch_heartbeat_at TEXT,
     watch_expires_at TEXT,
-    watch_owner TEXT
+    watch_owner TEXT,
+    -- Set by a pause: when it began, the pauses.CHECKS name the watchdog tries on its timer
+    -- to resume the run by itself, and the last time the user was notified about it.
+    paused_at TEXT,
+    pause_check TEXT,
+    reminded_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS phases (
@@ -520,8 +525,9 @@ CREATE TABLE IF NOT EXISTS notifications (
     -- done, warning, or error.
     kind TEXT NOT NULL,
     -- One row per event: drive_done:<request_id>, directive:<directive_id>,
-    -- drive_unavailable:<directive_id>, or issue:<issue_id> for an issue that ended its
-    -- last round below the floor.
+    -- drive_unavailable:<directive_id>, issue:<issue_id> for an issue that ended its
+    -- last round below the floor, pause:<event_id>, needs_user:<directive_id>,
+    -- resumed:<event_id>, or oracle_unreachable:<directive_id>.
     event_key TEXT NOT NULL,
     message TEXT NOT NULL,
     -- 1 when the settings' notify list holds push: the run's Oracle owes a PushNotification.
