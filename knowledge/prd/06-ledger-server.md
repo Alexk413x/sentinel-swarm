@@ -197,13 +197,13 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
 
 | Group | Tools |
 |---|---|
-| Run and plan | `run_start`, `run_status`, `run_pause`, `phase_resume`, `run_finish`, `profile_set`, `guidelines_set`, `guidelines_get`, `phase_add`, `phase_update`, `plan_unlocked`, `module_add` |
+| Run and plan | `run_start`, `run_status`, `run_pause`, `phase_resume`, `run_finish`, `run_close`, `profile_set`, `guidelines_set`, `guidelines_get`, `phase_add`, `phase_update`, `plan_unlocked`, `module_add` |
 | Repo | `repo_check`, `repo_branch_create` |
 | Briefs and agents | `brief_create`, `brief_get`, `brief_ack`, `agent_spawn`, `agent_resume`, `agent_release` |
-| Ownership | `claim_file`, `release_file`, `who_owns`, `wait_for` (Coder, Lead) |
+| Ownership | `claim_file` (Lead, Manager), `release_file`, `who_owns`, `wait_for` (Coder, Lead), `file_delete` (Coder) |
 | Messages and directives | `message_post`, `message_inbox`, `directive_submit`, `directive_inbox`, `directive_resolve`, `user_ask` |
 | Tests and graph | `tests_run`, `test_run_get`, `graph_upsert` |
-| Review | `score_record`, `handoff_submit`, `review_compare`, `approve`, `return_work`, `attempt_record`, `accept_incomplete`, `version_restore`, `module_review`, `phase_review` |
+| Review | `score_record`, `handoff_submit`, `review_compare`, `approve`, `return_work`, `attempt_record`, `accept_incomplete`, `file_accept_incomplete` (Oracle), `version_restore`, `module_review`, `phase_review` |
 | Issues | `issue_open`, `issue_list`, `issue_close`, `idea_record`, `issue_escalate` |
 | Agreements | `cr_open`, `cr_accept`, `cr_complete`, `cr_verify`, `cr_list`, `departure_record`, `departure_decide`, `shortfall_record`, `deferral_propose`, `agreement_decide`, `override_grant` |
 | Reporting | `status_tree`, `report_build`, `analytics_query` (one read-only SELECT, Oracle only), `events(target_agent_id, limit)`, `ledger_info` |
@@ -217,7 +217,8 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
 - `caller`, `targeted`, and `finding_ids` carry parameter descriptions in the schema, and
   so do `contract`, `depends_on`, `parties`, and `directive_id`.
 - Signatures that carry a gate: `module_add(phase_id, name, depends_on)`,
-  `claim_file(path, test_path, for_name, depends_on)`, `brief_create(..., contract)`,
+  `claim_file(path, test_path, for_name, depends_on, module_id, product_of)`,
+  `brief_create(..., contract)`,
   `deferral_propose(body, kind, file_id, parties)`, and
   `agreement_decide(deferral_id, decision, reason, directive_id)`. `brief_get` returns
   `depends_on_contracts`, and `deferral_propose` with `parties` returns `arbiter` and
@@ -305,7 +306,11 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
   name), and leave out empty fields; a file's `owner` is the owner's name. `run_status`
   also lists the open `file_waits`.
   `agent_spawn` leaves empty fields and the settings snapshot out of its result.
-- `version_restore(version_id)` restores a saved version onto the Coder's own file.
+- `version_restore(version_id)` restores a saved version onto the Coder's own file. A
+  deletion version deletes the file.
+- `mcp/launch/ledger.py close [--repo <root>] [--file ID=REASON ...] <outcome>` runs
+  `run_close` from a terminal, outside any session, for the run's owner. See "Settling
+  a file and closing a run by the Oracle" in [02-run-lifecycle.md](02-run-lifecycle.md).
 - The server itself shows a desktop notification for each notification it records:
   a Driver event or an issue that ends round 3 below the floor. It runs from
   `notify.py`, in a background thread, when the settings' `notify` list includes `os`.

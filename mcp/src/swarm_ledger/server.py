@@ -77,6 +77,20 @@ _BRIEF_CREATE_REPLACES = Field(
 _CLAIM_FILE_DEPENDS_ON = Field(
     default=None, description="File ids of this module that this file uses; brief those first."
 )
+_CLAIM_FILE_MODULE_ID = Field(
+    default=None,
+    description="A Manager's claim: the module of its phase that takes the path. A Lead "
+    "leaves it unset.",
+)
+_CLAIM_FILE_PRODUCT_OF = Field(
+    default=None,
+    description="For a generated file, such as a build output: the file_id of the live claim it "
+    "is built from. for_name is that file's Coder, and the product rides its handoff.",
+)
+_RUN_CLOSE_FILES = Field(
+    default=None,
+    description='Each unsettled file, as {"file_id": <id>, "reason": <why it stops short>}.',
+)
 _DEFERRAL_PROPOSE_PARTIES = Field(
     default=None,
     description="For a dispute: the agent names on the other side. Their closest "
@@ -175,6 +189,32 @@ def run_finish(
     caller: CallerName, outcome: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Finishes the active run once every phase is approved; the Oracle calls this."""
+    ...
+
+
+@_tool()
+def run_close(
+    caller: CallerName,
+    outcome: str,
+    files_incomplete: list[dict[str, Any]] | None = _RUN_CLOSE_FILES,
+    agent_id: str | None = _STAMPED_AGENT_ID,
+) -> dict[str, Any]:
+    """Closes a run the ledger cannot finish; the Oracle calls this. Every unsettled file
+    must be named with its reason; each is recorded incomplete. It records the outcome,
+    releases every agent, stops their sessions, and the server exits."""
+    ...
+
+
+@_tool()
+def file_accept_incomplete(
+    caller: CallerName,
+    file_id: int,
+    reason: str,
+    evidence: list[int],
+    agent_id: str | None = _STAMPED_AGENT_ID,
+) -> dict[str, Any]:
+    """Settles a file verified another way as incomplete; the Oracle calls this with the
+    reason and the passing test run ids that cover it. module_review counts it settled."""
     ...
 
 
@@ -334,7 +374,8 @@ def agent_release(
     caller: CallerName, target_agent_id: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Releases an agent it directly parented; any parent role calls this for its own child. The
-    Oracle may also release an agent whose parent has ended."""
+    Oracle may also release an agent whose parent has ended. Passed a queued child's name, it
+    cancels that queued spawn and keeps its brief and claim."""
     ...
 
 
@@ -361,9 +402,12 @@ def claim_file(
     test_path: str | None,
     for_name: str,
     depends_on: list[int] | None = _CLAIM_FILE_DEPENDS_ON,
+    module_id: int | None = _CLAIM_FILE_MODULE_ID,
+    product_of: int | None = _CLAIM_FILE_PRODUCT_OF,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
-    """Claims a file path for a coder under the caller's module; a Lead calls this. for_name is
+    """Claims a file path for a coder under the caller's module; a Lead calls this, or a
+    Manager for an unowned path, with the module_id of one of its modules. for_name is
     coder-p<phase ordinal>-<module>-<file slug>."""
     ...
 
@@ -372,7 +416,8 @@ def claim_file(
 def release_file(
     caller: CallerName, path: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
-    """Releases a live claim on a file path; a Lead calls this."""
+    """Releases a live claim on a file path; a Lead calls this. It refuses while the owning
+    Coder is live, and drops the owner's queued spawn."""
     ...
 
 
@@ -821,6 +866,15 @@ def version_restore(
     caller: CallerName, version_id: int, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Restores a saved version onto the coder's own owned file; a Coder calls this."""
+    ...
+
+
+@_tool()
+def file_delete(
+    caller: CallerName, path: str, agent_id: str | None = _STAMPED_AGENT_ID
+) -> dict[str, Any]:
+    """Deletes the Coder's own claimed file, test file, or product from disk; a Coder calls
+    this. handoff_submit records the deletion as the file's version for review."""
     ...
 
 

@@ -12,6 +12,7 @@ from . import __version__, agentfiles, lock, notify, pauses, rekey, sessions, wa
 from .agreements import AgreementsMixin
 from .capacity import CapacityMixin
 from .clock import utcnow
+from .closing import ClosingMixin
 from .db import (
     NOW,
     connect,
@@ -155,6 +156,7 @@ def _parent_ended(conn: sqlite3.Connection, target: sqlite3.Row) -> bool:
 
 
 class Ledger(
+    ClosingMixin,
     CapacityMixin,
     AgreementsMixin,
     ReviewMixin,
@@ -1314,7 +1316,7 @@ class Ledger(
                 "SELECT * FROM agents WHERE agent_id = ?", (target_agent_id,)
             ).fetchone()
             if target is None:
-                raise LedgerError(f"unknown agent_id {target_agent_id!r}")
+                return self._cancel_queued(conn, c, target_agent_id)
             if target["parent_agent_id"] != c.agent_id and not (
                 c.role == "oracle" and _parent_ended(conn, target)
             ):
@@ -1325,6 +1327,28 @@ class Ledger(
             self._release_agent(conn, target_agent_id, "agent_release")
 
         return self._agent_dict(target_agent_id)
+
+    @staticmethod
+    def _cancel_queued(conn: sqlite3.Connection, c: Caller, child_name: str) -> dict:
+        queued = conn.execute(
+            "SELECT * FROM spawn_queue WHERE child_name = ? AND state = 'queued' "
+            "AND parent_agent_id = ?",
+            (child_name, c.agent_id),
+        ).fetchone()
+        if queued is None:
+            raise LedgerError(f"unknown agent_id {child_name!r}")
+        conn.execute(
+            "UPDATE spawn_queue SET state = 'dropped', reason = ? WHERE queue_id = ?",
+            (f"agent_release by {c.name}", queued["queue_id"]),
+        )
+        return {
+            "child_name": child_name,
+            "dropped": True,
+            "next": (
+                f"The queued spawn of {child_name} is cancelled. Its brief and file claim "
+                "stay; call agent_spawn to queue it again."
+            ),
+        }
 
     def agent_spawn(self, caller: str, agent_id: str, child_name: str) -> dict:
         c = resolve(self.conn, caller, agent_id)
@@ -1430,6 +1454,17 @@ class Ledger(
                 raise LedgerError(
                     f"phase {brief['phase_id']} is paused: {paused['pause_reason']}; call "
                     "phase_resume before spawning into it"
+                )
+        if brief["child_role"] == "coder":
+            claim = self.conn.execute(
+                "SELECT 1 FROM files WHERE file_id = ? AND owner_agent_id = ? "
+                "AND released_at IS NULL",
+                (brief["file_id"], child_name),
+            ).fetchone()
+            if claim is None:
+                raise LedgerError(
+                    f"file {brief['file_id']} has no live claim for {child_name!r}: its claim "
+                    "was released, so the Coder would start with nothing it may write"
                 )
         spawned = self.conn.execute(
             "SELECT session_name FROM agents WHERE name = ? AND ended_at IS NULL", (child_name,)
@@ -1792,27 +1827,35 @@ class Ledger(
         test_path: str | None,
         for_name: str,
         depends_on: list[int] | None = None,
+        module_id: int | None = None,
+        product_of: int | None = None,
     ) -> dict:
         depends_on = depends_on or []
         if test_path is not None and test_path.strip().lower() in ("", "none", "null"):
             test_path = None
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
-            require_role(c, "lead")
+            require_role(c, "lead", "manager")
+            target_module = self._claim_module(conn, c, module_id)
             module = conn.execute(
                 "SELECT m.name, p.ordinal FROM modules m JOIN phases p ON p.phase_id = m.phase_id "
                 "WHERE m.module_id = ?",
-                (c.module_id,),
+                (target_module,),
             ).fetchone()
             if module is not None:
                 require_coder_name(for_name, module["ordinal"], module["name"])
+            source = (
+                self._claim_source(conn, target_module, product_of, for_name, test_path)
+                if product_of is not None
+                else None
+            )
             outside = [
                 dep_id
                 for dep_id in depends_on
                 if conn.execute(
                     "SELECT 1 FROM files WHERE file_id = ? AND module_id = ? "
                     "AND state != 'superseded'",
-                    (dep_id, c.module_id),
+                    (dep_id, target_module),
                 ).fetchone()
                 is None
             ]
@@ -1829,19 +1872,28 @@ class Ledger(
             ):
                 raise LedgerError(f"path {path!r} already has a live claim")
             held = conn.execute(
-                "SELECT path FROM files WHERE owner_agent_id = ? AND released_at IS NULL",
+                "SELECT path FROM files WHERE owner_agent_id = ? AND released_at IS NULL "
+                "AND source_file_id IS NULL",
                 (for_name,),
             ).fetchone()
-            if held is not None:
+            if held is not None and source is None:
                 raise LedgerError(
                     f"{for_name!r} already holds the live claim on {held['path']!r}; "
-                    "one Coder owns one file, so claim this path for a new Coder name"
+                    "one Coder owns one file, so claim this path for a new Coder name, or "
+                    "pass product_of when the path is generated from that file"
                 )
 
             cur = conn.execute(
                 "INSERT INTO files (module_id, path, test_path, owner_agent_id, state, "
-                f"claimed_at) VALUES (?, ?, ?, ?, 'claimed', {NOW})",
-                (c.module_id, path, test_path, for_name),
+                f"claimed_at, source_file_id) VALUES (?, ?, ?, ?, ?, {NOW}, ?)",
+                (
+                    target_module,
+                    path,
+                    test_path,
+                    for_name,
+                    source["state"] if source is not None else "claimed",
+                    product_of,
+                ),
             )
             file_id = cur.lastrowid
             conn.execute(
@@ -1859,7 +1911,50 @@ class Ledger(
         claimed["depends_on"] = list(depends_on)
         return claimed
 
+    @staticmethod
+    def _claim_module(conn: sqlite3.Connection, c: Caller, module_id: int | None) -> int | None:
+        if c.role == "lead":
+            if module_id is not None and module_id != c.module_id:
+                raise LedgerError("a Lead claims files only in its own module")
+            return c.module_id
+        if module_id is None:
+            raise LedgerError("a Manager's claim_file names the module_id of one of its modules")
+        row = conn.execute(
+            "SELECT 1 FROM modules WHERE module_id = ? AND phase_id = ?", (module_id, c.phase_id)
+        ).fetchone()
+        if row is None:
+            raise LedgerError(f"module {module_id!r} is not a module of {c.name!r}'s phase")
+        return module_id
+
+    @staticmethod
+    def _claim_source(
+        conn: sqlite3.Connection,
+        module_id: int | None,
+        product_of: int,
+        for_name: str,
+        test_path: str | None,
+    ) -> sqlite3.Row:
+        source = conn.execute(
+            "SELECT * FROM files WHERE file_id = ? AND module_id = ? AND released_at IS NULL "
+            "AND source_file_id IS NULL",
+            (product_of, module_id),
+        ).fetchone()
+        if source is None:
+            raise LedgerError(
+                f"product_of {product_of!r} is not a live claim of this module; claim the "
+                "source file first"
+            )
+        if source["owner_agent_id"] != for_name:
+            raise LedgerError(
+                f"a product belongs to its source's Coder, {source['owner_agent_id']!r}, not "
+                f"{for_name!r}"
+            )
+        if test_path is not None:
+            raise LedgerError("a product has no test_path; its source's tests cover it")
+        return source
+
     def release_file(self, caller: str, agent_id: str, path: str) -> dict:
+        dropped: str | None = None
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
             require_role(c, "lead")
@@ -1868,13 +1963,36 @@ class Ledger(
             ).fetchone()
             if row is None:
                 raise LedgerError(f"no live claim for {path!r}")
+            owner = conn.execute(
+                "SELECT name, state FROM agents WHERE name = ? AND ended_at IS NULL",
+                (row["owner_agent_id"],),
+            ).fetchone()
+            if owner is not None and row["source_file_id"] is None:
+                raise LedgerError(
+                    f"{owner['name']!r} is live ({owner['state']}) and holds this claim; release "
+                    "the Coder with agent_release first, or let its handoff close the claim"
+                )
             conn.execute(
-                f"UPDATE files SET released_at = {NOW}, state = 'released' WHERE file_id = ?",
-                (row["file_id"],),
+                f"UPDATE files SET released_at = {NOW}, state = 'released' "
+                "WHERE file_id = ? OR (source_file_id = ? AND released_at IS NULL)",
+                (row["file_id"], row["file_id"]),
             )
             file_id = row["file_id"]
+            queued = conn.execute(
+                "SELECT * FROM spawn_queue WHERE child_name = ? AND state = 'queued'",
+                (row["owner_agent_id"],),
+            ).fetchone()
+            if queued is not None and row["source_file_id"] is None:
+                dropped = queued["child_name"]
+                conn.execute(
+                    "UPDATE spawn_queue SET state = 'dropped', reason = ? WHERE queue_id = ?",
+                    (f"release_file released its claim on {path}", queued["queue_id"]),
+                )
 
-        return row_dict(self.conn, "files", "file_id", file_id)
+        released = row_dict(self.conn, "files", "file_id", file_id)
+        if dropped is not None:
+            released["dropped_spawn"] = dropped
+        return released
 
     def who_owns(self, path: str) -> dict:
         row = self.conn.execute(
@@ -1935,8 +2053,10 @@ class Ledger(
             cur = conn.execute(
                 f"UPDATE files SET stale_since = {NOW} WHERE released_at IS NULL "
                 "AND file_id = (SELECT file_id FROM agents WHERE agent_id = ?) "
-                "AND (path = ? OR test_path = ?)",
-                (agent_id, path, path),
+                "AND (path = ? OR test_path = ? OR EXISTS (SELECT 1 FROM files p "
+                "WHERE p.source_file_id = files.file_id AND p.path = ? "
+                "AND p.released_at IS NULL))",
+                (agent_id, path, path, path),
             )
         return {"path": path, "updated": cur.rowcount > 0}
 

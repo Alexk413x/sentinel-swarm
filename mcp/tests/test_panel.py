@@ -52,7 +52,13 @@ def _build(ledger: Ledger) -> dict:
     ctx = bootstrap_module(ledger)
     coder = spawn_coder(ledger, ctx, "coder-p1-module-1-a", "src/a.py", "tests/test_a.py")
     ctx["file_id"] = coder["file_id"]
+    ctx["coder_id"] = coder["agent_id"]
     return ctx
+
+
+def _release_claim(ledger: Ledger, ctx: dict) -> None:
+    ledger.agent_release("lead-p1-module-1", ctx["lead"]["agent_id"], ctx["coder_id"])
+    ledger.release_file("lead-p1-module-1", ctx["lead"]["agent_id"], "src/a.py")
 
 
 def _approve_all(ledger: Ledger, ctx: dict) -> None:
@@ -118,7 +124,7 @@ def test_an_incomplete_file_makes_module_phase_and_run_a_problem(ledger: Ledger)
 
 def test_a_released_file_is_a_problem(ledger: Ledger) -> None:
     ctx = _build(ledger)
-    ledger.release_file("lead-p1-module-1", ctx["lead"]["agent_id"], "src/a.py")
+    _release_claim(ledger, ctx)
 
     statuses = _statuses(_run_snapshot(ledger))
     assert statuses["file"] == "problem"
@@ -127,7 +133,7 @@ def test_a_released_file_is_a_problem(ledger: Ledger) -> None:
 
 def test_a_reclaimed_file_counts_the_superseded_version_as_done(ledger: Ledger) -> None:
     ctx = _build(ledger)
-    ledger.release_file("lead-p1-module-1", ctx["lead"]["agent_id"], "src/a.py")
+    _release_claim(ledger, ctx)
     new = ledger.claim_file(
         "lead-p1-module-1",
         ctx["lead"]["agent_id"],
@@ -153,7 +159,7 @@ def test_a_reclaimed_file_counts_the_superseded_version_as_done(ledger: Ledger) 
 
 def test_the_superseded_file_is_done_and_hidden_from_the_module(ledger: Ledger) -> None:
     ctx = _build(ledger)
-    ledger.release_file("lead-p1-module-1", ctx["lead"]["agent_id"], "src/a.py")
+    _release_claim(ledger, ctx)
     new = ledger.claim_file(
         "lead-p1-module-1",
         ctx["lead"]["agent_id"],

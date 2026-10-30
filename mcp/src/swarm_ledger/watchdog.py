@@ -109,6 +109,7 @@ def scan(
     findings += _landed_wait_findings(conn, run["run_id"], agents, by_session)
     findings += _unsent_findings(conn, run["run_id"], agents, by_session, now, settings)
     findings += _queued_findings(conn, run["run_id"], agents, now, settings)
+    findings += _unmanaged_phase_findings(conn, run["run_id"], agents)
 
     stalled = _stalled(conn, run, agents, by_session, now)
     if stalled is not None:
@@ -364,6 +365,39 @@ def _queued_findings(
             )
         )
     return findings
+
+
+def _unmanaged_phase_findings(
+    conn: sqlite3.Connection, run_id: int, agents: list[dict]
+) -> list[Finding]:
+    oracle = next((a for a in agents if a["role"] == "oracle"), None)
+    if oracle is None:
+        return []
+    phases = [
+        f"{row['phase_id']} ({row['name']}, {row['state']}; last Manager {row['manager']})"
+        for row in conn.execute(
+            "SELECT p.phase_id, p.name, p.state, "
+            "(SELECT a.name FROM agents a WHERE a.phase_id = p.phase_id AND a.role = 'manager' "
+            "ORDER BY a.started_at DESC LIMIT 1) AS manager FROM phases p "
+            "WHERE p.run_id = ? AND p.state IN ('unlocked', 'working') AND p.paused_at IS NULL "
+            "AND EXISTS (SELECT 1 FROM agents a WHERE a.phase_id = p.phase_id "
+            "AND a.role = 'manager') "
+            "AND NOT EXISTS (SELECT 1 FROM agents a WHERE a.phase_id = p.phase_id "
+            "AND a.role = 'manager' AND a.ended_at IS NULL) ORDER BY p.ordinal",
+            (run_id,),
+        )
+    ]
+    if not phases:
+        return []
+    return [
+        _finding(
+            oracle,
+            "phase_unmanaged",
+            f"phase(s) {', '.join(phases)} have work left and no live Manager",
+            "Brief and spawn a new Manager for each phase, or call file_accept_incomplete for "
+            "a file that cannot finish, or run_close if the run cannot.",
+        )
+    ]
 
 
 def _finding(agent: dict, kind: str, detail: str, next_step: str) -> Finding:

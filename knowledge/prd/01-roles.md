@@ -165,8 +165,10 @@
   through the Coder's Lead. `message_post` refuses a Coder, and `pre_send_message`
   refuses a `SendMessage` to one unless the ledger owes it a wake-up from the Manager.
 - **Done when:** the Oracle approves the phase.
-- **Tools:** Read, Grep, Glob, ToolSearch, SendMessage, WebSearch, WebFetch, its
-  ledger tools, and the codebase-kg read tools.
+- **Tools:** Read, Grep, Glob, Bash and PowerShell (limited to the named host commands
+  in the settings' `commands` list), ToolSearch, SendMessage, WebSearch, WebFetch, its
+  ledger tools, and the codebase-kg read tools. Its `claim_file` claims a path no module
+  owns into one of its modules.
 
 ### Lead
 
@@ -184,8 +186,9 @@
 - **Must not:** write a project file, or read a Coder's scores before it records its
   own.
 - **Done when:** its Manager accepts the module with `module_review` and releases it.
-- **Tools:** the same as the Manager. Of the graph write tools, it holds only
-  `graph_upsert`, for nodes that span two or more files, each its module's or unclaimed.
+- **Tools:** the same as the Manager, without the shell. Of the graph write tools, it
+  holds only `graph_upsert`, for nodes that span two or more files, each its module's or
+  unclaimed.
 
 ### Coder
 

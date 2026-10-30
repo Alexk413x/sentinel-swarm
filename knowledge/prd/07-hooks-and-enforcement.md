@@ -191,25 +191,32 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
 - `pre_write`: while a run is active or paused, denies anyone a write into the records
   folder, unconditionally; the records folder is the ledger's own state, so no
   override rule covers it either. Denies a write by any role but the
-  Coder, and a Coder's write outside its claimed path and test path, under `.claude/`
-  and outside the repo included, naming the owner; an override of rule `write` lets one
-  of these two writes through. The Coder's deny names its claimed test file as the place
-  for a scratch helper or a throwaway check, run with `tests_run`, and says to write no
-  scratch file anywhere else, `.claude/` included. It also denies a write from a session
-  whose `agent_type` is `swarm-<role>` but that is not a live agent of the run, such as
-  a released agent or a resumed session not yet re-keyed, and asks it to call
-  `ledger_info()`, whose `pre_ledger` re-keys a pending resume.
+  Coder, and a Coder's write outside its claimed path, its test path, and the products
+  claimed from its file, under `.claude/` and outside the repo included, naming the
+  owner; an override of rule `write` lets one of these two writes through. The Coder's
+  deny names its claimed test file as the place for a scratch helper or a throwaway
+  check, run with `tests_run`, and says to write no scratch file anywhere else,
+  `.claude/` included. It also denies a write from a session whose `agent_type` is
+  `swarm-<role>` but that is not a live agent of the run, such as a released agent or a
+  resumed session not yet re-keyed, and asks it to call `ledger_info()`, whose
+  `pre_ledger` re-keys a pending resume.
 - `pre_ask`: while a run is active or paused, denies `AskUserQuestion` to a swarm
   session (by registry or by `agent_type`) whose `claude agents --json` entry has kind
   `background`, since nobody sees the question there and the run would wait on it. The
   deny names `user_ask(question)`. An interactive session, a session the listing does
   not show, a failed listing, and a non-swarm caller pass. No override rule covers it.
 - `pre_shell`: while a run is active or paused, denies the shell to every role but the
-  Coder and the Driver. A Coder may run a command that starts with the profile's test,
-  build, or lint command, or read-only git (`status`, `diff`, `log`, `show`,
-  `ls-files`, `branch`). A Driver may run only a command that starts with the profile's
-  `build_command`. A command with `;`, `&`, `|`, `<`, `>`, a backtick, a newline, or
-  `$(` is denied. An override of rule `shell` lets one command through.
+  Coder, the Manager, and the Driver. A Coder may run a command that starts with the
+  profile's test, build, or lint command, `git rm` of its own claimed path, test path,
+  or products (with `-q`, `--quiet`, or `--` only), or read-only git (`status`, `diff`,
+  `log`, `show`, `ls-files`, `branch`). An allowed `git rm` marks the file stale, so the
+  handoff needs a newer self review. A Coder and a Manager may run each named host
+  command in the settings' `commands` list, exactly as
+  `cd <cwd> && <interpreter> <run>`, or `<interpreter> <run>` when `cwd` is `.`, with
+  whitespace folded; the Manager may run nothing else. A Driver may run only a command
+  that starts with the profile's `build_command`. Apart from a named host command, a
+  command with `;`, `&`, `|`, `<`, `>`, a backtick, a newline, or `$(` is denied. An
+  override of rule `shell` lets one command through.
 - `pre_monitor`: allows exactly one `Monitor` call from a swarm session, the Oracle's
   watchdog call. It denies every other one and names the allowed call. A session not
   yet in the ledger counts as a swarm session when its `agent_type` is `swarm-<role>`.
@@ -259,8 +266,8 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   each owed call first and `message_inbox` last. It does not block a stop that follows
   its own block (`stop_hook_active`). It names the owed calls at once, with no wait; see
   "Wake-up delivery" in [05-sessions.md](05-sessions.md). A Driver whose exploration is closed
-  and that owes nothing more is released instead of set idle. After a run finishes, the
-  Oracle's stop refreshes the report, then blocks while the Oracle still owes a
+  and that owes nothing more is released instead of set idle. After a run finishes or
+  closes, the Oracle's stop refreshes the report, then blocks while the Oracle still owes a
   `PushNotification` call.
 - `send_target`: posted by the mod's `session.send` hook for a model's `SendMessage`.
   It answers the session id of the live agent of the caller's run whose session name
@@ -273,15 +280,18 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   caller's self-owed wake-ups sent and answers their text and the count of its test runs
   still `running`. See "Mod wake-up delivery" and "Messages" in
   [05-sessions.md](05-sessions.md). Each ignores a caller the registry does not know.
-- `session_end`: records tokens and cost and the end reason. After a run finishes, the
-  Oracle's `session_end` refreshes the report.
+- `session_end`: records tokens and cost and the end reason. After a run finishes or
+  closes, the Oracle's `session_end` refreshes the report.
 
 ## Rule-to-enforcement map
 
 | Rule | Enforced by |
 |---|---|
-| Only the Coder writes project files | `pre_write`; no write tool in the other agent files, and no shell except the Driver's, which `pre_shell` limits to the build command |
+| Only the Coder writes project files | `pre_write`; no write tool in the other agent files, and no shell except the Driver's, which `pre_shell` limits to the build command, and the Manager's, which `pre_shell` limits to the named host commands |
 | A Coder writes only its own file and test file | `pre_write` for edit tools; `pre_shell` and `post_shell` for the shell |
+| A Coder deletes only its own file, and the deletion is reviewed | `file_delete` and `pre_shell`'s `git rm` rule refuse any other path; `handoff_submit` records the deletion as the file's version |
+| A generated file changes with its source | `claim_file(product_of)` gives it the source's Coder; `handoff_submit` saves its version, and `approve`, `return_work`, and `accept_incomplete` give it the source's state |
+| A run step outside test, build, and lint runs only as a named host command | `pre_shell` matches the settings' `commands` exactly; `tests_run` names the command a failing test's output mentions |
 | Nobody edits the records by hand | `pre_write` |
 | A role starts only its own child role | `brief_create` and `agent_spawn`; `pre_agent` denies `Agent` except a Driver's cartographer subagents |
 | The Oracle starts a new exploration only after every fix has finished | `drive_request` refuses while an exploration is open or a Manager, Lead, or Coder is live |
@@ -343,6 +353,9 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
 | An issue that ends round 3 below the floor notifies the user now | `attempt_record` records the notification and shows the OS notification; the Oracle's `stop` blocks until the `PushNotification` call |
 | The Oracle checks the repo before a Manager starts | `agent_spawn` |
 | A phase hands up only after every module review | `phase_update(handed_up)` |
+| A file settles only by approval, an accepted incomplete, a superseding claim, a stray release, or an agreed deferral that moves its work out | `module_review(accepted)`, `approve`'s module check, and `run_close` read `settle.py`; `file_accept_incomplete` is the Oracle's direct call |
+| A child's claim outlives its parent's park or release | Only `release_file`, `approve`, `accept_incomplete`, `file_accept_incomplete`, and `run_close` close a claim. `release_file` refuses a live owner and drops a queued owner's spawn; `agent_spawn` and the queue refuse a Coder with no live claim |
+| A run that cannot finish still closes on the record | `run_close` and `mcp/launch/ledger.py close` |
 | A phase is approved only after the Oracle reviews it | `phase_update(approved)` |
 | Code the graph maps has a test file by the end | `phase_review(accepted)` |
 | A child wakes its parent after each step | The Stop hook, from the owed wake-ups |

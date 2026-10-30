@@ -5,6 +5,8 @@ CREATE TABLE IF NOT EXISTS runs (
     plugin_version TEXT,
     settings_json TEXT,
     outcome TEXT,
+    -- Set by run_close: 'oracle' or 'launcher'. A closed run's state is 'closed'.
+    closed_by TEXT,
     -- The Oracle's most recent repo_check result and the branch repo_branch_create made.
     repo_check_json TEXT,
     repo_checked_at TEXT,
@@ -65,6 +67,9 @@ CREATE TABLE IF NOT EXISTS files (
     -- Set by hook 7 after a Coder's edit. handoff_submit refuses a self review
     -- older than this, so a stale review can never wave through a later edit.
     stale_since TEXT,
+    -- Set for a generated file claimed as a product of its source file: it has the source's
+    -- owner, rides the source's handoff, and takes the source's state.
+    source_file_id INTEGER REFERENCES files (file_id) ON DELETE RESTRICT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -213,6 +218,8 @@ CREATE TABLE IF NOT EXISTS change_requests (
     completed_at TEXT,
     completion_notes TEXT,
     evidence_test_run_id INTEGER REFERENCES test_runs (test_run_id) ON DELETE RESTRICT,
+    -- For a file with no test_path: the file's handoff submitted after acceptance.
+    evidence_handoff_id INTEGER REFERENCES handoffs (handoff_id) ON DELETE RESTRICT,
     verified_at TEXT,
     verify_notes TEXT,
     decided_at TEXT,
@@ -303,6 +310,8 @@ CREATE TABLE IF NOT EXISTS versions (
     -- Path to the human-readable file copy, relative to the records folder.
     -- The BLOB above is authoritative; this is what version_restore reads.
     stored_path TEXT,
+    -- 1 when the version records the file's deletion: content is empty, stored_path NULL.
+    deleted INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -355,6 +364,8 @@ CREATE TABLE IF NOT EXISTS deferrals (
     issue_ids_json TEXT,
     -- For a prd deferral: the user_chat directive the decision rests on.
     directive_id INTEGER REFERENCES directives (directive_id) ON DELETE RESTRICT,
+    -- For file_accept_incomplete: the test run ids that cover the file, as a JSON list.
+    evidence_json TEXT,
     state TEXT NOT NULL DEFAULT 'open',
     decided_by TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
     decision_reason TEXT,

@@ -5,7 +5,7 @@ import sqlite3
 from collections.abc import Callable
 from typing import Literal
 
-from . import graph, rubric
+from . import graph, rubric, settle
 from .db import dict_rows, in_clause, row_dict, write_tx
 from .host import LedgerHost
 from .identity import Caller, LedgerError, ledger_errors, require_role, resolve
@@ -114,12 +114,11 @@ class OversightMixin(LedgerHost):
         phase_id: int,
         disagreement_notes: dict[str, str],
     ) -> None:
-        files = dict_rows(conn.execute("SELECT * FROM files WHERE module_id = ?", (module_id,)))
-        not_ready = [
-            f["path"] for f in files if f["state"] not in ("approved", "incomplete", "superseded")
-        ]
+        not_ready = [f["path"] for f in settle.unsettled_files(conn, self.repo_root, module_id)]
         if not_ready:
             raise LedgerError(f"file(s) are not approved or incomplete yet: {not_ready}")
+        settle.close_settled(conn, self.repo_root, module_id)
+        files = dict_rows(conn.execute("SELECT * FROM files WHERE module_id = ?", (module_id,)))
         self._block_module_review_for_departures(conn, module_id)
 
         last_change = self._module_last_decision(conn, module_id)

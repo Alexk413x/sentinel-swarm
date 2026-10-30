@@ -106,6 +106,17 @@ build_command:
 # Left empty; the setup skill fills this in from the detected stack.
 lint_command:
 
+# Named host commands outside test, build, and lint, such as the rebuild of a derived file.
+# The Coder's and the Manager's shell gates allow each one exactly as
+# "cd <cwd> && <interpreter> <run>", or "<interpreter> <run>" when cwd is ".". A failing
+# test whose output names a command's name or run is reported with that command. Setup
+# proposes the ones the repo's docs name. For example:
+#   - name: build-recipes
+#     run: scripts/recipes/build_recipes.py
+#     cwd: .
+#     interpreter: python
+commands:
+
 # Left empty; no default parallelism cap is set yet.
 parallelism_cap:
 

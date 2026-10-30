@@ -58,6 +58,11 @@ Fill `build_command` and `lint_command` the same way, from what the repo actuall
 uses, for example `npm run build` and `npx eslint .`, or `uv run ruff check`. Both
 are optional; the shell gate allows them for Coders when they are set.
 
+`commands` lists named host commands outside test, build, and lint, such as the rebuild
+of a derived file: each entry has `name`, `run`, `cwd`, and `interpreter`. The Coder's
+and the Manager's shell gates allow each one. Step 5's output proposes the commands the
+repo's docs name; ask the user which ones the swarm should run, and add those.
+
 Leave `models`, `rubric`, `escalation`, and `runtime` at their defaults unless the
 user asks for a change.
 

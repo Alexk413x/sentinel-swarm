@@ -5,6 +5,15 @@ from pathlib import Path
 
 
 def save_version(records_dir: Path, file_id: int, agent_id: str | None, path: Path) -> dict:
+    if not path.exists():
+        return {
+            "file_id": file_id,
+            "agent_id": agent_id,
+            "content": b"",
+            "sha256": hashlib.sha256(b"").hexdigest(),
+            "stored_path": None,
+            "deleted": 1,
+        }
     content = path.read_bytes()
     version_dir = records_dir / "versions" / str(file_id)
     version_dir.mkdir(parents=True, exist_ok=True)
@@ -19,6 +28,7 @@ def save_version(records_dir: Path, file_id: int, agent_id: str | None, path: Pa
         "content": content,
         "sha256": hashlib.sha256(content).hexdigest(),
         "stored_path": stored_file.relative_to(records_dir).as_posix(),
+        "deleted": 0,
     }
 
 

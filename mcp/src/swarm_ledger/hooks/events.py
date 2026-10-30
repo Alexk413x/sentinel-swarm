@@ -4,7 +4,6 @@ import json
 import os
 import re
 import shlex
-import sqlite3
 import subprocess
 from collections.abc import Callable
 from datetime import datetime, timedelta
@@ -25,6 +24,7 @@ from ..identity import (
 )
 from ..ledger import Ledger
 from ..queries import latest_live_oracle, live_run, submitted_handoffs, unread_count
+from ..settings import command_line
 from ..watchdog import MONITOR_CALL, REGISTER_GRACE, WATCH_COMMAND
 
 _RECORDS_DIR = ".sentinel-swarm"
@@ -35,6 +35,8 @@ SYNC_POST_TOOLS = ("SendMessage", "PushNotification", "Monitor", *_WRITE_TOOLS)
 FIRED_AT_KEY = "sentinel_swarm_fired_at"
 TRANSPORT_KEY = "sentinel_swarm_transport"
 _READONLY_GIT = frozenset({"status", "diff", "log", "show", "ls-files", "branch"})
+_GIT_RM_FLAGS = frozenset({"-q", "--quiet", "--"})
+_HOST_COMMAND_ROLES = frozenset({"coder", "manager"})
 _POSIX = os.name != "nt"
 _RUN_STATUS_ROLES = frozenset({"manager", "lead"})
 # Claude Code saves additionalContext over 10,000 characters to a file and shows the model
@@ -135,8 +137,15 @@ def _claim_row(ledger: Ledger, caller: dict) -> sqlite3.Row | None:
     ).fetchone()
 
 
-def _owned_paths(claim: sqlite3.Row | None) -> set[str | None]:
-    return {claim["path"], claim["test_path"]} if claim is not None else set()
+def _owned_paths(ledger: Ledger, caller: dict) -> list[str]:
+    paths: list[str] = []
+    for row in ledger.conn.execute(
+        "SELECT path, test_path FROM files WHERE released_at IS NULL "
+        "AND (file_id = ? OR source_file_id = ?) ORDER BY file_id",
+        (caller["file_id"], caller["file_id"]),
+    ):
+        paths += [p for p in (row["path"], row["test_path"]) if p and p not in paths]
+    return paths
 
 
 def _session_context(text: str) -> dict:
@@ -317,13 +326,10 @@ def handle_pre_write(ledger: Ledger, data: dict) -> dict | None:
     claim = _claim_row(ledger, caller)
     if rel is None:
         return _deny_or_override(f"{raw_path} is outside the repo root. {_scratch_hint(claim)}")
-    if rel not in _owned_paths(claim):
+    owned = _owned_paths(ledger, caller)
+    if rel not in owned:
         owner = ledger.who_owns(rel)["owner"] or "nobody"
-        mine = (
-            " and ".join(p for p in (claim["path"], claim["test_path"]) if p)
-            if claim is not None
-            else "nothing"
-        )
+        mine = " and ".join(owned) or "nothing"
         return _deny_or_override(
             f"{rel} is owned by {owner}; you own {mine}. {_scratch_hint(claim)}"
         )
@@ -352,20 +358,50 @@ def _allowed_templates(ledger: Ledger, role: str) -> list[str]:
     return [t for t in templates if t]
 
 
-def _command_allowed(ledger: Ledger, command: str, role: str) -> bool:
+def _host_command(ledger: Ledger, command: str, role: str) -> bool:
+    if role not in _HOST_COMMAND_ROLES:
+        return False
+    wanted = " ".join(command.split())
+    return any(" ".join(command_line(c).split()) == wanted for c in ledger.settings.commands)
+
+
+def _git_rm_paths(argv: list[str]) -> list[str] | None:
+    if argv[:2] != ["git", "rm"]:
+        return None
+    paths = [a for a in argv[2:] if a not in _GIT_RM_FLAGS]
+    if not paths or any(p.startswith("-") for p in paths):
+        return None
+    return paths
+
+
+def _command_allowed(ledger: Ledger, command: str, caller: dict) -> bool:
+    role = caller["role"]
+    if _host_command(ledger, command, role):
+        return True
     if _SHELL_OPERATORS.search(command):
         return False
     try:
         argv = shlex.split(command, posix=_POSIX)
     except ValueError:
         return False
-    if not argv:
+    if not argv or role == "manager":
         return False
     for template in _allowed_templates(ledger, role):
         prefix = shlex.split(template.replace("{target}", ""), posix=_POSIX)
         if prefix and argv[: len(prefix)] == prefix:
             return True
-    return role == "coder" and argv[0] == "git" and len(argv) > 1 and argv[1] in _READONLY_GIT
+    if role != "coder":
+        return False
+    removed = _git_rm_paths(argv)
+    if removed is not None:
+        owned = _owned_paths(ledger, caller)
+        relative = [_repo_relative(ledger, p) for p in removed]
+        if all(p is not None and p in owned for p in relative):
+            for p in relative:
+                ledger.mark_stale(caller["agent_id"], str(p))
+            return True
+        return False
+    return argv[0] == "git" and len(argv) > 1 and argv[1] in _READONLY_GIT
 
 
 def handle_pre_shell(ledger: Ledger, data: dict) -> dict | None:
@@ -378,14 +414,24 @@ def handle_pre_shell(ledger: Ledger, data: dict) -> dict | None:
     command = str(_tool_input(data).get("command") or "")
     _deny_or_override = partial(_deny_unless_overridden, ledger, caller, "shell", command)
 
-    if caller["role"] not in ("coder", "driver"):
+    if caller["role"] not in ("coder", "driver", "manager"):
         return _deny_or_override("this role has no shell; use the ledger tools")
-    if _command_allowed(ledger, command, caller["role"]):
+    if _command_allowed(ledger, command, caller):
         return None
 
-    allowed = list(_allowed_templates(ledger, caller["role"]))
+    allowed = (
+        [] if caller["role"] == "manager" else list(_allowed_templates(ledger, caller["role"]))
+    )
+    if caller["role"] in _HOST_COMMAND_ROLES:
+        allowed += [command_line(c) for c in ledger.settings.commands]
     if caller["role"] == "coder":
+        allowed.append("git rm of your own claimed paths")
         allowed.append("read-only git (status, diff, log, show, ls-files, branch)")
+    if not allowed:
+        return _deny_or_override(
+            "this role's shell runs only the named host commands in the settings' commands "
+            "list, and none is set"
+        )
     return _deny_or_override(f"command not allowed; allowed: {'; '.join(allowed)}")
 
 
@@ -689,7 +735,7 @@ def handle_post_shell(ledger: Ledger, data: dict) -> None:
     if not changed:
         return
 
-    owned = _owned_paths(_claim_row(ledger, caller))
+    owned = set(_owned_paths(ledger, caller))
     others = {
         p
         for row in ledger.conn.execute(
@@ -1146,7 +1192,7 @@ def _refresh_finished_report(
     ledger: Ledger, caller_id: str | None, transcript_path: str | None
 ) -> None:
     run = ledger.conn.execute(
-        "SELECT * FROM runs WHERE state = 'finished' ORDER BY run_id DESC LIMIT 1"
+        "SELECT * FROM runs WHERE state IN ('finished', 'closed') ORDER BY run_id DESC LIMIT 1"
     ).fetchone()
     if run is None or not caller_id:
         return
