@@ -234,8 +234,24 @@ CREATE TABLE IF NOT EXISTS test_runs (
     -- The working tree's state when the run started, and the earlier run a reuse copies.
     fingerprint TEXT,
     reused_from INTEGER REFERENCES test_runs (test_run_id) ON DELETE RESTRICT,
+    -- running until the runner process records it; then done, stale (the working tree
+    -- changed during a full run), or abandoned (the runner died before it recorded).
+    state TEXT NOT NULL DEFAULT 'done',
+    reason TEXT,
+    errors INTEGER,
+    -- Skips that matched the settings' allowed_skips, which count as clean.
+    allowed_skipped INTEGER NOT NULL DEFAULT 0,
+    skip_patterns_json TEXT,
+    claimed_json TEXT,
+    timeout_s INTEGER,
+    runner_pid INTEGER,
+    duration_ms INTEGER,
+    finished_at TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+
+CREATE INDEX IF NOT EXISTS idx_test_runs_running
+    ON test_runs (run_id) WHERE state = 'running';
 
 CREATE TABLE IF NOT EXISTS guidelines (
     guideline_id INTEGER PRIMARY KEY,

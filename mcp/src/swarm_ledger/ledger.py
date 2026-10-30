@@ -177,8 +177,8 @@ class Ledger(
         self.repo_root = repo_root
         self.server_pid = server_pid if server_pid is not None else os.getpid()
         self.settings = settings if settings is not None else load_settings(repo_root)
-        path = db_path if db_path is not None else ledger_path(repo_root)
-        self.conn = connect(path)
+        self.db_path = db_path if db_path is not None else ledger_path(repo_root)
+        self.conn = connect(self.db_path)
         self._pending_stops: list[tuple[str, str]] = []
         if (repo_root / ".git").exists():
             ensure_git_exclude(repo_root)
@@ -1731,11 +1731,34 @@ class Ledger(
         return dict_rows(
             self.conn.execute(
                 "SELECT w.* FROM wakeups w JOIN agents a ON a.agent_id = w.to_agent_id "
-                "WHERE w.from_agent_id = ? AND w.sent_at IS NULL AND a.ended_at IS NULL "
-                "ORDER BY w.wakeup_id",
+                "WHERE w.from_agent_id = ? AND w.to_agent_id != w.from_agent_id "
+                "AND w.sent_at IS NULL AND a.ended_at IS NULL ORDER BY w.wakeup_id",
                 (agent_id,),
             )
         )
+
+    def take_self_wakeups(self, agent_id: str) -> list[dict]:
+        with write_tx(self.conn) as conn:
+            owed = dict_rows(
+                conn.execute(
+                    "SELECT * FROM wakeups WHERE from_agent_id = ? AND to_agent_id = ? "
+                    "AND sent_at IS NULL ORDER BY wakeup_id",
+                    (agent_id, agent_id),
+                )
+            )
+            if owed:
+                ids = [w["wakeup_id"] for w in owed]
+                conn.execute(
+                    f"UPDATE wakeups SET sent_at = {NOW} WHERE wakeup_id IN ({in_clause(ids)})",
+                    ids,
+                )
+        return owed
+
+    def running_test_runs(self, agent_id: str) -> int:
+        return self.conn.execute(
+            "SELECT COUNT(*) AS n FROM test_runs WHERE agent_id = ? AND state = 'running'",
+            (agent_id,),
+        ).fetchone()["n"]
 
     def wakeups_sent(self, agent_id: str, to_session_name: str) -> int:
         with write_tx(self.conn) as conn:

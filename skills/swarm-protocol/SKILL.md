@@ -187,6 +187,11 @@ keeps every gate.
   reworked.
 - `tests_run` scopes are role-bound: file to the Coder, module to the Lead, phase to
   the Manager, full to the Oracle.
+- `tests_run` starts the suite in its own process under the ledger server, bounded by
+  `test_timeout_s`. It returns the result when the run ends within about 20 seconds,
+  else `state: "running"` with the `test_run_id`; end the turn, and a wake-up names the
+  result once it is recorded. A run counts as clean only with every skip named in
+  `allowed_skips`, and a full run whose working tree changed counts for nothing.
 - `override_grant` is the Oracle's alone.
 - `agent_spawn` refuses to start a Manager until the run has a recorded `repo_check`.
   It does not require `obvious_start`; a not-obvious start is the Oracle's call to

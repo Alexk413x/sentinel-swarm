@@ -156,7 +156,9 @@ this machine, never a Remote Control one.
 
 1. `tests_run(scope="phase", target=<the phase's directory or test selector>)` once
    every Lead has reported and every module has an accepted `module_review`. Do not
-   read or quote the output as your own finding: the ledger holds the record.
+   read or quote the output as your own finding: the ledger holds the record. When a
+   `tests_run` returns `state: "running"`, end your turn: a wake-up names the result
+   when the ledger records it.
 2. `phase_update(phase_id, state="handed_up")`. A Manager sets its own phase to
    `working` or `handed_up`; the Oracle sets every other state.
 3. `message_post(to_name=<the Oracle's name>, body=<the phase review>)`: what each module

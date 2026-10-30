@@ -200,7 +200,8 @@ testpaths = ["tests"]
 pythonpath = ["."]
 EOF
 
-sed 's|^test_command:.*|test_command: python -m pytest -q -p no:cacheprovider {target}|' \
+sed -e 's|^test_command:.*|test_command: python -m pytest -q -p no:cacheprovider {target}|' \
+  -e 's|^full_target:.*|full_target: tests|' \
   "$root/templates/sentinel-swarm.local.md.example" > .claude/sentinel-swarm.local.md
 
 cat > "$run_dir/graph.json" <<EOF

@@ -138,8 +138,10 @@ refuses unless:
 1. The caller owns the file.
 2. No change request on the file that a Coder accepted is still uncompleted.
 3. When the file has a `test_path`, the ledger runs `tests_run(scope="file")` on it
-   and the run passes: exit code 0, at least one test passed, and zero failed, errored,
-   or skipped.
+   and the run is clean: exit code 0, at least one test passed, zero failed or errored,
+   and every skip named by `allowed_skips`. A run still going after the 20-second wait
+   refuses the handoff with its `test_run_id`; the Coder ends its turn, and once the
+   wake-up names the result, `handoff_submit` reuses that run on the unchanged tree.
 4. The code graph is current for the file, and neither the file nor its test file is stale against its recorded baseline. See "The code graph" in [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
 5. A self review exists and is newer than the Coder's last edit of either path.
 6. After a returned handoff of the file, the Coder has read its brief with `brief_get`
@@ -227,8 +229,9 @@ The Manager then posts its phase report to the Oracle.
 `phase_review(phase_id, outcome, notes, low_score_notes, scores)` belongs to the Oracle,
 for a phase in `handed_up`.
 
-- `accepted` refuses unless the Oracle recorded a passing `tests_run(scope="full")`
-  after the hand-up; no approved or incomplete file of the phase lacks a test file while
+- `accepted` refuses unless the Oracle recorded a clean `tests_run(scope="full")`
+  after the hand-up. The refusal names the scope and the command it needs, and the
+  latest full run since the hand-up: still running, or not clean with its reason; no approved or incomplete file of the phase lacks a test file while
   the code graph anchors a function or class in it; `low_score_notes` holds a
   non-empty note, keyed by `file_id`, for each file whose latest Lead review has a
   dimension below the target; and `scores` rates completeness, integration, and open

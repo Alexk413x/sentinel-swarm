@@ -30,6 +30,8 @@ DEFAULT_MAX_WORKERS = 8
 DEFAULT_HEADROOM_MB = 1500
 _FALSE_WORDS = frozenset({"false", "no", "off", "0"})
 PROFILE_KEYS = ("test_command", "build_command", "lint_command")
+TEST_SCOPES = ("file", "module", "phase", "full")
+DEFAULT_TEST_TIMEOUT_S = 600
 
 
 def normalize_budget(raw: object) -> int | None:
@@ -50,6 +52,34 @@ def normalize_max_workers(raw: object) -> int:
     except ValueError:
         return DEFAULT_MAX_WORKERS
     return max(0, workers)
+
+
+def normalize_test_timeout(raw: object) -> int:
+    if raw is None or isinstance(raw, bool):
+        return DEFAULT_TEST_TIMEOUT_S
+    try:
+        seconds = int(str(raw).strip())
+    except ValueError:
+        return DEFAULT_TEST_TIMEOUT_S
+    return seconds if seconds > 0 else DEFAULT_TEST_TIMEOUT_S
+
+
+def normalize_text_list(raw: object) -> list[str]:
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    return [str(item).strip() for item in raw if item is not None and str(item).strip()]
+
+
+def normalize_scope_commands(raw: object) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        scope: str(raw[scope]).strip()
+        for scope in TEST_SCOPES
+        if raw.get(scope) is not None and str(raw[scope]).strip()
+    }
 
 
 def normalize_notify(raw: object) -> list[str]:
@@ -114,6 +144,11 @@ class Settings:
     test_command: str | None = None
     build_command: str | None = None
     lint_command: str | None = None
+    test_command_by_scope: dict[str, str] = field(default_factory=dict)
+    test_timeout_s: int = DEFAULT_TEST_TIMEOUT_S
+    full_target: str | None = None
+    allowed_skips: list[str] = field(default_factory=list)
+    slow_tests: list[str] = field(default_factory=list)
     parallelism_cap: int | None = None
     time_budget_minutes: int | None = None
     # Empty means repo_check tries main, then master, then reports no base branch.
@@ -146,6 +181,9 @@ class Settings:
                 "memory": MemorySettings(**(data.get("memory") or {})),
             }
         )
+
+    def test_template(self, scope: str) -> str | None:
+        return self.test_command_by_scope.get(scope) or self.test_command
 
     def adopt_profile(self, snapshot: str | None) -> None:
         try:
@@ -220,6 +258,13 @@ def load_settings(repo_root: Path) -> Settings:
         test_command=data.get("test_command") or defaults.test_command,
         build_command=data.get("build_command") or defaults.build_command,
         lint_command=data.get("lint_command") or defaults.lint_command,
+        test_command_by_scope=normalize_scope_commands(data.get("test_command_by_scope")),
+        test_timeout_s=normalize_test_timeout(data.get("test_timeout_s")),
+        full_target=str(data["full_target"]).strip() or None
+        if data.get("full_target") is not None
+        else None,
+        allowed_skips=normalize_text_list(data.get("allowed_skips")),
+        slow_tests=normalize_text_list(data.get("slow_tests")),
         parallelism_cap=data.get("parallelism_cap") or defaults.parallelism_cap,
         time_budget_minutes=normalize_budget(data.get("time_budget_minutes")),
         base_branch=data.get("base_branch") or defaults.base_branch,

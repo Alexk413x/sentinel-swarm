@@ -18,8 +18,8 @@
   tool catalog, and sends the call to a worker. Each worker is a Python process that
   holds its own `Ledger` and SQLite connection and runs one call at a time.
 - `max_workers` in `.claude/sentinel-swarm.local.md` caps the tool-call pool, default
-  8. Hooks run on a second pool with the same cap, so a long tool call such as
-  `tests_run` never holds up a hook. A pool starts a worker when a call finds none free,
+  8. Hooks run on a second pool with the same cap, so a long tool call never holds up a
+  hook. A pool starts a worker when a call finds none free,
   up to the cap, and stops one after 60 seconds idle; past the cap a call waits for the
   next free worker. `max_workers: 0` starts no workers: tool calls run in the front one
   at a time under one lock on one connection, and each hook runs in the front on its own
@@ -243,20 +243,57 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
   `plan_unlocked`, `events`, `analytics_query`, and `test_run_get`. A tool that marks a row is not
   read-only: `message_inbox` marks its messages read, and `directive_inbox` sets
   `notified_at`. Mark a new tool read-only only when it writes no row, file, or session.
-- `tests_run(scope, target)` is role-bound: `file` to the Coder (its own path or test
-  path only), `module` to the Lead, `phase` to the Manager, `full` to the Oracle. It
-  runs the profile's test command with `{target}` replaced, or removed for no target,
-  in the ledger's environment, with a 600-second timeout. It parses pytest and Go output. An agent never reports a test result itself.
+- `tests_run(scope, target, force, include_slow)` is role-bound: `file` to the Coder
+  (its own path or test path only), `module` to the Lead, `phase` to the Manager, `full`
+  to the Oracle. It builds the scope's command: `test_command_by_scope.<scope>`, else the
+  profile's `test_command`, with `{target}` replaced, or removed for no target. A full
+  run with no target takes `full_target`; when the command holds `{target}` and
+  `full_target` is empty, the call refuses, so a full run never collects from the repo
+  root. A pytest command gets `--deselect <id>` for each of `slow_tests` unless
+  `include_slow` is true. It parses pytest and Go output. An agent never reports a test
+  result itself.
+- **A test run outlives the tool call.** `tests_run` inserts the `test_runs` row in
+  state `running` and starts `mcp/launch/ledger.py testrun` (`testrun.py`) on the base
+  interpreter as its own detached process: a new process group with a hidden console on
+  Windows (`CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`), a new session elsewhere, so
+  no console window opens and no Claude Code shell or pool worker owns it. The runner
+  runs the command with `shell=True` in the repo root, writes its output to
+  `.sentinel-swarm/test-runs/<test_run_id>.log`, kills the process tree at
+  `test_timeout_s` (default 600), parses the result, records it on the row, and deletes
+  the log. The run survives the tool call, the worker that took it, and a restart of the
+  ledger server.
+- `tests_run` waits up to 20 seconds for the run to end. A run that ends in time comes
+  back as its result. A longer one returns `state: "running"` with its `test_run_id`
+  and a `next` that says to end the turn. When the runner records the result, it owes
+  the caller a wake-up from itself (`from_agent_id` = `to_agent_id`, reason
+  `test_run`) whose pointer names the run, its outcome, and `test_run_get`. See "Test
+  results" in [05-sessions.md](05-sessions.md). A call that finds its own run of the
+  same command on the same tree still running waits on that run instead of starting
+  another.
+- A row's `state` is `running`, `done`, `stale`, or `abandoned`. A full run compares the
+  working tree's fingerprint at its end with the one at its start; when they differ it
+  records `stale`, with the reason, and the run counts for nothing. Other scopes keep the
+  start fingerprint only. A row whose runner process is gone without a result, or that
+  runs past `test_timeout_s` plus 120 seconds, or that has no runner pid 60 seconds after
+  it started, becomes `abandoned`, and the caller is owed the wake-up. The server sweeps
+  for these at start and on each watchdog pass, and `tests_run` sweeps before it starts
+  a run, so a server restart never leaves a row `running` with nothing behind it.
+- A run counts as clean when its state is `done`, its exit code is 0, nothing failed,
+  at least one test passed, and every skip matched `allowed_skips`
+  (`allowed_skipped` = `skipped`). `handoff_submit`, `cr_complete`, `module_review`, and
+  `phase_review` read clean runs only.
 - `tests_run` stores the last 20,000 characters of output in the ledger, and returns a
   summary of at most 4,000: the last 500 characters of a pass, or the first traceback
   from the `FAILURES` section and the `short test summary info` section of a failure.
   Output in another format returns its last 4,000 characters. `output_chars` gives the
-  stored length, and `test_run_get(test_run_id)` returns the stored run with its full
-  output to any agent of the run.
+  stored length, and `test_run_get(test_run_id)` returns the run, with its state and
+  full output once recorded, and `ok`, to any agent of the run. A large suite fits the
+  cap by sharding: `pytest -n auto` from pytest-xdist, set in
+  `test_command_by_scope.full`.
 - `tests_run` reuses a passing run instead of running again when an earlier run of the
   same run used the same command on the same working tree: the same `HEAD`, the same
   tracked changes (`git status --untracked-files=no`), and the same contents of every
-  file and test file claimed in the run. It records a new row that copies the earlier
+  file and test file claimed in the run. Only a `done` run is reused. It records a new row that copies the earlier
   result, with `reused_from` naming it and `duration_ms` 0, and returns `reused: true`.
   Every gate then reads the new row as it reads any run. `force=true` always runs. Any
   edit, shell change, or hand-up that changed a claimed or tracked file changes the

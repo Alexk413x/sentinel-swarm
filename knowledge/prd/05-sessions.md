@@ -136,8 +136,8 @@ wake-up the caller owes, and returns a `next` field with the exact call to make.
   `drive_done`, and `drive_unavailable` when the Driver calls it, owe the Oracle too, so
   the Oracle is woken directly when an exploration ends or the Driver cannot load. See
   "Explorations" in [02-run-lifecycle.md](02-run-lifecycle.md).
-- A wake-up is owed only to a live agent with a session name, never to the caller
-  itself.
+- A wake-up is owed only to a live agent with a session name. The one wake-up an
+  agent owes itself is a test result; see "Test results" below.
 - `next` is `SendMessage(to="<session name>", message="<one-line pointer>")` when the
   recipient's session runs, and `agent_resume(target_name=...)` when it does not. When
   `claude agents --json` fails, `next` names both: the `SendMessage` call, or
@@ -221,7 +221,32 @@ one. The ledger pushes nothing into a session.
   the mod's delivery path. **(needs implementation)**
 - The Coder's Stop hook also blocks once, per Coder, when the Coder stops while working
   with no handoff, and names `handoff_submit`, a `message_post` to its Lead, or
-  `wait_for`. It does not block a Coder with an open file wait.
+  `wait_for`. It does not block a Coder with an open file wait or a test run still
+  `running`.
+
+### Test results
+
+- When a test runner records a run (`done`, `stale`, or `abandoned`), it owes the
+  agent that called `tests_run` a wake-up from that agent itself, reason `test_run`,
+  whose pointer reads "Test run <id> (<scope> <target>) is recorded, <outcome>. Read it
+  with test_run_get(test_run_id=<id>)." See "A test run outlives the tool call" in
+  [06-ledger-server.md](06-ledger-server.md).
+- `tests_run` marks the wake-up sent when it returns the result itself, within its
+  20-second wait.
+- `owed`, the member Stop hook's owed calls, and the watchdog's `wake_unsent` leave a
+  self-owed wake-up out: no `SendMessage` to oneself is ever named.
+- The Stop hook delivers one: when a self-owed wake-up is unsent and the stop does not
+  follow the hook's own block (`stop_hook_active`), it marks it sent and blocks with
+  its pointer, so the agent reads the result in the same turn. This runs for every role,
+  before the member and Oracle checks.
+- The mod delivers one to an idle session. While the agent has a test run in flight,
+  and once after each of its ledger tool calls, the mod posts `self_owed` every 15
+  seconds. The ledger marks the self-owed wake-ups sent and answers their pointers as
+  one text, with the time signal, and the count of the agent's runs still `running`.
+  The mod submits the text with `$.prompt.submit`, which starts a turn once the session
+  is idle and never interrupts one, and stops polling when no run is left.
+- A session the daemon retired is parked like any other, and `resume_parked` resumes
+  it with the pointer of the wake-up owed to it.
 
 ## Time signal
 
@@ -343,7 +368,8 @@ fails as ambiguous, or goes to the offline entry and waits there for good. See
   not yet acknowledged its brief. The Oracle then stops instead of waking a child that
   is starting. A child that never starts is reported by the watchdog.
 - It does not block for pending work while a directive waits on the user, with outcome
-  `needs_user`.
+  `needs_user`, or while a test run of the Oracle's is still `running`: its wake-up
+  brings the Oracle back.
 - Otherwise it blocks while the run has unlocked phases, submitted handoffs, live file
   claims, handed-up phases without an accepted review, or live agents none of which is
   working. Phases under a scoped pause do not count. The reason names

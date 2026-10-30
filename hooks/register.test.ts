@@ -270,6 +270,42 @@ describe('owed wake-ups', () => {
   })
 })
 
+describe('a test run that ends while the session waits', () => {
+  test('the recorded result starts a turn, and polling stops once nothing runs', async ($, on) => {
+    const w = world(on, { answers: { self_owed: { text: 'Test run 3 (full tests) is recorded, passed.', running: 0 } } })
+    const prompts: string[] = []
+    on('prompt.submit', (_$, e) => {
+      prompts.push(e.text)
+      return { text: e.text }
+    })
+    await start($)
+    await w.clock.advance(15_000)
+    expect(prompts).toEqual(['Test run 3 (full tests) is recorded, passed.'])
+    await w.clock.advance(15_000)
+    expect(w.events().filter(event => event === 'self_owed').length).toBe(1)
+  })
+
+  test('a run still in flight keeps the poll going, and a ledger call restarts it', async ($, on) => {
+    const answers: Record<string, unknown> = { self_owed: { text: null, running: 1 } }
+    const w = world(on, { answers })
+    const prompts: string[] = []
+    on('prompt.submit', (_$, e) => {
+      prompts.push(e.text)
+      return { text: e.text }
+    })
+    await start($)
+    await w.clock.advance(15_000)
+    answers.self_owed = { text: null, running: 0 }
+    await w.clock.advance(15_000)
+    await w.clock.advance(15_000)
+    expect(w.events().filter(event => event === 'self_owed').length).toBe(2)
+    await $.classic.PostToolUse({ tool_name: 'mcp__swarm-ledger__tests_run', tool_input: {}, tool_response: {}, tool_use_id: 'u1' } as never)
+    await w.clock.advance(15_000)
+    expect(w.events().filter(event => event === 'self_owed').length).toBe(3)
+    expect(prompts).toEqual([])
+  })
+})
+
 describe("a model's SendMessage", () => {
   test('a swarm session name goes to the live session by its id', async ($, on) => {
     const w = world(on, { answers: { send_target: { session_id: 'sess-mgr', name: 'mgr-p1-phase-1' } } })

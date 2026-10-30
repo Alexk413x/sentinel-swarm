@@ -24,8 +24,10 @@ the file already exists, edit it in place instead of overwriting the user's valu
 When the user set the plugin's `test_command` option (`${user_config.test_command}`),
 use that value verbatim for `test_command`. Otherwise detect the stack and write the
 three commands into the frontmatter. `test_command` must contain `{target}`; the
-ledger substitutes the file, module, or phase being tested, and drops the placeholder
-for a full run.
+ledger substitutes the file, module, or phase being tested. A full run substitutes
+`full_target`, and refuses while it is empty: set it to the folder that holds the
+tests, for pytest the `testpaths` folder such as `tests`. Run from the repo root
+without a path, pytest walks the whole tree and imports every `test_*.py` it finds.
 
 | Stack | `test_command` |
 |---|---|
@@ -36,6 +38,21 @@ for a full run.
 
 `-p no:cacheprovider` matters: several Coders run pytest at the same time in one
 working tree, and they would otherwise contend on `.pytest_cache`.
+
+Then fill in the test settings:
+
+- `test_timeout_s` (default 600) bounds one test run's process. A suite that takes
+  longer than half of it needs sharding: put `-n auto` (pytest-xdist) in the full
+  run's command, `test_command_by_scope.full`, or raise the cap.
+- `test_command_by_scope` takes a command per scope (`file`, `module`, `phase`,
+  `full`). Use it for what only one scope needs, such as an environment variable that
+  turns on a slow benchmark: put it in `test_command`, and every handoff runs it.
+- `allowed_skips` names the skips the environment causes on purpose, by text in the
+  skip's location or reason. Every other skip fails its run and blocks every handoff
+  and phase review. For pytest, add `-rs` to the command so the ledger can read the
+  reasons.
+- `slow_tests` names pytest node ids or folders to leave out of every run unless a
+  brief asks for them (`tests_run(include_slow=true)`).
 
 Fill `build_command` and `lint_command` the same way, from what the repo actually
 uses, for example `npm run build` and `npx eslint .`, or `uv run ruff check`. Both
@@ -75,7 +92,16 @@ The first line picks a Python 3.9 or newer interpreter: `py -3`, else `python3`,
 `python`. The ledger imports only the standard library, so it needs no venv and no install
 step.
 
-It is safe to run again, and it prints what it changed:
+It is safe to run again, and it prints what it changed and what it found:
+
+- The test command, tried through the ledger's own runner (`cmd.exe` on Windows, so a
+  path only a POSIX shell accepts fails here first). For pytest it dry-runs the full
+  command with `--collect-only` and reports the collected count or the collection
+  error. It warns about an empty `full_target`, and about skips no `allowed_skips`
+  entry can match.
+- With `--time-full-run`, it runs the full suite once and warns when the run takes
+  more than half of `test_timeout_s`. Offer the user this run: it takes as long as the
+  suite does.
 
 - `.claude/agents/swarm-oracle.md`, `swarm-manager.md`, `swarm-lead.md`, and
   `swarm-coder.md`, from the plugin's templates. Each file sets its role's model,
@@ -109,5 +135,5 @@ output prints. They run it once in a terminal, accept the trust prompt, and exit
 ## 7. Report
 
 Say what was detected, what was written, and anything the user must confirm by hand:
-a test command you could not infer, a missing dependency, a repo with no git
-checkout, or a repo that is not trusted yet.
+a test command you could not infer, every warning the test check printed, a missing
+dependency, a repo with no git checkout, or a repo that is not trusted yet.

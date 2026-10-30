@@ -19,6 +19,7 @@ class LedgerHost:
     conn: sqlite3.Connection
     settings: Settings
     repo_root: Path
+    db_path: Path
     _pending_stops: list[tuple[str, str]]
 
     def _log_event(
@@ -33,6 +34,10 @@ class LedgerHost:
     def _active_run(self, conn: sqlite3.Connection) -> sqlite3.Row: ...
 
     def adopt_run_profile(self, run_id: int | None) -> None: ...
+
+    def test_command_for(
+        self, scope: str, target: str | None, include_slow: bool = False
+    ) -> str: ...
 
     def pause_reason(self, run_id: int) -> str | None: ...
 

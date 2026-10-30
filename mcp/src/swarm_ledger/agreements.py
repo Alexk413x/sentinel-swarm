@@ -19,9 +19,10 @@ _ROLE_TITLE = {"lead": "Lead", "manager": "Manager", "oracle": "Oracle"}
 
 def test_run_passed(row: sqlite3.Row) -> bool:
     return (
-        row["exit_code"] == 0
+        row["state"] == "done"
+        and row["exit_code"] == 0
         and (row["failed"] or 0) == 0
-        and (row["skipped"] or 0) == 0
+        and (row["skipped"] or 0) == (row["allowed_skipped"] or 0)
         and (row["passed"] or 0) >= 1
     )
 

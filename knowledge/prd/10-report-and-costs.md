@@ -49,8 +49,8 @@ Sections:
   asked (kept even after a later `directive_resolve` changes the outcome) and each
   reply it received through `reply_to`; then every row of the `notifications` table,
   with its kind, message, and time.
-- Final test run: the last `full`-scope `tests_run`, with passed, failed, skipped, and
-  exit code, or a note that none was recorded.
+- Final test run: the last `full`-scope `tests_run` that is no longer running, with
+  passed, failed, skipped, and exit code, or a note that none was recorded.
 - Measures: each phase's working time; each role's total agent time, summed across its
   agents; returns per file, from the `attempts` table; and cost per phase, summed from
   each agent's cost by its `phase_id`, with the Oracle's cost under a run-level total

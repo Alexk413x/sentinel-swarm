@@ -17,6 +17,10 @@ A thread in the ledger server (`watchdog.py`) runs every `interval_seconds`. It 
 failed listing skips one pass. On a paused run it only tries the pause's clear-check
 and sends reminders; see "Paused runs" and "Reminders" below.
 
+Each pass first sweeps the test runs, paused run or not: a `running` row whose runner
+process is gone becomes `abandoned`, and its caller is owed the wake-up. See "A test run
+outlives the tool call" in [06-ledger-server.md](06-ledger-server.md).
+
 Before the scan, each pass of an active run runs the memory steps in this order, each
 on its own so a failure in one is logged and the next still runs: sample each session's
 memory, park agents whose session is gone, resume parked agents that are owed a
@@ -32,7 +36,7 @@ pass reads the listing again for the scan. See "Parked agents" and "Memory" in
 | `driver_overdue` | The Driver's session runs, it is `working`, and its open exploration's last check-in (or its start, with none yet) is older than 30 minutes plus a 5-minute grace | Message it, or have the Oracle stop it and start a fix for whatever blocked it. |
 | `driver_unsent` | The Driver's exploration is closed, the ledger has not released it, its session runs but sits idle, and it has owed a live agent an unsent wake-up for more than 2 minutes. This is the Driver ignoring its Stop hook block twice: `stop_hook_active` lets the second stop through idle. Not also reported as `crashed`, which covers a dead session instead. | Read its result in the ledger, then `agent_release` it. |
 | `wait_landed` | A live Coder or Lead has an open `wait_for` row on a path whose latest claim is `approved` or `incomplete`. `approve` closes the waits in the same transaction, so this reports a race or a lost close | `agent_resume(target_name=...)`, or the `SendMessage` to its session when it runs |
-| `wake_unsent` | A wake-up a live agent owes a live Manager, Lead, Coder, or Driver has been unsent for `unsent_wakeup_minutes`. One finding per target, from its oldest such wake-up. Not reported for a Driver's debt, which `driver_unsent` covers | The wake call (`SendMessage` or `agent_resume`) for the target. For a parked target: the ledger resumes it once memory allows, or wake it now with that call |
+| `wake_unsent` | A wake-up a live agent owes a live Manager, Lead, Coder, or Driver has been unsent for `unsent_wakeup_minutes`. One finding per target, from its oldest such wake-up. Not reported for a Driver's debt, which `driver_unsent` covers, or for a test result an agent owes itself | The wake call (`SendMessage` or `agent_resume`) for the target. For a parked target: the ledger resumes it once memory allows, or wake it now with that call |
 | `spawn_queued` | A spawn `agent_spawn` queued for memory has waited `queued_spawn_minutes`. Reported on the parent, one finding per queued spawn | Free memory on the machine, lower `memory.headroom_mb`, or `run_pause` and tell the user the run waits on memory |
 | `spinning` | The agent's last `spin_failures` test runs for one scope and target all failed. Does not apply to a Driver, which runs no `tests_run` | Ask its parent to `return_work` or `issue_escalate` |
 | `context_high` | The latest request of the agent, the Oracle included, fills `context_pct` of its window | Have its parent replace it. For the Oracle: `run_pause`, then resume in a fresh session |

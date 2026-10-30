@@ -815,7 +815,7 @@ def _block_coder_stop_once(ledger: Ledger, caller: dict, data: dict) -> dict | N
         "SELECT 1 FROM file_waits WHERE agent_id = ? AND closed_at IS NULL",
         (caller["agent_id"],),
     ).fetchone()
-    if waiting is not None:
+    if waiting is not None or ledger.running_test_runs(caller["agent_id"]):
         return None
 
     with write_tx(ledger.conn) as conn:
@@ -977,6 +977,10 @@ def handle_stop(ledger: Ledger, data: dict) -> dict | None:
     caller = _swarm_caller(ledger, caller_id)
     if caller is None:
         return None
+    if not data.get("stop_hook_active"):
+        results = _self_wakeup_text(ledger, caller["agent_id"])
+        if results:
+            return _block(results)
     if caller["role"] != "oracle":
         return _member_stop(ledger, caller, data)
     if data.get("stop_hook_active"):
@@ -1031,7 +1035,7 @@ def _oracle_work_block(ledger: Ledger, run: dict, oracle: dict) -> dict | None:
         "SELECT 1 FROM directives WHERE run_id = ? AND state = 'open' AND outcome = 'needs_user'",
         (run["run_id"],),
     ).fetchone()
-    if needs_user is not None:
+    if needs_user is not None or ledger.running_test_runs(oracle["agent_id"]):
         return None
 
     live = [
@@ -1198,6 +1202,24 @@ def handle_owed(ledger: Ledger, data: dict) -> dict | None:
         target["text"] = wake.timed(text, wake.signal_for(ledger.conn, target["session_id"]))
         wakeups.append(target)
     return {"wakeups": wakeups}
+
+
+def _self_wakeup_text(ledger: Ledger, agent_id: str) -> str | None:
+    owed = ledger.take_self_wakeups(agent_id)
+    if not owed:
+        return None
+    text = " ".join(dict.fromkeys(w["pointer"] for w in owed))
+    return wake.timed(text, wake.signal_for(ledger.conn, agent_id))
+
+
+def handle_self_owed(ledger: Ledger, data: dict) -> dict | None:
+    caller = _data_caller(ledger, data)
+    if caller is None:
+        return None
+    return {
+        "text": _self_wakeup_text(ledger, caller["agent_id"]),
+        "running": ledger.running_test_runs(caller["agent_id"]),
+    }
 
 
 def handle_wake_sent(ledger: Ledger, data: dict) -> dict | None:
