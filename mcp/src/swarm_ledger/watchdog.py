@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 import threading
@@ -10,11 +11,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import notify, rekey, sessions, wake
+from . import notify, procs, rekey, sessions, wake
 from .clock import parse_stamp, stamp, utcnow
 from .db import NOW, write_tx
 from .identity import ROLES, LedgerError
-from .queries import latest_live_oracle, live_run, submitted_handoffs, unread_count
+from .queries import (
+    latest_live_oracle,
+    live_run,
+    logical_state,
+    submitted_handoffs,
+    unread_count,
+)
 from .settings import NOTIFY_CHANNELS, WatchdogSettings
 from .waits import landed_waits
 
@@ -28,6 +35,8 @@ MONITOR_CALL = (
     f'description="sentinel-swarm watchdog", timeout_ms={MONITOR_TIMEOUT_MS})'
 )
 REGISTER_GRACE = timedelta(minutes=2)
+# A released session can take a moment to exit after claude stop returns.
+STRAY_GRACE = timedelta(minutes=1)
 WAKE_EVERY = timedelta(minutes=5)
 MAX_WAKES = 3
 WAKE_STATE = "watchdog_wake"
@@ -105,6 +114,7 @@ def scan(
     findings += _landed_wait_findings(conn, run["run_id"], agents, by_session)
     findings += _unsent_findings(conn, run["run_id"], agents, by_session, now, settings)
     findings += _queued_findings(conn, run["run_id"], agents, now, settings)
+    findings += _stray_process_findings(conn, run["run_id"], now)
 
     stalled = _stalled(conn, run, agents, by_session, now)
     if stalled is not None:
@@ -216,6 +226,57 @@ def _queued_findings(
     return findings
 
 
+def _stray_process_findings(conn: sqlite3.Connection, run_id: int, now: datetime) -> list[Finding]:
+    rows = conn.execute(
+        "SELECT p.*, a.name, a.session_name FROM released_processes p "
+        "JOIN agents a ON a.agent_id = p.agent_id WHERE a.run_id = ? AND p.recorded_at <= ? "
+        "ORDER BY p.agent_id, p.pid",
+        (run_id, stamp(now - STRAY_GRACE)),
+    ).fetchall()
+    if not rows:
+        return []
+    table = procs.snapshot()
+    children = procs.children_map(table)
+    protected = procs.ancestors(table, os.getpid())
+    by_agent: dict[str, list[sqlite3.Row]] = {}
+    for row in rows:
+        by_agent.setdefault(row["agent_id"], []).append(row)
+    findings: list[Finding] = []
+    for agent_id, recorded in by_agent.items():
+        stray: dict[int, procs.Proc] = {}
+        for row in recorded:
+            current = table.get(row["pid"])
+            if current is not None and not procs.same_process(current, row["created"]):
+                continue
+            if current is not None:
+                stray.setdefault(current.pid, current)
+            if row["is_session"]:
+                found = procs.tool_tree(table, row["pid"], row["created"])
+            else:
+                found = procs.descendants(children, row["pid"], row["created"])
+            for proc in found:
+                stray.setdefault(proc.pid, proc)
+        left = [p for pid, p in sorted(stray.items()) if pid not in protected]
+        if not left:
+            continue
+        agent = {"agent_id": agent_id, "name": recorded[0]["name"]}
+        agent["session_name"] = recorded[0]["session_name"]
+        listed = ", ".join(f"{p.name} (pid {p.pid})" for p in left)
+        pids = " ".join(str(p.pid) for p in left)
+        stop = " ".join(f"/PID {p.pid}" for p in left) if sys.platform == "win32" else pids
+        command = f"taskkill /F /T {stop}" if sys.platform == "win32" else f"kill {stop}"
+        findings.append(
+            _finding(
+                agent,
+                "stray_process",
+                f"it was released, but {len(left)} process(es) its session started still run: "
+                f"{listed}",
+                f"Tell the user to stop them with `{command}`; they hold files and memory.",
+            )
+        )
+    return findings
+
+
 def _finding(agent: dict, kind: str, detail: str, next_step: str) -> Finding:
     return Finding(
         agent_id=agent["agent_id"],
@@ -238,7 +299,7 @@ def _not_running(entry: dict | None) -> str:
 
 
 def _crashed(agent: dict, entry: dict | None, now: datetime) -> list[Finding]:
-    state = agent["state"]
+    state = logical_state(agent)
     started = parse_stamp(agent["started_at"])
     overdue = started is not None and now - started > REGISTER_GRACE
     if state != "working" and not (state == "registered" and overdue):
@@ -795,6 +856,7 @@ class Watchdog:
             ("resume parked agents", lambda: ledger.resume_parked(listing)),
             ("start queued spawns", lambda: ledger.start_queued_spawns(listing)),
             ("park idle parents", lambda: ledger.park_idle_parents(listing)),
+            ("release finished parked parents", lambda: ledger.release_finished_parked(now)),
         ]
         for label, step in steps:
             try:
@@ -870,6 +932,9 @@ class Watchdog:
                 )
                 reason = f"the watchdog woke the Oracle: {message}"
                 agent_id = self._adopt_resumed(oracle, bg_id)
+            except sessions.ConfigParseError as exc:
+                failure = self.ledger.pause_for_config(exc) if self.ledger is not None else exc
+                reason = f"the watchdog could not resume the Oracle: {failure}"
             except LedgerError as exc:
                 reason = f"the watchdog could not resume the Oracle: {exc}"
         with write_tx(self.conn) as conn:

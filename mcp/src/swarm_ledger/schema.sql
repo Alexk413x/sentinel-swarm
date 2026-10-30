@@ -101,9 +101,15 @@ CREATE TABLE IF NOT EXISTS agents (
     -- re-keys the agent to that id.
     resume_started_at TEXT,
     -- Set while the agent is live but its session is not running: the daemon retired it, or
-    -- the ledger stopped an idle parent under memory pressure. A parked agent keeps its state.
+    -- the ledger stopped an idle parent under memory pressure. Parking sets state to 'parked'
+    -- and keeps the state it had in state_before_park; unparking puts that state back.
     parked_at TEXT,
-    park_reason TEXT
+    park_reason TEXT,
+    state_before_park TEXT,
+    -- The session's process, as the watchdog last saw it running. A release stops the processes
+    -- its tool shells started, even after the session itself is gone.
+    session_pid INTEGER,
+    session_pid_created INTEGER
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_name_live
@@ -575,4 +581,16 @@ CREATE TABLE IF NOT EXISTS memory_estimates (
     mean_mb INTEGER NOT NULL,
     samples INTEGER NOT NULL,
     updated_at TEXT NOT NULL
+);
+
+-- The processes a release found under the released agent's session: the session's own
+-- process and every process its tool shells started. The watchdog reports one still running.
+CREATE TABLE IF NOT EXISTS released_processes (
+    agent_id TEXT NOT NULL,
+    pid INTEGER NOT NULL,
+    created INTEGER,
+    name TEXT,
+    is_session INTEGER NOT NULL DEFAULT 0,
+    recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (agent_id, pid)
 );

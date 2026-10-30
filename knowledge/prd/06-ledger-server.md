@@ -265,8 +265,9 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
   `branch`, `plugin_version`, `started_at`, and the decoded `repo_check`), not the run
   row. The PRD text comes back only with `include_prd=true`, and the settings snapshot
   never does. Their agent lists carry names, not session ids (`parent` is the parent's
-  name), and leave out empty fields; a file's `owner` is the owner's name. `run_status`
-  also lists the open `file_waits`.
+  name), and leave out empty fields; a file's `owner` is the owner's name. A `parked`
+  agent carries its `park_reason` and `session: "closed"`: it is live in the ledger,
+  but its session is closed. `run_status` also lists the open `file_waits`.
   `agent_spawn` leaves empty fields and the settings snapshot out of its result.
 - `version_restore(version_id)` restores a saved version onto the Coder's own file.
 - The server itself shows a desktop notification for each notification it records:

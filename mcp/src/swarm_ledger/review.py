@@ -199,7 +199,7 @@ def live_agents(conn: sqlite3.Connection, run_id: int) -> list[dict]:
     names = agent_names(conn, run_id)
     rows = conn.execute(
         "SELECT name, role, state, current_activity, parent_agent_id, model, effort, "
-        "session_name, last_heartbeat_at FROM agents "
+        "session_name, last_heartbeat_at, park_reason FROM agents "
         "WHERE run_id = ? AND ended_at IS NULL ORDER BY started_at",
         (run_id,),
     ).fetchall()
@@ -207,6 +207,8 @@ def live_agents(conn: sqlite3.Connection, run_id: int) -> list[dict]:
     for row in rows:
         agent = dict(row)
         agent["parent"] = names.get(agent.pop("parent_agent_id"))
+        if agent["state"] == "parked":
+            agent["session"] = "closed"
         agents.append({key: value for key, value in agent.items() if value is not None})
     return agents
 
@@ -261,8 +263,8 @@ class ReviewMixin(LedgerHost):
             return
         phase_name = _phase_name_at(conn, row["phase_id"])
         conn.execute(
-            f"UPDATE agents SET state = 'released', ended_at = {NOW}, phase_at_end = ? "
-            "WHERE agent_id = ?",
+            f"UPDATE agents SET state = 'released', ended_at = {NOW}, phase_at_end = ?, "
+            "state_before_park = NULL WHERE agent_id = ?",
             (phase_name, target_agent_id),
         )
         self._log_event(conn, target_agent_id, row["state"], "released", reason)

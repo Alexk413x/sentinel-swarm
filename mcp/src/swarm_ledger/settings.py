@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, TypeVar
 
-from . import frontmatter
+from . import frontmatter, memory
 from .rubric import Thresholds
 
 _DEFAULT_RUNTIME = {
@@ -49,6 +49,16 @@ def normalize_max_workers(raw: object) -> int:
     except ValueError:
         return DEFAULT_MAX_WORKERS
     return max(0, workers)
+
+
+def normalize_parallelism_cap(raw: object) -> int | None:
+    if raw is None or isinstance(raw, bool) or str(raw).strip() == "":
+        return memory.default_parallelism_cap(memory.total_mb())
+    try:
+        cap = int(str(raw).strip())
+    except ValueError:
+        return memory.default_parallelism_cap(memory.total_mb())
+    return cap if cap > 0 else None
 
 
 def normalize_notify(raw: object) -> list[str]:
@@ -210,7 +220,7 @@ def load_settings(repo_root: Path) -> Settings:
         test_command=data.get("test_command") or defaults.test_command,
         build_command=data.get("build_command") or defaults.build_command,
         lint_command=data.get("lint_command") or defaults.lint_command,
-        parallelism_cap=data.get("parallelism_cap") or defaults.parallelism_cap,
+        parallelism_cap=normalize_parallelism_cap(data.get("parallelism_cap")),
         time_budget_minutes=normalize_budget(data.get("time_budget_minutes")),
         base_branch=data.get("base_branch") or defaults.base_branch,
         effort=effort,

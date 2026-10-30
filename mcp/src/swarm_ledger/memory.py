@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import subprocess
@@ -13,6 +14,9 @@ from .paths import config_dir
 
 SESSION_MB = 300
 CODER_CHILDREN_MB = 300
+# A role session measured about 600 MB: two processes of about 150 MB and 450 MB.
+SESSION_COST_MB = 600
+MIN_PARALLELISM_CAP = 4
 _COMMAND_TIMEOUT_S = 5
 _LOG_TAIL = 512 * 1024
 _RETIRE_LINE = re.compile(r"bg retire (\S+?):\s*(.+?)\s*$")
@@ -36,7 +40,7 @@ def platform_free_mb() -> int | None:
         return None
 
 
-def _windows_free_mb() -> int | None:
+def _windows_memory_mb() -> tuple[int, int] | None:
     if sys.platform != "win32":
         return None
     import ctypes
@@ -59,7 +63,35 @@ def _windows_free_mb() -> int | None:
     status.dwLength = ctypes.sizeof(MemoryStatusEx)
     if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
         return None
-    return int(status.ullAvailPhys // (1024 * 1024))
+    mb = 1024 * 1024
+    return int(status.ullAvailPhys // mb), int(status.ullTotalPhys // mb)
+
+
+def _windows_free_mb() -> int | None:
+    figures = _windows_memory_mb()
+    return figures[0] if figures is not None else None
+
+
+def total_mb() -> int | None:
+    return platform_total_mb()
+
+
+def platform_total_mb() -> int | None:
+    try:
+        if sys.platform == "win32":
+            figures = _windows_memory_mb()
+            return figures[1] if figures is not None else None
+        pages = os.sysconf("SC_PHYS_PAGES")
+        size = os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError):
+        return None
+    return int(pages * size // (1024 * 1024)) if pages > 0 and size > 0 else None
+
+
+def default_parallelism_cap(total: int | None) -> int | None:
+    if total is None:
+        return None
+    return max(MIN_PARALLELISM_CAP, total // 2 // SESSION_COST_MB)
 
 
 def _mac_free_mb() -> int | None:

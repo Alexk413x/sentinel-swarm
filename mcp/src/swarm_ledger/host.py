@@ -19,6 +19,7 @@ class LedgerHost:
     conn: sqlite3.Connection
     settings: Settings
     repo_root: Path
+    server_pid: int
     _pending_stops: list[tuple[str, str]]
 
     def _log_event(

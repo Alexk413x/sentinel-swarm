@@ -216,6 +216,20 @@ describe('owed wake-ups', () => {
     expect(w.posts.find(p => p.event === 'wake_sent')?.body.wakeup_ids).toEqual([3])
   })
 
+  test('a send refused on an unreadable ~/.claude.json is tried again after a pause', async ($, on) => {
+    let tries = 0
+    const w = world(on, {
+      answers: { owed: { wakeups: [OWED.wakeups[0]] } },
+      send: () => (++tries < 2 ? { isDelivered: false, reason: 'JSON Parse error: Unexpected EOF' } : { isDelivered: true }),
+    })
+    await start($)
+    const stopped = $.classic.Stop({ stop_hook_active: false } as never)
+    await w.clock.advance(2_000)
+    await stopped
+    expect(w.sends.length).toBe(2)
+    expect(w.posts.find(p => p.event === 'wake_sent')?.body.wakeup_ids).toEqual([3])
+  })
+
   test('the Stop hook pays before it posts stop', async ($, on) => {
     const w = world(on, { answers: { owed: { wakeups: [OWED.wakeups[0]] } } })
     await start($)

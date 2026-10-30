@@ -101,6 +101,10 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
 - Adds `.sentinel-swarm/`, `.claude/agents/swarm-*.md`, `.claude/codebase-kg.local.md`,
   and `.claude/sentinel-swarm.local.md` to `.git/info/exclude`, so the settings file the
   setup skill writes stays out of `git status`.
+- Prints the `parallelism_cap` the ledger will use, whether it is the default for the
+  machine's total memory, and that it counts this run's live sessions plus every other
+  swarm's running sessions on the machine. See "Parallelism" in
+  [05-sessions.md](05-sessions.md).
 - Reports whether the repo is trusted, from `~/.claude.json` (or
   `$CLAUDE_CONFIG_DIR/.claude.json`), and prints the command that trusts it.
   `--check-trust` only checks, and exits 1 with the command when the repo is not
@@ -207,7 +211,7 @@ descriptions stay out of every session's context.
 | `build_command`, `lint_command` | empty | Optional; the Coder's shell gate allows them, and the Driver's allows `build_command` only |
 | `memory.headroom_mb` | 1500 | Megabytes of free memory the ledger keeps. `agent_spawn` queues a session whose role's estimate would take free memory below it, the watchdog starts it once memory frees, and a parked agent's resume follows the same rule. Empty admits every spawn. See "Memory" in [05-sessions.md](05-sessions.md) |
 | `memory.park_idle_parents` | `true` | Under memory pressure, the watchdog stops an idle Manager or Lead whose children still work and resumes it when a wake-up is owed to it. `false` leaves idle parents to the daemon |
-| `parallelism_cap` | empty | No limit when empty; also counts other swarms' live sessions on the machine |
+| `parallelism_cap` | empty | The most sessions at once: the run's live agents plus other swarms' running sessions on the machine. Empty sets it from total memory, half of it at 600 MB a session and at least 4; `0` turns it off. See "Parallelism" in [05-sessions.md](05-sessions.md) |
 | `time_budget_minutes` | empty | Advisory minutes for the run. Each wake-up and watchdog line for the Oracle or a Manager ends with `elapsed <n>s / <budget>s`, or `elapsed <n>s` when empty. A value that is not a positive whole number reads as empty. See "Time signal" in [05-sessions.md](05-sessions.md) |
 | `base_branch` | empty | `repo_check` tries `main`, then `master` |
 | `effort.<role>` | `medium` for every role | `--effort <level>` for that role's sessions. A settings file with no `effort` key gets `medium` for every role; a role left empty runs at its model's default. A brief's own `effort` overrides it |

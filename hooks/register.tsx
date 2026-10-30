@@ -47,6 +47,8 @@ const SHIM_MS = 50_000
 const SEND_MS = 15_000
 const SEND_RETRY_MS = [2_000, 4_000, 8_000]
 const NOT_YET_LIVE = /no live session/i
+// Many sessions starting at once can leave ~/.claude.json truncated until a later write completes it.
+const CONFIG_UNREADABLE = /JSON Parse error|\.claude\.json\S*\s+is\s+corrupt/i
 const WRITE_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']
 const WRITE_TOOL = new RegExp(`^(${WRITE_TOOLS.join('|')})$`)
 const SHELL_TOOL = /^(Bash|PowerShell)$/
@@ -634,7 +636,7 @@ async function deliver($: EngineInterface, wakeup: Owed): Promise<number[]> {
     const sent = await sendOwn($, to, wakeup.text).catch(() => undefined)
     if (sent?.isDelivered) return wakeup.wakeup_ids
     // A session registers 10 to 14 s after it starts; a send before that finds no live session.
-    if (sent === undefined || !NOT_YET_LIVE.test(sent.reason)) return []
+    if (sent === undefined || !(NOT_YET_LIVE.test(sent.reason) || CONFIG_UNREADABLE.test(sent.reason))) return []
   }
   return []
 }

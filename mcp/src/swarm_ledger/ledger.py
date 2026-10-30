@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import __version__, agentfiles, lock, rekey, sessions, wake
+from . import __version__, agentfiles, lock, memory, procs, rekey, sessions, wake
 from .agreements import AgreementsMixin
 from .capacity import CapacityMixin
 from .db import (
@@ -34,6 +34,7 @@ from .identity import (
 from .issues import IssuesMixin
 from .messages import MessagesMixin
 from .oversight import OversightMixin
+from .queries import UNPARK_SET, latest_live_oracle
 from .repo import RepoMixin
 from .report import ReportMixin
 from .review import ReviewMixin, agent_names, live_agents, run_summary
@@ -164,13 +165,79 @@ class Ledger(
     def _stop_released_sessions(self) -> None:
         pending, self._pending_stops = self._pending_stops, []
         for agent_id, bg_id in pending:
+            table = procs.snapshot()
+            root = self._session_process(agent_id, table)
+            tree = procs.tool_tree(table, *root) if root is not None else []
             try:
                 sessions.stop(bg_id)
                 outcome = f"session {bg_id} stopped"
             except Exception as exc:
                 outcome = f"session {bg_id} was not stopped: {exc}"
+            stopped = self._stop_tree(tree)
+            if stopped:
+                outcome = f"{outcome}; {stopped} process(es) its tools left running stopped"
             with write_tx(self.conn) as conn:
+                self._record_released_processes(conn, agent_id, root, table, tree)
                 self._log_event(conn, agent_id, "released", "released", outcome)
+
+    def _session_process(
+        self, agent_id: str, table: dict[int, procs.Proc]
+    ) -> tuple[int, int | None] | None:
+        row = self.conn.execute(
+            "SELECT session_pid, session_pid_created FROM agents WHERE agent_id = ?", (agent_id,)
+        ).fetchone()
+        pid = memory.session_pids().get(agent_id)
+        if pid is not None and pid in table:
+            return pid, table[pid].created
+        if row is None or row["session_pid"] is None:
+            return None
+        current = table.get(row["session_pid"])
+        if current is not None and not procs.same_process(current, row["session_pid_created"]):
+            return None
+        return row["session_pid"], row["session_pid_created"]
+
+    def _stop_tree(self, tree: list[procs.Proc]) -> int:
+        if not tree:
+            return 0
+        table = procs.snapshot()
+        protected = procs.ancestors(table, os.getpid()) | {self.server_pid}
+        left = procs.survivors(table, [(p.pid, p.created) for p in tree], protected)
+        return sum(1 for proc in left if procs.terminate(proc))
+
+    def _record_released_processes(
+        self,
+        conn: sqlite3.Connection,
+        agent_id: str,
+        root: tuple[int, int | None] | None,
+        table: dict[int, procs.Proc],
+        tree: list[procs.Proc],
+    ) -> None:
+        rows: list[tuple[int, int | None, str | None, int]] = [
+            (p.pid, p.created, p.name, 0) for p in tree
+        ]
+        if root is not None:
+            current = table.get(root[0])
+            rows.append((root[0], root[1], current.name if current is not None else None, 1))
+        conn.executemany(
+            "INSERT OR IGNORE INTO released_processes (agent_id, pid, created, name, is_session) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [(agent_id, *row) for row in rows],
+        )
+
+    def pause_for_config(self, exc: sessions.ConfigParseError) -> LedgerError:
+        if sessions.claude_json_problem() is None:
+            return sessions.ConfigParseError(str(exc))
+        reason = sessions.config_pause_reason(str(exc))
+        paused = False
+        with write_tx(self.conn) as conn:
+            run = conn.execute("SELECT * FROM runs WHERE state = 'active'").fetchone()
+            oracle = latest_live_oracle(conn, run["run_id"]) if run is not None else None
+            if run is not None and oracle is not None:
+                conn.execute("UPDATE runs SET state = 'paused' WHERE run_id = ?", (run["run_id"],))
+                self._log_event(conn, oracle["agent_id"], "active", "paused", reason)
+                paused = True
+        note = " The ledger paused the run." if paused else ""
+        return sessions.ConfigParseError(f"{reason}.{note}")
 
     def _log_event(
         self,
@@ -223,12 +290,14 @@ class Ledger(
             else:
                 run_id = self._open_run(conn, prd, session_id, oracle_name, session_name)
 
+        others = lock.live_swarms(self.server_pid)
         if resumed is not None:
-            return resumed | {"oracle": self._agent_dict(session_id)}
+            return resumed | {"oracle": self._agent_dict(session_id), "other_swarms": others}
         return {
             "run": row_dict(self.conn, "runs", "run_id", run_id),
             "oracle": self._agent_dict(session_id),
             "resumed": False,
+            "other_swarms": others,
         }
 
     def _open_run(
@@ -1255,7 +1324,10 @@ class Ledger(
         self._require_spawnable(brief, child_name)
 
         session_name = self.session_name(brief["run_id"], child_name)
-        listing = sessions.list_sessions()
+        try:
+            listing = sessions.list_sessions(retry=True)
+        except sessions.ConfigParseError as exc:
+            raise self.pause_for_config(exc) from exc
         if session_name in sessions.live_names(listing):
             raise LedgerError(f"a running session already has the name {session_name!r}")
         self._require_spawn_slot(brief, listing)
@@ -1270,7 +1342,10 @@ class Ledger(
         effort = brief["effort"] or self.settings.effort.get(role)
         options = self._session_options(role, brief["model"], effort)
         prompt = f"You are {child_name}. Read your brief from the swarm ledger and follow it."
-        bg_id, session_id = sessions.spawn(prompt, session_name, options, cwd=self.repo_root)
+        try:
+            bg_id, session_id = sessions.spawn(prompt, session_name, options, cwd=self.repo_root)
+        except sessions.ConfigParseError as exc:
+            raise self.pause_for_config(exc) from exc
 
         with write_tx(self.conn) as conn:
             conn.execute(
@@ -1447,7 +1522,10 @@ class Ledger(
                 f"{target_name!r} has no recorded session, so agent_resume cannot wake it: "
                 "a resume without one starts a fresh session"
             )
-        listing = sessions.list_sessions()
+        try:
+            listing = sessions.list_sessions(retry=True)
+        except sessions.ConfigParseError as exc:
+            raise self.pause_for_config(exc) from exc
         own = sessions.find_session(listing, target["agent_id"])
         if own is not None and sessions.is_running(own):
             label = target["session_name"] or target["agent_id"]
@@ -1501,11 +1579,13 @@ class Ledger(
                 name=target["session_name"],
                 options=self._resume_options(target["role"], target["model"], target["effort"]),
             )
-        except LedgerError:
+        except LedgerError as exc:
             with write_tx(self.conn) as conn:
                 conn.execute(
                     "UPDATE agents SET resume_started_at = NULL WHERE agent_id = ?", (old_id,)
                 )
+            if isinstance(exc, sessions.ConfigParseError):
+                raise self.pause_for_config(exc) from exc
             raise
         with write_tx(self.conn) as conn:
             if bg_id is not None:
@@ -1551,13 +1631,17 @@ class Ledger(
             rekey.adopt(conn, old_id, new_id)
         return new_id
 
-    def adopt_session(self, session_id: str | None, *, use_listing: bool = False) -> str | None:
+    def adopt_session(
+        self, session_id: str | None, *, use_listing: bool = False, unpark: bool = False
+    ) -> str | None:
         if not session_id:
             return None
         known = self.conn.execute(
-            "SELECT 1 FROM agents WHERE agent_id = ?", (session_id,)
+            "SELECT state FROM agents WHERE agent_id = ?", (session_id,)
         ).fetchone()
         if known is not None:
+            if unpark and known["state"] == "parked":
+                self.unpark(session_id, "its session sent a hook")
             return None
         pending = dict_rows(
             self.conn.execute(
@@ -1865,12 +1949,29 @@ class Ledger(
     def agent_active(self, agent_id: str, reason: str) -> bool:
         return self._agent_transition(agent_id, "idle", "working", reason)
 
+    def unpark(self, agent_id: str, reason: str) -> bool:
+        with write_tx(self.conn) as conn:
+            cur = conn.execute(
+                f"UPDATE agents SET {UNPARK_SET} WHERE agent_id = ? AND state = 'parked' "
+                "AND ended_at IS NULL",
+                (agent_id,),
+            )
+            if cur.rowcount:
+                self._log_event(conn, agent_id, "parked", "unparked", reason)
+        return bool(cur.rowcount)
+
     def _agent_transition(self, agent_id: str, from_state: str, to_state: str, reason: str) -> bool:
         with write_tx(self.conn) as conn:
             cur = conn.execute(
                 "UPDATE agents SET state = ? WHERE agent_id = ? AND state = ? AND ended_at IS NULL",
                 (to_state, agent_id, from_state),
             )
+            if cur.rowcount == 0:
+                cur = conn.execute(
+                    "UPDATE agents SET state_before_park = ? WHERE agent_id = ? "
+                    "AND state = 'parked' AND state_before_park = ? AND ended_at IS NULL",
+                    (to_state, agent_id, from_state),
+                )
             if cur.rowcount == 0:
                 return False
             self._log_event(conn, agent_id, from_state, to_state, reason)

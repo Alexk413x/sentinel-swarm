@@ -102,16 +102,23 @@ session of that role. See "Measured baselines" in [12-testing.md](12-testing.md)
 
 ## Agent states
 
-`registered` → `working` ↔ `idle` → `handed_up` → `released`.
+`registered` → `working` ↔ `idle` → `handed_up` → `released`, and `parked` from any
+live state.
 
 - `brief_ack`, which the `session_start` hook calls, sets `working`. The Stop hook sets `working` to `idle` when a turn ends.
   The next tool use or session start sets it back to `working`.
 - `handoff_submit` sets the Coder to `handed_up`. `return_work` sets it to `idle`.
 - Release sets `released` and `ended_at`.
-- Parked is a flag on a live agent, not a state: `agents.parked_at` and `park_reason`
-  are set while its session is not running because the daemon retired it or the ledger
-  stopped it, and the agent keeps its state. A parked agent is not ended: the ledger
-  resumes it when a wake-up is owed to it. See "Parked agents" below.
+- `parked` means the agent is live but its session is closed: the daemon retired it,
+  or the ledger stopped it. The write that sets `parked_at` and `park_reason` also sets
+  `state` to `parked` and keeps the state it replaced in `state_before_park`. Unparking
+  puts that state back and clears all three, in one write. A parked agent is not
+  ended: the ledger resumes it when a wake-up is owed to it. See "Parked agents" below.
+- A change the workflow makes to a parked agent's state goes to `state_before_park`:
+  the Stop hook's `working` to `idle`, and `return_work`'s `handed_up` to `idle`. The
+  checks that ask what an agent waits on (the `crashed` finding, and the Oracle's Stop
+  hook naming idle agents to wake) read `state_before_park` for a parked agent. The
+  checks that ask whether a session works now count a parked agent as not working.
 
 ## Wake-ups owed
 
@@ -366,6 +373,25 @@ fails as ambiguous, or goes to the offline entry and waits there for good. See
   that session and returns `rekeyed_from`.
 - Release sets the row `released` and stops the session with `claude stop <bg_id>`,
   which frees its memory. The Oracle's session is never stopped this way.
+- Release also stops the processes the session's tools started, which `claude stop`
+  leaves running. Before the stop, the ledger reads the machine's process table
+  (`procs.snapshot`: `CreateToolhelp32Snapshot` on Windows, `ps -A` elsewhere) and takes
+  the session's process: the pid in `<config>/sessions/<pid>.json`, else the
+  `session_pid` the watchdog last saw running. It keeps each child of that process that
+  is a shell (`bash`, `sh`, `zsh`, `dash`, `fish`, `cmd`, `powershell`, `pwsh`) and
+  every process under such a shell. After the stop, it terminates each of those still
+  running and each new process under them (`TerminateProcess` on Windows, `SIGKILL`
+  elsewhere), never the ledger server or the process making the call.
+- The session's other children are its MCP servers. They exit with the session, and a
+  plugin's relay among them can start the machine's one shared server that other
+  sessions use, so a release leaves them alone.
+- A process counts as a child only when it started after its parent, because a parent
+  pid can name a dead process whose pid was reused. A process is terminated only while
+  its start time still matches the one recorded.
+- The release records the session's process and every process it found in
+  `released_processes`, and logs how many it stopped in the release's agent event. The
+  watchdog reports any of them still running, and any process started under them, as
+  `stray_process`; see [08-watchdog.md](08-watchdog.md).
 - `agent_release(target_agent_id)` releases a child of the caller. The other releases
   are automatic. Every release hands the released agent's `open` and `accepted` change
   requests to its nearest live ancestor; see "Change requests" in
@@ -411,14 +437,25 @@ than keep an alias.
 
 ### Parked agents
 
-- On each pass, the watchdog compares the run's live Managers, Leads, and Coders with the
-  plain `claude agents --json` listing. One whose session is absent or not running,
-  started more than 2 minutes ago and with no resume in flight, is parked. Its reason
-  is the matching `bg retire <bg id>: <reason>` line of `~/.claude/daemon.log` when one
-  exists ("the daemon retired its session: idle-prompt, idle 6m [low memory]"), else
-  "its session is not in claude agents --json" or "its session is not running (state
-  <state>)". A parked agent whose session is seen running again is unparked. A
-  successful resume clears the flag.
+- On each pass, the watchdog reconciles the run's live Managers, Leads, and Coders with
+  the plain `claude agents --json` listing (`sessions.list_sessions`). One whose session
+  is absent or not running, started more than 2 minutes ago and with no resume in
+  flight, is parked. Its reason is the matching `bg retire <bg id>: <reason>` line of
+  `~/.claude/daemon.log` when one exists ("the daemon retired its session: idle-prompt,
+  idle 6m [low memory]"), else "its session is not in claude agents --json" or "its
+  session is not running (state <state>)". A parked agent whose session is seen running
+  again is unparked. A successful resume unparks it.
+- A hook from a parked agent's session unparks it before the hook runs, because a
+  session that sends a hook is running. `stop` and `session_end` do not, since a
+  session's last hooks can arrive after the daemon retired it.
+- The watchdog releases a parked Manager whose phase is `handed_up` or `approved`, and a
+  parked Lead whose module is `approved` or whose latest `module_review` is accepted,
+  once it has been parked for `idle_exit_minutes`. It releases only one with no live
+  child, no unsent wake-up owed to it, and no unread message. The release's agent event
+  names why: "the watchdog released it: parked over <n> minutes (<park reason>), and its
+  phase is handed_up". If a review returns the work, the Oracle or the Manager briefs a
+  fresh one: a returned review of an ended subject already reports
+  `subject_ended`.
 - When memory frees, the watchdog resumes parked agents that are owed a wake-up, each
   with that wake-up's pointers: first the parents none of whose children is still
   `registered` or `working`, then by phase ordinal, then by the oldest owed wake-up. It
@@ -448,13 +485,15 @@ than keep an alias.
 
 ## Parallelism
 
-- No limit by default. `agent_spawn` starts every session the plan calls for.
-- When the user sets `parallelism_cap`, `agent_spawn` refuses at the cap, counting the
-  run's live agents, the Oracle included, plus other swarms' live sessions on the
-  machine: entries from `claude agents --json` that are running, whose name matches the
-  swarm session-name shape (`<slug>-r<run_id>-<name>`, from `looks_like_swarm_session`),
-  and that are not one of this run's own session names. The parent tries again after a
-  release.
+- `agent_spawn` refuses at `parallelism_cap`, counting the run's live agents, the
+  Oracle included, plus other swarms' live sessions on the machine: entries from
+  `claude agents --json` that are running, whose name matches the swarm session-name
+  shape (`<slug>-r<run_id>-<name>`, from `looks_like_swarm_session`), and that are not
+  one of this run's own session names. The parent tries again after a release.
+- Left empty, `parallelism_cap` is set from total memory: half of it, at 600 MB a
+  session, and at least 4 (27 on a 32 GB machine). Unknown total memory leaves no cap,
+  and `0` turns the cap off. Setup prints the value and says that it counts other
+  swarms' sessions.
 - `role_parallelism_cap.<role>` caps that role's own live agents in the run, on top of
   `parallelism_cap`.
 - `drive_request` starts the Driver through the same `agent_spawn` path, so both caps
@@ -478,31 +517,65 @@ for the measured figures.
   per role in `memory_estimates`. A role's estimate is that mean, or 300 MB with no
   sample, plus 300 MB for a Coder's test and type-check processes. The functions are
   replaceable, as `sessions._run` is, so tests fake them.
-- **Admit.** Before `agent_spawn` starts a session, it checks that free memory minus the
-  child role's estimate stays at or above `memory.headroom_mb` (1,500 by default; the
-  daemon retires sessions at about 700 MB free). A spawn that does not fit, or that
-  arrives while earlier spawns of the run wait, is queued in `spawn_queue` and returns
-  `queued: true`, the reason, and a `next` that says not to call `agent_spawn` for it
-  again. A second `agent_spawn` of a queued child returns the same entry. Unknown free
-  memory, or an empty `headroom_mb`, admits the spawn.
+- **Admit.** Before `agent_spawn` starts a session, it checks the machine-wide
+  estimate: free memory, less the memory reserved for sessions still starting on the
+  machine by any swarm, minus the child role's estimate, must stay at or above
+  `memory.headroom_mb` (1,500 by default; the daemon retires sessions at about 700 MB
+  free). A spawn that does not fit, or that arrives while earlier spawns of the run
+  wait, is queued in `spawn_queue` and returns `queued: true`, the reason, and a `next`
+  that says not to call `agent_spawn` for it again. A second `agent_spawn` of a queued
+  child returns the same entry. Unknown free memory, or an empty `headroom_mb`, admits
+  the spawn.
+- **Reserve.** Free memory does not show a session until it has started, about a
+  minute, so two swarms, or two calls of one swarm, could each admit a session against
+  the same free memory. Every admission therefore runs under the machine-wide file lock
+  `<config>/sentinel-swarm/locks/memory.lock`, and each admitted spawn or resume records
+  its estimate in `locks/memory.json` with its server's pid and the time. A reservation
+  counts for 60 seconds, and only while its server runs. Other swarms' queued spawns do
+  not count: two runs that each held back for the other's queue would both wait.
 - **Start queued spawns.** Each watchdog pass starts queued spawns oldest first, while
   they fit. It skips one whose phase is paused or that a parallelism cap holds back,
   and drops one whose brief was acknowledged, whose parent ended, or whose start failed,
-  with a ledger message to the parent that says why. While a spawn is queued, the
+  with a ledger message to the parent that says why. A start that fails on an
+  unreadable `~/.claude.json` stays queued; see "An unreadable ~/.claude.json" below. While a spawn is queued, the
   Oracle's Stop hook does not block for pending work, and the watchdog reports no stall.
-- **Capacity.** `run_status` returns `capacity`: `free_mb`, `headroom_mb`,
-  `estimate_mb` per role, `spawn_slots` per role (how many more sessions fit under the
-  headroom, within the parallelism caps, less the queued spawns), `queued_spawns`, and
-  `parked` agents with their reasons. The Manager, Lead, and Oracle templates start at
+- **Capacity.** `run_status` returns `capacity`: `free_mb`, `reserved_mb` (the
+  reservations above), `other_swarms` (every other live swarm on the machine, from the
+  multi-repo lock), `headroom_mb`, `estimate_mb` per role, `spawn_slots` per role (how
+  many more sessions fit under the headroom after the reservations, within the
+  parallelism caps, less the queued spawns), `queued_spawns`, and `parked` agents with
+  their reasons. The `status` skill prints the queued spawns and the parked agents in
+  its first lines. The Manager, Lead, and Oracle templates start at
   most `spawn_slots` children at once.
 - **Park idle parents.** When `memory.park_idle_parents` is on (the default) and free
-  memory is below the headroom plus the estimates of the queued spawns, each watchdog
+  memory is below the headroom plus the estimates of the queued spawns and the
+  reservations, each watchdog
   pass stops idle Leads, then idle Managers, with `claude stop <bg_id>`, until the
   estimates it freed cover the shortfall. It stops only one whose session runs, that has
   a live child that is `registered` or `working`, and that is owed no unsent wake-up and
   has no unread messages, checked in the same transaction that sets `parked_at`, with
   the reason "the ledger stopped it under memory pressure while its children work". A
   failed stop clears the flag. The first wake-up owed to it resumes it.
+
+## An unreadable ~/.claude.json
+
+Many sessions starting, resuming, and stopping at once can leave `~/.claude.json`
+truncated for a while, and every `claude` command fails until a later write completes
+the file. See [13-platform-facts.md](13-platform-facts.md).
+
+- A `claude` command that starts, resumes, or stops a session, and the listing that
+  `agent_spawn` and `agent_resume` read first, is tried again when it fails with "JSON
+  Parse error" or "`.claude.json` is corrupted": after 1, 2, 4, and 8 seconds, five
+  tries over 15 seconds. That covers `agent_spawn`, queued spawns, `agent_resume`, the
+  ledger's resume of a wake-up target, and the watchdog's resume of the Oracle. The
+  mod's wake-up send is tried again on the same error, after 2, 4, and 8 seconds.
+- When the last try fails and `~/.claude.json` still does not parse, the ledger pauses
+  the run. The pause reason starts "~/.claude.json does not parse", gives the error,
+  and names the newest file in `~/.claude/backups/` whose name starts `.claude.json`,
+  that is not a `.corrupted` copy, and that parses, with the advice to copy it over
+  `~/.claude.json` or wait for Claude Code to rewrite it. The failed call returns the
+  same text. When the file parses again by then, the call fails without a pause.
+- A queued spawn whose start failed this way stays queued.
 
 ## The multi-repo lock
 
@@ -517,6 +590,8 @@ for the measured figures.
   (`lock.pid_alive`, native on POSIX, `OpenProcess` on Windows), whatever run id the
   lock names. Resuming the run that already holds the lock is unaffected, because only
   opening a run takes the lock.
+- `run_start` returns `other_swarms`: the repo, run id, and server pid of every other
+  lock whose server is alive. Admission reads the same machine; see "Memory" above.
 - The lock clears at `run_finish`, when the ledger server that holds it shuts down for
   any reason (`serve._shut_down` releases a lock its own pid owns), and, self-healing,
   the next `run_start` that finds a lock whose pid is no longer alive treats it as
