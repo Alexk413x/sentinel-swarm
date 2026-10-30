@@ -20,6 +20,7 @@ AGENT_ID_COLUMNS = [
     ("agents", "parent_agent_id"),
     ("briefs", "acked_by_agent_id"),
     ("briefs", "parent_agent_id"),
+    ("briefs", "replaces_agent_id"),
     ("change_requests", "from_agent_id"),
     ("change_requests", "to_agent_id"),
     ("deferrals", "arbiter_agent_id"),

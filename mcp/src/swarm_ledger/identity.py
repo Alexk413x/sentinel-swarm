@@ -56,6 +56,7 @@ ROLE_TOOLS: dict[str, frozenset[str]] = {
             "idea_record",
             "events",
             "tests_run",
+            "graph_upsert",
             "phase_review",
             "agreement_decide",
             "departure_record",

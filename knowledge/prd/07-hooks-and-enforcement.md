@@ -271,7 +271,10 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
 | Fixes always name their finding ids | `brief_create` refuses an Oracle brief without `finding_ids` while the run has an open finding, and an unknown finding id from any role; `brief_get`, `status_tree`, and the report show the ids and titles |
 | A fix Coder works on a fresh claim | `brief_create` refuses a Coder brief whose findings were recorded after the file's claim; `brief_get` returns each finding's steps, results, and evidence |
 | A Driver starts only through `drive_request` | `brief_create` refuses `child_role="driver"` |
-| A node that spans files is written through the Lead | `graph_upsert` refuses a Coder's anchor outside its own file and a Lead's anchor outside its module's files |
+| A node that spans files is written through the Lead | `graph_upsert` refuses a Coder's anchor outside its own file, except an added anchor on its own file or a baseline re-record on a node that spans files; a Lead's anchor on another module's claimed file; and an Oracle's anchor on any claimed file |
+| A graph description fits codebase-kg's cap | `graph_upsert` refuses a description over 240 characters before codebase-kg runs |
+| A replacement parent reaches the children of the agent it replaced | `brief_ack` moves the live children and briefs of an ended agent of the same name, or of the one the brief's `replaces` names, to the new agent |
+| An agent under an ended parent can be released | `agent_release` lets the Oracle release an agent whose parent has ended |
 | A stopped bug gets no more fixes, and its evidence reaches the user | `brief_create` and `agent_spawn` refuse a brief whose `finding_ids` name it; `drive_done` puts the evidence in the directive and the notification |
 | A pattern of bugs pauses fixes in that area | `brief_create` and `agent_spawn` refuse a finding in the area while the pattern's directive is open |
 | After 3 waves that fix nothing, the Oracle reports what is left | `drive_done` records the directive and the notification that list what is left; the report shows both |

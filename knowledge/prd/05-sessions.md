@@ -261,7 +261,9 @@ a possible injection. So only the Oracle and the Managers see the elapsed time.
   wake-ups across levels, such as `cr_open` to a file's Coder, `cr_verify` by the
   nearest live ancestor, issue escalations, and disputes. The Oracle may also wake any
   live agent of the run that is not working, because its Stop hook names such agents
-  when the run stalls. The text of a `SendMessage` is not checked.
+  when the run stalls. The text of a `SendMessage` is not checked. The hook reads the
+  caller's row, and so its parent, from the ledger on every call; nothing about the
+  relation is cached at spawn, so a re-pointed child reaches its new parent at once.
 - A change request is not direction: `cr_open` from a Manager or the Oracle routes to
   the file's live Coder, and owes it the wake-up.
 - `message_inbox()` returns `messages` and `remaining`. It takes the caller's unread
@@ -366,14 +368,31 @@ fails as ambiguous, or goes to the offline entry and waits there for good. See
   that session and returns `rekeyed_from`.
 - Release sets the row `released` and stops the session with `claude stop <bg_id>`,
   which frees its memory. The Oracle's session is never stopped this way.
-- `agent_release(target_agent_id)` releases a child of the caller. The other releases
-  are automatic. Every release hands the released agent's `open` and `accepted` change
+- `agent_release(target_agent_id)` releases a child of the caller. The Oracle may also
+  release an agent whose parent has ended, such as a Lead left live under a released
+  Manager. The other releases are automatic. Every release hands the released agent's `open` and `accepted` change
   requests to its nearest live ancestor; see "Change requests" in
   [04-agreements.md](04-agreements.md).
 - A Driver whose exploration is closed is released once it owes no unsent wake-up: after
   its `SendMessage` to the Oracle, after its own `agent_resume` of the Oracle, or at its
   Stop hook when it owes nothing. `drive_request` and `run_finish` release one that is
   still live.
+
+### A replacement takes over its predecessor's children
+
+A parent can end while its children stay live: the daemon retires its session, or its
+parent releases it. Its replacement takes over the children.
+
+- `brief_ack` moves every live child and every brief of each ended agent of the run with
+  the same name to the new agent, in the bind's write transaction. A Manager's and a
+  Lead's names are fixed by their phase and module, so a replacement in the same scope
+  carries the same name.
+- `brief_create(replaces=<agent_id>)` names an ended agent of the child's role whose
+  children the child takes over under another name. It refuses an agent that is still
+  live, one of another role, or one outside the run.
+- Each moved child gets an agent event that names the old and new parent. An ended
+  child keeps its old parent.
+- The Oracle's own resume in `run_start` moves its children the same way.
 
 ### Re-keying a resumed session
 

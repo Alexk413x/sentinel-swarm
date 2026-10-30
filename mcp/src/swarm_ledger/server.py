@@ -69,6 +69,11 @@ _BRIEF_CREATE_CONTRACT = Field(
     description="The public contract of the child's file or module. Required before "
     "a file or module that depends on it can be briefed.",
 )
+_BRIEF_CREATE_REPLACES = Field(
+    default=None,
+    description="The agent_id of an ended agent the child replaces. brief_ack moves that agent's "
+    "live children and briefs to the child; an ended agent of the same name needs no replaces.",
+)
 _CLAIM_FILE_DEPENDS_ON = Field(
     default=None, description="File ids of this module that this file uses; brief those first."
 )
@@ -294,6 +299,7 @@ def brief_create(
     finding_ids: list[int] | None = _FINDING_IDS,
     effort: Literal["low", "medium", "high", "xhigh", "max"] | None = _BRIEF_CREATE_EFFORT,
     contract: str | None = _BRIEF_CREATE_CONTRACT,
+    replaces: str | None = _BRIEF_CREATE_REPLACES,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Creates a brief for the caller's child role (Oracle->Manager, Manager->Lead, Lead->Coder).
@@ -324,7 +330,8 @@ def brief_ack(caller: CallerName, agent_id: str | None = _STAMPED_AGENT_ID) -> d
 def agent_release(
     caller: CallerName, target_agent_id: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
-    """Releases an agent it directly parented; any parent role calls this for its own child."""
+    """Releases an agent it directly parented; any parent role calls this for its own child. The
+    Oracle may also release an agent whose parent has ended."""
     ...
 
 
@@ -543,8 +550,10 @@ def test_run_get(
 def graph_upsert(
     caller: CallerName, nodes: list[dict[str, Any]], agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
-    """Upserts code graph nodes. A Coder's nodes anchor only on its own claimed file; a Lead's
-    may span the files of its module."""
+    """Upserts code graph nodes, each description at most 240 characters. A Coder's nodes anchor
+    only on its own claimed file, and on a node that spans files it may only add anchors on its
+    own file or re-record its baseline. A Lead's nodes span two or more files, each its module's
+    or claimed by no module. The Oracle's nodes anchor only on files no module claims."""
     ...
 
 

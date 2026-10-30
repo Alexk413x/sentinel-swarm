@@ -71,6 +71,7 @@ class LedgerHost:
         finding_ids: list[int] | None = None,
         effort: str | None = None,
         contract: str | None = None,
+        replaces: str | None = None,
     ) -> dict: ...
 
     def agent_spawn(self, caller: str, agent_id: str, child_name: str) -> dict: ...

@@ -194,3 +194,110 @@ def test_graph_upsert_asks_codebase_kg_to_re_baseline_every_node_it_writes(
     assert graph.graph_upsert(host, nodes) == {"ok": True}
     assert [n["rebaseline"] for n in sent["input"]] == [True, True]
     assert "rebaseline" not in nodes[0]
+
+
+_ENGINE = (
+    "class Engine:\n    def start(self):\n        return 1\n\n"
+    "    def stop(self):\n        return 0\n"
+)
+
+
+def _anchored_host(tmp_path: Path, repo_root: Path, source: str, *symbols: str) -> Path:
+    host = tmp_path / "host"
+    (host / "pkg").mkdir(parents=True)
+    (host / "knowledge").mkdir()
+    (host / "pkg" / "engine.py").write_text(source, encoding="utf-8")
+    shutil.copy(repo_root / "knowledge" / "code_graph.db", host / "knowledge")
+    conn = sqlite3.connect(str(host / "knowledge" / "code_graph.db"))
+    try:
+        conn.execute("INSERT INTO node (id, kind, description) VALUES ('engine', 'class', 'd')")
+        for ordinal, symbol in enumerate(symbols):
+            conn.execute(
+                "INSERT INTO anchor (node_id, ord, path, base, symbol) "
+                "VALUES ('engine', ?, 'pkg/engine.py', 'engine.py', ?)",
+                (ordinal, symbol),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return host
+
+
+def test_a_class_method_anchor_resolves_by_its_segments(tmp_path: Path, repo_root: Path) -> None:
+    host = _anchored_host(tmp_path, repo_root, _ENGINE, "Engine", "Engine.start", "Engine.stop")
+    assert graph.graph_current_for(host, "pkg/engine.py") == (True, [])
+
+
+def test_a_method_anchor_whose_method_is_gone_is_not_found(tmp_path: Path, repo_root: Path) -> None:
+    host = _anchored_host(tmp_path, repo_root, _ENGINE, "Engine", "Engine.halt")
+    assert graph.graph_current_for(host, "pkg/engine.py") == (
+        False,
+        ["anchor symbol Engine.halt not found"],
+    )
+
+
+def test_a_method_anchor_maps_its_class(tmp_path: Path, repo_root: Path) -> None:
+    host = _anchored_host(tmp_path, repo_root, _ENGINE, "Engine.start")
+    assert graph.graph_current_for(host, "pkg/engine.py") == (True, [])
+
+
+def test_the_unmapped_refusal_lists_the_anchors_to_add(tmp_path: Path, repo_root: Path) -> None:
+    source = _ENGINE + "\n\ndef run():\n    pass\n\n\nclass Gear:\n    pass\n"
+    host = _anchored_host(tmp_path, repo_root, source, "Engine")
+    ok, reasons = graph.graph_current_for(host, "pkg/engine.py")
+    assert not ok
+    assert reasons == [
+        "run, Gear are unmapped; add the anchors pkg/engine.py#run, pkg/engine.py#Gear to a "
+        "node with graph_upsert"
+    ]
+
+
+def test_a_file_with_no_anchors_gets_the_full_anchor_list(tmp_path: Path, repo_root: Path) -> None:
+    host = _anchored_host(tmp_path, repo_root, _ENGINE)
+    (host / "pkg" / "conf.toml").write_text("x = 1\n", encoding="utf-8")
+    assert graph.graph_current_for(host, "pkg/engine.py")[1] == [
+        "no node anchors on pkg/engine.py; add the anchors pkg/engine.py#Engine to a node "
+        "with graph_upsert"
+    ]
+    assert graph.graph_current_for(host, "pkg/conf.toml")[1] == [
+        "no node anchors on pkg/conf.toml; add the anchors pkg/conf.toml to a node with "
+        "graph_upsert"
+    ]
+
+
+def test_graph_upsert_refuses_a_description_over_codebase_kgs_cap_before_it_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(*args: object, **kwargs: object) -> None:
+        raise AssertionError("codebase-kg must not run")
+
+    monkeypatch.setattr(subprocess, "run", fail)
+    node = {"id": "n", "kind": "module", "description": "x" * (graph.MAX_DESCRIPTION + 1)}
+    with pytest.raises(LedgerError, match="241-character description; codebase-kg caps"):
+        graph.graph_upsert(tmp_path, [node])
+
+
+@pytest.mark.integration
+def test_codebase_kg_and_the_ledger_agree_on_a_method_anchor(
+    tmp_path: Path, repo_root: Path, kg_root: Path
+) -> None:
+    del kg_root
+    host = _anchored_host(tmp_path, repo_root, _ENGINE)
+    ensure_graph_source_base(host)
+    node = {
+        "id": "engine",
+        "kind": "class",
+        "description": "starts and stops",
+        "anchors": [
+            "pkg/engine.py#Engine",
+            "pkg/engine.py#Engine.start",
+            "pkg/engine.py#Engine.stop",
+        ],
+    }
+    assert graph.graph_upsert(host, [node])["ok"] is True
+    assert graph.graph_current_for(host, "pkg/engine.py") == (True, [])
+    assert graph.node_anchors(host, "engine") == [
+        ("pkg/engine.py", "Engine"),
+        ("pkg/engine.py", "Engine.start"),
+        ("pkg/engine.py", "Engine.stop"),
+    ]

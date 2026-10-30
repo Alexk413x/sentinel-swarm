@@ -965,6 +965,93 @@ def test_graph_upsert_integration_calls_the_real_codebase_kg(ledger: Ledger, kg_
     assert result.get("ok") is True
 
 
+def _shared_node(host: Path) -> None:
+    conn = sqlite3.connect(str(host / "knowledge" / "code_graph.db"))
+    try:
+        conn.execute("INSERT INTO node (id, kind, description) VALUES ('shared', 'module', 'd')")
+        conn.execute(
+            "INSERT INTO anchor (node_id, ord, path, base, symbol) VALUES "
+            "('shared', 0, 'pkg/unmapped.py', 'unmapped.py', 'mul'), "
+            "('shared', 1, 'pkg/good.py', 'good.py', 'add')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_a_coder_adds_anchors_on_its_own_file_to_a_node_that_spans_files(
+    ledger: Ledger, host: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = bootstrap_module(ledger)
+    coder = spawn_coder(ledger, ctx, "coder-p1-module-1-sh1", "pkg/good.py", "tests/test_good.py")
+    _shared_node(host)
+    sent: list[list[dict]] = []
+
+    def fake_upsert(repo_root: Path, nodes: list[dict]) -> dict:
+        del repo_root
+        sent.append(nodes)
+        return {"ok": True}
+
+    monkeypatch.setattr(graph_module, "graph_upsert", fake_upsert)
+    name, agent = "coder-p1-module-1-sh1", coder["agent_id"]
+    added = {
+        "id": "shared",
+        "anchors": [
+            "pkg/unmapped.py#mul",
+            "pkg/good.py#add",
+            "pkg/good.py#helper",
+            "tests/test_good.py#test_add",
+        ],
+    }
+    assert ledger.graph_upsert(name, agent, [added]) == {"ok": True}
+    assert ledger.graph_upsert(name, agent, [{"id": "shared"}]) == {"ok": True}
+    assert len(sent) == 2
+
+    refused = [
+        {**added, "description": "rewritten"},
+        {"id": "shared", "anchors": ["pkg/good.py#add", "pkg/good.py#helper"]},
+        {"id": "shared", "anchors": [*added["anchors"], "pkg/unmapped.py#div"]},
+        {"id": "swarmtest_unmapped"},
+    ]
+    for node in refused:
+        with pytest.raises(LedgerError, match="may only add anchors on its own file"):
+            ledger.graph_upsert(name, agent, [node])
+    assert len(sent) == 2
+
+
+def test_a_coder_cannot_re_baseline_another_files_change_on_a_shared_node(
+    ledger: Ledger, host: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = bootstrap_module(ledger)
+    coder = spawn_coder(ledger, ctx, "coder-p1-module-1-sh2", "pkg/good.py", "tests/test_good.py")
+    _shared_node(host)
+    monkeypatch.setattr(graph_module, "graph_upsert", lambda repo_root, nodes: {"ok": True})
+    _record_baseline(host, "pkg/unmapped.py")
+    touch_module(host, "unmapped", "another coder's edit")
+
+    with pytest.raises(LedgerError, match=r"also anchors pkg/unmapped\.py, which changed"):
+        ledger.graph_upsert("coder-p1-module-1-sh2", coder["agent_id"], [{"id": "shared"}])
+
+
+@pytest.mark.integration
+def test_a_coder_re_baselines_only_its_own_file_on_a_shared_node(
+    ledger: Ledger, host: Path, kg_root: Path
+) -> None:
+    del kg_root
+    ctx = bootstrap_module(ledger)
+    coder = spawn_coder(ledger, ctx, "coder-p1-module-1-sh3", "pkg/good.py", "tests/test_good.py")
+    _shared_node(host)
+    _record_baseline(host, "pkg/unmapped.py")
+    _record_baseline(host, "pkg/good.py")
+    touch_module(host, "good", "reworked")
+    assert graph_module.stale_files(host, ["pkg/good.py"]) == {
+        "pkg/good.py": ["shared", "swarmtest_good"]
+    }
+
+    ledger.graph_upsert("coder-p1-module-1-sh3", coder["agent_id"], [{"id": "shared"}])
+    assert graph_module.stale_files(host, ["pkg/good.py", "pkg/unmapped.py"]) == {}
+
+
 # -- issue lifecycle ---------------------------------------------------------------
 
 

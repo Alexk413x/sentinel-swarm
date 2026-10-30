@@ -188,9 +188,51 @@ def test_a_lead_upserts_a_node_that_spans_its_modules_files(
     assert ledger.graph_upsert(tree["lead"], "lead-agent", nodes) == {"ok": True}
     assert calls == [nodes]
 
+    _claim_elsewhere(ledger, "src/other.py")
     with pytest.raises(LedgerError, match="its own module's files"):
         ledger.graph_upsert(tree["lead"], "lead-agent", _node("src/login.py", "src/other.py"))
     assert len(calls) == 1
+
+
+def _claim_elsewhere(ledger: Ledger, path: str) -> None:
+    with write_tx(ledger.conn) as conn:
+        phase_id = conn.execute("SELECT phase_id FROM phases").fetchone()["phase_id"]
+        module = conn.execute(
+            "INSERT INTO modules (phase_id, name, state) VALUES (?, 'billing', 'active')",
+            (phase_id,),
+        )
+        conn.execute(
+            "INSERT INTO files (module_id, path, state) VALUES (?, ?, 'claimed')",
+            (module.lastrowid, path),
+        )
+
+
+def test_a_lead_upserts_a_node_that_spans_its_file_and_an_unclaimed_file(
+    tree: dict, ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(graph_module, "graph_upsert", lambda repo_root, nodes: {"ok": True})
+    _claim(ledger, tree, "login", "src/login.py")
+
+    nodes = _node("src/login.py#login", "src/shared.py#helper")
+    assert ledger.graph_upsert(tree["lead"], "lead-agent", nodes) == {"ok": True}
+
+    _claim_elsewhere(ledger, "src/shared.py")
+    with pytest.raises(LedgerError, match=r"src/shared\.py belongs to another module's claim"):
+        ledger.graph_upsert(tree["lead"], "lead-agent", nodes)
+
+
+def test_the_oracle_upserts_only_nodes_no_module_owns(
+    tree: dict, ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(graph_module, "graph_upsert", lambda repo_root, nodes: {"ok": True})
+    _claim(ledger, tree, "login", "src/login.py")
+    oracle = tree["oracle_id"]
+
+    assert ledger.graph_upsert("oracle", oracle, _node("src/shared.py#helper")) == {"ok": True}
+    with pytest.raises(LedgerError, match=r"src/login\.py, which a module claims"):
+        ledger.graph_upsert("oracle", oracle, _node("src/shared.py#helper", "src/login.py"))
+    with pytest.raises(LedgerError, match=r"tests/test_login\.py, which a module claims"):
+        ledger.graph_upsert("oracle", oracle, _node("tests/test_login.py#test_login"))
 
 
 def test_a_lead_leaves_a_single_file_node_to_its_coder(
