@@ -5,11 +5,11 @@ from pathlib import Path
 import pytest
 from helpers import bootstrap_module, make_host, settings_text, spawn_coder
 
-from swarm_ledger import review, setup
+from swarm_ledger import setup, testing
 from swarm_ledger.hooks import events
 from swarm_ledger.ledger import Ledger
 from swarm_ledger.settings import command_line, load_settings
-from swarm_ledger.testing import TestResult
+from swarm_ledger.testing import Executed
 
 pytestmark = pytest.mark.usefixtures("claude_sessions")
 
@@ -99,15 +99,17 @@ def test_a_failing_test_that_names_a_command_is_reported_with_it(
     coder = spawn_coder(ledger, ctx, "coder-p1-module-1-sh", "src/mine.py", "tests/test_mine.py")
     output = "FAILED test_recipes - driver_recipes.db is stale; run scripts/build_recipes.py\n"
 
-    def failing(command: str, target: str | None, root: Path) -> TestResult:
-        return TestResult(command, 1, 3, 1, 0, 0, output, 10, False, "1 failed")
+    def failing(command: str, cwd: Path, timeout_s: int, log_path: Path | None = None) -> Executed:
+        return Executed(exit_code=1, output=output, duration_ms=10, timed_out=False)
 
-    monkeypatch.setattr(review, "run_tests", failing)
+    monkeypatch.setattr(testing, "execute", failing)
     result = ledger.tests_run(coder["name"], coder["agent_id"], "file", "tests/test_mine.py")
 
-    assert result["commands"] == [
-        {"name": "build-recipes", "command": "python scripts/build_recipes.py"}
-    ]
+    named = [{"name": "build-recipes", "command": "python scripts/build_recipes.py"}]
+    assert result["state"] == "done"
+    assert result["commands"] == named
+    got = ledger.test_run_get(coder["name"], coder["agent_id"], result["test_run_id"])
+    assert got["commands"] == named
 
 
 def test_setup_proposes_the_host_commands_the_docs_name(tmp_path: Path) -> None:

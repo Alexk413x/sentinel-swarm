@@ -4,6 +4,7 @@ import hashlib
 import shutil
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -79,8 +80,22 @@ def _ratings(value: int = 10) -> list[dict]:
     ]
 
 
+def _past_last_edit(ledger: Ledger, file_id: int) -> None:
+    # handoff_submit refuses a self review stamped in the same millisecond as the last edit,
+    # and SQLite's clock can repeat a stamp across back-to-back calls on Windows.
+    stale_since = _file(ledger, file_id)["stale_since"]
+    if stale_since is None:
+        return
+    while (
+        ledger.conn.execute("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AS now").fetchone()["now"]
+        <= stale_since
+    ):
+        time.sleep(0.001)
+
+
 def _hand_off(ledger: Ledger, coder: dict, file_id: int) -> dict:
     name = coder["name"]
+    _past_last_edit(ledger, file_id)
     ledger.score_record(name, coder["agent_id"], file_id, _ratings(), all_applicable(), "self")
     return ledger.handoff_submit(name, coder["agent_id"], file_id, [], [])
 
@@ -214,6 +229,7 @@ def test_a_deletion_is_the_files_version_and_is_reviewed_like_an_edit(ledger: Le
     ctx = bootstrap_module(ledger)
     coder = spawn_coder(ledger, ctx, "coder-p1-module-1-prd", "docs/prd.md", None)
     ledger.file_delete(coder["name"], coder["agent_id"], "docs/prd.md")
+    _past_last_edit(ledger, coder["file_id"])
     ledger.score_record(
         coder["name"], coder["agent_id"], coder["file_id"], _ratings(), all_applicable(), "self"
     )

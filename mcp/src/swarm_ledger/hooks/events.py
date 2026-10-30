@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shlex
+import sqlite3
 import subprocess
 from collections.abc import Callable
 from datetime import datetime, timedelta

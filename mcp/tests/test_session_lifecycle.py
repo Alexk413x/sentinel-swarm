@@ -462,8 +462,12 @@ def test_a_spawn_that_still_fails_on_the_config_file_pauses_the_run(
 
     assert str(backup) in str(caught.value)
     assert "The ledger paused the run" in str(caught.value)
-    assert ledger.conn.execute("SELECT state FROM runs").fetchone()["state"] == "paused"
+    assert "resumes by itself" in str(caught.value)
+    run = ledger.conn.execute("SELECT state, pause_check FROM runs").fetchone()
+    assert (run["state"], run["pause_check"]) == ("paused", "config_parses")
     assert (ledger.pause_reason(ctx.run_id) or "").startswith(sessions.CONFIG_PAUSE)
+    notice = ledger.conn.execute("SELECT message FROM notifications").fetchone()
+    assert notice["message"].startswith(f"Run paused: {sessions.CONFIG_PAUSE}")
 
 
 def test_a_failure_after_the_config_file_parses_again_does_not_pause(

@@ -17,7 +17,7 @@ from .agentfiles import driver_available
 from .db import append_git_excludes, main_git_dir
 from .frontmatter import FrontmatterError
 from .frontmatter import split_document as _split_document
-from .paths import claude_json_path, config_override
+from .paths import claude_json_path
 from .permissions import bypass_disabled, start_mode
 from .settings import SETTINGS_PATH, Settings, load_settings
 

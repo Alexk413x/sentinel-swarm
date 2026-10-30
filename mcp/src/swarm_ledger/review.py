@@ -21,6 +21,7 @@ from .identity import (
     require_role,
     resolve,
 )
+from .queries import logical_state
 from .rubric import Rating
 from .settings import command_line
 from .testing import build_command, summarize_output, tree_fingerprint
@@ -1196,17 +1197,19 @@ class ReviewMixin(LedgerHost):
             )
             settle.sync_products(conn, file_row["file_id"], "returned")
             coder_row = conn.execute(
-                "SELECT state FROM agents WHERE agent_id = ?", (handoff_row["agent_id"],)
+                "SELECT state, state_before_park FROM agents WHERE agent_id = ?",
+                (handoff_row["agent_id"],),
             ).fetchone()
             # 'idle', not 'working': the Coder's turn ended at its handoff, and the Stop
             # hook reads 'working' as a turn in progress. Its next tool use marks it working.
             if coder_row is not None:
+                column = "state_before_park" if coder_row["state"] == "parked" else "state"
                 conn.execute(
-                    "UPDATE agents SET state = 'idle' WHERE agent_id = ?",
+                    f"UPDATE agents SET {column} = 'idle' WHERE agent_id = ?",
                     (handoff_row["agent_id"],),
                 )
                 self._log_event(
-                    conn, handoff_row["agent_id"], coder_row["state"], "idle", "return_work"
+                    conn, handoff_row["agent_id"], logical_state(coder_row), "idle", "return_work"
                 )
             cur = conn.execute(
                 "INSERT INTO attempts (file_id, handoff_id, issue_ids_json, targeted_json, "

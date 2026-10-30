@@ -631,8 +631,12 @@ the file. See [13-platform-facts.md](13-platform-facts.md).
   the run. The pause reason starts "~/.claude.json does not parse", gives the error,
   and names the newest file in `~/.claude/backups/` whose name starts `.claude.json`,
   that is not a `.corrupted` copy, and that parses, with the advice to copy it over
-  `~/.claude.json` or wait for Claude Code to rewrite it. The failed call returns the
-  same text. When the file parses again by then, the call fails without a pause.
+  `~/.claude.json` or wait for Claude Code to rewrite it. The pause names the
+  `config_parses` clear-check and notifies the user like any `run_pause`, so the
+  watchdog resumes the run by itself once the file parses; see "Clear-checks" in
+  [02-run-lifecycle.md](02-run-lifecycle.md). The failed call returns the same text and
+  says the run resumes by itself. When the file parses again by then, the call fails
+  without a pause.
 - A queued spawn whose start failed this way stays queued.
 
 ## The multi-repo lock

@@ -269,14 +269,24 @@ class Ledger(
             return sessions.ConfigParseError(str(exc))
         reason = sessions.config_pause_reason(str(exc))
         paused = False
+        notice = None
         with write_tx(self.conn) as conn:
             run = conn.execute("SELECT * FROM runs WHERE state = 'active'").fetchone()
             oracle = latest_live_oracle(conn, run["run_id"]) if run is not None else None
             if run is not None and oracle is not None:
-                conn.execute("UPDATE runs SET state = 'paused' WHERE run_id = ?", (run["run_id"],))
-                self._log_event(conn, oracle["agent_id"], "active", "paused", reason)
+                notice = pauses.record_pause(
+                    conn,
+                    run["run_id"],
+                    oracle["agent_id"],
+                    reason,
+                    pauses.CONFIG_CHECK,
+                    self.settings.notify,
+                    utcnow(),
+                )
                 paused = True
-        note = " The ledger paused the run." if paused else ""
+        notify.deliver(notice, self.settings.notify)
+        label = pauses.CHECKS[pauses.CONFIG_CHECK].label
+        note = f" The ledger paused the run; it resumes by itself once {label}." if paused else ""
         return sessions.ConfigParseError(f"{reason}.{note}")
 
     def _log_event(

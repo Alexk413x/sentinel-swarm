@@ -169,7 +169,7 @@ def config_pause_reason(detail: str) -> str:
     )
     return (
         f"{CONFIG_PAUSE}, so the claude command fails: {detail}. {fix}, or wait for Claude "
-        "Code to rewrite it, then resume the run"
+        "Code to rewrite it"
     )
 
 

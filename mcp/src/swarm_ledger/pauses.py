@@ -9,8 +9,9 @@ from pathlib import Path
 
 from . import notify
 from .clock import stamp
-from .paths import config_override
+from .paths import claude_json_path
 
+CONFIG_CHECK = "config_parses"
 RESUME_HINT = "Say continue or run /sentinel-swarm:resume to continue it."
 
 
@@ -19,10 +20,6 @@ class ClearCheck:
     name: str
     label: str
     passes: Callable[[Path], bool]
-
-
-def claude_json_path() -> Path:
-    return (config_override() or Path.home()) / ".claude.json"
 
 
 def _config_parses(repo_root: Path) -> bool:
@@ -36,7 +33,7 @@ def _config_parses(repo_root: Path) -> bool:
 CHECKS: dict[str, ClearCheck] = {
     check.name: check
     for check in (
-        ClearCheck("config_parses", "the config file ~/.claude.json parses", _config_parses),
+        ClearCheck(CONFIG_CHECK, "the config file ~/.claude.json parses", _config_parses),
     )
 }
 

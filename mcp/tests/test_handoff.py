@@ -520,6 +520,37 @@ def _round_trip(
     return ledger.attempt_record("lead-p1-module-1", ctx["lead"]["agent_id"], file_id)["outcome"]
 
 
+def test_return_work_keeps_a_parked_coder_parked(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    coder_name = "coder-p1-module-1-parked"
+    coder = spawn_coder(ledger, ctx, coder_name, "pkg/parked.py", "tests/test_parked.py")
+    file_id = file_id_for(ledger, "pkg/parked.py")
+    ledger.score_record(
+        coder_name, coder["agent_id"], file_id, all_ratings(10), all_applicable(), "self"
+    )
+    handoff = ledger.handoff_submit(coder_name, coder["agent_id"], file_id, [], [])
+    ledger._park(coder["agent_id"], "retired")
+    lead_id = ctx["lead"]["agent_id"]
+    ledger.score_record(
+        "lead-p1-module-1",
+        lead_id,
+        file_id,
+        all_ratings(overrides={"testing": 5}),
+        all_applicable(),
+        "lead",
+    )
+    ledger.review_compare("lead-p1-module-1", lead_id, handoff["handoff_id"])
+
+    ledger.return_work("lead-p1-module-1", lead_id, handoff["handoff_id"], [], ["testing"])
+
+    row = ledger.conn.execute(
+        "SELECT state, state_before_park, parked_at FROM agents WHERE agent_id = ?",
+        (coder["agent_id"],),
+    ).fetchone()
+    assert (row["state"], row["state_before_park"]) == ("parked", "idle")
+    assert row["parked_at"] is not None
+
+
 def test_attempt_record_classifies_improved(ledger: Ledger) -> None:
     ctx = bootstrap_module(ledger)
     outcome = _round_trip(
