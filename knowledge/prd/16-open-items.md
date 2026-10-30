@@ -86,3 +86,22 @@ Each item below is marked **(needs implementation)** in its document.
   long-poll route, the panel's Allow and Deny buttons, and a watchdog check of open
   requests, since a session held by the hook does not show as waiting.
 - **Run panel payload.** The panel reads every brief on each 5-second refresh, about 240 KB for a run of 100 agents. Fetch a brief only when its task opens, and read the snapshot over the ledger server's HTTP route while it runs.
+- **Waiting sessions, live.** The `needs_user` finding, its transcript request text, and
+  its notification are unit-tested against a faked `claude agents --json`. A live run
+  should show a role session at a permission prompt and a background Oracle at an
+  `AskUserQuestion` each reported within one watchdog interval, with an OS notification.
+- **Write denies before the prompt, live.** The mod's `tool.call` gate runs before Claude
+  Code's permission check by the mod API's documentation. A live Coder in
+  `bypassPermissions` should be denied a `Write` under `.claude/scratch/` with the
+  scratch-helper reason and no prompt in agent view.
+- **`pre_ask`, live.** It reads `kind: "background"` from `claude agents --json`. A live
+  background Oracle should be denied `AskUserQuestion` and call `user_ask`; an
+  interactive Oracle should still be allowed the dialog.
+- **A running Oracle with no listener.** When the Oracle's session runs but is not
+  `busy`, the watchdog cannot deliver a finding to it: `claude --resume` would start a
+  second copy, and the CLI has no command that sends input. It notifies the user
+  instead. A live run should show how often this happens and whether a mod-side
+  delivery can wake the Oracle.
+- **Clear-check resume, live.** `config_parses` is unit-tested. A live run should show a
+  run paused on a corrupt `~/.claude.json` resume by itself within one watchdog interval
+  of the file parsing again, and the Oracle continue from the watchdog directive.

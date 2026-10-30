@@ -79,7 +79,10 @@ It is safe to run again, and it prints what it changed:
 
 - `.claude/agents/swarm-oracle.md`, `swarm-manager.md`, `swarm-lead.md`, and
   `swarm-coder.md`, from the plugin's templates. Each file sets its role's model,
-  color, tools, permission mode, MCP servers, and hooks. Setup adds no MCP server
+  color, tools, and MCP servers. It sets no permission mode: each role starts in your
+  own `permissions.defaultMode` unless `permission_mode.<role>` in
+  `.claude/sentinel-swarm.local.md` names one, and setup prints the mode each role
+  starts in. Setup adds no MCP server
   beyond the template's. A session gets the a11y servers when the host has a11y
   installed.
 - When a role file already exists, it keeps the user's frontmatter values, adds any

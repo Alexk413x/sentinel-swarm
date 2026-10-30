@@ -9,6 +9,7 @@ from . import events
 HANDLERS = {
     "session_start": events.handle_session_start,
     "pre_agent": events.handle_pre_agent,
+    "pre_ask": events.handle_pre_ask,
     "pre_write": events.handle_pre_write,
     "pre_shell": events.handle_pre_shell,
     "pre_monitor": events.handle_pre_monitor,

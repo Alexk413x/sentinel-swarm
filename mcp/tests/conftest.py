@@ -30,6 +30,17 @@ def _isolated_claude_config(
 
 
 @pytest.fixture(autouse=True)
+def _no_managed_settings(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The machine's real managed-settings.json would change the permission mode tests expect.
+    from swarm_ledger import permissions
+
+    missing = tmp_path_factory.mktemp("managed") / "managed-settings.json"
+    monkeypatch.setattr(permissions, "managed_settings_path", lambda platform=None: missing)
+
+
+@pytest.fixture(autouse=True)
 def _no_resume_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     # A resumed session that a fake listing never shows would hold each test for 15 seconds.
     monkeypatch.setattr(sessions, "_RESUME_WAIT_S", 0.0)

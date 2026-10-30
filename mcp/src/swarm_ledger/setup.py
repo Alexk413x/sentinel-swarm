@@ -17,7 +17,8 @@ from .db import append_git_excludes, main_git_dir
 from .frontmatter import FrontmatterError
 from .frontmatter import split_document as _split_document
 from .paths import config_override
-from .settings import SETTINGS_PATH
+from .permissions import bypass_disabled, start_mode
+from .settings import SETTINGS_PATH, load_settings
 
 CORE_ROLES = ("oracle", "manager", "lead", "coder")
 ROLES = (*CORE_ROLES, "driver")
@@ -159,6 +160,14 @@ def strip_ledger_hooks(frontmatter: str) -> tuple[str, list[str]]:
     return frontmatter.replace(block, lines[0] + rest if rest.strip() else "", 1), removed
 
 
+def strip_permission_mode(frontmatter: str) -> tuple[str, str | None]:
+    frontmatter = _with_newline(frontmatter)
+    block = key_blocks(frontmatter).get("permissionMode")
+    if block is None:
+        return frontmatter, None
+    return frontmatter.replace(block, "", 1), block.partition(":")[2].strip() or "(empty)"
+
+
 def role_template(role: str) -> str:
     return template_file(role).read_text(encoding="utf-8")
 
@@ -213,7 +222,8 @@ def write_role_files(repo: Path, report: SetupReport) -> None:
         try:
             frontmatter, body = split_document(existing)
             frontmatter, removed = strip_ledger_hooks(frontmatter)
-            start = _join_document(frontmatter, body) if removed else existing
+            frontmatter, mode = strip_permission_mode(frontmatter)
+            start = _join_document(frontmatter, body) if removed or mode else existing
             merged, added, body_changed = merge_role_file(start, template)
         except SetupError as exc:
             report.add(f"left {shown} unchanged: {exc}")
@@ -229,7 +239,26 @@ def write_role_files(repo: Path, report: SetupReport) -> None:
             changes.append(f"added keys from the template: {', '.join(added)}")
         if removed:
             changes.append(f"removed the ledger command hooks the mod runs: {', '.join(removed)}")
+        if mode:
+            changes.append(
+                f"removed permissionMode: {mode} (set permission_mode.{role} in "
+                f"{SETTINGS_PATH.as_posix()} to choose a mode)"
+            )
         report.add(f"updated {shown}, kept your frontmatter: {'; '.join(changes) or 'normalized'}")
+
+
+def report_permission_modes(repo: Path, report: SetupReport) -> None:
+    configured = load_settings(repo).permission_mode
+    for role in ROLES:
+        if not role_file(repo, role).is_file():
+            continue
+        start = start_mode(repo, role, configured.get(role))
+        report.add(f"swarm-{role} starts in {start.mode}: {start.source}")
+    if bypass_disabled(repo):
+        report.add(
+            "policy sets permissions.disableBypassPermissionsMode, so a role that would start "
+            "in bypassPermissions starts in acceptEdits"
+        )
 
 
 def write_shim(repo: Path, report: SetupReport) -> None:
@@ -360,6 +389,7 @@ def run_setup(repo: Path) -> SetupReport:
     merge_settings_local(repo, report)
     quiet_codebase_kg_nudge(repo, report)
     ensure_excludes(repo, report)
+    report_permission_modes(repo, report)
     report.add(RELOAD_NOTE)
     report.trusted = is_trusted(repo)
     report.trust_note = f"{repo} is trusted" if report.trusted else trust_instructions(repo)

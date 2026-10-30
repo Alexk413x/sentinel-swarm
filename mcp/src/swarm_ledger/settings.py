@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from . import frontmatter
+from .permissions import PERMISSION_MODES
 from .rubric import Thresholds
 
 _DEFAULT_RUNTIME = {
@@ -76,6 +77,7 @@ class WatchdogSettings:
     idle_exit_minutes: int = 15
     unsent_wakeup_minutes: int = 5
     queued_spawn_minutes: int = 10
+    remind_minutes: int = 30
 
 
 @dataclass
@@ -121,6 +123,9 @@ class Settings:
     # Per-role promptCacheTtl ("5m" or "1h") for agent_spawn; a role with no entry keeps the
     # Claude Code default.
     prompt_cache_ttl: dict[str, str] = field(default_factory=dict)
+    # Per-role --permission-mode for every launch; a role with no entry inherits the user's
+    # permissions.defaultMode (see permissions.start_mode).
+    permission_mode: dict[str, str] = field(default_factory=dict)
     # Per-role cap on that role's own live sessions in the run, on top of parallelism_cap.
     role_parallelism_cap: dict[str, int] = field(default_factory=dict)
     notify: list[str] = field(default_factory=lambda: list(NOTIFY_CHANNELS))
@@ -196,6 +201,11 @@ def load_settings(repo_root: Path) -> Settings:
     prompt_cache_ttl = {
         role: str(ttl) for role, ttl in (data.get("prompt_cache_ttl") or {}).items() if ttl
     }
+    permission_mode = {
+        role: str(mode).strip()
+        for role, mode in (data.get("permission_mode") or {}).items()
+        if mode and str(mode).strip() in PERMISSION_MODES
+    }
     role_parallelism_cap = {
         role: int(cap) for role, cap in (data.get("role_parallelism_cap") or {}).items() if cap
     }
@@ -215,6 +225,7 @@ def load_settings(repo_root: Path) -> Settings:
         base_branch=data.get("base_branch") or defaults.base_branch,
         effort=effort,
         prompt_cache_ttl=prompt_cache_ttl,
+        permission_mode=permission_mode,
         role_parallelism_cap=role_parallelism_cap,
         notify=normalize_notify(data.get("notify")),
         max_workers=normalize_max_workers(data.get("max_workers")),

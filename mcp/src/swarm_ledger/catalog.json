@@ -103,7 +103,7 @@
   {
    "name": "run_pause",
    "title": "Run Pause",
-   "description": "Pauses the run, or just the named phases, on a blocker only the user can fix; the Oracle\ncalls this. With phases, the run stays active: agent_spawn refuses those phases until\nphase_resume clears them, and the others keep going.",
+   "description": "Pauses the run, or just the named phases, on a blocker only the user can fix; the Oracle\ncalls this. With phases, the run stays active: agent_spawn refuses those phases until\nphase_resume clears them, and the others keep going. A whole-run pause notifies the user\nwith the reason. clear_check names the check the watchdog tries on its timer to resume the\nrun by itself: config_parses, the config file ~/.claude.json parses.",
    "inputSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -122,6 +122,18 @@
          "type": "integer"
         },
         "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "clear_check": {
+      "anyOf": [
+       {
+        "const": "config_parses",
+        "type": "string"
        },
        {
         "type": "null"
@@ -1158,6 +1170,37 @@
      "directive_id",
      "outcome",
      "resolution"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "user_ask",
+   "title": "User Ask",
+   "description": "Asks the user a question as an open needs_user directive and notifies the user; the\nOracle calls this in place of AskUserQuestion. The answer arrives in directive_inbox as a\ndirective that replies to it.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "question": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "question"
     ]
    },
    "outputSchema": {
@@ -3196,6 +3239,7 @@
   "status_tree",
   "test_run_get",
   "tests_run",
+  "user_ask",
   "version_restore",
   "wait_for"
  ]

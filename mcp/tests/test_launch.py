@@ -88,7 +88,7 @@ def test_interactive_puts_the_prompt_first_and_builds_the_flags(env):
     assert "--bg" not in command
     assert _option(command, "--agent") == "swarm-oracle"
     assert _option(command, "--model") == "opus"
-    assert _option(command, "--permission-mode") == "default"
+    assert "--permission-mode" not in command
     assert "--strict-mcp-config" in command
     config = json.loads(_option(command, "--mcp-config"))
     assert config["mcpServers"]["swarm-ledger"] == {
@@ -110,14 +110,16 @@ def test_interactive_puts_the_prompt_first_and_builds_the_flags(env):
     assert env["servers"] == [env["repo"].resolve()]
 
 
-def test_the_role_file_model_and_permission_mode_are_used(env):
+def test_the_role_file_model_and_the_permission_mode_setting_are_used(env):
     setup.run_setup(env["repo"])
     path = setup.role_file(env["repo"], "oracle")
     text = path.read_text(encoding="utf-8")
-    text = text.replace("model: opus", "model: fable").replace(
-        "permissionMode: default", "permissionMode: plan"
+    path.write_text(text.replace("model: opus", "model: fable"), encoding="utf-8")
+    settings = env["repo"] / ".claude" / "sentinel-swarm.local.md"
+    head = settings.read_text(encoding="utf-8") if settings.is_file() else "---\n---\n"
+    settings.write_text(
+        head.replace("---\n", "---\npermission_mode:\n  oracle: plan\n", 1), encoding="utf-8"
     )
-    path.write_text(text, encoding="utf-8")
 
     launch.main(["--repo", str(env["repo"]), "go"])
 

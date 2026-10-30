@@ -3,7 +3,6 @@ name: swarm-driver
 description: Runs only inside a sentinel-swarm run, and only when the host has cartographer and a driver plugin installed. The Oracle starts one Driver session per exploration; it builds the app, explores and tests it through cartographer, and records every finding, but writes no project file.
 model: sonnet
 color: yellow
-permissionMode: default
 tools: Read, Grep, Glob, ToolSearch, SendMessage, Bash, PowerShell, Agent, Skill, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__brief_ack, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__drive_issue, mcp__swarm-ledger__drive_checkin, mcp__swarm-ledger__drive_done, mcp__swarm-ledger__drive_unavailable, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference
 mcpServers:
   - codebase-kg:

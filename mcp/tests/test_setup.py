@@ -146,12 +146,75 @@ def test_existing_role_file_keeps_frontmatter_and_gets_new_body(repo: Path):
     assert fields["tools"] == "Read, Grep"
     assert "hooks" not in fields
     assert "mcpServers" in fields
-    assert fields["permissionMode"] == "default"
+    assert "permissionMode" not in fields
     assert _body(path) == _body(setup.template_file("lead"))
     line = next(line for line in report.lines if "swarm-lead.md" in line)
     assert line.startswith("updated")
     assert "replaced the prompt body" in line
-    assert "permissionMode" in line
+    assert "permissionMode" not in line
+
+
+def test_setup_removes_a_role_files_permission_mode_and_names_the_setting(repo: Path):
+    path = setup.role_file(repo, "coder")
+    path.parent.mkdir(parents=True)
+    template = setup.render_default(setup.role_template("coder"))
+    path.write_text(
+        template.replace("color: orange\n", "color: orange\npermissionMode: bypassPermissions\n"),
+        encoding="utf-8",
+    )
+
+    report = setup.run_setup(repo)
+
+    assert "permissionMode" not in _frontmatter(path)
+    line = next(line for line in report.lines if "swarm-coder.md" in line)
+    assert "removed permissionMode: bypassPermissions" in line
+    assert "permission_mode.coder in .claude/sentinel-swarm.local.md" in line
+
+
+def _user_permissions(config_dir: Path, permissions: dict) -> None:
+    (config_dir / "settings.json").write_text(
+        json.dumps({"permissions": permissions}), encoding="utf-8"
+    )
+
+
+def test_setup_reports_each_roles_starting_mode(repo: Path, config_dir: Path):
+    _user_permissions(config_dir, {"defaultMode": "bypassPermissions"})
+
+    report = setup.run_setup(repo)
+
+    for role in setup.CORE_ROLES:
+        assert (
+            f"swarm-{role} starts in bypassPermissions: inherited from the user's settings.json"
+            in report.lines
+        )
+    assert not any(line.startswith("swarm-driver starts") for line in report.lines)
+
+
+def test_setup_reports_the_coder_floor_over_an_inherited_default(repo: Path):
+    report = setup.run_setup(repo)
+
+    assert any(line.startswith("swarm-lead starts in default: inherited") for line in report.lines)
+    assert any(
+        line.startswith("swarm-coder starts in acceptEdits: the Coder's floor over default")
+        for line in report.lines
+    )
+
+
+def test_setup_reports_the_fallback_when_policy_disables_bypass(repo: Path, config_dir: Path):
+    _user_permissions(
+        config_dir,
+        {"defaultMode": "bypassPermissions", "disableBypassPermissionsMode": "disable"},
+    )
+
+    report = setup.run_setup(repo)
+
+    line = next(line for line in report.lines if line.startswith("swarm-oracle starts"))
+    assert line.startswith("swarm-oracle starts in acceptEdits:")
+    assert "disableBypassPermissionsMode" in line
+    assert any(
+        line.startswith("policy sets permissions.disableBypassPermissionsMode")
+        for line in report.lines
+    )
 
 
 def test_setup_narrows_a_whole_server_ledger_grant_and_keeps_other_tools(repo: Path):

@@ -22,9 +22,11 @@ Every role runs as its own Claude Code session, with its own row in agent view. 
 role starts a subagent: no role has the `Agent` tool, and the `pre_agent` hook denies
 an `Agent` call from any swarm session.
 
-- Each role's model, tools, permission mode, MCP servers, and hooks live in its
-  project agent file, `.claude/agents/swarm-<role>.md` in the host repo. `setup`
-  writes the files from the plugin's templates, and the user edits them.
+- Each role's model, tools, and MCP servers live in its project agent file,
+  `.claude/agents/swarm-<role>.md` in the host repo. `setup` writes the files from the
+  plugin's templates, and the user edits them. Its permission mode comes from
+  `permission_mode.<role>` in `.claude/sentinel-swarm.local.md`, and is the user's own
+  `permissions.defaultMode` when that is empty.
 - Every session runs in the host repo root, in one shared working tree.
 - Every session starts with the repo's shared ledger server over HTTP and codebase-kg,
   plus the a11y servers when the host has a11y installed. The launcher and

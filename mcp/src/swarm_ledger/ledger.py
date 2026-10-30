@@ -8,9 +8,10 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import __version__, agentfiles, lock, rekey, sessions, wake
+from . import __version__, agentfiles, lock, notify, pauses, rekey, sessions, wake
 from .agreements import AgreementsMixin
 from .capacity import CapacityMixin
+from .clock import utcnow
 from .db import (
     NOW,
     connect,
@@ -375,7 +376,11 @@ class Ledger(
             self._repoint_children(conn, old_id, session_id)
             self._log_event(conn, session_id, oracle["state"], "working", f"resumed from {old_id}")
         if run["state"] == "paused":
-            conn.execute("UPDATE runs SET state = 'active' WHERE run_id = ?", (run["run_id"],))
+            conn.execute(
+                "UPDATE runs SET state = 'active', pause_check = NULL, paused_at = NULL "
+                "WHERE run_id = ?",
+                (run["run_id"],),
+            )
             self._log_event(conn, session_id, "paused", "active", "resumed from pause")
         return {
             "run": row_dict(conn, "runs", "run_id", run["run_id"]),
@@ -405,10 +410,19 @@ class Ledger(
             )
 
     def run_pause(
-        self, caller: str, agent_id: str, reason: str, phases: list[int] | None = None
+        self,
+        caller: str,
+        agent_id: str,
+        reason: str,
+        phases: list[int] | None = None,
+        clear_check: str | None = None,
     ) -> dict:
         if not reason.strip():
             raise LedgerError("run_pause needs a reason the user can act on")
+        if clear_check is not None and clear_check not in pauses.CHECKS:
+            raise LedgerError(
+                f"unknown clear_check {clear_check!r}; use one of {sorted(pauses.CHECKS)}"
+            )
         if phases:
             return self._pause_phases(caller, agent_id, reason, phases)
         with write_tx(self.conn) as conn:
@@ -417,8 +431,10 @@ class Ledger(
             run = self._active_run(conn)
             if run["state"] == "paused":
                 raise LedgerError("the run is already paused; run_start resumes it")
-            conn.execute("UPDATE runs SET state = 'paused' WHERE run_id = ?", (run["run_id"],))
-            self._log_event(conn, c.agent_id, "active", "paused", reason)
+            notice = pauses.record_pause(
+                conn, run["run_id"], c.agent_id, reason, clear_check, self.settings.notify, utcnow()
+            )
+        notify.deliver(notice, self.settings.notify)
 
         return row_dict(self.conn, "runs", "run_id", run["run_id"]) | {"reason": reason}
 
@@ -1486,6 +1502,7 @@ class Ledger(
             serve.server_url(self.repo_root),
             effort=effort or self.settings.effort.get(role),
             prompt_cache_ttl=self.settings.prompt_cache_ttl.get(role),
+            permission_mode=self.settings.permission_mode.get(role),
         )
 
     def _resume_options(self, role: str, model: str | None, effort: str | None = None) -> list[str]:

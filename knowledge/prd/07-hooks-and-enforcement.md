@@ -22,6 +22,7 @@
 |---|---|---|---|
 | `SessionStart` | all | `session_start` | all |
 | `PreToolUse` | `Agent` | `pre_agent` | all |
+| `PreToolUse` | `AskUserQuestion` | `pre_ask` | all |
 | `PreToolUse` | `Write\|Edit\|MultiEdit\|NotebookEdit` | `pre_write` | all |
 | `PreToolUse` | `Bash\|PowerShell` | `pre_shell` | all |
 | `PreToolUse` | `Monitor` | `pre_monitor` | all |
@@ -91,12 +92,15 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   It keeps the session id, the transcript path, the folder, and the role in `$.state`,
   so a reload of the module keeps them. Every hook returns `next(e)` at once in any
   other session. The mod does not read the role file.
-- **Gates.** A `tool.call` hook per gating event (`pre_agent`, `pre_write`,
+- **Gates.** A `tool.call` hook per gating event (`pre_agent`, `pre_ask`, `pre_write`,
   `pre_shell`, `pre_monitor`, `pre_send_message`, `pre_skill` for the Driver,
   `pre_ledger`) posts the classic `PreToolUse` input, with `agent_id` set to the
   loop's id for a subagent's call. A `deny` answer becomes `{ deny }`; an
   `updatedInput` answer rewrites the call's arguments, which is how `pre_ledger`
-  stamps `agent_id`. The mod's own `$.session.send` runs as a `SendMessage` call
+  stamps `agent_id`. A `tool.call` hook runs before Claude Code's permission check and
+  its prompt, so a deny returns to the agent at once in every permission mode,
+  `bypassPermissions` included, and no prompt waits for agent view. The mod's own
+  `$.session.send` runs as a `SendMessage` call
   through these hooks, addressed to the target's `uds:` pipe and not to a session
   name, so `pre_send_message` would refuse it. The `SendMessage` gate passes a call
   whose `message` is a wake-up text the mod is sending at that moment: the ledger
@@ -186,8 +190,19 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
 - `pre_write`: while a run is active or paused, denies anyone a write into the records
   folder, unconditionally; the records folder is the ledger's own state, so no
   override rule covers it either. Denies a write by any role but the
-  Coder, and a Coder's write outside its claimed path and test path, naming the owner;
-  an override of rule `write` lets one of these two writes through.
+  Coder, and a Coder's write outside its claimed path and test path, under `.claude/`
+  and outside the repo included, naming the owner; an override of rule `write` lets one
+  of these two writes through. The Coder's deny names its claimed test file as the place
+  for a scratch helper or a throwaway check, run with `tests_run`, and says to write no
+  scratch file anywhere else, `.claude/` included. It also denies a write from a session
+  whose `agent_type` is `swarm-<role>` but that is not a live agent of the run, such as
+  a released agent or a resumed session not yet re-keyed, and asks it to call
+  `ledger_info()`, whose `pre_ledger` re-keys a pending resume.
+- `pre_ask`: while a run is active or paused, denies `AskUserQuestion` to a swarm
+  session (by registry or by `agent_type`) whose `claude agents --json` entry has kind
+  `background`, since nobody sees the question there and the run would wait on it. The
+  deny names `user_ask(question)`. An interactive session, a session the listing does
+  not show, a failed listing, and a non-swarm caller pass. No override rule covers it.
 - `pre_shell`: while a run is active or paused, denies the shell to every role but the
   Coder and the Driver. A Coder may run a command that starts with the profile's test,
   build, or lint command, or read-only git (`status`, `diff`, `log`, `show`,
@@ -324,4 +339,7 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
 | Code the graph maps has a test file by the end | `phase_review(accepted)` |
 | A child wakes its parent after each step | The Stop hook, from the owed wake-ups |
 | The Oracle keeps working while the run has work, unless a directive waits on the user | The Oracle's Stop hook |
+| A background Oracle asks the user through the ledger, never through a dialog nobody sees | `pre_ask` denies `AskUserQuestion` in a background session; `user_ask` posts the question and notifies the user |
+| A role never waits on a permission prompt for a write outside its claim | `pre_write` denies it before Claude Code's permission check, in every permission mode |
+| The user hears about every pause, question, waiting session, and stalled run | `run_pause`, `user_ask`, `directive_resolve(needs_user)`, and the watchdog's `needs_user` and `run_stalled` reports record the notification; the watchdog repeats it while it waits |
 | The Oracle's watchdog listener stays armed | The Oracle's Stop hook and `pre_monitor` |

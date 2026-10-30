@@ -139,6 +139,13 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   starts. (2026-09-25)
 - A `--bg` session in the default permission mode stalls for good on a file write.
   `--permission-mode acceptEdits` clears it. (2026-09-25)
+- A mod's `tool.call` hook runs before Claude Code's permission check and its prompt:
+  each `next(e)` runs the hooks beneath, then core, which is the permission prompt and
+  then the tool, and a `{ deny }` refuses the call before either. From the mod API's
+  type documentation for Claude Code 2.1.314, not yet checked in a live session.
+  (2026-10-30)
+- `claude agents --json` shows a background session waiting on `AskUserQuestion` as
+  `status: waiting` with `waitingFor: "input needed"`. (2026-10-28, run B)
 - Before the plugin relays, one swarm session ran 4 MCP server processes for codebase-kg
   0.7.0, or 14 with both a11y servers in their `uvx` form, and 15 to 20 MCP-related
   processes in all. (2026-09-25)

@@ -41,6 +41,7 @@ def _session_options(repo: Path, role: str, model: str | None, ledger_url: str) 
         ledger_url,
         effort=settings.effort.get(role),
         prompt_cache_ttl=settings.prompt_cache_ttl.get(role),
+        permission_mode=settings.permission_mode.get(role),
     )
 
 

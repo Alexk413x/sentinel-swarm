@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import notify, rekey, sessions, wake
+from . import notify, pauses, rekey, sessions, wake
 from .clock import parse_stamp, stamp, utcnow
 from .db import NOW, write_tx
 from .identity import ROLES, LedgerError
@@ -41,6 +41,9 @@ _TAIL_BLOCK = 256 * 1024
 DRIVER_CHECKIN_INTERVAL = timedelta(minutes=30)
 DRIVER_CHECKIN_GRACE = timedelta(minutes=5)
 DRIVER_ERRORS = {"crashed": ("crashed", "error"), "driver_overdue": ("overdue", "warning")}
+USER_KINDS = ("needs_user", "run_stalled")
+_USER_WAITS = ("permission", "input", "question", "approval")
+_REQUEST_CHARS = 300
 
 
 @dataclass(frozen=True)
@@ -96,12 +99,13 @@ def scan(
                         "or issue_escalate.",
                     )
                 )
-        elif agent["role"] == "driver":
+        elif agent["role"] == "driver" and not waiting_on_user(entry):
             findings += _driver_findings(conn, agent, entry, now)
         context = _context_high(agent, settings)
         if context is not None:
             findings.append(_finding(agent, "context_high", context, _context_step(agent, names)))
 
+    findings += _needs_user_findings(agents, by_session)
     findings += _landed_wait_findings(conn, run["run_id"], agents, by_session)
     findings += _unsent_findings(conn, run["run_id"], agents, by_session, now, settings)
     findings += _queued_findings(conn, run["run_id"], agents, now, settings)
@@ -109,7 +113,153 @@ def scan(
     stalled = _stalled(conn, run, agents, by_session, now)
     if stalled is not None:
         findings.append(stalled)
+    run_stalled = _run_stalled(conn, run, agents, by_session, now, settings)
+    if run_stalled is not None:
+        findings.append(run_stalled)
     return findings
+
+
+def waiting_on_user(entry: dict | None) -> str | None:
+    if entry is None:
+        return None
+    waiting = " ".join(str(entry.get("waitingFor") or "").split())
+    if any(word in waiting.lower() for word in _USER_WAITS):
+        return waiting
+    return None
+
+
+def _needs_user_findings(agents: list[dict], by_session: dict[str, dict]) -> list[Finding]:
+    findings: list[Finding] = []
+    for agent in agents:
+        waiting = waiting_on_user(by_session.get(agent["agent_id"]))
+        if waiting is None:
+            continue
+        session = agent["session_name"] or agent["name"]
+        request = pending_request(agent.get("transcript_path"))
+        detail = f"its session {session} waits on {waiting}"
+        if request:
+            detail = f"{detail}: {request}"
+        findings.append(
+            _finding(
+                agent,
+                "needs_user",
+                detail,
+                f"The user has been notified. Tell the user to open the session {session} in "
+                "agent view and answer it, and keep the rest of the run moving.",
+            )
+        )
+    return findings
+
+
+def pending_request(raw: object) -> str | None:
+    """The tool call a session waits on, from the end of its transcript, as one line."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        with Path(raw).open("rb") as handle:
+            handle.seek(0, 2)
+            start = max(0, handle.tell() - _TAIL_BLOCK)
+            handle.seek(start)
+            lines = handle.read().split(b"\n")
+    except OSError:
+        return None
+    for line in reversed(lines[1:] if start > 0 else lines):
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict) or record.get("isSidechain"):
+            continue
+        message = record.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        blocks = [b for b in content if isinstance(b, dict)]
+        if any(b.get("type") == "tool_result" for b in blocks):
+            return None
+        uses = [b for b in blocks if b.get("type") == "tool_use"]
+        if uses:
+            return _describe_request(uses[-1])
+    return None
+
+
+def _describe_request(use: dict) -> str:
+    name = str(use.get("name") or "a tool")
+    raw = use.get("input")
+    tool_input: dict = raw if isinstance(raw, dict) else {}
+    if name == "AskUserQuestion":
+        asked = []
+        for question in tool_input.get("questions") or []:
+            if not isinstance(question, dict):
+                continue
+            labels = [
+                str(o.get("label")) for o in question.get("options") or [] if isinstance(o, dict)
+            ]
+            text = str(question.get("question") or "").strip()
+            asked.append(f"{text} (options: {', '.join(labels)})" if labels else text)
+        return _clip("AskUserQuestion: " + " / ".join(asked))
+    for key in ("file_path", "command", "path", "url"):
+        if tool_input.get(key):
+            return _clip(f"{name} {tool_input[key]}")
+    return _clip(f"{name} {json.dumps(tool_input, ensure_ascii=False)}")
+
+
+def _clip(text: str) -> str:
+    flat = " ".join(text.split())
+    return flat if len(flat) <= _REQUEST_CHARS else flat[: _REQUEST_CHARS - 3] + "..."
+
+
+def _run_stalled(
+    conn: sqlite3.Connection,
+    run: sqlite3.Row,
+    agents: list[dict],
+    by_session: dict[str, dict],
+    now: datetime,
+    settings: WatchdogSettings,
+) -> Finding | None:
+    oracle = next((a for a in agents if a["role"] == "oracle"), None)
+    after = timedelta(minutes=settings.stuck_minutes)
+    if oracle is None or after <= timedelta(0):
+        return None
+    run_id = run["run_id"]
+    if conn.execute(
+        "SELECT 1 FROM spawn_queue WHERE run_id = ? AND state = 'queued'", (run_id,)
+    ).fetchone():
+        return None
+    for agent in agents:
+        entry = by_session.get(agent["agent_id"])
+        running = entry is not None and sessions.is_running(entry)
+        if agent["state"] == "working" and running and not waiting_on_user(entry):
+            return None
+    if conn.execute(
+        "SELECT 1 FROM wakeups w JOIN agents t ON t.agent_id = w.to_agent_id "
+        "WHERE w.run_id = ? AND w.sent_at IS NULL AND t.ended_at IS NULL",
+        (run_id,),
+    ).fetchone():
+        return None
+    stamps = [_last_activity(conn, run_id), parse_stamp(run["started_at"])]
+    stamps += [_transcript_written(a) for a in agents]
+    last = max((s for s in stamps if s is not None), default=None)
+    if last is None or now - last < after:
+        return None
+    waiting = [
+        a["session_name"] or a["name"]
+        for a in agents
+        if waiting_on_user(by_session.get(a["agent_id"]))
+    ]
+    detail = (
+        f"no agent of the run has worked and no wake-up has been owed for {_minutes(now - last)} "
+        "minutes"
+    )
+    if waiting:
+        detail = f"{detail}; waiting on the user: {', '.join(waiting)}"
+    return _finding(
+        oracle,
+        "run_stalled",
+        detail,
+        "The user has been notified. Read status_tree(), then wake the agent whose work is "
+        "pending, or ask the user with user_ask when only the user can move the run.",
+    )
 
 
 def _landed_wait_findings(
@@ -271,16 +421,8 @@ def _release_step(agent_id: str) -> str:
 def _session_findings(
     agent: dict, entry: dict | None, now: datetime, settings: WatchdogSettings
 ) -> list[Finding]:
-    if entry is not None and "permission" in str(entry.get("waitingFor") or "").lower():
-        return [
-            _finding(
-                agent,
-                "waiting_permission",
-                "its session waits on a permission prompt",
-                f"Tell the user to open the session {agent['session_name'] or agent['name']} "
-                "in agent view and answer its permission prompt.",
-            )
-        ]
+    if waiting_on_user(entry):
+        return []
 
     running = entry is not None and sessions.is_running(entry)
     if not running:
@@ -625,6 +767,15 @@ def _wake_call(agent: dict, by_session: dict[str, dict]) -> str:
     ).next
 
 
+def _pause_reason(conn: sqlite3.Connection, run_id: int) -> str | None:
+    row = conn.execute(
+        "SELECT e.reason FROM agent_events e JOIN agents a ON a.agent_id = e.agent_id "
+        "WHERE a.run_id = ? AND e.to_state = 'paused' ORDER BY e.event_id DESC LIMIT 1",
+        (run_id,),
+    ).fetchone()
+    return row["reason"] if row is not None else None
+
+
 def directive_body(finding: Finding) -> str:
     session = finding.session_name or "none recorded"
     return (
@@ -732,6 +883,64 @@ def driver_notices(
     return notices
 
 
+def user_notices(
+    conn: sqlite3.Connection, run_id: int, reported: list[dict], channels: Sequence[str]
+) -> list[dict]:
+    notices: list[dict] = []
+    with write_tx(conn):
+        for row in reported:
+            if row["kind"] not in USER_KINDS:
+                continue
+            agent = conn.execute(
+                "SELECT name, role FROM agents WHERE agent_id = ?", (row["agent_id"],)
+            ).fetchone()
+            on_oracle = agent is not None and agent["role"] == "oracle"
+            if row["kind"] == "needs_user":
+                name = agent["name"] if agent is not None else row["agent_id"]
+                message = f"The swarm needs you: {name}, {row['detail']}"
+            else:
+                message = f"The swarm run stalled: {row['detail']}"
+            notice = notify.record(
+                conn,
+                run_id,
+                kind="warning",
+                event_key=f"directive:{row['directive_id']}",
+                message=message,
+                channels=_os_only(channels)
+                if row["kind"] == "needs_user" and on_oracle
+                else channels,
+            )
+            if notice is not None:
+                notices.append(notice)
+    return notices
+
+
+def _os_only(channels: Sequence[str]) -> list[str]:
+    # The Oracle cannot send a PushNotification while its own session is the one stuck.
+    return [c for c in channels if c != "push"]
+
+
+def waiting_questions(conn: sqlite3.Connection, run_id: int) -> list[str]:
+    return [
+        str(row["question"] or row["body"])
+        for row in conn.execute(
+            "SELECT question, body FROM directives WHERE run_id = ? AND state = 'open' "
+            "AND outcome = 'needs_user' ORDER BY directive_id",
+            (run_id,),
+        )
+    ]
+
+
+def reminder(conn: sqlite3.Connection, run: sqlite3.Row, pause_reason: str | None) -> str | None:
+    questions = waiting_questions(conn, run["run_id"])
+    parts: list[str] = []
+    if run["state"] == "paused":
+        parts.append(pauses.pause_message(pause_reason or "no reason recorded", run["pause_check"]))
+    if questions:
+        parts.append(f"{len(questions)} question(s) wait on you: {questions[0]}")
+    return " ".join(parts) or None
+
+
 class Watchdog:
     def __init__(
         self,
@@ -778,8 +987,59 @@ class Watchdog:
                 )
             for notice in driver_notices(self.conn, run["run_id"], reported, self.notify_channels):
                 notify.deliver(notice, self.notify_channels, log=self._log)
+            for notice in user_notices(self.conn, run["run_id"], reported, self.notify_channels):
+                notify.deliver(notice, self.notify_channels, log=self._log)
             self._wake_oracle(run, listing, now)
+        if run is not None and run["state"] == "paused":
+            run = self._try_clear_check(run, now)
+        if run is not None:
+            self._remind(run, now)
         self._check_idle(run, listing, now)
+
+    def _try_clear_check(self, run: sqlite3.Row, now: datetime) -> sqlite3.Row:
+        check = pauses.CHECKS.get(run["pause_check"] or "")
+        if check is None:
+            return run
+        try:
+            passed = check.passes(self.repo_root)
+        except Exception as exc:
+            self._log(f"the clear-check {check.name} failed: {type(exc).__name__}: {exc}")
+            return run
+        if not passed:
+            return run
+        oracle = latest_live_oracle(self.conn, run["run_id"])
+        with write_tx(self.conn) as conn:
+            note = pauses.clear_resume(conn, run, oracle["agent_id"] if oracle else "watchdog", now)
+            notice = notify.record(
+                conn,
+                run["run_id"],
+                kind="done",
+                event_key=f"resumed:{run['paused_at']}",
+                message=f"The swarm run resumed by itself: {check.label}.",
+                channels=self.notify_channels,
+            )
+        notify.deliver(notice, self.notify_channels, log=self._log)
+        self._log(f"run {run['run_id']}: {note}")
+        return self.conn.execute("SELECT * FROM runs WHERE run_id = ?", (run["run_id"],)).fetchone()
+
+    def _remind(self, run: sqlite3.Row, now: datetime) -> None:
+        every = timedelta(minutes=self.settings.remind_minutes)
+        if every <= timedelta(0) or "os" not in self.notify_channels:
+            return
+        reason = _pause_reason(self.conn, run["run_id"]) if run["state"] == "paused" else None
+        message = reminder(self.conn, run, reason)
+        last = parse_stamp(run["reminded_at"])
+        if message is None or (last is not None and now - last < every):
+            if message is None and last is not None:
+                self._set_reminded(run["run_id"], None)
+            return
+        self._set_reminded(run["run_id"], stamp(now))
+        if last is not None:
+            notify.show(notify.one_line(message), level=notify.LEVELS["warning"], log=self._log)
+
+    def _set_reminded(self, run_id: int, at: str | None) -> None:
+        with write_tx(self.conn) as conn:
+            conn.execute("UPDATE runs SET reminded_at = ? WHERE run_id = ?", (at, run_id))
 
     def _memory_pass(self, listing: list[dict], now: datetime) -> list[dict]:
         ledger = self.ledger
@@ -824,14 +1084,20 @@ class Watchdog:
         if oracle is None:
             return
         entry = sessions.find_session(listing, oracle["agent_id"])
-        if entry is not None and sessions.is_running(entry):
+        running = entry is not None and sessions.is_running(entry)
+        if running and str((entry or {}).get("status") or "").lower() == "busy":
             return
-        waiting = self.conn.execute(
-            "SELECT COUNT(*) AS n FROM directives WHERE run_id = ? AND source = 'watchdog' "
-            "AND state = 'open' AND notified_at IS NULL AND created_at <= ?",
+        pending = self.conn.execute(
+            "SELECT COUNT(*) AS n, MIN(directive_id) AS first FROM directives WHERE run_id = ? "
+            "AND source = 'watchdog' AND state = 'open' AND notified_at IS NULL "
+            "AND created_at <= ?",
             (run["run_id"], stamp(now - self.interval)),
-        ).fetchone()["n"]
+        ).fetchone()
+        waiting = int(pending["n"])
         if not waiting:
+            return
+        if running:
+            self._oracle_unreachable(run, oracle, entry, waiting, pending["first"])
             return
         attempts = [
             parse_stamp(row["at"])
@@ -880,6 +1146,28 @@ class Watchdog:
             )
         self._log(reason)
 
+    def _oracle_unreachable(
+        self, run: sqlite3.Row, oracle: sqlite3.Row, entry: dict | None, count: int, first: int
+    ) -> None:
+        session = oracle["session_name"] or oracle["name"]
+        asks = waiting_on_user(entry)
+        state = f"waits on {asks}" if asks else "sits idle with no watchdog listener"
+        with write_tx(self.conn) as conn:
+            notice = notify.record(
+                conn,
+                run["run_id"],
+                kind="warning",
+                event_key=f"oracle_unreachable:{first}",
+                message=(
+                    f"The swarm's Oracle session {session} {state}, and {count} watchdog "
+                    "finding(s) wait for it. Open it in agent view."
+                ),
+                channels=_os_only(self.notify_channels),
+            )
+        if notice is not None:
+            self._log(f"the Oracle's session runs but {state}; notified the user")
+        notify.deliver(notice, self.notify_channels, log=self._log)
+
     def _adopt_resumed(self, agent: sqlite3.Row, bg_id: str | None) -> str:
         with write_tx(self.conn) as conn:
             conn.execute(
@@ -908,22 +1196,23 @@ class Watchdog:
                 server_url(self.repo_root),
                 effort=settings.effort.get("oracle"),
                 prompt_cache_ttl=settings.prompt_cache_ttl.get("oracle"),
+                permission_mode=settings.permission_mode.get("oracle"),
             )
         except LedgerError:
             return []
 
     def _pause(self, run: sqlite3.Row, oracle: sqlite3.Row, now: datetime) -> None:
         with write_tx(self.conn) as conn:
-            cur = conn.execute(
-                "UPDATE runs SET state = 'paused' WHERE run_id = ? AND state = 'active'",
-                (run["run_id"],),
+            notice = pauses.record_pause(
+                conn,
+                run["run_id"],
+                oracle["agent_id"],
+                PAUSE_REASON,
+                None,
+                self.notify_channels,
+                now,
             )
-            if cur.rowcount:
-                conn.execute(
-                    "INSERT INTO agent_events (agent_id, from_state, to_state, reason, at) "
-                    "VALUES (?, 'active', 'paused', ?, ?)",
-                    (oracle["agent_id"], PAUSE_REASON, stamp(now)),
-                )
+        notify.deliver(notice, self.notify_channels, log=self._log)
         self._log(f"paused run {run['run_id']}: {PAUSE_REASON}")
 
     def _check_idle(
@@ -934,7 +1223,7 @@ class Watchdog:
             self._activity_seen = activity
             self._idle_since = None
             return
-        if run is not None and run["state"] == "active":
+        if run is not None and (run["state"] == "active" or run["pause_check"]):
             self._idle_since = None
             return
         if run is not None and listing is not None and self._any_running(run, listing):
