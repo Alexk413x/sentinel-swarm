@@ -2,6 +2,24 @@
 
 All notable changes to the `sentinel-swarm` plugin.
 
+## [0.6.0] — 2026-10-30 — answer permission prompts from the run panel
+
+### Added
+
+- The run panel answers a role session's permission prompt. When Claude Code would ask
+  about a call in a role session, the mod's `tool.check` hook holds it, records a
+  `permission_requests` row, and waits for the panel's **Allow** or **Deny**. After
+  `permission_hold_seconds` (default 300; 0 turns holding off), or on any error, Claude
+  Code shows its own prompt. Questions and plan approvals stay in agent view.
+- `ledger.py permission --id <n> (--allow|--deny) [--note]` answers a held request.
+- The watchdog reports a held request as `needs_user`, with its notification and
+  reminders, and does not report the held session as stuck.
+
+### Changed
+
+- A ledger created before 0.6.0 has no `permission_requests` table. Delete
+  `.sentinel-swarm/ledger.db` before the first run on 0.6.0.
+
 ## [0.5.2] — 2026-10-30 — notice a blocked session
 
 ### Fixed

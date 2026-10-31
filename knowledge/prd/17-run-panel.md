@@ -149,6 +149,12 @@ answers it. The hold is a mod hook, since the plugin has no command hooks.
   user: it files `needs_user` with the tool and input, which notifies the user and is
   reminded every `remind_minutes`, and it does not report the session `stuck` or
   `crashed` or count it as working for `run_stalled`. See [08-watchdog.md](08-watchdog.md).
+- **Who can answer.** Only the `permission` launcher writes an `allowed` or `denied`
+  answer. A role session's routes only expire or withdraw its own request, and a role's
+  shell runs only its allowlisted commands, so no role tool answers a request. Code a
+  role runs through its test command can write any file, the ledger included; that code
+  can already do what the held call would, so the hold is no weaker than Claude Code's
+  own prompt against it, and no stronger.
 
 ## The tree
 
