@@ -104,6 +104,8 @@ answers it. The hold is a mod hook, since the plugin has no command hooks.
   - the verdict is `ask` and carries no `plugin`, so it is Claude Code's own ask, not
     another plugin's;
   - `e.approver` is `person`, so a person would answer the ask;
+  - `e.tool_use_id` is set, so it decides a real call, not another plugin's
+    `$.tool.check` query;
   - the tool is not `AskUserQuestion` or `ExitPlanMode`, which require the person: a
     hook's allow does not dismiss their dialog;
   - `permission_hold_seconds` is above 0, and the session's ledger server answers.

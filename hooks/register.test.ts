@@ -161,8 +161,13 @@ describe('a permission prompt held for the run panel', () => {
     on('tool.check', () => verdict as never)
   }
 
-  async function check($: Engine, tool = 'Write', approver: string | null = 'person') {
-    return $.tool.check({ tool, input: OUTSIDE, ...(approver === null ? {} : { approver }) } as never)
+  async function check($: Engine, tool = 'Write', approver: string | null = 'person', call: string | null = 'toolu_1') {
+    return $.tool.check({
+      tool,
+      input: OUTSIDE,
+      ...(approver === null ? {} : { approver }),
+      ...(call === null ? {} : { tool_use_id: call }),
+    } as never)
   }
 
   test('an allow from the panel lets the call run', async ($, on) => {
@@ -220,7 +225,7 @@ describe('a permission prompt held for the run panel', () => {
     expect(w.events()).toEqual(['session_start', 'permission_request'])
   })
 
-  test("a plugin's ask, a host approver, a question, an allow and a deny are not held", async ($, on) => {
+  test("a plugin's ask, a host approver, a query, a question, an allow and a deny are not held", async ($, on) => {
     const verdict: { current: Record<string, unknown> } = { current: { ...ASK, plugin: 'other-plugin' } }
     const w = world(on, { answers: { permission_request: OPENED, permission_wait: { state: 'allowed', note: null } } })
     on('tool.check', () => verdict.current as never)
@@ -229,6 +234,7 @@ describe('a permission prompt held for the run panel', () => {
     verdict.current = ASK
     expect(await check($, 'Write', 'host')).toMatchObject(ASK)
     expect(await check($, 'Write', null)).toMatchObject(ASK)
+    expect(await check($, 'Write', 'person', null)).toMatchObject(ASK)
     expect(await check($, 'AskUserQuestion')).toMatchObject(ASK)
     expect(await check($, 'ExitPlanMode')).toMatchObject(ASK)
     verdict.current = { decision: 'deny', reason: 'denied by a rule' }

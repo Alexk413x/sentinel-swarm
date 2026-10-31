@@ -139,7 +139,13 @@ export const register: Register = on => {
 
   on('tool.check', async ($, e, next) => {
     const verdict = await next(e)
-    if (verdict.decision !== 'ask' || verdict.plugin !== undefined || e.approver !== 'person' || PERSON_TOOLS.has(e.tool)) {
+    if (
+      verdict.decision !== 'ask' ||
+      verdict.plugin !== undefined ||
+      e.approver !== 'person' ||
+      e.tool_use_id === undefined ||
+      PERSON_TOOLS.has(e.tool)
+    ) {
       return verdict
     }
     const s = await active($)
