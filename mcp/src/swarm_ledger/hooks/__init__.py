@@ -29,6 +29,9 @@ HANDLERS = {
     "inbox_ack": events.handle_inbox_ack,
     "inbox_release": events.handle_inbox_release,
     "send_target": events.handle_send_target,
+    "permission_request": events.handle_permission_request,
+    "permission_wait": events.handle_permission_wait,
+    "permission_close": events.handle_permission_close,
 }
 # A resumed session's first hooks: only these may afford a claude agents --json call to match
 # an unknown session id to the agent being resumed.

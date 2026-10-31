@@ -93,6 +93,16 @@
   `ledger.py close` stopping every role session and the server exiting after
   `idle_exit_minutes`, and a Coder's `git rm` and a Manager's named host command
   passing the shell gate.
+- **Permission prompts answered in the run panel, live.** The mod's `tool.check` hold,
+  the ledger's long poll, the panel's Allow and Deny, and the watchdog's `needs_user`
+  for a held request are unit-tested against a faked ledger and engine. A live run
+  should start a role session in a permission mode that prompts (`default`), have it
+  call `Write` outside its allowed paths, and show the request in the panel's Waiting
+  on you box and as an OS notification; Allow should let the write run and Deny refuse
+  it with the panel's reason. A second request left unanswered should show Claude
+  Code's own prompt in agent view once `permission_hold_seconds` pass. It should also
+  confirm that the session's own `e.approver` is `person` there, and that an interrupt
+  marks the request `withdrawn`.
 - **Other platforms.** An exploration of running a Coder on a non-Claude CLI through
   ide-agent-tabs, not a build. The plan is `plans/other-platforms.md`.
 - **The Oracle's wake of a waiting agent.** `pre_send_message` lets the Oracle wake any
@@ -106,12 +116,6 @@ Each item below is marked **(needs implementation)** in its document.
 
 - **The device-queue broker** ([05-sessions.md](05-sessions.md)). Needs a new plan on
   the mod's delivery path.
-- **Answering a permission prompt in the run panel**
-  ([17-run-panel.md](17-run-panel.md)). A `tool.check` hook in each role session would hold
-  an `ask` verdict on a long poll to the ledger until the panel answers, and fall back
-  to Claude Code's prompt at its own deadline. It needs a `permission_request` table, a
-  long-poll route, the panel's Allow and Deny buttons, and a watchdog check of open
-  requests, since a session held by the hook does not show as waiting.
 - **Run panel payload.** The panel reads every brief on each 5-second refresh, about 240 KB for a run of 100 agents. Fetch a brief only when its task opens, and read the snapshot over the ledger server's HTTP route while it runs.
 - **Waiting sessions, live.** The `needs_user` finding, its transcript request text, its
   notification, and its reminders are unit-tested against a faked `claude agents --json`.

@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import notify, pauses, procs, rekey, sessions, testrun, wake
+from . import notify, pauses, permission, procs, rekey, sessions, testrun, wake
 from .clock import parse_stamp, stamp, utcnow
 from .db import NOW, write_tx
 from .identity import ROLES, LedgerError
@@ -53,6 +53,7 @@ DRIVER_ERRORS = {"crashed": ("crashed", "error"), "driver_overdue": ("overdue", 
 USER_KINDS = ("needs_user", "run_stalled")
 _USER_WAITS = ("permission", "input", "question", "approval")
 _REQUEST_CHARS = 300
+HELD_WAIT = "a permission request held for the run panel"
 
 
 @dataclass(frozen=True)
@@ -89,6 +90,13 @@ def scan(
         )
     ]
     by_session = {str(e["sessionId"]): e for e in listing if e.get("sessionId")}
+    held = {r["agent_id"]: r for r in permission.open_requests(conn, run["run_id"], now)}
+    for agent_id in held.keys() & by_session.keys():
+        by_session[agent_id] = {
+            **by_session[agent_id],
+            "status": "waiting",
+            "waitingFor": HELD_WAIT,
+        }
     names = {a["agent_id"]: a["name"] for a in agents}
 
     findings: list[Finding] = []
@@ -114,7 +122,7 @@ def scan(
         if context is not None:
             findings.append(_finding(agent, "context_high", context, _context_step(agent, names)))
 
-    findings += _needs_user_findings(agents, by_session)
+    findings += _needs_user_findings(agents, by_session, held)
     findings += _landed_wait_findings(conn, run["run_id"], agents, by_session)
     findings += _unsent_findings(conn, run["run_id"], agents, by_session, now, settings)
     findings += _queued_findings(conn, run["run_id"], agents, now, settings)
@@ -144,13 +152,19 @@ def waiting_on_user(entry: dict | None) -> str | None:
     return None
 
 
-def _needs_user_findings(agents: list[dict], by_session: dict[str, dict]) -> list[Finding]:
+def _needs_user_findings(
+    agents: list[dict], by_session: dict[str, dict], held: dict[str, dict]
+) -> list[Finding]:
     findings: list[Finding] = []
     for agent in agents:
         waiting = waiting_on_user(by_session.get(agent["agent_id"]))
         if waiting is None:
             continue
         session = agent["session_name"] or agent["name"]
+        asked = held.get(agent["agent_id"])
+        if asked is not None:
+            findings.append(_held_finding(agent, session, asked))
+            continue
         request = pending_request(agent.get("transcript_path"))
         detail = f"its session {session} waits on {waiting}"
         if request:
@@ -165,6 +179,19 @@ def _needs_user_findings(agents: list[dict], by_session: dict[str, dict]) -> lis
             )
         )
     return findings
+
+
+def _held_finding(agent: dict, session: str, asked: dict) -> Finding:
+    request = _clip(f"{asked['tool']} {asked['summary']}")
+    return _finding(
+        agent,
+        "needs_user",
+        f"its session {session} waits on {HELD_WAIT}: {request}; answer permission request "
+        f"{asked['request_id']} in the run panel",
+        "The user has been notified. Tell the user to allow or deny permission request "
+        f"{asked['request_id']} in the run panel; unanswered by {asked['expires_at']}, the "
+        f"session {session} shows its own prompt in agent view. Keep the rest of the run moving.",
+    )
 
 
 def pending_request(raw: object) -> str | None:
@@ -214,15 +241,11 @@ def _describe_request(use: dict) -> str:
             text = str(question.get("question") or "").strip()
             asked.append(f"{text} (options: {', '.join(labels)})" if labels else text)
         return _clip("AskUserQuestion: " + " / ".join(asked))
-    for key in ("file_path", "command", "path", "url"):
-        if tool_input.get(key):
-            return _clip(f"{name} {tool_input[key]}")
-    return _clip(f"{name} {json.dumps(tool_input, ensure_ascii=False)}")
+    return _clip(f"{name} {permission.input_text(tool_input)}")
 
 
 def _clip(text: str) -> str:
-    flat = " ".join(text.split())
-    return flat if len(flat) <= _REQUEST_CHARS else flat[: _REQUEST_CHARS - 3] + "..."
+    return permission.one_line(text, _REQUEST_CHARS)
 
 
 def _run_stalled(

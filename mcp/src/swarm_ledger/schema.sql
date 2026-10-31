@@ -492,6 +492,27 @@ CREATE TABLE IF NOT EXISTS watchdog_findings (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_watchdog_findings_live
     ON watchdog_findings (run_id, agent_id, kind) WHERE cleared_at IS NULL;
 
+-- A role session's call that Claude Code would ask the person about, held by the mod for
+-- the run panel to answer until expires_at. state: open, allowed, denied, expired, or
+-- withdrawn.
+CREATE TABLE IF NOT EXISTS permission_requests (
+    request_id INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL REFERENCES runs (run_id) ON DELETE RESTRICT,
+    agent_id TEXT NOT NULL REFERENCES agents (agent_id) ON DELETE RESTRICT,
+    tool TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    reason TEXT,
+    state TEXT NOT NULL DEFAULT 'open',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    expires_at TEXT NOT NULL,
+    answered_at TEXT,
+    answered_by TEXT,
+    note TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_permission_requests_open
+    ON permission_requests (run_id) WHERE state = 'open';
+
 CREATE TABLE IF NOT EXISTS drive_requests (
     request_id INTEGER PRIMARY KEY,
     run_id INTEGER NOT NULL REFERENCES runs (run_id) ON DELETE RESTRICT,

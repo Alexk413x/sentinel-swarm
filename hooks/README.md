@@ -29,6 +29,10 @@ result to its own idle session with `$.prompt.submit`, and reads the inbox into 
 delivered wake-up. Its `session.send` hook posts `send_target` for each `SendMessage` the
 session's model makes, and sends one addressed to a swarm session name to that
 session's id instead, since a stale or Remote Control session can carry the same name.
+Its `tool.check` hook posts `permission_request`, `permission_wait`, and
+`permission_close` to hold a call Claude Code would ask the person about until the run
+panel answers it or `permission_hold_seconds` pass; see "Answering a permission prompt
+in the panel" in `knowledge/prd/17-run-panel.md`.
 
 The fallback runs this command from the host repo root:
 
@@ -71,6 +75,7 @@ The per-event behavior lives in `mcp/src/swarm_ledger/hooks/events.py`, as funct
 | `PreToolUse` | `SendMessage` | `pre_send_message` | all |
 | `PreToolUse` | `Skill` | `pre_skill`, which denies `map-explore` before `map-test` | driver |
 | `PreToolUse` | `mcp__swarm-ledger__.*` | `pre_ledger` | all |
+| `tool.check` (mod hook) | Claude Code's own `ask` that a person would answer | `permission_request`, `permission_wait`, `permission_close`, which hold the call for the run panel's Allow or Deny | all |
 | `PostToolUse` | `SendMessage\|PushNotification\|Monitor\|Write\|Edit\|MultiEdit\|NotebookEdit` | `post_any` | all |
 | `PostToolUse` | all, `async: true` | `post_activity`, which skips the tools `post_any` covers | all |
 | `PostToolUse` | `Bash\|PowerShell` | `post_shell` | coder |

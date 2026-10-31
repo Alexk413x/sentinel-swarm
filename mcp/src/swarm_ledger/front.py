@@ -3,9 +3,10 @@
 The front sends each tool call to a pool worker, or, with `max_workers` 0, runs it here one at
 a time under `_CALL_LOCK`. Hooks go to a second pool of the same size, so a long tool call such
 as `tests_run` never holds up a hook; with `max_workers` 0 they run here on their own
-connection. It keeps what must happen once per server: the activity clock the
-watchdog reads, `on_run_finish`, and the OS notifications a worker's reply lists. Both the
-lean HTTP front (`http_front.py`) and the fastmcp registrations in `server.py` call it.
+connection. The run panel's long poll (`FRONT_HOOKS`) always runs here. It keeps what must
+happen once per server: the activity clock the watchdog reads, `on_run_finish`, and the OS
+notifications a worker's reply lists. Both the lean HTTP front (`http_front.py`) and the
+fastmcp registrations in `server.py` call it.
 """
 
 from __future__ import annotations
@@ -29,6 +30,9 @@ _hook_pool: Pool | None = None
 _CALL_LOCK = threading.RLock()
 on_run_finish: Callable[[str | None], None] | None = None
 last_call_at = 0.0
+# A long poll runs on the server's own request thread, so a held permission request never
+# holds a hook worker that other sessions' gates wait for.
+FRONT_HOOKS = frozenset({"permission_wait"})
 
 
 class UnknownHook(LookupError):
@@ -106,7 +110,7 @@ def call_tool(name: str, args: dict[str, Any], agent_id: str | None, stamped: bo
 
 
 def run_hook(root: Path, event: str, payload: str) -> tuple[str, str]:
-    if _hook_pool is None:
+    if _hook_pool is None or event in FRONT_HOOKS:
         from .hooks import HANDLERS, run_event
 
         if event not in HANDLERS:

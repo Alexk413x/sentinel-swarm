@@ -2,8 +2,9 @@
 
 The run panel is a side pane that shows a swarm run as a tree of agents and the work
 each one owns, with what waits on the user at the top. It reads the ledger. It writes
-to the ledger only when the user answers the Oracle's question in the panel: the answer
-goes in as a directive reply.
+to the ledger only when the user answers in the panel: an answer to the Oracle's
+question goes in as a directive reply, and an Allow or Deny answers a held permission
+request.
 
 ## Opening it
 
@@ -29,8 +30,10 @@ goes in as a directive reply.
 - The document lists every run, newest first. Each run carries its state, outcome,
   branch, elapsed time, agent counts, the agent tree (Oracle, Managers, Leads, Coders,
   and the Driver), and what waits on the user: the open `needs_user` directives, the
-  watchdog's open `needs_user` and `run_stalled` findings, and a paused run's reason
-  (the reason of the run's latest move to `paused`).
+  watchdog's open `needs_user` and `run_stalled` findings, the open permission requests
+  of its live agents that have not expired (`permissions`: the request id, the agent,
+  the tool, the input summary, Claude Code's reason, and when it was asked and
+  expires), and a paused run's reason (the reason of the run's latest move to `paused`).
 - Each agent carries its session id, session name, and transcript path. A child that
   `agent_spawn` queued in `spawn_queue` has a brief but no session yet; it sits in the
   tree under its parent as a queued row, with its brief's task and the queue's reason.
@@ -63,15 +66,23 @@ goes in as a directive reply.
   run waits on the user. It lists, one line each:
   - every role session that `claude agents --json` shows waiting, as "waits on a
     permission prompt" or "waits for your answer";
+  - every held permission request, as "asks to run <tool> (permission request <id>)";
   - every open `needs_user` directive, as a question from the Oracle;
   - every open watchdog finding of kind `needs_user`, unless that agent's session wait
-    is already listed, and of kind `run_stalled`;
+    or held request is already listed, and of kind `run_stalled`;
   - a paused run, with its reason.
 - An item that belongs to an agent names the agent and the first line of its request.
   Its details sit under the agent's row, in a red-bordered box (`borderColor="error"`):
   the tool and its input, or the question and its options, and where to answer.
   - A waiting session is answered in agent view (`claude agents`), on the session the
-    box names. No mod API answers another session's prompt.
+    box names. The panel cannot answer a prompt Claude Code already shows; it answers
+    only the requests a role's own mod holds for it (below).
+  - A held permission request shows the tool and its input summary, Claude Code's
+    reason, and **Allow** and **Deny** buttons. A press runs `mcp/launch/ledger.py
+    permission --repo <repo> --id <id> --allow` (or `--deny`), a toast says whether it
+    went, and the panel refreshes. The box also says when the hold ends, after which
+    the session shows Claude Code's own prompt in agent view. Every surface the mod API
+    lists carries `Button`.
   - A `needs_user` directive sits under the Oracle's row with an answer field. Enter
     sends the text through `mcp/launch/ledger.py directive --source user_chat --sender
     "run panel" --reply-to <id>`, which resolves the directive, and a toast says whether
@@ -82,34 +93,60 @@ goes in as a directive reply.
   cause and message the Oracle or run `/sentinel-swarm:resume`.
 - The row of an agent with an item shows the warning glyph `⚠` and is never dimmed.
 
-### Answering a permission prompt in the panel (needs implementation)
+### Answering a permission prompt in the panel
 
-The panel would answer a role's permission prompt itself: the role's gate posts a
-`permission_request` row for a call Claude Code would ask about and waits, the panel's
-box draws Allow and Deny, and a press writes the answer.
+A role session holds a call Claude Code would ask the person about, and the panel
+answers it. The hold is a mod hook, since the plugin has no command hooks.
 
-What the mod API (Claude Code 2.1.314) fixes:
-
-- The plugin has no command hooks, so the hook would be a mod hook. A `tool.check` hook
-  sees Claude Code's own verdict for the call, `allow`, `ask`, or `deny`, so `ask` marks
-  exactly the calls that would raise a prompt. A hook may answer any verdict.
-- A mod hook's budget is 10 seconds of its own code (`HookBudget.ms`). Time spent
-  awaiting a `$` call, such as `$.http.fetch` or `$.process.run`, does not count; a
-  `$.clock` wait does. Past the budget the hook is absent: its `.catch` runs with a
-  1-second grace (`catchMs`), or the call goes on as if the hook had not run.
-  `$.process.run` stops at 10 minutes; the types give `$.http.fetch` no limit. When the
-  person interrupts, `next.signal` aborts and the hook has 5 seconds (`lingerMs`).
-- So the hook can wait on a long poll to the ledger server, with its own deadline. At
-  that deadline it returns Claude Code's `ask`, and the session shows its own prompt.
-
-Why it is not built:
-
-- While the hook waits, Claude Code raises no prompt, so `claude agents --json` shows
-  the session busy, not waiting. The watchdog's `needs_user` check and agent view would
-  miss it until the deadline, unless the watchdog also reads open
-  `permission_request` rows.
-- It needs a `permission_request` table, a long-poll route on the ledger server, the
-  panel's answer path, and the watchdog change. Each touches code outside the panel.
+- **Which calls.** The mod's `tool.check` hook runs in role sessions only, the sessions
+  the gates act in. It first reads Claude Code's own verdict with `next(e)`. It holds the
+  call only when all of these hold:
+  - the verdict is `ask` and carries no `plugin`, so it is Claude Code's own ask, not
+    another plugin's;
+  - `e.approver` is `person`, so a person would answer the ask;
+  - the tool is not `AskUserQuestion` or `ExitPlanMode`, which require the person: a
+    hook's allow does not dismiss their dialog;
+  - `permission_hold_seconds` is above 0, and the session's ledger server answers.
+- **The hold.** The hook posts `permission_request` with the tool, its input, and Claude
+  Code's reason. The ledger records an `open` row in `permission_requests` with a
+  one-line summary of the input (the file path, command, path, or URL, or the input as
+  JSON, cut at 300 characters) and `expires_at`, `permission_hold_seconds` from now.
+  It answers the request id, the hold, and the long poll's wait (25 seconds). The hook
+  then posts `permission_wait` in a loop. Each post returns once the request is
+  answered, after 25 seconds, or at `expires_at`.
+- **The answer.** `allowed` returns `{ decision: 'allow', reason: 'Allowed by the user in
+  the run panel' }`. `denied` returns `{ decision: 'deny', reason: 'The user denied this
+  in the run panel' }`, with the note after a colon when one was given. The ledger
+  records `answered_at` and `answered_by` ("run panel").
+- **The fallback.** At `expires_at`, after one more poll than the hold needs, on any
+  error, or when the ledger records no request, the hook marks the request `expired`
+  (best effort) and returns Claude Code's verdict unchanged. The session then shows
+  Claude Code's own prompt, which the user answers in agent view. When the person
+  interrupts, `next.signal` aborts, and the hook marks the request `withdrawn` and
+  returns the verdict. Its `.catch` returns `next(e)`, Claude Code's verdict, so a
+  failure falls back to the ask and never to an allow. The hook never changes an
+  `allow` or a `deny`.
+- **The hook's budget.** A mod hook's budget is 10 seconds of its own code
+  (`HookBudget.ms`). The time it awaits `$.http.fetch` does not count, so the hold can
+  last minutes. Past the budget its `.catch` runs with a 1-second grace (`catchMs`).
+  After `next.signal` aborts, a hook has 5 seconds (`lingerMs`); the hook stops waiting
+  on the poll at once.
+- **The routes.** `permission_request`, `permission_wait`, and `permission_close` are
+  hook events on the token-authenticated `POST /hook/<event>` route. Each answers
+  nothing for a session that is not a live agent of the live run, and
+  `permission_wait` and `permission_close` act only on the caller's own request.
+  `permission_wait` runs on the server's request thread, never on a hook worker, so a
+  held session does not hold up other sessions' gates. See "The hook route" in
+  [06-ledger-server.md](06-ledger-server.md).
+- **Answering.** `mcp/launch/ledger.py permission --repo <repo> --id <id> (--allow |
+  --deny) [--note <text>]` answers an open request. It refuses a request that is not
+  open. It marks an open request past `expires_at` `expired` and refuses it, saying to
+  answer the prompt in agent view.
+- **The watchdog.** While the hook holds a call, Claude Code shows the session busy.
+  The watchdog reads open, unexpired requests and treats the session as waiting on the
+  user: it files `needs_user` with the tool and input, which notifies the user and is
+  reminded every `remind_minutes`, and it does not report the session `stuck` or
+  `crashed` or count it as working for `run_stalled`. See [08-watchdog.md](08-watchdog.md).
 
 ## The tree
 

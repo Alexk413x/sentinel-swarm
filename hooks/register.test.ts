@@ -1,15 +1,15 @@
 import type { On, SessionSendResult } from 'claude-code'
 import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 
-import { attention, dimmed, mark, parseWaiting, pendingRequest, startHint, taskDetail } from './panel'
-import type { PanelAgent, PanelRunView, PanelSessionWait, PanelSnapshot, PanelTask } from '../types'
+import { ALLOWED_REASON, DENIED_REASON, attention, dimmed, holdForPanel, mark, parseWaiting, pendingRequest, startHint, taskDetail } from './panel'
+import type { PanelAgent, PanelPermission, PanelRunView, PanelSessionWait, PanelSnapshot, PanelTask } from '../types'
 
 const CWD = 'C:/host'
 const TOKEN = 'a'.repeat(40)
 const RAN_OK = { stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
 
 type Options = {
-  answers?: Record<string, unknown>
+  answers?: Record<string, unknown | ((body: Record<string, unknown>) => unknown)>
   serverDown?: boolean
   shim?: { exitCode: number; stdout: string }
   send?: (to: string) => SessionSendResult
@@ -33,8 +33,10 @@ function world(on: On, options: Options = {}) {
   on('http.fetch', (_$, e) => {
     if (options.serverDown) throw new Error('connection refused')
     const event = e.url.split('/hook/')[1] ?? ''
-    posts.push({ event, body: JSON.parse(e.init?.body ?? '{}') as Record<string, unknown> })
-    const answer = options.answers?.[event]
+    const body = JSON.parse(e.init?.body ?? '{}') as Record<string, unknown>
+    posts.push({ event, body })
+    const given = options.answers?.[event]
+    const answer = typeof given === 'function' ? given(body) : given
     const text = answer === undefined ? '' : JSON.stringify(answer)
     return { value: { status: 200, ok: true, headers: { 'x-sentinel-swarm-repo': encodeURIComponent(CWD) }, text } }
   })
@@ -147,6 +149,141 @@ describe('gates', () => {
     expect(JSON.stringify(result)).toContain('/sentinel-swarm:setup')
     expect(w.writes).toEqual([])
     expect(w.shims.filter(argv => argv[3] === 'pre_write').map(argv => argv[0])).toEqual(['python3', 'python'])
+  })
+})
+
+describe('a permission prompt held for the run panel', () => {
+  const ASK = { decision: 'ask', reason: 'Write outside the allowed working directories' } as const
+  const OPENED = { request_id: 4, hold_seconds: 300, wait_seconds: 25, expires_at: '2026-10-30T12:05:00.000Z' }
+  const OUTSIDE = { file_path: 'C:/elsewhere/x.py', content: 'x' }
+
+  function beneath(on: On, verdict: Record<string, unknown> = ASK) {
+    on('tool.check', () => verdict as never)
+  }
+
+  async function check($: Engine, tool = 'Write', approver: string | null = 'person') {
+    return $.tool.check({ tool, input: OUTSIDE, ...(approver === null ? {} : { approver }) } as never)
+  }
+
+  test('an allow from the panel lets the call run', async ($, on) => {
+    const w = world(on, { answers: { permission_request: OPENED, permission_wait: { state: 'allowed', note: null } } })
+    beneath(on)
+    await start($)
+    expect(await check($)).toMatchObject({ decision: 'allow', reason: ALLOWED_REASON })
+    expect(w.posts.find(p => p.event === 'permission_request')?.body).toMatchObject({
+      session_id: 'sess-lead',
+      tool_name: 'Write',
+      tool_input: OUTSIDE,
+      reason: ASK.reason,
+    })
+    expect(w.posts.find(p => p.event === 'permission_wait')?.body.request_id).toBe(4)
+    expect(w.events()).not.toContain('permission_close')
+  })
+
+  test('a deny from the panel refuses the call with its note', async ($, on) => {
+    world(on, { answers: { permission_request: OPENED, permission_wait: { state: 'denied', note: 'write it under src' } } })
+    beneath(on)
+    await start($)
+    expect(await check($)).toMatchObject({ decision: 'deny', reason: `${DENIED_REASON}: write it under src` })
+  })
+
+  test('at the deadline the request expires and Claude Code asks as it would have', async ($, on) => {
+    const w = world(on, { answers: { permission_request: OPENED, permission_wait: { state: 'open', note: null } } })
+    beneath(on)
+    await start($)
+    expect(await check($)).toMatchObject(ASK)
+    expect(w.events().filter(event => event === 'permission_wait').length).toBe(13)
+    expect(w.posts.find(p => p.event === 'permission_close')?.body).toMatchObject({ request_id: 4, state: 'expired' })
+  })
+
+  test('a request the ledger closed falls back to the ask', async ($, on) => {
+    const w = world(on, { answers: { permission_request: OPENED, permission_wait: { state: 'expired', note: null } } })
+    beneath(on)
+    await start($)
+    expect(await check($)).toMatchObject(ASK)
+    expect(w.events().filter(event => event === 'permission_wait').length).toBe(1)
+  })
+
+  test('with the ledger unreachable, or no hold, Claude Code asks', async ($, on) => {
+    const w = world(on, { serverDown: true })
+    beneath(on)
+    await start($)
+    expect(await check($)).toMatchObject(ASK)
+    expect(w.shims.some(argv => argv.includes('permission_request'))).toBe(false)
+  })
+
+  test('a ledger that records no request leaves the ask alone', async ($, on) => {
+    const w = world(on)
+    beneath(on)
+    await start($)
+    expect(await check($)).toMatchObject(ASK)
+    expect(w.events()).toEqual(['session_start', 'permission_request'])
+  })
+
+  test("a plugin's ask, a host approver, a question, an allow and a deny are not held", async ($, on) => {
+    const verdict: { current: Record<string, unknown> } = { current: { ...ASK, plugin: 'other-plugin' } }
+    const w = world(on, { answers: { permission_request: OPENED, permission_wait: { state: 'allowed', note: null } } })
+    on('tool.check', () => verdict.current as never)
+    await start($)
+    expect(await check($)).toMatchObject({ decision: 'ask', plugin: 'other-plugin' })
+    verdict.current = ASK
+    expect(await check($, 'Write', 'host')).toMatchObject(ASK)
+    expect(await check($, 'Write', null)).toMatchObject(ASK)
+    expect(await check($, 'AskUserQuestion')).toMatchObject(ASK)
+    expect(await check($, 'ExitPlanMode')).toMatchObject(ASK)
+    verdict.current = { decision: 'deny', reason: 'denied by a rule' }
+    expect(await check($)).toMatchObject({ decision: 'deny', reason: 'denied by a rule' })
+    verdict.current = { decision: 'allow' }
+    expect(await check($)).toMatchObject({ decision: 'allow' })
+    expect(w.events()).toEqual(['session_start'])
+  })
+
+  test('a session that is not a swarm role is not held', async ($, on) => {
+    const w = world(on, { answers: { permission_request: OPENED, permission_wait: { state: 'allowed', note: null } } })
+    beneath(on)
+    await start($, 'general-purpose', 'sess-user')
+    expect(await check($)).toMatchObject(ASK)
+    expect(w.posts).toEqual([])
+  })
+
+  test('an interrupt withdraws the request and hands back the ask', async () => {
+    const closed: [number, string][] = []
+    const controller = new AbortController()
+    const held = holdForPanel(
+      {
+        open: async () => OPENED,
+        wait: () => new Promise(() => undefined),
+        close: async (id, state) => {
+          closed.push([id, state])
+          return null
+        },
+      },
+      ASK,
+      controller.signal,
+    )
+    controller.abort()
+    expect(await held).toEqual(ASK)
+    expect(closed).toEqual([[4, 'withdrawn']])
+  })
+
+  test('a failing poll expires the request and never allows', async () => {
+    const closed: string[] = []
+    const verdict = await holdForPanel(
+      {
+        open: async () => OPENED,
+        wait: async () => {
+          throw new Error('the ledger server answered 500')
+        },
+        close: async (_id, state) => {
+          closed.push(state)
+          return null
+        },
+      },
+      ASK,
+      new AbortController().signal,
+    )
+    expect(verdict).toEqual(ASK)
+    expect(closed).toEqual(['expired'])
   })
 })
 
@@ -494,9 +631,19 @@ function runView(overrides: Partial<PanelRunView> = {}): PanelRunView {
     run: { run_id: 3, state: 'active', outcome: null, branch: null, started_at: '2026-10-28T00:00:00Z', ended_at: null, elapsed_s: 60 },
     agents: [{ ...oracle, children: [agent()] }],
     counts: { live: 2 },
-    waiting: { questions: [], findings: [], paused: null },
+    waiting: { questions: [], findings: [], paused: null, permissions: [] },
     ...overrides,
   }
+}
+
+const HELD: PanelPermission = {
+  request_id: 4,
+  agent: 'coder-a',
+  tool: 'Write',
+  summary: 'C:/elsewhere/x.py',
+  reason: 'Write outside the allowed working directories',
+  asked_at: '2026-10-30T12:00:00.000Z',
+  expires_at: '2026-10-30T12:05:00.000Z',
 }
 
 const SESSION_WAIT: PanelSessionWait = {
@@ -619,6 +766,7 @@ describe('what waits on you', () => {
           { finding_id: 2, kind: 'needs_user', agent: 'coder-a', detail: 'coder-a waits on a permission prompt', since: 'T' },
         ],
         paused: 'the build needs a licence key',
+        permissions: [],
       },
     })
     const items = attention(view, [])
@@ -633,15 +781,37 @@ describe('what waits on you', () => {
 
   test('the session wait replaces the watchdog finding for the same agent', () => {
     const view = runView({
-      waiting: { questions: [], findings: [{ finding_id: 2, kind: 'needs_user', agent: 'coder-a', detail: 'waits', since: 'T' }], paused: null },
+      waiting: { questions: [], findings: [{ finding_id: 2, kind: 'needs_user', agent: 'coder-a', detail: 'waits', since: 'T' }], paused: null, permissions: [] },
     })
     expect(attention(view, [SESSION_WAIT]).map(i => i.key)).toEqual(['wait:3:coder-a'])
+  })
+
+  test('a held permission request sits under its agent with Allow and Deny', () => {
+    const view = runView({
+      waiting: {
+        questions: [],
+        findings: [{ finding_id: 2, kind: 'needs_user', agent: 'coder-a', detail: 'waits on a held request', since: 'T' }],
+        paused: null,
+        permissions: [HELD],
+      },
+    })
+    const items = attention(view, [])
+    expect(items.map(i => i.key)).toEqual(['permission:3:4'])
+    expect(items[0]).toMatchObject({
+      agent: 'coder-a',
+      title: 'asks to run Write (permission request 4)',
+      lines: ['Write: C:/elsewhere/x.py', 'Write outside the allowed working directories'],
+      directiveId: null,
+      permissionId: 4,
+    })
+    expect(items[0]?.where).toContain('Allow or Deny it here')
+    expect(items[0]?.where).toContain('agent view')
   })
 
   test('an ended run waits on nobody', () => {
     const view = runView({
       run: { ...runView().run, ended_at: '2026-10-28T02:00:00Z' },
-      waiting: { questions: [{ directive_id: 7, question: '?', asked_at: 'T' }], findings: [], paused: null },
+      waiting: { questions: [{ directive_id: 7, question: '?', asked_at: 'T' }], findings: [], paused: null, permissions: [] },
     })
     expect(attention(view, [SESSION_WAIT])).toEqual([])
   })
@@ -658,7 +828,7 @@ describe('the panel draws what waits on you', () => {
   test('the top section and the red box show the request, and an answer goes back as a directive reply', async ($, on) => {
     const launched: string[][] = []
     const toasts: string[] = []
-    const base = runView({ waiting: { questions: [{ directive_id: 7, question: 'Which branch?', asked_at: 'T' }], findings: [], paused: null } })
+    const base = runView({ waiting: { questions: [{ directive_id: 7, question: 'Which branch?', asked_at: 'T' }], findings: [], paused: null, permissions: [] } })
     const gone = agent({ agent_id: 'sess-b', name: 'coder-b', session_name: 'host-r3-coder-b', session: 'gone', task: task({ id: 'file_id:2', name: 'b.py' }) })
     const oracle = base.agents[0] as PanelAgent
     const view = { ...base, agents: [{ ...oracle, children: [...oracle.children, gone] }] }
@@ -712,6 +882,48 @@ describe('the panel draws what waits on you', () => {
       'use main',
     ])
     expect(toasts).toEqual(['Sent your answer to directive 7.'])
+    await ui.unmount()
+  })
+
+  test('Allow and Deny answer a held permission request through the launcher', async ($, on) => {
+    const launched: string[][] = []
+    const toasts: string[] = []
+    const view = runView({ waiting: { questions: [], findings: [], paused: null, permissions: [HELD] } })
+    const snapshot: PanelSnapshot = { repo: CWD, generated_at: '', runs: [view] }
+    const clock = mock.clock(on, { now: 1_000 })
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('ui.panes', () => ({ value: [] }))
+    on('ui.toast', (_$, e) => {
+      toasts.push(String((e as { text?: unknown }).text ?? ''))
+      return { value: undefined }
+    })
+    on('fs.read', (_$, e) => {
+      throw new Error(`ENOENT: ${e.path}`)
+    })
+    on('process.run', (_$, e) => {
+      launched.push([...e.argv])
+      const refused = e.argv.includes('--deny')
+      const stdout = e.argv[0] === 'claude' ? '[]' : e.argv.includes('permission') ? '{}' : JSON.stringify(snapshot)
+      return { value: { ...RAN_OK, exitCode: refused ? 1 : 0, stdout, stderr: refused ? 'cannot answer the permission request: permission request 4 is allowed, not open\n' : '' } }
+    })
+    await $.tool.call({ tool: 'mcp__sentinel-swarm__open_panel', repo: CWD } as never)
+    await clock.settle()
+
+    const ui = await $.ui.mount({ plugin: 'sentinel-swarm', component: 'Pane', requestId: 'swarm-run', surface: 'terminal', props: PANE_PROPS } as never)
+    const box = await ui.find({ key: 'permission:3:4' })
+    expect(box?.props.borderColor).toBe('error')
+    expect(box?.text).toContain('Write: C:/elsewhere/x.py')
+    await ui.press({ key: 'allow:permission:3:4' })
+    await clock.settle()
+    const allowed = launched.find(argv => argv.includes('permission')) ?? []
+    expect(allowed.slice(allowed.indexOf('permission'))).toEqual(['permission', '--repo', CWD, '--id', '4', '--allow'])
+    expect(toasts).toEqual(['Allowed permission request 4.'])
+
+    await ui.press({ key: 'deny:permission:3:4' })
+    await clock.settle()
+    expect(launched.some(argv => argv.includes('--deny'))).toBe(true)
+    expect(toasts[1]).toContain('Permission request 4 was not answered')
+    expect(toasts[1]).toContain('not open')
     await ui.unmount()
   })
 })
