@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, SessionSendAddress, SessionSendResult } from 'claude-code'
+import type { BuiltinToolName, EngineInterface, Register, SessionSendAddress, SessionSendResult } from 'claude-code'
 
 import {
   ASK_COLOR,
@@ -17,6 +17,7 @@ import {
   dimmed,
   duration,
   flatten,
+  holdForPanel,
   inline,
   liveAgents,
   mark,
@@ -31,7 +32,7 @@ import {
   waitOf,
   wrap,
 } from './panel'
-import type { AgentRow, Attention, IsOpen, Row, Segment, Span, TaskRow } from './panel'
+import type { AgentRow, Attention, HoldLedger, IsOpen, Row, Segment, Span, TaskRow } from './panel'
 import type { PanelFetch, PanelSessionWait, PanelSnapshot, PanelTask, PanelRunView, SentinelSwarmSession } from '../types'
 
 type Answer = Record<string, unknown> | null
@@ -51,7 +52,7 @@ const RECORDS = '.sentinel-swarm'
 const SHIM = `${RECORDS}/hook.py`
 const PYTHONS = ['python3', 'python']
 const FAST_MS = 10_000
-const SLOW_MS: Readonly<Record<string, number>> = { stop: 40_000, session_end: 40_000 }
+const SLOW_MS: Readonly<Record<string, number>> = { stop: 40_000, session_end: 40_000, permission_wait: 40_000 }
 const SHIM_MS = 50_000
 const SEND_MS = 15_000
 const SEND_RETRY_MS = [2_000, 4_000, 8_000]
@@ -65,21 +66,25 @@ const SHELL_TOOL = /^(Bash|PowerShell)$/
 // Must equal SYNC_POST_TOOLS in mcp/src/swarm_ledger/hooks/events.py.
 const SYNC_POST_TOOLS = ['SendMessage', 'PushNotification', 'Monitor', ...WRITE_TOOLS]
 const RECEIVED_FROM = ['peer', 'peer-send-message', 'coordinator']
+// A hook's allow does not dismiss the dialog of a tool that requires the person.
+const PERSON_TOOLS: ReadonlySet<string> = new Set(['AskUserQuestion', 'ExitPlanMode'])
+const exactly = (name: BuiltinToolName): RegExp => new RegExp(`^${name}$`)
+
 const PRE_TOOL_GATES: readonly {
-  tool: string | RegExp
+  tool: RegExp
   event: string
   role?: string
   skip?: (e: object) => boolean
 }[] = [
-  { tool: 'Agent', event: 'pre_agent' },
-  { tool: 'AskUserQuestion', event: 'pre_ask' },
+  { tool: exactly('Agent'), event: 'pre_agent' },
+  { tool: exactly('AskUserQuestion'), event: 'pre_ask' },
   { tool: WRITE_TOOL, event: 'pre_write' },
   { tool: SHELL_TOOL, event: 'pre_shell' },
-  { tool: 'Monitor', event: 'pre_monitor' },
+  { tool: exactly('Monitor'), event: 'pre_monitor' },
   // $.session.send runs as a SendMessage call to the target's pipe address, not its session id;
   // the ledger checked the recipient before the mod sent, so the mod's own text passes.
-  { tool: 'SendMessage', event: 'pre_send_message', skip: isOwnSend },
-  { tool: 'Skill', event: 'pre_skill', role: 'driver' },
+  { tool: exactly('SendMessage'), event: 'pre_send_message', skip: isOwnSend },
+  { tool: exactly('Skill'), event: 'pre_skill', role: 'driver' },
   { tool: LEDGER_TOOL, event: 'pre_ledger' },
 ]
 const sessionRef = { plugin: 'sentinel-swarm', key: 'session' } as const
@@ -133,6 +138,22 @@ export const register: Register = on => {
       next.called ? next(e) : { deny: cannotCheck(next.error) },
     )
   }
+
+  on('tool.check', async ($, e, next) => {
+    const verdict = await next(e)
+    if (
+      verdict.decision !== 'ask' ||
+      verdict.plugin !== undefined ||
+      e.approver !== 'person' ||
+      e.tool_use_id === undefined ||
+      PERSON_TOOLS.has(e.tool)
+    ) {
+      return verdict
+    }
+    const s = await active($)
+    if (s === null) return verdict
+    return holdForPanel(heldIn($, s, e.tool, e.input, verdict.reason), verdict, next.signal)
+  }).catch(($, e, next) => next(e))
 
   on('classic.PostToolUse', async ($, e, next) => {
     const s = await active($)
@@ -402,6 +423,16 @@ export const register: Register = on => {
             <Text key={String(i)}>{text === '' ? ' ' : text}</Text>
           ))}
           <Text dimColor>{where}</Text>
+          {item.permissionId !== null && (
+            <Box flexDirection="row" gap={1}>
+              <Button key={`allow:${item.key}`} onPress={() => void answerPermission($, item.permissionId ?? 0, true)}>
+                Allow
+              </Button>
+              <Button key={`deny:${item.key}`} onPress={() => void answerPermission($, item.permissionId ?? 0, false)}>
+                Deny
+              </Button>
+            </Box>
+          )}
           {item.directiveId !== null && Input !== undefined && (
             <Input
               key={`answer:${item.key}`}
@@ -603,6 +634,14 @@ async function judge<E extends object, R>(
   const updated = hookOutput(answer)?.updatedInput
   if (!isRecord(updated)) return next(e)
   return next({ tool, tool_use_id, ...updated } as E)
+}
+
+function heldIn($: EngineInterface, s: SentinelSwarmSession, tool: string, input: unknown, reason: string | undefined): HoldLedger {
+  return {
+    open: () => post($, s, 'permission_request', { ...base(s), tool_name: tool, tool_input: input, reason }),
+    wait: requestId => post($, s, 'permission_wait', { ...base(s), request_id: requestId }),
+    close: (requestId, state) => post($, s, 'permission_close', { ...base(s), request_id: requestId, state }),
+  }
 }
 
 async function adopt(
@@ -911,6 +950,18 @@ async function replyTo($: EngineInterface, directiveId: number, text: string): P
     $.ui.toast(`Sent your answer to directive ${directiveId}.`)
   } catch (err) {
     $.ui.toast(`Your answer to directive ${directiveId} was not sent: ${errorText(err)}`)
+  }
+  await refresh($)
+}
+
+async function answerPermission($: EngineInterface, requestId: number, allow: boolean): Promise<void> {
+  const repo = await repoOf($)
+  const args = ['permission', '--repo', repo, '--id', String(requestId), allow ? '--allow' : '--deny']
+  try {
+    await launch($, `${$.plugin.root}/mcp/launch/ledger.py`, args)
+    $.ui.toast(`${allow ? 'Allowed' : 'Denied'} permission request ${requestId}.`)
+  } catch (err) {
+    $.ui.toast(`Permission request ${requestId} was not answered: ${errorText(err)}`)
   }
   await refresh($)
 }

@@ -29,6 +29,7 @@
 | `PreToolUse` | `SendMessage` | `pre_send_message` | all |
 | `PreToolUse` | `Skill` | `pre_skill` | Driver |
 | `PreToolUse` | `mcp__swarm-ledger__.*` | `pre_ledger` | all |
+| `tool.check` (mod hook) | Claude Code's own `ask` that a person would answer | `permission_request`, `permission_wait`, `permission_close` | all |
 | `PostToolUse` | `SendMessage\|PushNotification\|Monitor\|Write\|Edit\|MultiEdit\|NotebookEdit` | `post_any` | all |
 | `PostToolUse` | all, `async: true` | `post_activity` | all |
 | `PostToolUse` | `Bash\|PowerShell` | `post_shell` | Coder |
@@ -118,6 +119,13 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   `post_shell` for a Coder's shell; `classic.PreCompact` and `classic.SessionEnd`
   post theirs. A failed post here allows, as a failed shim does. Every payload
   carries `sentinel_swarm_transport: "mod"`.
+- **Held permission prompts.** The mod's `tool.check` hook holds a call that Claude Code
+  would ask the person about, posts `permission_request`, and long-polls
+  `permission_wait` until the run panel answers it or `permission_hold_seconds` pass.
+  Then it returns the panel's allow or deny, or Claude Code's own ask, and marks an
+  unanswered request `expired` with `permission_close`. Its `.catch` returns Claude
+  Code's verdict. See "Answering a permission prompt in the panel" in
+  [17-run-panel.md](17-run-panel.md).
 - **A model's SendMessage.** The mod's `session.send` hook posts `send_target` for each
   `SendMessage` the session's model makes, and sends a swarm session name to that
   session's id itself. See "Session names and SendMessage" in
@@ -274,6 +282,14 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   is `to` without a trailing ` [<ref>]`, when `pre_send_message` would allow the send,
   and nothing otherwise. See "Session names and SendMessage" in
   [05-sessions.md](05-sessions.md).
+- `permission_request`, `permission_wait`, `permission_close`: posted by the mod's
+  `tool.check` hook only. `permission_request` records an open request for a live agent
+  of the live run and answers its id, the hold, and the poll's wait, or nothing when
+  `permission_hold_seconds` is 0. `permission_wait` answers the caller's request's state
+  and note once it is not `open`, after 25 seconds, or at its expiry, which marks it
+  `expired`. `permission_close` marks the caller's open request `expired` or
+  `withdrawn`. See "Answering a permission prompt in the panel" in
+  [17-run-panel.md](17-run-panel.md).
 - `owed`, `wake_sent`, `self_owed`, `inbox_take`, `inbox_ack`, `inbox_release`: posted
   by the mod only. `owed` resumes a stopped or parked target itself before it answers,
   except the Oracle, and leaves that target out of the answer. `self_owed` marks the

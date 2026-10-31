@@ -172,6 +172,11 @@ permission_mode:
   coder:
   driver:
 
+# How long, in seconds, a role session holds a call Claude Code would ask you about, so you
+# can answer it with Allow or Deny in the run panel. Unanswered by then, the session shows
+# Claude Code's own prompt, which you answer in agent view. 0 turns holding off.
+permission_hold_seconds: 300
+
 # Left empty for every role; agent_spawn also caps that role's own live sessions in the run,
 # on top of parallelism_cap above.
 role_parallelism_cap:

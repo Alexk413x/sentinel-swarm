@@ -32,6 +32,7 @@ _FALSE_WORDS = frozenset({"false", "no", "off", "0"})
 PROFILE_KEYS = ("test_command", "build_command", "lint_command")
 TEST_SCOPES = ("file", "module", "phase", "full")
 DEFAULT_TEST_TIMEOUT_S = 600
+DEFAULT_PERMISSION_HOLD_S = 300
 
 
 def normalize_budget(raw: object) -> int | None:
@@ -62,6 +63,16 @@ def normalize_test_timeout(raw: object) -> int:
     except ValueError:
         return DEFAULT_TEST_TIMEOUT_S
     return seconds if seconds > 0 else DEFAULT_TEST_TIMEOUT_S
+
+
+def normalize_hold_seconds(raw: object) -> int:
+    if raw is None or isinstance(raw, bool):
+        return DEFAULT_PERMISSION_HOLD_S
+    try:
+        seconds = int(str(raw).strip())
+    except ValueError:
+        return DEFAULT_PERMISSION_HOLD_S
+    return max(0, seconds)
 
 
 def normalize_text_list(raw: object) -> list[str]:
@@ -208,6 +219,7 @@ class Settings:
     role_parallelism_cap: dict[str, int] = field(default_factory=dict)
     notify: list[str] = field(default_factory=lambda: list(NOTIFY_CHANNELS))
     max_workers: int = DEFAULT_MAX_WORKERS
+    permission_hold_seconds: int = DEFAULT_PERMISSION_HOLD_S
 
     def snapshot(self) -> str:
         return json.dumps(asdict(self), sort_keys=True)
@@ -318,4 +330,5 @@ def load_settings(repo_root: Path) -> Settings:
         role_parallelism_cap=role_parallelism_cap,
         notify=normalize_notify(data.get("notify")),
         max_workers=normalize_max_workers(data.get("max_workers")),
+        permission_hold_seconds=normalize_hold_seconds(data.get("permission_hold_seconds")),
     )

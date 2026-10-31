@@ -43,9 +43,18 @@ export type Attention = {
   lines: string[]
   where: string
   directiveId: number | null
+  permissionId: number | null
+}
+export type PanelVerdict = { decision: 'allow' | 'deny'; reason: string }
+export type HoldLedger = {
+  open: () => Promise<Record<string, unknown> | null>
+  wait: (requestId: number) => Promise<Record<string, unknown> | null>
+  close: (requestId: number, state: 'expired' | 'withdrawn') => Promise<unknown>
 }
 
 const INPUT_CHARS = 400
+export const ALLOWED_REASON = 'Allowed by the user in the run panel'
+export const DENIED_REASON = 'The user denied this in the run panel'
 
 export function mark(agent: PanelAgent, waiting = false): [string, string | undefined] {
   if (agent.ended_at !== null) return ['·', undefined]
@@ -373,10 +382,24 @@ export function attention(view: PanelRunView, sessions: readonly PanelSessionWai
       lines: requestLines(wait.request),
       where: `Answer it in agent view (claude agents), on session ${wait.name || agent.name}.`,
       directiveId: null,
+      permissionId: null,
+    })
+  }
+  const asked = view.waiting ?? { questions: [], findings: [], paused: null, permissions: [] }
+  for (const p of asked.permissions) {
+    const agent = agents.some(a => a.name === p.agent) ? p.agent : null
+    if (agent !== null) waiting.add(agent)
+    items.push({
+      key: `permission:${run}:${p.request_id}`,
+      agent,
+      title: `asks to run ${p.tool} (permission request ${p.request_id})`,
+      lines: [`${p.tool}: ${p.summary}`, ...(p.reason ? [p.reason] : [])],
+      where: `Allow or Deny it here. Unanswered by ${new Date(p.expires_at).toLocaleTimeString()}, its session shows its own prompt in agent view.`,
+      directiveId: null,
+      permissionId: p.request_id,
     })
   }
   const oracle = agents.find(agent => agent.role === 'oracle')?.name ?? null
-  const asked = view.waiting ?? { questions: [], findings: [], paused: null }
   for (const q of asked.questions) {
     items.push({
       key: `question:${run}:${q.directive_id}`,
@@ -385,6 +408,7 @@ export function attention(view: PanelRunView, sessions: readonly PanelSessionWai
       lines: q.question.split('\n'),
       where: `Type the answer and press Enter: it goes to the Oracle as a reply to directive ${q.directive_id}.`,
       directiveId: q.directive_id,
+      permissionId: null,
     })
   }
   for (const f of asked.findings) {
@@ -398,6 +422,7 @@ export function attention(view: PanelRunView, sessions: readonly PanelSessionWai
       lines: f.detail.split('\n'),
       where: stalled ? 'Check it with /sentinel-swarm:status, then message the Oracle.' : 'Answer it in agent view (claude agents).',
       directiveId: null,
+      permissionId: null,
     })
   }
   if (asked.paused !== null) {
@@ -408,7 +433,43 @@ export function attention(view: PanelRunView, sessions: readonly PanelSessionWai
       lines: asked.paused.split('\n'),
       where: 'Fix the cause, then message the Oracle in agent view or run /sentinel-swarm:resume.',
       directiveId: null,
+      permissionId: null,
     })
   }
   return items
+}
+
+export async function holdForPanel<V>(ledger: HoldLedger, verdict: V, signal: AbortSignal): Promise<V | PanelVerdict> {
+  const opened = await ledger.open().catch(() => null)
+  const id = opened?.request_id
+  const hold = Number(opened?.hold_seconds)
+  const wait = Number(opened?.wait_seconds)
+  if (typeof id !== 'number' || !(hold > 0) || !(wait > 0)) return verdict
+  const aborted = new Promise<'aborted'>(resolve => {
+    if (signal.aborted) resolve('aborted')
+    else signal.addEventListener('abort', () => resolve('aborted'), { once: true })
+  })
+  const answered = await pollAnswer(ledger, id, Math.ceil(hold / wait) + 1, aborted).catch(() => null)
+  if (answered === 'aborted') {
+    await ledger.close(id, 'withdrawn').catch(() => undefined)
+    return verdict
+  }
+  if (answered !== null) return answered
+  await ledger.close(id, 'expired').catch(() => undefined)
+  return verdict
+}
+
+async function pollAnswer(ledger: HoldLedger, id: number, polls: number, aborted: Promise<'aborted'>): Promise<PanelVerdict | 'aborted' | null> {
+  for (let poll = 0; poll < polls; poll++) {
+    const answer = await Promise.race([ledger.wait(id), aborted])
+    if (answer === 'aborted') return answer
+    const state = answer?.state
+    if (state === 'allowed') return { decision: 'allow', reason: ALLOWED_REASON }
+    if (state === 'denied') {
+      const note = typeof answer?.note === 'string' ? answer.note.trim() : ''
+      return { decision: 'deny', reason: note === '' ? DENIED_REASON : `${DENIED_REASON}: ${note}` }
+    }
+    if (state !== 'open') return null
+  }
+  return null
 }

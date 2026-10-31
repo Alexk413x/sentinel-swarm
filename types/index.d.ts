@@ -64,7 +64,17 @@ export type PanelQuestion = { directive_id: number; question: string; asked_at: 
 
 export type PanelFinding = { finding_id: number; kind: string; agent: string | null; detail: string; since: string }
 
-export type PanelRunWaiting = { questions: PanelQuestion[]; findings: PanelFinding[]; paused: string | null }
+export type PanelPermission = {
+  request_id: number
+  agent: string
+  tool: string
+  summary: string
+  reason: string | null
+  asked_at: string
+  expires_at: string
+}
+
+export type PanelRunWaiting = { questions: PanelQuestion[]; findings: PanelFinding[]; paused: string | null; permissions: PanelPermission[] }
 
 export type PanelRunView = { run: PanelRun; agents: PanelAgent[]; counts: PanelCounts; waiting?: PanelRunWaiting }
 

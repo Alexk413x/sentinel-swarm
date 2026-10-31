@@ -62,6 +62,19 @@ def test_connect_is_idempotent(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_connect_adds_a_missing_table_to_an_existing_ledger(tmp_path: Path) -> None:
+    db_path = tmp_path / "ledger.db"
+    conn = connect(db_path)
+    conn.execute("DROP TABLE permission_requests")
+    conn.close()
+    conn = connect(db_path)
+    try:
+        rows = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        assert "permission_requests" in {row["name"] for row in rows}
+    finally:
+        conn.close()
+
+
 def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
 

@@ -130,6 +130,10 @@
   unknown event and 409 unless the `X-Sentinel-Swarm-Repo` header names this server's
   repo root. A 200 answer carries the header back. See "The shim" in
   [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md).
+- `permission_wait`, the run panel's long poll, runs in the front on the request's own
+  thread and connection, never on a hook worker, so a session held for up to 25 seconds
+  per poll does not hold up other sessions' gates. See "Answering a permission prompt
+  in the panel" in [17-run-panel.md](17-run-panel.md).
 - Lifetime: the launcher starts the server before the Oracle. It exits after
   `run_finish`, and after `idle_exit_minutes` with no active run, or a paused run, and
   no session of the run running. A ledger tool call restarts the idle clock. A failed
@@ -155,15 +159,18 @@ the project's code in the host repo itself. Tracking is `local` only.
 
 - Every connection opens with WAL, `synchronous=NORMAL`, foreign keys on, and a 5-second
   busy timeout. Every write runs inside `BEGIN IMMEDIATE`.
-- `migrate` applies `schema.sql` to a new ledger at schema version 1. It does not upgrade an
-  older ledger: a ledger from an earlier release lacks columns and tables, and the ledger
-  fails on them. Delete `.sentinel-swarm/ledger.db` to start fresh.
+- `migrate` applies `schema.sql`, at schema version 1, every time a connection opens the
+  ledger for writing. Every statement in it is `IF NOT EXISTS`, so a ledger from an
+  earlier release gains the tables and indexes added since. It gains no new column: a
+  release that adds a column to an existing table still needs a fresh ledger (delete
+  `.sentinel-swarm/ledger.db`). The run panel opens the ledger read-only, so it skips a
+  table a ledger lacks until a server opens that ledger.
 - Tables, grouped: the plan (`runs`, `phases`, `phase_deps`, `modules`, `module_deps`,
   `files`, `file_deps`, `guidelines`); agents (`agents`, `agent_events`, `briefs`,
   `wakeups`); review (`handoffs`, `reviews`, `scores`, `test_runs`, `versions`,
   `attempts`, `issues`, `ideas`); agreements (`change_requests`, `departures`,
   `departure_decisions`, `deferrals`, `overrides`); communication (`messages`,
-  `directives`, `watchdog_findings`, `notifications`); the Driver (`drive_requests`,
+  `directives`, `watchdog_findings`, `notifications`, `permission_requests`); the Driver (`drive_requests`,
   `drive_findings`, `drive_stops`); the code graph (`graph_gaps`). Read `schema.sql`
   for the columns.
 - `module_deps` and `file_deps` hold the dependencies a dependent's brief waits on, and

@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
 
-from .. import __version__, notify, pricing, sessions, wake
+from .. import __version__, notify, permission, pricing, sessions, wake
 from ..agentfiles import CODEBASE_KG_PLUGIN, plugin_installed
 from ..clock import parse_stamp, utcnow
 from ..db import ensure_git_exclude, write_tx
@@ -1307,3 +1307,61 @@ def handle_inbox_ack(ledger: Ledger, data: dict) -> dict | None:
 
 def handle_inbox_release(ledger: Ledger, data: dict) -> dict | None:
     return _settle(ledger, data, read=False)
+
+
+def _request_id(data: dict) -> int | None:
+    raw = data.get("request_id")
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) else None
+
+
+def handle_permission_request(ledger: Ledger, data: dict) -> dict | None:
+    caller = _data_caller(ledger, data)
+    run = live_run(ledger.conn)
+    tool = data.get("tool_name")
+    hold = ledger.settings.permission_hold_seconds
+    if caller is None or run is None or caller["run_id"] != run["run_id"]:
+        return None
+    if hold <= 0 or not isinstance(tool, str) or not tool:
+        return None
+    reason = data.get("reason")
+    row = permission.open_request(
+        ledger.conn,
+        run_id=run["run_id"],
+        agent_id=caller["agent_id"],
+        tool=tool,
+        tool_input=_tool_input(data),
+        reason=reason if isinstance(reason, str) else None,
+        hold_seconds=hold,
+        now=utcnow(),
+    )
+    return {
+        "request_id": row["request_id"],
+        "hold_seconds": hold,
+        "wait_seconds": permission.WAIT_S,
+        "expires_at": row["expires_at"],
+    }
+
+
+def handle_permission_wait(ledger: Ledger, data: dict) -> dict | None:
+    caller = _data_caller(ledger, data)
+    request_id = _request_id(data)
+    if caller is None or request_id is None:
+        return None
+    raw = data.get("wait_seconds")
+    wait = permission.WAIT_S
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        wait = min(permission.WAIT_S, max(0.0, float(raw)))
+    row = permission.wait_answer(ledger.conn, request_id, caller["agent_id"], wait)
+    if row is None:
+        return None
+    return {"state": row["state"], "note": row["note"]}
+
+
+def handle_permission_close(ledger: Ledger, data: dict) -> dict | None:
+    caller = _data_caller(ledger, data)
+    request_id = _request_id(data)
+    state = data.get("state")
+    if caller is None or request_id is None or state not in permission.CLOSES:
+        return None
+    closed = permission.close(ledger.conn, request_id, caller["agent_id"], str(state), utcnow())
+    return {"closed": closed}

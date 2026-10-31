@@ -99,9 +99,9 @@ def migrate(conn: sqlite3.Connection) -> None:
         "version INTEGER NOT NULL)"
     )
     row = conn.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()
-    if row is not None:
-        if row["version"] != 1:
-            raise RuntimeError(f"unsupported ledger schema version {row['version']}")
-        return
+    if row is not None and row["version"] != 1:
+        raise RuntimeError(f"unsupported ledger schema version {row['version']}")
+    # Every statement in schema.sql is IF NOT EXISTS, so this adds new tables to an
+    # existing ledger; a new column in an existing table still needs a new ledger.
     conn.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
     conn.execute("INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 1)")
