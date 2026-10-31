@@ -17,8 +17,14 @@ All notable changes to the `sentinel-swarm` plugin.
 
 ### Changed
 
-- A ledger created before 0.6.0 has no `permission_requests` table. Delete
-  `.sentinel-swarm/ledger.db` before the first run on 0.6.0.
+- The ledger applies its schema on every open, so a ledger from an earlier release gains
+  new tables, such as `permission_requests`, without being deleted. A release that adds
+  a column to an existing table still needs a fresh ledger.
+
+### Fixed
+
+- The mod type-checks against the Claude Code 2.1.314 types: the gate loop passed a
+  matcher of type `string | RegExp` where the API takes a tool name.
 
 ## [0.5.2] — 2026-10-30 — notice a blocked session
 

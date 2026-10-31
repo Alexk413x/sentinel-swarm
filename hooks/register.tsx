@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, SessionSendAddress, SessionSendResult } from 'claude-code'
+import type { BuiltinToolName, EngineInterface, Register, SessionSendAddress, SessionSendResult } from 'claude-code'
 
 import {
   ASK_COLOR,
@@ -68,21 +68,23 @@ const SYNC_POST_TOOLS = ['SendMessage', 'PushNotification', 'Monitor', ...WRITE_
 const RECEIVED_FROM = ['peer', 'peer-send-message', 'coordinator']
 // A hook's allow does not dismiss the dialog of a tool that requires the person.
 const PERSON_TOOLS: ReadonlySet<string> = new Set(['AskUserQuestion', 'ExitPlanMode'])
+const exactly = (name: BuiltinToolName): RegExp => new RegExp(`^${name}$`)
+
 const PRE_TOOL_GATES: readonly {
-  tool: string | RegExp
+  tool: RegExp
   event: string
   role?: string
   skip?: (e: object) => boolean
 }[] = [
-  { tool: 'Agent', event: 'pre_agent' },
-  { tool: 'AskUserQuestion', event: 'pre_ask' },
+  { tool: exactly('Agent'), event: 'pre_agent' },
+  { tool: exactly('AskUserQuestion'), event: 'pre_ask' },
   { tool: WRITE_TOOL, event: 'pre_write' },
   { tool: SHELL_TOOL, event: 'pre_shell' },
-  { tool: 'Monitor', event: 'pre_monitor' },
+  { tool: exactly('Monitor'), event: 'pre_monitor' },
   // $.session.send runs as a SendMessage call to the target's pipe address, not its session id;
   // the ledger checked the recipient before the mod sent, so the mod's own text passes.
-  { tool: 'SendMessage', event: 'pre_send_message', skip: isOwnSend },
-  { tool: 'Skill', event: 'pre_skill', role: 'driver' },
+  { tool: exactly('SendMessage'), event: 'pre_send_message', skip: isOwnSend },
+  { tool: exactly('Skill'), event: 'pre_skill', role: 'driver' },
   { tool: LEDGER_TOOL, event: 'pre_ledger' },
 ]
 const sessionRef = { plugin: 'sentinel-swarm', key: 'session' } as const

@@ -257,6 +257,15 @@ def test_the_panel_lists_open_requests_under_waiting(ledger: Ledger) -> None:
     ]
 
 
+def test_the_panel_reads_a_ledger_without_the_requests_table(ledger: Ledger) -> None:
+    bootstrap_module(ledger)
+    ledger.conn.execute("DROP TABLE permission_requests")
+
+    run = panel.snapshot(ledger.conn, {})["runs"][0]
+
+    assert run["waiting"]["permissions"] == []
+
+
 def _working_lead(ledger: Ledger, minutes_ago: int) -> list[dict]:
     old = stamp(utcnow() - timedelta(minutes=minutes_ago))
     with write_tx(ledger.conn) as conn:

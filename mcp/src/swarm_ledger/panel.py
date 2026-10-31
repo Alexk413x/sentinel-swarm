@@ -448,6 +448,11 @@ def _waiting(conn: sqlite3.Connection, run: sqlite3.Row) -> dict:
             (run_id,),
         ).fetchone()
         paused = (row["reason"] if row is not None else None) or "no reason recorded"
+    held = (
+        permission.open_requests(conn, run_id, utcnow())
+        if _has_table(conn, "permission_requests")
+        else []
+    )
     permissions = [
         {
             "request_id": row["request_id"],
@@ -458,7 +463,7 @@ def _waiting(conn: sqlite3.Connection, run: sqlite3.Row) -> dict:
             "asked_at": row["created_at"],
             "expires_at": row["expires_at"],
         }
-        for row in permission.open_requests(conn, run_id, utcnow())
+        for row in held
     ]
     return {
         "questions": questions,
@@ -488,6 +493,17 @@ def document(repo_root: Path, run_id: int | None = None, sessions_dir: Path | No
         finally:
             conn.close()
     return {**base, "runs": [], "error": error}
+
+
+def _has_table(conn: sqlite3.Connection, name: str) -> bool:
+    # The panel opens the ledger read-only and never runs migrate, so a ledger no server has
+    # opened since a table was added to schema.sql still lacks that table.
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+        ).fetchone()
+        is not None
+    )
 
 
 def _open_plain(path: Path) -> sqlite3.Connection:
