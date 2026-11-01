@@ -105,3 +105,7 @@ change.
 6. How does the report count cost for a CLI that prints no usage?
 7. Is a handoff-time diff check strong enough for a Coder whose writes no hook can stop?
 8. What replaces the mod check-in for a session with no mod?
+9. Codex as a host (2026-11-01): the run panel and the role-session hooks are a Claude Code mod, which
+   Codex cannot load, so 0.6.1 declares them unsupported under Codex (`.codex-plugin/hooks/hooks.json`).
+   The panel is a viewer and the swarm runs without it. Supporting Codex agents as swarm roles needs
+   its own design: a Codex equivalent of the role hooks, or the handoff-time checks above.

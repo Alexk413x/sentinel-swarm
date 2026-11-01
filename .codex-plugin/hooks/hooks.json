@@ -1,0 +1,4 @@
+{
+  "description": "sentinel-swarm's run panel and its role-session hooks are a Claude Code mod (hooks/register.tsx). Codex cannot load Claude Code mods, so that mod is not supported under Codex: this file declares no hooks, and Codex runs none of the swarm's hooks. Running swarm roles as Codex agents is future work.",
+  "hooks": {}
+}
