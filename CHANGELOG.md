@@ -2,6 +2,16 @@
 
 All notable changes to the `sentinel-swarm` plugin.
 
+## [0.6.1] — 2026-11-01 — the mod is declared unsupported under Codex
+
+### Fixed
+
+- Codex failed to parse `hooks/hooks.json` ("unknown field `modules`") at every start, because the
+  file names the Claude Code mod `register.tsx`, which Codex cannot load. A Codex manifest,
+  `.codex-plugin/plugin.json`, now names `.codex-plugin/hooks/hooks.json` instead: it declares no
+  hooks and states that the run panel and role-session hooks are not supported under Codex. Claude
+  Code is unchanged.
+
 ## [0.6.0] — 2026-10-30 — answer permission prompts from the run panel
 
 ### Added
