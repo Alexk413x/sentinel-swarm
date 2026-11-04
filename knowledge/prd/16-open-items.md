@@ -114,6 +114,12 @@
 
 Each item below is marked **(needs implementation)** in its document.
 
+- **Native Copilot workers** ([11-setup-and-settings.md](11-setup-and-settings.md#host-support)).
+  Requires a worker host, trusted identity and tool-schema adapters, fail-closed
+  enforcement, session lifecycle and watchdog integration, and isolated parity tests.
+  Official SDK hooks and session APIs are candidate mechanisms, not support in this
+  plugin. Choose native workers versus an explicit Claude-worker bridge before
+  implementing a replacement. No UI port is required for read-only ledger status.
 - **The device-queue broker** ([05-sessions.md](05-sessions.md)). Needs a new plan on
   the mod's delivery path.
 - **Run panel payload.** The panel reads every brief on each 5-second refresh, about 240 KB for a run of 100 agents. Fetch a brief only when its task opens, and read the snapshot over the ledger server's HTTP route while it runs.
