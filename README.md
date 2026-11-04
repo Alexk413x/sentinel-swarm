@@ -26,6 +26,13 @@ code graph before it plans or writes, and each Coder updates the graph for its o
 
 ## Requirements
 
+**Copilot:** use the separate [Copilot companion](copilot/README.md) for capability
+checks and read-only status. Native swarm workers are unsupported. Installing
+skills or running the Python ledger does not load the Claude Code enforcement mod.
+The companion never starts Claude workers as a fallback. Claude's setup, launcher,
+role files, hooks, and skills remain unchanged. See the
+[host support contract](knowledge/prd/11-setup-and-settings.md#host-support).
+
 - Claude Code 2.1.294 or later: the CLI, the desktop app, or an IDE extension, on
   Windows or macOS. claude.ai chat and Cowork cannot run a swarm, because every role is a
   local background session with its own hooks.

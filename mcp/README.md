@@ -20,6 +20,10 @@ Entry points:
 - `mcp/launch/ledger.py serve --detach` starts the ledger server in the background.
 - `mcp/launch/ledger.py hooks <event>` runs one hook. The host repo's shim,
   `.sentinel-swarm/hook.py`, calls it.
+- `mcp/launch/ledger.py copilot check` reports unsupported native workers without
+  setup or startup. `copilot status [--repo <root>] [--run <id>]` reads Claude
+  records with SQLite `mode=ro` and exits 1 with JSON `error` if reading fails.
+  The separate [Copilot companion](../copilot/README.md) does not change Claude flows.
 
 ## The ledger database
 

@@ -42,6 +42,54 @@ Python is older than codebase-kg's floor, for `graph_upsert`'s fallback; see
 sentinel-swarm is public under the no-resale licence in `LICENSE`: Apache 2.0 terms plus
 the no-resale and prohibited-use conditions.
 
+## Host support
+
+The worker runtime is Claude Code. Copilot and Codex skill installation does not
+load `hooks/register.tsx`, whose `claude-code` imports, event schemas, trusted
+session identity, and tool names are part of enforcement. The Codex manifest
+deliberately declares no role hooks. Neither packaging surface supplies a native
+worker adapter.
+
+Copilot support is additive. Its adapter and skill live in separate files.
+Claude's setup, launcher, role templates, hooks, enforcement, and top-level skills
+keep their behavior. The companion skill is `copilot/skills/sentinel-swarm/SKILL.md`,
+not the top-level Claude skills. `copilot/README.md` explains project-local skill
+installation. The companion folder is not a standalone plugin package.
+`SENTINEL_SWARM_CLAUDE` selects a Claude executable; it is not a generic worker adapter.
+
+The separate `mcp/launch/ledger.py copilot <action> [--repo <root>]` entry point
+uses only the standard library. `check`, `setup`, `run`, and `resume` return exit 1
+with JSON explaining unsupported native workers. They do not write host files,
+check trust, run test commands, start a server, or launch workers. No Copilot-only
+runtime flag changes the Claude flows.
+
+`copilot status [--run <id>]` reads Claude records through SQLite `mode=ro` and
+the panel's snapshot helpers. It never uses the panel's writable-open fallback.
+It returns exit 1 with JSON `error` for a missing, unreadable, or incompatible ledger.
+An empty `runs` list without an error means no matching recorded run, not completed
+work. Its session liveness comes from Claude session records, not Copilot discovery.
+Status starts no server or workers and grants no ledger worker identity.
+
+The Copilot skill stops setup, run, and resume requests before changing host files
+or starting processes. A user must explicitly choose a Claude-worker bridge before
+another host starts Claude workers. That choice uses Claude installation,
+authentication, hooks, and sessions and is not native Copilot support. The companion
+does not implement a bridge or silently select one.
+
+**Native Copilot workers (needs implementation).** The official Copilot SDK
+documents [tool and lifecycle hooks](https://github.com/github/copilot-sdk/blob/main/docs/hooks/hooks-overview.md)
+and [independent-root session management](https://github.com/github/copilot-sdk/blob/main/docs/session-management.md).
+These APIs establish a candidate non-UI path, not verified Sentinel compatibility.
+Session management is experimental and opt-in. Creation requires host integration;
+Node.js and Rust document creation handlers, while Python's management API omits
+creation until it supports host callbacks. SDK session creation is a separate API.
+A native host must attach enforcement to each worker, normalize tool names and
+arguments, stamp trusted identity, preserve stop/write/shell/MCP gates, and own
+spawn, messaging, resume, release, permission handling, and watchdog behavior.
+Hook failures must deny gated operations. An API's presence does not establish
+parity with the Claude mod. Native workers versus a Claude-worker bridge is an
+explicit product decision, not a setup fallback. The Claude UI port is separate.
+
 ## How the ledger runs
 
 The ledger imports only the standard library, so it needs no venv, no `uv`, and no install
