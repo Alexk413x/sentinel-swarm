@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -121,8 +122,47 @@ def dev_channel_args() -> list[str]:
     return ["--dangerously-load-development-channels", *entries] if entries else []
 
 
+_JSON_FLAGS = frozenset({"--mcp-config", "--settings"})
+_LAUNCH_DIR = Path(".sentinel-swarm") / "launch"
+
+
+def cmd_args(args: Sequence[str], cwd: Path | None) -> list[str]:
+    """The arguments as a batch launcher may carry them: nothing cmd.exe would read.
+
+    The inline JSON of `--mcp-config` and `--settings` always holds quotes, so each goes to a
+    file under the records folder and the flag names the file. Any argument that still holds
+    a character cmd.exe reads refuses the launch: the prompt and the message are already
+    plain text by then, so what is left is a name, a model, or a path that needs a person.
+    """
+    out: list[str] = []
+    for index, arg in enumerate(args):
+        if index and args[index - 1] in _JSON_FLAGS and arg.lstrip().startswith("{"):
+            if cwd is None:
+                raise LedgerError(
+                    f"cannot pass {args[index - 1]} through a Windows batch launcher without "
+                    f"the repo folder; set {CLAUDE_VAR} to claude.exe"
+                )
+            folder = cwd / _LAUNCH_DIR
+            folder.mkdir(parents=True, exist_ok=True)
+            path = folder / f"{hashlib.sha256(arg.encode('utf-8')).hexdigest()[:16]}.json"
+            with path.open("w", encoding="utf-8", newline="\n") as handle:
+                handle.write(arg)
+            arg = str(path)
+        if _CMD_META.search(arg):
+            raise LedgerError(
+                "the claude launcher is a Windows batch file, which runs through cmd.exe, and "
+                f"argument {index + 1} of the launch holds a character cmd.exe would read as "
+                "a command (a percent sign, a quote, & | < > ^ ! or a line break). "
+                f"Set {CLAUDE_VAR} to claude.exe"
+            )
+        out.append(arg)
+    return out
+
+
 def _run(args: list[str], cwd: Path | None = None) -> str:
-    binary = _launcher(claude_binary())[0]
+    binary, through_cmd = _launcher(claude_binary())
+    if through_cmd:
+        args = cmd_args(args, cwd)
     # Files, not pipes: a backgrounded session can inherit the handles and hold a pipe open.
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         try:

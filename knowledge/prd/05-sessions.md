@@ -41,7 +41,10 @@ claude "You are <name>. Read your brief from the swarm ledger and follow it." --
   otherwise it rewrites the spawn prompt and the resume message, the only agent-written
   arguments, so the message still arrives: a percent sign becomes "percent", a double
   quote a single quote, `&` "and", `|` "/", `<` and `>` brackets, `!` a full stop, and
-  `^` and line breaks go. The launch flags the ledger builds itself are not rewritten.
+  `^` and line breaks go. The inline JSON of `--mcp-config` and `--settings` goes to a
+  file under `.sentinel-swarm/launch/`, named by its digest, and the flag names the
+  file. Any argument that still holds one of those characters refuses the launch and
+  says to set `SENTINEL_SWARM_CLAUDE` to `claude.exe`.
 - Development channels: when the environment variable `CLAUDE_DEV_CHANNELS` is not empty,
   every session launch appends `--dangerously-load-development-channels` and its entries as
   the last arguments. That covers `agent_spawn`, `agent_resume`, the watchdog's Oracle

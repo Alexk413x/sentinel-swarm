@@ -287,6 +287,25 @@ def test_a_cmd_shim_carries_a_message_as_plain_text(tmp_path: Path) -> None:
     assert sessions.launcher_text(plain, str(shim), windows=True) == plain
 
 
+def test_a_cmd_shim_gets_its_json_flags_as_files_and_no_cmd_characters(tmp_path: Path) -> None:
+    config = '{"mcpServers": {"swarm-ledger": {"type": "http", "url": "http://127.0.0.1:1/mcp"}}}'
+    args = ["a plain prompt", "--bg", "--name", "host-lead", "--mcp-config", config]
+    args += ["--settings", '{"worktree":{"bgIsolation":"none"}}', "--model", "sonnet"]
+
+    sent = sessions.cmd_args(args, tmp_path)
+
+    assert not any(sessions._CMD_META.search(arg) for arg in sent)
+    written = Path(sent[5])
+    assert written.parent == tmp_path / ".sentinel-swarm" / "launch"
+    assert written.read_text(encoding="utf-8") == config
+    assert Path(sent[7]).read_text(encoding="utf-8") == '{"worktree":{"bgIsolation":"none"}}'
+    assert sessions.cmd_args(args, tmp_path) == sent
+    with pytest.raises(LedgerError, match="cmd.exe"):
+        sessions.cmd_args(["prompt", "--model", "sonnet & calc"], tmp_path)
+    with pytest.raises(LedgerError, match="repo folder"):
+        sessions.cmd_args(["--mcp-config", config], None)
+
+
 def test_a_cmd_shim_runs_the_native_binary_npm_put_beside_it(tmp_path: Path) -> None:
     native = tmp_path.joinpath(*sessions._NPM_NATIVE)
     native.parent.mkdir(parents=True)
