@@ -84,9 +84,17 @@
 - **Config retry, live.** No live run has shown the retry riding out a truncated
   `~/.claude.json`, or the mod's `session.send` refusal text for one; the mod matches
   "JSON Parse error" and "`.claude.json` is corrupted".
-- **A wake-up during a deliberate park.** A wake-up sent between the watchdog's decision
-  to park an idle parent and its `claude stop` can be lost. The `wake_unsent` finding
-  reports it after `unsent_wakeup_minutes`.
+- **A wake-up during a deliberate park.** A wake-up sent while a park is claimed stays
+  owed, and `resume_parked` carries it. A wake-up sent between a session's stop and the
+  next sessions listing can still be lost. The `wake_unsent` finding reports it after
+  `unsent_wakeup_minutes`.
+- **The npm launcher on Windows.** The ledger looks for
+  `node_modules/@anthropic-ai/claude-code/bin/claude.exe` beside a `claude.cmd` shim. No
+  npm install has been checked for that layout; the plain-text rewrite covers the case
+  where it is absent.
+- **Bypass on a fresh config.** Every role starts with `--permission-mode
+  bypassPermissions`. No run has shown a background session accept it on a machine that
+  has never accepted bypass mode.
 - **Closing a run, live.** `run_close`, `ledger.py close`, `file_accept_incomplete`,
   `file_delete`, product claims, and the `commands` shell rule are built and
   unit-tested against a faked CLI. No live run has used them. A live run should show

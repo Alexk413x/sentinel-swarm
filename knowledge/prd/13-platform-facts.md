@@ -267,3 +267,5 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   plugin that project settings enable and whose registry entry names this repo. Checked
   against code.claude.com/docs/en/plugins/loading ("Find where a plugin is enabled") and
   the settings page on 2026-10-27; not run live.
+- On Windows, a `.cmd` or `.bat` launcher runs through cmd.exe, so `%VAR%` expands and a quote with `&` runs a command. `claude --help` (2.1.318) has no option that reads the prompt from a file or stdin for `--bg` or `--resume`. Verified 2026-11-12.
+- A session transcript's `message.usage` holds token counts, `service_tier`, and `speed`, and no cost field. Checked on a Claude Code 2.1.318 transcript, 2026-11-12.

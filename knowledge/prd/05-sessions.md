@@ -38,8 +38,10 @@ claude "You are <name>. Read your brief from the swarm ledger and follow it." --
   `.cmd` or `.bat` launcher (the npm shim) runs through cmd.exe, where agent-written text
   could expand `%VAR%` or run a command. The ledger runs the shim's own
   `node_modules/@anthropic-ai/claude-code/bin/claude.exe` when it sits beside the shim;
-  otherwise it refuses a launch whose arguments hold a percent sign, a quote, `& | < > ^ !`
-  or a line break, and says to set `SENTINEL_SWARM_CLAUDE` to `claude.exe`.
+  otherwise it rewrites the spawn prompt and the resume message, the only agent-written
+  arguments, so the message still arrives: a percent sign becomes "percent", a double
+  quote a single quote, `&` "and", `|` "/", `<` and `>` brackets, `!` a full stop, and
+  `^` and line breaks go. The launch flags the ledger builds itself are not rewritten.
 - Development channels: when the environment variable `CLAUDE_DEV_CHANNELS` is not empty,
   every session launch appends `--dangerously-load-development-channels` and its entries as
   the last arguments. That covers `agent_spawn`, `agent_resume`, the watchdog's Oracle

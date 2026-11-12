@@ -1061,7 +1061,7 @@ def test_report_cost_uses_list_prices_per_model() -> None:
         "cache_read_tokens": 1_000_000,
         "cache_write_tokens": 1_000_000,
     }
-    assert pricing.estimate("sonnet", tokens) == 2.0 + 10.0 + 0.20 + 4.0
+    assert pricing.estimate("sonnet", tokens) == 2.0 + 10.0 + 0.10 + 4.0
     assert pricing.estimate("claude-haiku-4-5", tokens) == 1.0 + 5.0 + 0.10 + 2.0
     assert pricing.estimate(None, tokens) is None
     usage = {
@@ -1073,6 +1073,43 @@ def test_report_cost_uses_list_prices_per_model() -> None:
         },
     }
     assert pricing.response_cost("claude-opus-5-5", usage) == 4.0 + 5.0 + 8.0
+    million = {"input_tokens": 1_000_000}
+    for model, rate in (
+        ("claude-fable-5-2", 8.0),
+        ("claude-mythos-5-2", 8.0),
+        ("claude-fable-5-1", 10.0),
+        ("claude-fable-5", 10.0),
+        ("claude-fable-5-9", 8.0),  # no row yet: the family's newest
+        ("fable", 8.0),
+        ("claude-opus-5-5", 4.0),
+        ("claude-opus-5", 5.0),
+        ("claude-opus-4-8", 5.0),
+        ("claude-opus-4-1-20250805", 15.0),
+        ("claude-opus-4-20250514", 15.0),
+        ("claude-sonnet-5", 2.0),
+        ("claude-sonnet-4-5-20250929", 3.0),
+        ("claude-haiku-5-5", 0.10),
+        ("haiku", 0.10),
+        ("claude-haiku-4-5-20251001", 1.0),
+    ):
+        assert pricing.estimate(model, million) == rate, model
+    read = {"cache_read_tokens": 1_000_000}
+    assert pricing.estimate("claude-fable-5", read) == 1.0
+    assert pricing.estimate("claude-fable-5-1", read) == 0.25
+    assert pricing.estimate("claude-sonnet-5", read) == 0.20
+    assert pricing.estimate("claude-sonnet-5-5", read) == 0.10
+    # Haiku 5.5 prices a request whose prompt is over 100,000 tokens at its higher row.
+    short = {"input_tokens": 60_000, "cache_read_input_tokens": 40_000, "output_tokens": 1_000}
+    long = {"input_tokens": 60_000, "cache_read_input_tokens": 40_001, "output_tokens": 1_000}
+    assert pricing.response_cost("claude-haiku-5-5", short) == pytest.approx(
+        (60_000 * 0.10 + 40_000 * 0.01 + 1_000 * 0.50) / 1e6
+    )
+    assert pricing.response_cost("claude-haiku-5-5", long) == pytest.approx(
+        (60_000 * 0.50 + 40_001 * 0.05 + 1_000 * 2.50) / 1e6
+    )
+    assert pricing.response_cost("claude-haiku-4-5", long) == pytest.approx(
+        (60_000 * 1.0 + 40_001 * 0.10 + 1_000 * 5.0) / 1e6
+    )
     assert report._duration("2026-09-25T02:00:00.000Z", "2026-09-25T02:35:10.000Z") == "35m 10s"
     assert report._duration("2026-09-25T02:00:00.000Z", "2026-09-25T03:05:00.000Z") == "1h 5m"
 

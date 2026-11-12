@@ -195,11 +195,13 @@ role_parallelism_cap:
 # call finds none free, up to this many, and stops one after 60 seconds idle. 0 runs every
 # call in the server process, one at a time.
 max_workers: 8
-# USD per million tokens, per model family, for the report's costs. A family listed here
-# replaces only the rates it names; a family with no built-in row (a new model) needs all
-# five. A key is a lower-case part of the model name; the longest match wins. Unset, the
-# built-in list prices apply: fable 10/50/0.25/12.5/20, opus 4/20/0.20/5/8,
-# sonnet 2/10/0.20/2.5/4, haiku 1/5/0.10/1.25/2 (input/output/cache read/5m write/1h write).
+# USD per million tokens, for the report's costs. Unset, the built-in list prices apply, one
+# row per model version (see "Token counting and cost" in the plugin's PRD): for example
+# Fable 5.2 8/40/0.20/10/16, Opus 5.5 4/20/0.20/5/8, Sonnet 5.5 2/10/0.10/2.5/4, Haiku 5.5
+# 0.10/0.50/0.01/0.125/0.20 (input/output/cache read/5m write/1h write). A key listed here
+# is a lower-case part of the model name, such as sonnet or opus-5-5; the longest match
+# wins and is used for every model it matches. A family with a built-in row replaces only
+# the rates it names; any other key needs all five.
 # pricing:
 #   sonnet:
 #     input: 2.0

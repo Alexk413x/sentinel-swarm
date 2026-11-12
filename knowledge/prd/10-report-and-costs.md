@@ -67,15 +67,39 @@ Sections:
 - Each response is priced at its own model's list rate, with 5-minute and 1-hour cache
   writes priced apart. A cache write with no split is priced at the 1-hour rate. The
   total is stored in `agents.cost_usd`.
-- `mcp/src/swarm_ledger/pricing.py` holds the rates per model family. An agent row with
-  no stored cost is estimated from its token totals.
-- The built-in rates are USD per million tokens (input, output, cache read, 5-minute cache
-  write, 1-hour cache write): fable 10, 50, 0.25, 12.5, 20; opus 4, 20, 0.20, 5, 8;
-  sonnet 2, 10, 0.20, 2.5, 4; haiku 1, 5, 0.10, 1.25, 2. The `pricing` setting overrides
-  them without a release: `pricing.<family>` names any of `input`, `output`, `cache_read`,
-  `cache_write_5m`, `cache_write_1h`, and a family with no built-in row needs all five.
-  A family is a lower-case part of the model name, and the longest match wins. Loading the
-  settings applies them to the server's pricing.
+- A transcript records token counts per response and no cost, so
+  `mcp/src/swarm_ledger/pricing.py` prices every response from its own table. An agent
+  row with no stored cost is estimated from its token totals.
+- The built-in rates are Anthropic's list prices in USD per million tokens (input, output,
+  cache read, 5-minute cache write, 1-hour cache write), read from
+  <https://platform.claude.com/docs/en/about-claude/pricing> on 2026-11-12, one row per
+  model version:
+
+  | Model | Input | Output | Cache read | 5-min write | 1-hour write |
+  |---|---|---|---|---|---|
+  | Fable 5.2, Mythos 5.2 | 8 | 40 | 0.20 | 10 | 16 |
+  | Fable 5.1, Mythos 5.1 | 10 | 50 | 0.25 | 12.5 | 20 |
+  | Fable 5, Mythos 5 | 10 | 50 | 1 | 12.5 | 20 |
+  | Opus 5.5 | 4 | 20 | 0.20 | 5 | 8 |
+  | Opus 5, 4.8, 4.7, 4.6, 4.5 | 5 | 25 | 0.50 | 6.25 | 10 |
+  | Opus 4.1, 4 | 15 | 75 | 1.50 | 18.75 | 30 |
+  | Sonnet 5.5 | 2 | 10 | 0.10 | 2.5 | 4 |
+  | Sonnet 5 | 2 | 10 | 0.20 | 2.5 | 4 |
+  | Sonnet 4.6, 4.5, 4 | 3 | 15 | 0.30 | 3.75 | 6 |
+  | Haiku 5.5, prompt up to 100,000 tokens | 0.10 | 0.50 | 0.01 | 0.125 | 0.20 |
+  | Haiku 5.5, prompt over 100,000 tokens | 0.50 | 2.50 | 0.05 | 0.625 | 1 |
+  | Haiku 4.5 | 1 | 5 | 0.10 | 1.25 | 2 |
+
+  The version comes from the model id (`claude-opus-5-5`, `claude-opus-4-1-20250805`). An
+  alias such as `sonnet`, or a version with no row, is priced as its family's newest model.
+  Haiku 5.5's higher row applies per response, by that response's input, cache read, and
+  cache write tokens; an estimate from token totals uses the lower row. Fast mode, the
+  Batch API, and data-residency multipliers are not priced.
+- The `pricing` setting overrides the table without a release: `pricing.<family>` names any
+  of `input`, `output`, `cache_read`, `cache_write_5m`, `cache_write_1h`, and a family with
+  no built-in row needs all five. A family is a lower-case part of the model name, the
+  longest match wins, and a configured row is used before the table for every model it
+  matches. Loading the settings applies them to the server's pricing.
 - When a transcript has a response whose model has no rate, the hook stores no cost
   from it, and the report falls back to the estimate. A cost the ledger cannot price
   shows as `unknown`, and so does any phase or run total that includes it.

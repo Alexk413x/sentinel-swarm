@@ -330,6 +330,8 @@ descriptions stay out of every session's context.
 | `base_branch` | empty | `repo_check` tries `main`, then `master` |
 | `effort.<role>` | `medium` for every role | `--effort <level>` for that role's sessions. A settings file with no `effort` key gets `medium` for every role; a role left empty runs at its model's default. A brief's own `effort` overrides it |
 | `prompt_cache_ttl.<role>` | `5m` for the Coder, empty for the others | `promptCacheTtl` (`"5m"` or `"1h"`) for that role's sessions |
+| `pricing.<family>` | unset | `input`, `output`, `cache_read`, `cache_write_5m`, `cache_write_1h` in USD per million tokens, over the built-in price table. See "Token counting and cost" in [10-report-and-costs.md](10-report-and-costs.md) |
+| `watchdog.context_windows.<family>` | unset | The context window in tokens for a model family, or `default` for every other model. See [08-watchdog.md](08-watchdog.md) |
 | `role_parallelism_cap.<role>` | empty | Cap on that role's own live sessions in the run |
 | `permission_mode.<role>` | empty for every role | `--permission-mode <mode>` for that role's sessions. Empty starts the role in `bypassPermissions`; an unknown value reads as empty. See "Permission mode" above |
 | `permission_hold_seconds` | 300 | How long a role session holds a call Claude Code would ask the person about, so the user can allow or deny it in the run panel. Unanswered by then, the session shows Claude Code's own prompt, answered in agent view. `0` turns holding off; a negative value reads as `0`; a value that is not a whole number reads as 300. Each hold reads the settings file again. See "Answering a permission prompt in the panel" in [17-run-panel.md](17-run-panel.md) |

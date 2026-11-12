@@ -166,12 +166,12 @@ def test_pricing_defaults_ship_unchanged(tmp_path: Path) -> None:
     assert settings.pricing == {}
     assert settings.watchdog.context_windows == {}
     assert pricing.PRICES == pricing.DEFAULT_PRICES
-    assert pricing.DEFAULT_PRICES["sonnet"] == (2.0, 10.0, 0.20, 2.5, 4.0)
+    assert pricing.DEFAULT_PRICES["sonnet"] == (2.0, 10.0, 0.10, 2.5, 4.0)
 
 
 def test_a_pricing_override_replaces_only_the_rates_it_names(tmp_path: Path) -> None:
     settings = _load(tmp_path, "pricing:\n  sonnet:\n    input: 3\n    output: 15\n")
-    assert pricing.PRICES["sonnet"] == (3.0, 15.0, 0.20, 2.5, 4.0)
+    assert pricing.PRICES["sonnet"] == (3.0, 15.0, 0.10, 2.5, 4.0)
     assert pricing.PRICES["opus"] == pricing.DEFAULT_PRICES["opus"]
     again = Settings.from_snapshot(settings.snapshot())
     assert again.pricing == {"sonnet": {"input": 3.0, "output": 15.0}}
@@ -186,7 +186,7 @@ def test_a_new_family_needs_all_five_rates_and_beats_a_shorter_match(tmp_path: P
     )
     assert "partial" not in pricing.PRICES
     assert pricing.estimate("claude-opus-6", {"input_tokens": 1_000_000}) == 7.0
-    assert pricing.estimate("claude-opus-5", {"input_tokens": 1_000_000}) == 4.0
+    assert pricing.estimate("claude-opus-5-5", {"input_tokens": 1_000_000}) == 4.0
 
 
 def test_bad_pricing_and_window_values_are_ignored(tmp_path: Path) -> None:
@@ -268,21 +268,23 @@ def test_windows_working_set_is_read_with_typed_handles() -> None:
 # -- the claude launcher -------------------------------------------------------------------------
 
 
-def test_a_native_binary_gets_its_arguments_unchanged() -> None:
-    args = ["--resume", "x", 'a "quoted" & %PATH% message']
-    assert sessions._argv("/usr/bin/claude", args, windows=True) == ["/usr/bin/claude", *args]
-    assert sessions._argv("C:/x/claude.exe", args, windows=True) == ["C:/x/claude.exe", *args]
+def test_a_native_binary_carries_a_message_unchanged() -> None:
+    text = 'a "quoted" & %PATH% message'
+    assert sessions.launcher_text(text, "/usr/bin/claude", windows=True) == text
+    assert sessions.launcher_text(text, "C:/x/claude.exe", windows=True) == text
+    assert sessions.launcher_text(text, "C:/x/claude.cmd", windows=False) == text
 
 
-def test_a_cmd_shim_refuses_text_cmd_would_read_as_a_command(tmp_path: Path) -> None:
+def test_a_cmd_shim_carries_a_message_as_plain_text(tmp_path: Path) -> None:
     shim = tmp_path / "claude.cmd"
     shim.write_text("@echo off\n", encoding="utf-8")
-    for text in ("100%", 'say "hi" & calc', "a|b", "x\ny", "<in", "^", "!x"):
-        with pytest.raises(LedgerError, match="cmd.exe"):
-            sessions._argv(str(shim), ["--resume", "id", text], windows=True)
-    plain = ["--resume", "id", "a plain message, with spaces"]
-    assert sessions._argv(str(shim), plain, windows=True) == [str(shim), *plain]
-    assert sessions._argv(str(shim), ["a&b"], windows=False) == [str(shim), "a&b"]
+    sent = sessions.launcher_text(
+        'coverage is 100%: say "hi" & calc | x <in >out ^ now!\nnext line', str(shim), windows=True
+    )
+    assert sent == "coverage is 100 percent: say 'hi' and calc / x (in )out now. next line"
+    assert not sessions._CMD_META.search(sent)
+    plain = "a plain message, with spaces"
+    assert sessions.launcher_text(plain, str(shim), windows=True) == plain
 
 
 def test_a_cmd_shim_runs_the_native_binary_npm_put_beside_it(tmp_path: Path) -> None:
@@ -291,5 +293,5 @@ def test_a_cmd_shim_runs_the_native_binary_npm_put_beside_it(tmp_path: Path) -> 
     native.write_text("", encoding="utf-8")
     shim = tmp_path / "claude.cmd"
     shim.write_text("", encoding="utf-8")
-    argv = sessions._argv(str(shim), ['evil" & calc'], windows=True)
-    assert argv == [str(native), 'evil" & calc']
+    assert sessions._launcher(str(shim), windows=True) == (str(native), False)
+    assert sessions.launcher_text('evil" & calc', str(shim), windows=True) == 'evil" & calc'

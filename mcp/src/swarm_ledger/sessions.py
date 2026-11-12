@@ -70,33 +70,48 @@ def claude_binary() -> str:
     return shutil.which(raw) or raw
 
 
-_CMD_META = re.compile(r"[%\"&|<>^!\r\n]")
 _NPM_NATIVE = ("node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe")
+# What cmd.exe would read in an argument, and the plain text that stands in for it.
+_CMD_PLAIN = {
+    "%": " percent",
+    '"': "'",
+    "&": " and ",
+    "|": "/",
+    "<": "(",
+    ">": ")",
+    "^": "",
+    "!": ".",
+    "\r": " ",
+    "\n": " ",
+}
+_CMD_META = re.compile("[" + re.escape("".join(_CMD_PLAIN)) + "]")
 
 
-def _argv(binary: str, args: Sequence[str], windows: bool | None = None) -> list[str]:
-    """The command line for `binary`, which must never hand agent-written text to cmd.exe.
+def _launcher(binary: str, windows: bool | None = None) -> tuple[str, bool]:
+    """The binary to run, and whether it runs through cmd.exe.
 
     On Windows, a `.cmd` or `.bat` launcher (the npm shim) runs through cmd.exe, where `%VAR%`
     expands and `"` with `&` runs a command. The shim's own native binary runs instead when it
-    sits where npm puts it; otherwise an argument cmd.exe would read is refused.
+    sits where npm puts it.
     """
     if windows is None:
         windows = os.name == "nt"
     if not windows or Path(binary).suffix.lower() not in (".cmd", ".bat"):
-        return [binary, *args]
+        return binary, False
     native = Path(binary).parent.joinpath(*_NPM_NATIVE)
-    if native.is_file():
-        return [str(native), *args]
-    for arg in args:
-        if _CMD_META.search(arg):
-            raise LedgerError(
-                f"{binary} is a Windows batch launcher, which runs through cmd.exe, and an "
-                "argument holds a character it would read as a command (a percent sign, a "
-                "quote, & | < > ^ ! or a line break). "
-                f"Set {CLAUDE_VAR} to claude.exe"
-            )
-    return [binary, *args]
+    return (str(native), False) if native.is_file() else (binary, True)
+
+
+def launcher_text(text: str, binary: str | None = None, windows: bool | None = None) -> str:
+    """A prompt or a resume message as the launcher can carry it.
+
+    Agent-written text never reaches cmd.exe as written: through a batch launcher, each
+    character cmd.exe would read is replaced by plain text, so the message still arrives.
+    The launch flags the ledger builds itself are not rewritten.
+    """
+    if not _launcher(binary or claude_binary(), windows)[1]:
+        return text
+    return " ".join(_CMD_META.sub(lambda m: _CMD_PLAIN[m.group()], text).split())
 
 
 def dev_channel_args() -> list[str]:
@@ -107,12 +122,12 @@ def dev_channel_args() -> list[str]:
 
 
 def _run(args: list[str], cwd: Path | None = None) -> str:
-    binary = claude_binary()
+    binary = _launcher(claude_binary())[0]
     # Files, not pipes: a backgrounded session can inherit the handles and hold a pipe open.
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         try:
             result = subprocess.run(
-                _argv(binary, args),
+                [binary, *args],
                 cwd=cwd,
                 env=child_env(),
                 stdin=subprocess.DEVNULL,
@@ -270,7 +285,8 @@ def live_names(sessions: list[dict]) -> set[str]:
 
 
 def spawn(prompt: str, name: str, options: list[str], cwd: Path) -> tuple[str, str]:
-    output = _run_retrying([prompt, "--bg", "--name", name, *options, *dev_channel_args()], cwd=cwd)
+    args = [launcher_text(prompt), "--bg", "--name", name, *options, *dev_channel_args()]
+    output = _run_retrying(args, cwd=cwd)
     bg_id = parse_bg_id(output)
     if bg_id is None:
         raise LedgerError(f"claude --bg printed no background id: {_strip_ansi(output).strip()!r}")
@@ -330,5 +346,6 @@ def resume(
     # --resume restores the conversation only: the name and launch flags are passed again, or
     # the session comes back under a generated name without its MCP config.
     named = ["--name", name] if name else []
-    args = ["--resume", session_id, "--bg", message, *named, *options, *dev_channel_args()]
+    text = launcher_text(message)
+    args = ["--resume", session_id, "--bg", text, *named, *options, *dev_channel_args()]
     return parse_bg_id(_run_retrying(args, cwd=cwd))

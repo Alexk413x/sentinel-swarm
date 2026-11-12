@@ -124,6 +124,8 @@ def test_hot_lookups_have_indexes_and_an_existing_ledger_gains_them(tmp_path: Pa
     db_path = tmp_path / "ledger.db"
     conn = connect(db_path)
     conn.execute("DROP INDEX idx_handoffs_file")
+    # A ledger from an earlier release carries no digest of this schema.
+    conn.execute("PRAGMA user_version = 0")
     conn.close()
     conn = connect(db_path)
     try:
