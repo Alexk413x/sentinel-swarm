@@ -34,7 +34,12 @@ claude "You are <name>. Read your brief from the swarm ledger and follow it." --
   records the child's row: `agent_id` = the session id, `session_name`, `bg_id`, state
   `registered`. A session that does not appear is stopped and the call fails.
 - The parent ends its turn after its spawns. A child's message wakes it.
-- The claude binary is `SENTINEL_SWARM_CLAUDE` when set, else `claude`.
+- The claude binary is `SENTINEL_SWARM_CLAUDE` when set, else `claude`. On Windows, a
+  `.cmd` or `.bat` launcher (the npm shim) runs through cmd.exe, where agent-written text
+  could expand `%VAR%` or run a command. The ledger runs the shim's own
+  `node_modules/@anthropic-ai/claude-code/bin/claude.exe` when it sits beside the shim;
+  otherwise it refuses a launch whose arguments hold a percent sign, a quote, `& | < > ^ !`
+  or a line break, and says to set `SENTINEL_SWARM_CLAUDE` to `claude.exe`.
 - Development channels: when the environment variable `CLAUDE_DEV_CHANNELS` is not empty,
   every session launch appends `--dangerously-load-development-channels` and its entries as
   the last arguments. That covers `agent_spawn`, `agent_resume`, the watchdog's Oracle
@@ -486,7 +491,9 @@ than keep an alias.
   only once the poll found the resumed session. Otherwise they stay owed, and the call
   returns `reachable: false`. The agent is re-keyed when its first hook arrives, and the
   sender's mod then delivers the wake-ups to the new id.
-- The watchdog's Oracle resume re-keys the Oracle the same way.
+- The watchdog's Oracle resume re-keys the Oracle the same way, and claims it first: it
+  sets `resume_started_at` under the same 120-second window before `claude --resume`, skips
+  the wake when a resume is already in flight, and clears the claim when the resume fails.
 
 ### Parked agents
 
@@ -512,7 +519,12 @@ than keep an alias.
 - When memory frees, the watchdog resumes parked agents that are owed a wake-up, each
   with that wake-up's pointers: first the parents none of whose children is still
   `registered` or `working`, then by phase ordinal, then by the oldest owed wake-up. It
-  stops at the first one that does not fit under the headroom.
+  stops at the first one that does not fit under the headroom. After each resume it reads
+  `claude agents --json` again, so the new session counts as a running member session for
+  the next candidate; a failed listing ends the pass.
+- A wake-up owed to an agent whose park is claimed (`parked_at` set) while its session still
+  runs is not sent: the session is about to be stopped, so the wake-up stays owed and the
+  resume of the parked agent carries it.
 - A resume fits when free memory minus the role's estimate stays at or above
   `memory.headroom_mb`, or when no member session of the run runs, since then waiting
   frees nothing. Unknown free memory fits.

@@ -50,6 +50,9 @@ listing again for the scan. See "Parked agents" and "Memory" in
 - The context size is the input, cache read, and cache creation tokens of the last
   assistant response in the agent's transcript. The window is 200,000 tokens when the
   model names Haiku, else 1,000,000, unless the `context_window` setting names one.
+  `watchdog.context_windows` maps a lower-case part of a model name to a window and may
+  hold a `default` for any other model; the longest matching family wins, and an unlisted
+  model keeps the built-in window above.
 - For the idle stall, "nothing changed" reads the latest agent event, message, and test
   run, and the last write of the Oracle's transcript. The Oracle's own session status
   does not count, because its armed Monitor keeps it `busy`.
@@ -140,6 +143,8 @@ listing again for the scan. See "Parked agents" and "Memory" in
   as not passed.
 - A paused run with a clear-check keeps the ledger server from its idle exit, so the
   check keeps running.
+- A pass whose `claude agents --json` listing failed does not know whether a session
+  runs, so it never counts as "no session runs": it resets the idle timer.
 
 ## Reminders
 
@@ -161,7 +166,7 @@ notification and owe no `PushNotification`. With `notify` lacking `os`, or
 
 Under `watchdog` in `.claude/sentinel-swarm.local.md`: `interval_seconds` (30),
 `stuck_minutes` (15), `spin_failures` (5), `context_pct` (80), `context_window` (unset:
-taken from the model), `idle_exit_minutes` (15; also how long a finished parent stays
+taken from the model), `context_windows` (unset: per family, see above), `idle_exit_minutes` (15; also how long a finished parent stays
 parked before the watchdog releases it), `unsent_wakeup_minutes` (5; 0 turns
 `wake_unsent` off), `queued_spawn_minutes` (10; 0 turns `spawn_queued` off),
 `remind_minutes` (30; 0 shows each notification once). `stuck_minutes` also sets

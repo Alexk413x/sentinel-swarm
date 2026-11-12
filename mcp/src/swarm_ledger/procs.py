@@ -133,7 +133,8 @@ def created_of(pid: int) -> int | None:
         output = subprocess.run(
             ["ps", "-o", "lstart=", "-p", str(pid)],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_COMMAND_TIMEOUT_S,
             env={**os.environ, "LC_ALL": "C"},
         ).stdout.strip()
@@ -165,7 +166,8 @@ def _posix_snapshot() -> dict[int, Proc]:
     output = subprocess.run(
         ["ps", "-A", "-o", "pid=", "-o", "ppid=", "-o", "lstart=", "-o", "comm="],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=_COMMAND_TIMEOUT_S,
         env={**os.environ, "LC_ALL": "C"},
         check=True,

@@ -152,9 +152,12 @@ def graph_upsert(repo_root: Path, nodes: list[dict]) -> dict:
                 env=env,
                 input=json.dumps(patches),
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=120,
             )
+        except subprocess.TimeoutExpired as exc:
+            raise LedgerError("graph_upsert timed out after 120s") from exc
         except OSError as exc:
             launcher = "Python" if base else "uv"
             raise LedgerError(f"failed to launch {launcher} for graph_upsert: {exc}") from exc
@@ -246,24 +249,6 @@ def node_anchors(repo_root: Path, node_id: str) -> list[tuple[str, str]]:
             (row[0], row[1])
             for row in conn.execute(
                 f"SELECT path, {symbol} FROM anchor WHERE node_id = ? ORDER BY ord", (node_id,)
-            )
-        ]
-    except sqlite3.Error:
-        return []
-    finally:
-        conn.close()
-
-
-def node_anchor_paths(repo_root: Path, node_id: str) -> list[str]:
-    graph_path = repo_root / "knowledge" / "code_graph.db"
-    if not graph_path.is_file():
-        return []
-    conn = open_readonly(graph_path)
-    try:
-        return [
-            row[0]
-            for row in conn.execute(
-                "SELECT DISTINCT path FROM anchor WHERE node_id = ? ORDER BY path", (node_id,)
             )
         ]
     except sqlite3.Error:

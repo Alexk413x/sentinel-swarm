@@ -70,6 +70,35 @@ def claude_binary() -> str:
     return shutil.which(raw) or raw
 
 
+_CMD_META = re.compile(r"[%\"&|<>^!\r\n]")
+_NPM_NATIVE = ("node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe")
+
+
+def _argv(binary: str, args: Sequence[str], windows: bool | None = None) -> list[str]:
+    """The command line for `binary`, which must never hand agent-written text to cmd.exe.
+
+    On Windows, a `.cmd` or `.bat` launcher (the npm shim) runs through cmd.exe, where `%VAR%`
+    expands and `"` with `&` runs a command. The shim's own native binary runs instead when it
+    sits where npm puts it; otherwise an argument cmd.exe would read is refused.
+    """
+    if windows is None:
+        windows = os.name == "nt"
+    if not windows or Path(binary).suffix.lower() not in (".cmd", ".bat"):
+        return [binary, *args]
+    native = Path(binary).parent.joinpath(*_NPM_NATIVE)
+    if native.is_file():
+        return [str(native), *args]
+    for arg in args:
+        if _CMD_META.search(arg):
+            raise LedgerError(
+                f"{binary} is a Windows batch launcher, which runs through cmd.exe, and an "
+                "argument holds a character it would read as a command (a percent sign, a "
+                "quote, & | < > ^ ! or a line break). "
+                f"Set {CLAUDE_VAR} to claude.exe"
+            )
+    return [binary, *args]
+
+
 def dev_channel_args() -> list[str]:
     # Last on the command line: the flag takes several values and swallows anything after it.
     raw = [e for e in re.split(r"[\s,]+", os.environ.get(DEV_CHANNELS_VAR, "")) if e]
@@ -83,7 +112,7 @@ def _run(args: list[str], cwd: Path | None = None) -> str:
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         try:
             result = subprocess.run(
-                [binary, *args],
+                _argv(binary, args),
                 cwd=cwd,
                 env=child_env(),
                 stdin=subprocess.DEVNULL,

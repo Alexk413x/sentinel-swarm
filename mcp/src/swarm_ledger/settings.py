@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, TypeVar
 
-from . import frontmatter, memory
+from . import frontmatter, memory, pricing
 from .permissions import PERMISSION_MODES
 from .rubric import Thresholds
 
@@ -125,6 +125,9 @@ class WatchdogSettings:
     spin_failures: int = 5
     context_pct: int = 80
     context_window: int | None = None
+    # Context window by model family (a substring of the model name, lower case), and
+    # "default" for any other model. A family with no entry keeps the built-in window.
+    context_windows: dict[str, int] = field(default_factory=dict)
     idle_exit_minutes: int = 15
     unsent_wakeup_minutes: int = 5
     queued_spawn_minutes: int = 10
@@ -135,6 +138,22 @@ class WatchdogSettings:
 class MemorySettings:
     headroom_mb: int | None = DEFAULT_HEADROOM_MB
     park_idle_parents: bool = True
+
+
+def normalize_context_windows(raw: object) -> dict[str, int]:
+    if not isinstance(raw, dict):
+        return {}
+    found: dict[str, int] = {}
+    for family, window in raw.items():
+        if isinstance(window, bool) or not str(family).strip():
+            continue
+        try:
+            tokens = int(str(window).strip().replace("_", ""))
+        except ValueError:
+            continue
+        if tokens > 0:
+            found[str(family).strip().lower()] = tokens
+    return found
 
 
 def normalize_memory(raw: object) -> MemorySettings:
@@ -220,6 +239,9 @@ class Settings:
     notify: list[str] = field(default_factory=lambda: list(NOTIFY_CHANNELS))
     max_workers: int = DEFAULT_MAX_WORKERS
     permission_hold_seconds: int = DEFAULT_PERMISSION_HOLD_S
+    # USD per million tokens by model family, merged onto pricing.DEFAULT_PRICES:
+    # {family: {input, output, cache_read, cache_write_5m, cache_write_1h}}.
+    pricing: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def snapshot(self) -> str:
         return json.dumps(asdict(self), sort_keys=True)
@@ -284,6 +306,9 @@ def load_settings(repo_root: Path) -> Settings:
     rubric = _section(Thresholds, data.get("rubric"))
     escalation = _section(EscalationSettings, data.get("escalation"))
     watchdog = _section(WatchdogSettings, data.get("watchdog"))
+    watchdog.context_windows = normalize_context_windows(watchdog.context_windows)
+    price_overrides = pricing.normalize_overrides(data.get("pricing"))
+    pricing.configure(price_overrides)
     memory = normalize_memory(data.get("memory"))
 
     effort = (
@@ -331,4 +356,5 @@ def load_settings(repo_root: Path) -> Settings:
         notify=normalize_notify(data.get("notify")),
         max_workers=normalize_max_workers(data.get("max_workers")),
         permission_hold_seconds=normalize_hold_seconds(data.get("permission_hold_seconds")),
+        pricing=price_overrides,
     )

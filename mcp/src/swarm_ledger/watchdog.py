@@ -25,6 +25,8 @@ from .queries import (
 from .settings import NOTIFY_CHANNELS, WatchdogSettings
 from .waits import landed_waits
 
+RESUME_WINDOW_S = 120
+
 if TYPE_CHECKING:
     from .ledger import Ledger
 
@@ -718,8 +720,15 @@ def _usage_of(raw: bytes) -> tuple[int, str] | None:
     return tokens, str(message.get("model") or "")
 
 
-def _context_window(models: str) -> int:
-    return _WINDOW_HAIKU if "haiku" in models.lower() else _WINDOW_1M
+def _context_window(models: str, overrides: dict[str, int] | None = None) -> int:
+    given = overrides or {}
+    name = models.lower()
+    for family in sorted(given, key=len, reverse=True):
+        if family != "default" and family in name:
+            return given[family]
+    if "haiku" in name:
+        return _WINDOW_HAIKU
+    return given.get("default", _WINDOW_1M)
 
 
 def _context_high(agent: dict, settings: WatchdogSettings) -> str | None:
@@ -733,7 +742,9 @@ def _context_high(agent: dict, settings: WatchdogSettings) -> str | None:
     if found is None:
         return None
     tokens, model = found
-    window = settings.context_window or _context_window(f"{agent['model'] or ''} {model}")
+    window = settings.context_window or _context_window(
+        f"{agent['model'] or ''} {model}", settings.context_windows
+    )
     pct = tokens * 100 / window
     if pct < settings.context_pct:
         return None
@@ -1268,21 +1279,33 @@ class Watchdog:
                 f"{oracle['agent_id']!r}"
             )
         else:
-            try:
-                bg_id = sessions.resume(
-                    oracle["agent_id"],
-                    message,
-                    cwd=self.repo_root,
-                    name=oracle["session_name"],
-                    options=self._oracle_options(oracle["model"]),
-                )
-                reason = f"the watchdog woke the Oracle: {message}"
-                agent_id = self._adopt_resumed(oracle, bg_id)
-            except sessions.ConfigParseError as exc:
-                failure = self.ledger.pause_for_config(exc) if self.ledger is not None else exc
-                reason = f"the watchdog could not resume the Oracle: {failure}"
-            except LedgerError as exc:
-                reason = f"the watchdog could not resume the Oracle: {exc}"
+            with write_tx(self.conn) as conn:
+                claimed = conn.execute(
+                    f"UPDATE agents SET resume_started_at = {NOW} WHERE agent_id = ? "
+                    "AND (resume_started_at IS NULL OR resume_started_at < "
+                    f"strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-{RESUME_WINDOW_S} seconds'))",
+                    (oracle["agent_id"],),
+                ).rowcount
+            if not claimed:
+                reason = "the watchdog did not wake the Oracle: a resume of it is already running"
+            else:
+                try:
+                    bg_id = sessions.resume(
+                        oracle["agent_id"],
+                        message,
+                        cwd=self.repo_root,
+                        name=oracle["session_name"],
+                        options=self._oracle_options(oracle["model"]),
+                    )
+                    reason = f"the watchdog woke the Oracle: {message}"
+                    agent_id = self._adopt_resumed(oracle, bg_id)
+                except sessions.ConfigParseError as exc:
+                    self._release_resume(oracle["agent_id"])
+                    failure = self.ledger.pause_for_config(exc) if self.ledger is not None else exc
+                    reason = f"the watchdog could not resume the Oracle: {failure}"
+                except LedgerError as exc:
+                    self._release_resume(oracle["agent_id"])
+                    reason = f"the watchdog could not resume the Oracle: {exc}"
         with write_tx(self.conn) as conn:
             conn.execute(
                 "INSERT INTO agent_events (agent_id, from_state, to_state, reason, at) "
@@ -1313,11 +1336,16 @@ class Watchdog:
             self._log(f"the Oracle's session runs but {state}; notified the user")
         notify.deliver(notice, self.notify_channels, log=self._log)
 
+    def _release_resume(self, agent_id: str) -> None:
+        with write_tx(self.conn) as conn:
+            conn.execute(
+                "UPDATE agents SET resume_started_at = NULL WHERE agent_id = ?", (agent_id,)
+            )
+
     def _adopt_resumed(self, agent: sqlite3.Row, bg_id: str | None) -> str:
         with write_tx(self.conn) as conn:
             conn.execute(
-                f"UPDATE agents SET bg_id = COALESCE(?, bg_id), resume_started_at = {NOW} "
-                "WHERE agent_id = ?",
+                "UPDATE agents SET bg_id = COALESCE(?, bg_id) WHERE agent_id = ?",
                 (bg_id, agent["agent_id"]),
             )
         new_id = sessions.wait_for_resumed(bg_id, agent["session_name"])
@@ -1371,7 +1399,8 @@ class Watchdog:
         if run is not None and (run["state"] == "active" or run["pause_check"]):
             self._idle_since = None
             return
-        if run is not None and listing is not None and self._any_running(run, listing):
+        # A failed listing is unknown liveness, not "no session runs".
+        if run is not None and (listing is None or self._any_running(run, listing)):
             self._idle_since = None
             return
         if self._idle_since is None:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import sqlite3
 import statistics
@@ -12,17 +11,13 @@ from typing import Any
 
 from . import pricing
 from .clock import parse_stamp
+from .paths import config_dir
 
 SHIM_MARKER = ".sentinel-swarm/hook.py"
 LATENCY_TOOLS = ("Read", "ToolSearch")
 # Claude Code writes both an attachment per Stop hook with output and one summary per stop
 # listing every Stop hook, so the attachments for these events would count twice.
 _SUMMARIZED_EVENTS = ("Stop", "SubagentStop")
-
-
-def config_dir() -> Path:
-    raw = os.environ.get("CLAUDE_CONFIG_DIR")
-    return Path(raw) if raw else Path.home() / ".claude"
 
 
 def project_folder(repo_root: Path) -> Path:

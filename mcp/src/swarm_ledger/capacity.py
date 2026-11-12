@@ -321,6 +321,10 @@ class CapacityMixin(LedgerHost):
         for row in rows:
             entry = sessions.find_session(listing, row["agent_id"])
             if entry is not None and sessions.is_running(entry):
+                if row["parked_at"] is not None:
+                    # The park is claimed and `claude stop` is on its way: the session is dying,
+                    # so the wake-up stays owed and `resume_parked` brings it back.
+                    handled.add(row["agent_id"])
                 continue
             moved = sessions.resumed_entry(listing, None, row["session_name"])
             if moved is not None:
@@ -378,6 +382,13 @@ class CapacityMixin(LedgerHost):
         candidates.sort(key=lambda a: (a["busy"] > 0, a["ordinal"] or 0, a["owed_since"] or ""))
         resumed: list[dict] = []
         for agent in candidates:
+            if resumed:
+                # A resume started a session: judge the next candidate against a fresh listing,
+                # or "no member session runs" would stay true for all of them.
+                try:
+                    listing = sessions.list_sessions()
+                except LedgerError:
+                    break
             if self._resuming(agent):
                 continue
             if not self._may_resume(agent, listing):

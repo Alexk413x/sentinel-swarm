@@ -69,6 +69,13 @@ Sections:
   total is stored in `agents.cost_usd`.
 - `mcp/src/swarm_ledger/pricing.py` holds the rates per model family. An agent row with
   no stored cost is estimated from its token totals.
+- The built-in rates are USD per million tokens (input, output, cache read, 5-minute cache
+  write, 1-hour cache write): fable 10, 50, 0.25, 12.5, 20; opus 4, 20, 0.20, 5, 8;
+  sonnet 2, 10, 0.20, 2.5, 4; haiku 1, 5, 0.10, 1.25, 2. The `pricing` setting overrides
+  them without a release: `pricing.<family>` names any of `input`, `output`, `cache_read`,
+  `cache_write_5m`, `cache_write_1h`, and a family with no built-in row needs all five.
+  A family is a lower-case part of the model name, and the longest match wins. Loading the
+  settings applies them to the server's pricing.
 - When a transcript has a response whose model has no rate, the hook stores no cost
   from it, and the report falls back to the estimate. A cost the ledger cannot price
   shows as `unknown`, and so does any phase or run total that includes it.
