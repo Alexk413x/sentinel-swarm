@@ -28,7 +28,9 @@ into architecture and code structure.
   one-line reason.
 - Every dimension is scored on every review, including the dimensions a fix did not
   target. `score_record` refuses a Coder or Lead score set whose `applicable` does not
-  list all nine dimensions, and a dimension marked not applicable with an empty reason.
+  list all nine dimensions, a dimension marked not applicable with an empty reason, and
+  a score set that marks every dimension not applicable. A score set with no rated
+  dimension never passes.
 
 ## Scale
 
@@ -111,6 +113,11 @@ into architecture and code structure.
   - **Improved:** no regression, and a targeted dimension rose by `plateau` or more. The
     attempt does not count against the budget.
   - **Plateau:** anything else.
+- `attempt_record` classifies the file's latest attempt once; it refuses an attempt that
+  already has an outcome, so a repeated call never adds an attempt or restores twice.
+  The comparison is against the review of the kept version: a review that a regression
+  discarded is never the baseline for the next attempt, and a later regression restores
+  the latest handoff that no earlier regression discarded.
 - A plateau or a regression adds one attempt to each open issue of the file. After
   `attempts_per_round` such attempts, the issue moves to the next round.
 - A fix is kept only when it is not a regression, so the file's current version is

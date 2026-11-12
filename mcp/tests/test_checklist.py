@@ -25,6 +25,7 @@ def _build_ledger(
     full_test_exit_code: int = 0,
     full_test_passed: int = 3,
     full_test_failed: int = 0,
+    full_test_errors: int = 0,
     open_directives: int = 0,
     findings: tuple[tuple[str, str, bool], ...] = (),
     write_report: bool = True,
@@ -65,9 +66,9 @@ def _build_ledger(
 
         if full_test_run:
             conn.execute(
-                "INSERT INTO test_runs (run_id, scope, exit_code, passed, failed) "
-                "VALUES (?, 'full', ?, ?, ?)",
-                (run_id, full_test_exit_code, full_test_passed, full_test_failed),
+                "INSERT INTO test_runs (run_id, scope, exit_code, passed, failed, errors) "
+                "VALUES (?, 'full', ?, ?, ?, ?)",
+                (run_id, full_test_exit_code, full_test_passed, full_test_failed, full_test_errors),
             )
 
         for i in range(open_directives):
@@ -182,6 +183,13 @@ def test_no_full_test_run_fails(tmp_path: Path) -> None:
 
 def test_failing_full_test_run_fails(tmp_path: Path) -> None:
     root, _ = _build_ledger(tmp_path, full_test_exit_code=1, full_test_passed=2, full_test_failed=1)
+    checks = checklist.run_checklist(root)
+    check = next(c for c in checks if c.name == "the last full test run passed")
+    assert check.passed is False
+
+
+def test_a_full_test_run_with_collection_errors_fails(tmp_path: Path) -> None:
+    root, _ = _build_ledger(tmp_path, full_test_errors=1)
     checks = checklist.run_checklist(root)
     check = next(c for c in checks if c.name == "the last full test run passed")
     assert check.passed is False

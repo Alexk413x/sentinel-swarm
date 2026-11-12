@@ -287,8 +287,12 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
   for these at start and on each watchdog pass, and `tests_run` sweeps before it starts
   a run, so a server restart never leaves a row `running` with nothing behind it.
 - A run counts as clean when its state is `done`, its exit code is 0, nothing failed,
-  at least one test passed, and every skip matched `allowed_skips`
-  (`allowed_skipped` = `skipped`). `handoff_submit`, `cr_complete`, `module_review`, and
+  at least one test passed, nothing errored, and every skip matched `allowed_skips`
+  (`allowed_skipped` = `skipped`). The counts come from the runner's last summary line
+  (pytest, vitest, jest), so a logged line such as "1 failed attempt" cannot fail a green
+  run; output with no recognised summary line is scanned as a whole, and `go test` is
+  counted by its `ok`, `FAIL`, and `--- SKIP` lines. The after-run checklist applies the
+  same rule to the last full run. `handoff_submit`, `cr_complete`, `module_review`, and
   `phase_review` read clean runs only.
 - `tests_run` stores the last 20,000 characters of output in the ledger, and returns a
   summary of at most 4,000: the last 500 characters of a pass, or the first traceback
@@ -314,8 +318,9 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
   agent carries its `park_reason` and `session: "closed"`: it is live in the ledger,
   but its session is closed. `run_status` also lists the open `file_waits`.
   `agent_spawn` leaves empty fields and the settings snapshot out of its result.
-- `version_restore(version_id)` restores a saved version onto the Coder's own file. A
-  deletion version deletes the file.
+- `version_restore(version_id)` restores a saved version onto the Coder's own file: a
+  test file's version onto its `test_path`, any other onto its `path`. It marks the file
+  stale, as an edit does. A deletion version deletes the file.
 - `mcp/launch/ledger.py close [--repo <root>] [--file ID=REASON ...] <outcome>` runs
   `run_close` from a terminal, outside any session, for the run's owner. See "Settling
   a file and closing a run by the Oracle" in [02-run-lifecycle.md](02-run-lifecycle.md).

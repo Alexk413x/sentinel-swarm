@@ -23,7 +23,16 @@ _FAILURES_RE = re.compile(r"^=+ (FAILURES|ERRORS) =+$", re.MULTILINE)
 _SECTION_RE = re.compile(r"^(_{3,} .* _{3,}|=+ .* =+)$", re.MULTILINE)
 _SHORT_SUMMARY_RE = re.compile(r"^=+ short test summary info =+$", re.MULTILINE)
 
-_NO_TESTS_RAN_RE = re.compile(r"no tests ran")
+_NO_TESTS_RAN_RE = re.compile(r"^[=\s]*no tests ran\b", re.MULTILINE)
+# A runner's summary line holds only counts: pytest's "2 failed, 1 passed in 0.1s", jest's
+# "Tests: 1 failed, 5 passed, 6 total", vitest's "Tests  3 failed | 12 passed (15)". A log
+# line such as "1 failed attempt" is not one, so it cannot fail a green run.
+_COUNT = r"\d+ (?:passed|failed|skipped|errors?|warnings?|deselected|xfailed|xpassed|todo|total)"
+_SUMMARY_LINE_RE = re.compile(
+    rf"^[=\s]*(?:Tests?:?\s+)?{_COUNT}(?:\s*[,|]\s*{_COUNT})*(?:\s*\(\d+\))?"
+    r"(?:\s+in\s+[\d.]+\s*m?s)?(?:\s+\([^)]*\))?[=\s]*$",
+    re.MULTILINE,
+)
 _PASSED_RE = re.compile(r"(\d+)\s+passed\b")
 _FAILED_RE = re.compile(r"(\d+)\s+failed\b")
 _SKIPPED_RE = re.compile(r"(\d+)\s+skipped\b")
@@ -120,10 +129,13 @@ def _parse_counts(output: str) -> _Counts:
     if _NO_TESTS_RAN_RE.search(output):
         return _Counts(no_tests_ran=True)
 
-    passed_match = _PASSED_RE.search(output)
-    failed_match = _FAILED_RE.search(output)
-    skipped_match = _SKIPPED_RE.search(output)
-    errors_match = _ERRORS_RE.search(output)
+    # The runner's last summary line is the verdict; with none recognised, scan the output.
+    summaries = _SUMMARY_LINE_RE.findall(output)
+    text = summaries[-1] if summaries else output
+    passed_match = _PASSED_RE.search(text)
+    failed_match = _FAILED_RE.search(text)
+    skipped_match = _SKIPPED_RE.search(text)
+    errors_match = _ERRORS_RE.search(text)
     if passed_match or failed_match or skipped_match or errors_match:
         return _Counts(
             passed=int(passed_match.group(1)) if passed_match else 0,

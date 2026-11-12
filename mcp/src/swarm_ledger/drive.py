@@ -10,6 +10,7 @@ from .clock import parse_stamp, stamp, utcnow
 from .db import NOW, dict_rows, in_clause, row_dict, write_tx
 from .host import LedgerHost
 from .identity import Caller, LedgerError, SpawnDeferred, require_run, resolve
+from .queries import latest_live_oracle
 from .watchdog import DRIVER_CHECKIN_INTERVAL
 
 SEVERITIES = ("blocker", "major", "minor")
@@ -156,7 +157,10 @@ def compute_loop_status(requests: list[dict], findings: list[dict]) -> dict[str,
         if ordinal is None:
             continue
         fp = f["fingerprint"]
-        by_fingerprint.setdefault(fp, []).append(ordinal)
+        # One attempt per later exploration that still finds it, however often it reports it.
+        ordinals = by_fingerprint.setdefault(fp, [])
+        if ordinal not in ordinals:
+            ordinals.append(ordinal)
         findings_at.setdefault(ordinal, []).append(f)
         title_of[fp] = f.get("title") or fp
         area_of[fp] = f.get("area") or area_of.get(fp)
@@ -410,11 +414,7 @@ class DriveMixin(LedgerHost):
         return loop_status(self.conn, run_id)
 
     def _oracle_agent_id(self, conn: sqlite3.Connection, run_id: int) -> str | None:
-        row = conn.execute(
-            "SELECT agent_id FROM agents WHERE run_id = ? AND role = 'oracle' "
-            "AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1",
-            (run_id,),
-        ).fetchone()
+        row = latest_live_oracle(conn, run_id)
         return row["agent_id"] if row is not None else None
 
     def release_closed_driver(self, agent_id: str) -> bool:
@@ -425,10 +425,24 @@ class DriveMixin(LedgerHost):
             self._release_agent(conn, agent_id, "exploration closed; final wake-up sent")
         return True
 
+    def _link_queued_driver(self, agent_id: str) -> None:
+        agent = self.conn.execute(
+            "SELECT name, role, run_id FROM agents WHERE agent_id = ?", (agent_id,)
+        ).fetchone()
+        if agent is None or agent["role"] != "driver":
+            return
+        with write_tx(self.conn) as conn:
+            conn.execute(
+                "UPDATE drive_requests SET agent_id = ? WHERE agent_id IS NULL AND state = 'open' "
+                "AND run_id = ? AND 'driver-e' || ordinal = ?",
+                (agent_id, agent["run_id"], agent["name"]),
+            )
+
     def drive_skill(self, agent_id: str, skill: str) -> str | None:
         name = skill.strip().removeprefix("/").removeprefix("cartographer:")
         if name not in ("map-test", "map-explore"):
             return None
+        self._link_queued_driver(agent_id)
         with write_tx(self.conn) as conn:
             request = conn.execute(
                 "SELECT * FROM drive_requests WHERE agent_id = ? AND state = 'open'", (agent_id,)
@@ -454,6 +468,11 @@ class DriveMixin(LedgerHost):
         ).fetchone()
         if row is None:
             raise LedgerError(f"unknown request_id {request_id!r}")
+        if row["agent_id"] is None:
+            self._link_queued_driver(c.agent_id)
+            row = self.conn.execute(
+                "SELECT * FROM drive_requests WHERE request_id = ?", (request_id,)
+            ).fetchone()
         if row["agent_id"] != c.agent_id:
             raise LedgerError(f"{c.name!r} does not own exploration {request_id!r}")
         if row["state"] != "open":
@@ -725,14 +744,27 @@ class DriveMixin(LedgerHost):
             f"drive_checkin(request_id={request_id}, ...) every 30 minutes, and "
             f"drive_done(request_id={request_id}) when the exploration ends."
         )
-        self._write_brief(caller, agent_id, child_name, "driver", model, body, finding_ids=[])
-        spawned = self.agent_spawn(caller, agent_id, child_name)
+        try:
+            self._write_brief(caller, agent_id, child_name, "driver", model, body, finding_ids=[])
+            spawned = self.agent_spawn(caller, agent_id, child_name)
+        except BaseException:
+            # No Driver exists for this request, so it must not stay open and block the next.
+            with write_tx(self.conn) as conn:
+                conn.execute(
+                    f"UPDATE drive_requests SET state = 'abandoned', done_at = {NOW} "
+                    "WHERE request_id = ? AND state = 'open' AND agent_id IS NULL",
+                    (request_id,),
+                )
+            raise
 
-        with write_tx(self.conn) as conn:
-            conn.execute(
-                "UPDATE drive_requests SET agent_id = ? WHERE request_id = ?",
-                (spawned["agent_id"], request_id),
-            )
+        # A spawn queued for memory has no session yet; `_own_open_request` links the request
+        # to the Driver's session when the queue starts it and it makes its first call.
+        if spawned.get("agent_id") is not None:
+            with write_tx(self.conn) as conn:
+                conn.execute(
+                    "UPDATE drive_requests SET agent_id = ? WHERE request_id = ?",
+                    (spawned["agent_id"], request_id),
+                )
 
         result = row_dict(self.conn, "drive_requests", "request_id", request_id)
         result["driver"] = spawned

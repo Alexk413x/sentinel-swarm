@@ -8,6 +8,7 @@ from . import settle
 from .db import NOW, dict_rows, in_clause, row_dict, write_tx
 from .host import LedgerHost
 from .identity import ROLE_RANK, Caller, LedgerError, caller_of, parent_chain, require_role, resolve
+from .waits import latest_file
 
 _CR_BLOCKING_STATES = ("open", "accepted", "completed")
 _PENDING_STATES = ("open", "lead_agreed", "manager_agreed")
@@ -23,6 +24,7 @@ def test_run_passed(row: sqlite3.Row) -> bool:
         row["state"] == "done"
         and row["exit_code"] == 0
         and (row["failed"] or 0) == 0
+        and (row["errors"] or 0) == 0
         and (row["skipped"] or 0) == (row["allowed_skipped"] or 0)
         and (row["passed"] or 0) >= 1
     )
@@ -254,12 +256,7 @@ class AgreementsMixin(LedgerHost):
     def cr_open(self, caller: str, agent_id: str, path: str, body: str) -> dict:
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
-            file_row = conn.execute(
-                "SELECT f.* FROM files f JOIN modules m ON m.module_id = f.module_id "
-                "JOIN phases p ON p.phase_id = m.phase_id WHERE p.run_id = ? AND f.path = ? "
-                "ORDER BY f.file_id DESC LIMIT 1",
-                (c.run_id, path),
-            ).fetchone()
+            file_row = latest_file(conn, c.run_id, path)
             if file_row is None:
                 raise LedgerError(f"no module plans {path!r}; ask your parent to plan it")
             recipient = self._cr_recipient(conn, c, file_row)
@@ -343,8 +340,9 @@ class AgreementsMixin(LedgerHost):
         if file_row is not None and not file_row["test_path"]:
             handoff = conn.execute(
                 "SELECT handoff_id FROM handoffs WHERE file_id = ? AND created_at >= ? "
-                "AND state IN ('submitted', 'approved') ORDER BY handoff_id DESC LIMIT 1",
-                (cr_row["file_id"], cr_row["accepted_at"]),
+                "AND handoff_id > ? AND state IN ('submitted', 'approved') "
+                "ORDER BY handoff_id DESC LIMIT 1",
+                (cr_row["file_id"], cr_row["accepted_at"], cr_row["evidence_handoff_id"] or 0),
             ).fetchone()
             if handoff is None:
                 raise LedgerError(
@@ -360,12 +358,16 @@ class AgreementsMixin(LedgerHost):
     ) -> int:
         targets = self._cr_targets(conn, cr_row)
         placeholders = in_clause(targets)
+        # A failed verification returns the request to accepted with its old evidence still
+        # recorded; the next completion needs evidence newer than that.
+        floor = cr_row["evidence_test_run_id"] or 0
 
         if recipient_role == "coder":
             candidates = conn.execute(
                 f"SELECT * FROM test_runs WHERE scope = 'file' AND target IN ({placeholders}) "
-                "AND agent_id = ? AND created_at > ? ORDER BY test_run_id DESC",
-                (*targets, c.agent_id, cr_row["accepted_at"]),
+                "AND agent_id = ? AND created_at > ? AND test_run_id > ? "
+                "ORDER BY test_run_id DESC",
+                (*targets, c.agent_id, cr_row["accepted_at"], floor),
             ).fetchall()
             for candidate in candidates:
                 if test_run_passed(candidate):
@@ -377,8 +379,8 @@ class AgreementsMixin(LedgerHost):
 
         candidates = conn.execute(
             f"SELECT * FROM test_runs WHERE scope = 'file' AND target IN ({placeholders}) "
-            "AND created_at > ? ORDER BY test_run_id DESC",
-            (*targets, cr_row["accepted_at"]),
+            "AND created_at > ? AND test_run_id > ? ORDER BY test_run_id DESC",
+            (*targets, cr_row["accepted_at"], floor),
         ).fetchall()
         for candidate in candidates:
             if test_run_passed(candidate):
@@ -388,7 +390,7 @@ class AgreementsMixin(LedgerHost):
             "ORDER BY handoff_id DESC LIMIT 1",
             (cr_row["file_id"], cr_row["accepted_at"]),
         ).fetchone()
-        if handoff is not None and handoff["test_run_id"] is not None:
+        if handoff is not None and (handoff["test_run_id"] or 0) > floor:
             return handoff["test_run_id"]
         raise LedgerError(
             f"no passing test run or approved handoff for {cr_row['path']} since acceptance"

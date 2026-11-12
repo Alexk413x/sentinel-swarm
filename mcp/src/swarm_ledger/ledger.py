@@ -37,7 +37,7 @@ from .identity import (
 from .issues import IssuesMixin
 from .messages import MessagesMixin
 from .oversight import OversightMixin
-from .queries import UNPARK_SET, latest_live_oracle
+from .queries import LIVE_RUN_STATES, UNPARK_SET, latest_live_oracle
 from .repo import RepoMixin
 from .report import ReportMixin
 from .review import ReviewMixin, live_agents, run_summary
@@ -57,7 +57,6 @@ _PHASE_MOVES = {
     "handed_up": ("approved", "working"),
     "approved": (),
 }
-_LIVE_RUN = "state IN ('active', 'paused')"
 SLUG_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 # A build command that serves or watches reloads on edits, and the Driver must test the build
 # it made at the start of an exploration. profile_set refuses any of these words.
@@ -318,7 +317,7 @@ class Ledger(
         return dict(row) if row is not None else {}
 
     def _active_run(self, conn: sqlite3.Connection) -> sqlite3.Row:
-        row = conn.execute(f"SELECT * FROM runs WHERE {_LIVE_RUN}").fetchone()
+        row = conn.execute(f"SELECT * FROM runs WHERE {LIVE_RUN_STATES}").fetchone()
         if row is None:
             raise LedgerError("no active run")
         return row
@@ -343,13 +342,19 @@ class Ledger(
 
         resumed: dict | None = None
         run_id: int | None = None
-        with write_tx(self.conn) as conn:
-            active = conn.execute(f"SELECT * FROM runs WHERE {_LIVE_RUN}").fetchone()
-            if active is not None:
-                self._refuse_live_oracle(conn, active, session_id, listing, listing_error)
-                resumed = self._run_resume(conn, active, session_id, session_name)
-            else:
-                run_id = self._open_run(conn, prd, session_id, oracle_name, session_name)
+        try:
+            with write_tx(self.conn) as conn:
+                active = conn.execute(f"SELECT * FROM runs WHERE {LIVE_RUN_STATES}").fetchone()
+                if active is not None:
+                    self._refuse_live_oracle(conn, active, session_id, listing, listing_error)
+                    resumed = self._run_resume(conn, active, session_id, session_name)
+                else:
+                    run_id = self._open_run(conn, prd, session_id, oracle_name, session_name)
+        except BaseException:
+            if resumed is None:
+                # The rollback undid the run, but the lock file is outside the transaction.
+                lock.release_owned(self.repo_root, self.server_pid)
+            raise
 
         others = lock.live_swarms(self.server_pid)
         if resumed is not None:
@@ -515,6 +520,11 @@ class Ledger(
             raise LedgerError(
                 f"unknown clear_check {clear_check!r}; use one of {sorted(pauses.CHECKS)}"
             )
+        if phases is not None and not phases:
+            raise LedgerError(
+                "phases names no phase; list the phases to pause, or leave phases out to "
+                "pause the whole run"
+            )
         if phases:
             return self._pause_phases(caller, agent_id, reason, phases)
         with write_tx(self.conn) as conn:
@@ -663,6 +673,10 @@ class Ledger(
             ).fetchall():
                 self._release_agent(conn, row["agent_id"], "run_finish")
 
+        # The run is no longer live, so its lock goes now: a report that fails to write must
+        # not leave the repo locked against the next run_start.
+        lock.release(self.repo_root, run_id)
+
         report = self.report_build(caller, agent_id)
         with write_tx(self.conn) as conn:
             conn.execute(
@@ -671,7 +685,6 @@ class Ledger(
                 (c.agent_id,),
             )
             self._log_event(conn, c.agent_id, "working", "released", "run_finish")
-        lock.release(self.repo_root, run_id)
 
         run_row = row_dict(self.conn, "runs", "run_id", run_id)
         run_row["report_path"] = report["path"]
@@ -774,6 +787,9 @@ class Ledger(
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
             require_role(c, "oracle")
+            depends_on = list(dict.fromkeys(depends_on))
+            if depends_on:
+                self._require_run_phases(conn, c.run_id, depends_on)
             ordinal = conn.execute(
                 "SELECT COALESCE(MAX(ordinal), 0) + 1 AS n FROM phases WHERE run_id = ?",
                 (c.run_id,),
@@ -1094,8 +1110,9 @@ class Ledger(
                 raise LedgerError(f"a live agent already holds the name {child_name!r}")
             if (
                 conn.execute(
-                    "SELECT 1 FROM briefs WHERE child_name = ? AND acked_at IS NULL",
-                    (child_name,),
+                    "SELECT 1 FROM briefs WHERE child_name = ? AND acked_at IS NULL "
+                    "AND (? IS NULL OR run_id = ?)",
+                    (child_name, c.run_id, c.run_id),
                 ).fetchone()
                 is not None
             ):
@@ -2101,6 +2118,8 @@ class Ledger(
             ).fetchone()
             if row is None:
                 raise LedgerError(f"no live claim for {path!r}")
+            if c.module_id != row["module_id"]:
+                raise LedgerError(f"{caller!r} is not the Lead of the module that holds {path!r}")
             owner = conn.execute(
                 "SELECT name, state FROM agents WHERE name = ? AND ended_at IS NULL",
                 (row["owner_agent_id"],),
