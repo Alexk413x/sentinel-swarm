@@ -40,6 +40,18 @@ message. The Oracle then calls, in order:
 - Phase states: `planned`, `unlocked`, `working`, `handed_up`, `approved`. A Manager
   sets only its own phase, and only to `working` or `handed_up`. The Oracle sets every
   other state.
+- `phase_update` makes only these moves: `planned` to `unlocked` (every phase it
+  depends on approved), `unlocked` to `working`, `working` to `handed_up`, `handed_up`
+  to `approved`, `handed_up` to `working` (rework), and the Oracle's `unlocked` to
+  `planned`, which re-locks a phase nobody has started. The Manager's
+  first `module_add` sets an `unlocked` phase to `working`, so no template step does. A phase has started when any
+  agent of it (live or ended), any module, or any brief names it; the re-lock refuses
+  then. `approved` is final. The phase must belong to the caller's run. A refused move,
+  including setting the state a phase already has, names the current state and the legal
+  next states. The ledger's own writers do not pass through this table: a returned
+  `phase_review`, and a change-request fix wave, reopen a `handed_up` phase to
+  `working` directly. A hand-up resets `handed_up_at`, so an accepted `phase_review`
+  from before a rework never satisfies a later approval.
 - A run has a typical shape. **Foundation:** setup and shared helpers first, because
   other work waits on them. **Scale out:** the approved foundation unlocks parallel
   phases. **Scale down:** integration phases bring the parts together with fewer
@@ -201,7 +213,11 @@ The ledger enforces this order:
 2. `review_compare(handoff_id)` returns both score sets and the dimensions that
    disagree.
 3. `departure_decide` for each departure the handoff carries.
-4. One decision:
+4. One decision. `approve`, `return_work`, and `accept_incomplete` act on a
+   `submitted` handoff only, and refuse a `returned`, `approved`, `incomplete`, or
+   `superseded` one, naming its state; after a return the Lead waits for the Coder's new
+   handoff. `review_compare` is not a decision and still runs on any handoff that is not
+   superseded.
    - `approve(handoff_id)` refuses without a comparison, when the Lead review since the
      handoff fails the pass rule, while the file has an open issue, while a change
      request on the file is not verified or declined, and while a departure on the

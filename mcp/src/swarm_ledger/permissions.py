@@ -8,16 +8,28 @@ from typing import Any
 
 from .paths import config_dir
 
-PERMISSION_MODES = ("default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions")
+PERMISSION_MODES = (
+    "default",
+    "acceptEdits",
+    "plan",
+    "auto",
+    "dontAsk",
+    "bypassPermissions",
+    "manual",
+)
 BYPASS = "bypassPermissions"
-FLOOR = "acceptEdits"
+# Every role starts in this mode unless permission_mode.<role> names another: a background
+# session that prompts stalls until a person answers, and the mod's gates hold in every mode.
+DEFAULT_MODE = BYPASS
+DEFAULT_SOURCE = "the swarm's default for every role"
+FALLBACK = "acceptEdits"
 SETTINGS_FILE = "sentinel-swarm.local.md"
 
 
 @dataclass(frozen=True)
 class StartMode:
     mode: str
-    flag: str | None
+    flag: str
     source: str
 
 
@@ -49,14 +61,6 @@ def _sources(repo_root: Path) -> list[tuple[str, Path]]:
     ]
 
 
-def inherited_mode(repo_root: Path) -> tuple[str, str]:
-    for label, path in _sources(repo_root):
-        mode = _permissions(path).get("defaultMode")
-        if isinstance(mode, str) and mode in PERMISSION_MODES:
-            return mode, f"inherited from {label}"
-    return "default", "inherited: no settings file sets permissions.defaultMode"
-
-
 def bypass_disabled(repo_root: Path) -> bool:
     return any(
         _permissions(path).get("disableBypassPermissionsMode") == "disable"
@@ -65,14 +69,13 @@ def bypass_disabled(repo_root: Path) -> bool:
 
 
 def start_mode(repo_root: Path, role: str, configured: str | None) -> StartMode:
+    """The mode a role's session starts in. The launch always passes it as `--permission-mode`,
+    so the user's own `permissions.defaultMode` never decides a role session's mode."""
     if configured in PERMISSION_MODES:
-        mode, flag, source = configured, configured, f"permission_mode.{role} in {SETTINGS_FILE}"
+        mode, source = str(configured), f"permission_mode.{role} in {SETTINGS_FILE}"
     else:
-        mode, source = inherited_mode(repo_root)
-        flag = None
-        if role == "coder" and mode == "default":
-            mode, flag, source = FLOOR, FLOOR, f"the Coder's floor over {mode} ({source})"
+        mode, source = DEFAULT_MODE, DEFAULT_SOURCE
     if mode == BYPASS and bypass_disabled(repo_root):
-        mode, flag = FLOOR, FLOOR
+        mode = FALLBACK
         source = f"{source}; policy sets permissions.disableBypassPermissionsMode"
-    return StartMode(mode=mode, flag=flag, source=source)
+    return StartMode(mode=mode, flag=mode, source=source)

@@ -159,12 +159,11 @@ prompt_cache_ttl:
   driver:
 
 # The permission mode each role's session starts in: default, acceptEdits, plan, auto,
-# dontAsk, or bypassPermissions. Leave a role empty to inherit your own
-# permissions.defaultMode. A Coder that would inherit default starts in acceptEdits, since a
-# background session in default stalls on its first file write. When policy sets
-# permissions.disableBypassPermissionsMode, a role that would start in bypassPermissions
-# starts in acceptEdits. The swarm's hooks gate writes, the shell, and SendMessage in every
-# mode.
+# dontAsk, bypassPermissions, or manual. Leave a role empty to start it in
+# bypassPermissions, the swarm's default for every role: a background session that prompts
+# waits until you answer. When policy sets permissions.disableBypassPermissionsMode, a role
+# that would start in bypassPermissions starts in acceptEdits. The role tool lists and the
+# swarm's hooks gate writes, the shell, and SendMessage in every mode.
 permission_mode:
   oracle:
   manager:

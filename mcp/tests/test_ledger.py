@@ -326,6 +326,8 @@ def test_phase_deps_and_plan_unlocked(ledger: Ledger) -> None:
 
     # phase-1 has no modules, so its own module-review gate is vacuous; it still needs to go
     # through handed_up and an accepted phase_review before it can be approved.
+    ledger.phase_update("oracle", oracle_id, phase_1["phase_id"], "unlocked")
+    ledger.phase_update("oracle", oracle_id, phase_1["phase_id"], "working")
     ledger.phase_update("oracle", oracle_id, phase_1["phase_id"], "handed_up")
     insert_passing_test_run(ledger, run_id, oracle_id, "full")
     ledger.phase_review(
@@ -606,6 +608,25 @@ def test_who_owns_and_release_file(ledger: Ledger) -> None:
     ledger.release_file("lead-p1-module-1", ctx["lead"]["agent_id"], "src/a.py")
     released = ledger.who_owns("src/a.py")
     assert released["owner"] is None
+
+
+def test_run_status_and_status_tree_name_a_files_owner(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    ledger.claim_file(
+        "lead-p1-module-1",
+        ctx["lead"]["agent_id"],
+        "src/a.py",
+        "tests/test_a.py",
+        "coder-p1-module-1-c1",
+    )
+
+    status = ledger.run_status("oracle", ctx["oracle_id"])
+    tree = ledger.status_tree("oracle", ctx["oracle_id"])
+
+    assert [f["owner"] for f in status["files"]] == ["coder-p1-module-1-c1"]
+    assert "owner_agent_id" not in status["files"][0]
+    tree_files = tree["phases"][0]["modules"][0]["files"]
+    assert [f["owner"] for f in tree_files] == ["coder-p1-module-1-c1"]
 
 
 # -- messages -----------------------------------------------------------------
@@ -947,8 +968,12 @@ def test_run_start_resumes_the_active_run_for_a_new_session(ledger: Ledger) -> N
 def test_manager_sets_its_own_phase_to_working_and_handed_up_only(ledger: Ledger) -> None:
     ctx = bootstrap_module(ledger)
     mgr = ctx["manager"]["agent_id"]
+    # bootstrap_module has already set the phase to working, as a Manager's first step does.
     assert (
-        ledger.phase_update("mgr-p1-phase-1", mgr, ctx["phase_id"], "working")["state"] == "working"
+        ledger.conn.execute(
+            "SELECT state FROM phases WHERE phase_id = ?", (ctx["phase_id"],)
+        ).fetchone()["state"]
+        == "working"
     )
     ledger.agent_release("mgr-p1-phase-1", mgr, ctx["lead"]["agent_id"])
     _accept_module(ledger, ctx)
@@ -1065,7 +1090,7 @@ def test_report_times_a_phase_from_its_first_manager_start(ledger: Ledger) -> No
             (ctx["manager"]["agent_id"],),
         )
     text = ledger.report_build("oracle", ctx["oracle_id"])["text"]
-    assert "## Phase: p1-phase-1 (unlocked, 6m 0s)" in text
+    assert "## Phase: p1-phase-1 (working, 6m 0s)" in text
 
 
 @pytest.mark.parametrize("given", ["None", "null", "", "  "])

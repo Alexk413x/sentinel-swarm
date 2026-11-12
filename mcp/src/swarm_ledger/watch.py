@@ -82,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo", type=Path, default=None, help="the host repo root")
     args = parser.parse_args(argv)
     root = (args.repo or env.repo_root()).resolve()
+    env.utf8_stdout()
     conn = connect(env.db_path_for(root))
     try:
         return watch(conn, sys.stdout)

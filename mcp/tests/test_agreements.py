@@ -479,6 +479,10 @@ def test_phase_update_approved_refused_while_a_cr_is_open(ledger: Ledger) -> Non
     ctx = bootstrap_module(ledger)
     _approve_good(ledger, ctx)
     ledger.cr_open("mgr-p1-phase-1", ctx["manager"]["agent_id"], "pkg/good.py", "one more change")
+    # The phase is handed up through SQL: this test isolates the approval's own CR check, and
+    # the hand-up gates (module review) are not its subject.
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE phases SET state = 'handed_up' WHERE phase_id = ?", (ctx["phase_id"],))
 
     with pytest.raises(LedgerError, match="not verified"):
         ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
@@ -1041,7 +1045,7 @@ def test_a_manager_pushback_returns_a_handoff_the_lead_has_not_approved(
     coder = ledger.conn.execute("SELECT state FROM agents WHERE agent_id = ?", (coder_id,))
     assert coder.fetchone()["state"] == "idle"
     assert _owed(ledger) == [(ctx["manager"]["agent_id"], lead_id), (lead_id, coder_id)]
-    with pytest.raises(LedgerError, match="call return_work"):
+    with pytest.raises(LedgerError, match="is returned"):
         ledger.approve("lead-p1-module-1", lead_id, handed["handoff_id"])
 
 

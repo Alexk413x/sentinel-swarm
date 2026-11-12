@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from helpers import enable_plugins, write_registry
 
-from swarm_ledger import auth
+from swarm_ledger import agentfiles, auth
 from swarm_ledger.agentfiles import (
     SESSION_SETTINGS,
     agent_file_path,
@@ -135,7 +135,7 @@ def test_session_options_builds_the_flags_from_the_role_file(tmp_path: Path) -> 
         "--model",
         "haiku",
         "--permission-mode",
-        "acceptEdits",
+        "bypassPermissions",
         "--strict-mcp-config",
         "--mcp-config",
         options[options.index("--mcp-config") + 1],
@@ -151,7 +151,7 @@ def test_session_options_leaves_out_what_the_file_does_not_set(tmp_path: Path) -
     _write(tmp_path, "lead", "---\nname: swarm-lead\n---\nbody\n")
     options = session_options(tmp_path, "lead", None, "http://127.0.0.1:1/mcp")
     assert "--model" not in options
-    assert "--permission-mode" not in options
+    assert options[options.index("--permission-mode") + 1] == "bypassPermissions"
     assert "--allowedTools" not in options
     assert options[:2] == ["--agent", "swarm-lead"]
 
@@ -201,6 +201,8 @@ def test_session_options_run_every_plugin_server_through_the_stdio_shim(
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
     _registry(config_dir, [{"scope": "user"}])
     _write(host, "coder", _CODER)
+    # A macOS or Linux host that has only python3: the relay entries must not name python.
+    monkeypatch.setattr(agentfiles, "python_command", lambda: "python3")
 
     options = session_options(host, "coder", None, "http://127.0.0.1:1/mcp")
     servers = json.loads(options[options.index("--mcp-config") + 1])["mcpServers"]
@@ -214,7 +216,7 @@ def test_session_options_run_every_plugin_server_through_the_stdio_shim(
     ]
     for name in ("a11y-tools", "a11y-kg"):
         assert servers[name] == {
-            "command": "python",
+            "command": "python3",
             "args": [".sentinel-swarm/hook.py", "mcp", "a11y@accessibility-tools", name],
         }
 

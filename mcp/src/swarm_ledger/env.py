@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -21,6 +22,14 @@ def repo_root() -> Path:
 def db_path_for(root: Path) -> Path:
     raw = os.environ.get(DB_PATH_VAR)
     return Path(raw).resolve() if raw else ledger_path(root)
+
+
+def utf8_stdout() -> None:
+    # The launcher runs Python with -I -S, so a piped stdout takes the locale's encoding: the
+    # ANSI code page on Windows. Text outside it would raise UnicodeEncodeError mid-print.
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(encoding="utf-8", errors="replace")
 
 
 def open_ledger(root: Path | None = None) -> Ledger:

@@ -36,8 +36,8 @@ from ..watchdog import MONITOR_CALL, REGISTER_GRACE, WATCH_COMMAND
 
 _RECORDS_DIR = ".sentinel-swarm"
 _WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
-# Must equal the synchronous post_any matcher in templates/agents/*.md: the Stop hook and
-# handoff_submit read what post_any records for these tools, so it cannot run async.
+# Must equal SYNC_POST_TOOLS in hooks/register.tsx, which waits for post_any after these
+# tools: the Stop hook and handoff_submit read what post_any records for them.
 SYNC_POST_TOOLS = ("SendMessage", "PushNotification", "Monitor", *_WRITE_TOOLS)
 FIRED_AT_KEY = "sentinel_swarm_fired_at"
 TRANSPORT_KEY = "sentinel_swarm_transport"
@@ -95,6 +95,17 @@ def _swarm_caller(ledger: Ledger, caller_id: str | None) -> dict | None:
 
 def _data_caller(ledger: Ledger, data: dict) -> dict | None:
     return _swarm_caller(ledger, _caller_id(data))
+
+
+def _gated_caller(ledger: Ledger, data: dict) -> dict | None:
+    # A subagent's call carries the subagent's agent_id and its parent's session_id. The
+    # ledger knows only the parent, so an unknown agent_id is gated as the session's agent.
+    # Only the gates for write, shell and skill use this: pre_ledger stamps identity from
+    # _caller_id, so a subagent is never stamped as its parent.
+    caller = _data_caller(ledger, data)
+    if caller is None and data.get("agent_id"):
+        return _swarm_caller(ledger, data.get("session_id"))
+    return caller
 
 
 def _repo_relative(ledger: Ledger, raw: str) -> str | None:
@@ -313,7 +324,7 @@ def handle_pre_write(ledger: Ledger, data: dict) -> dict | None:
     if rel is not None and (rel == _RECORDS_DIR or rel.startswith(f"{_RECORDS_DIR}/")):
         return _deny("the records folder is written by the ledger only")
 
-    caller = _data_caller(ledger, data)
+    caller = _gated_caller(ledger, data)
     if caller is None:
         if _role_of(ledger, data) is None:
             return None
@@ -414,9 +425,14 @@ def _command_allowed(ledger: Ledger, command: str, caller: dict) -> bool:
 def handle_pre_shell(ledger: Ledger, data: dict) -> dict | None:
     if _active_run_row(ledger) is None:
         return None
-    caller = _data_caller(ledger, data)
+    caller = _gated_caller(ledger, data)
     if caller is None:
-        return None
+        if _role_of(ledger, data) is None:
+            return None
+        return _deny(
+            "this swarm session is not a live agent of the run, so it runs no shell command. "
+            "Call ledger_info() to see whether the ledger knows it"
+        )
 
     command = str(_tool_input(data).get("command") or "")
     _deny_or_override = partial(_deny_unless_overridden, ledger, caller, "shell", command)
@@ -556,7 +572,7 @@ def handle_send_target(ledger: Ledger, data: dict) -> dict | None:
 
 
 def handle_pre_skill(ledger: Ledger, data: dict) -> dict | None:
-    caller = _data_caller(ledger, data)
+    caller = _gated_caller(ledger, data)
     if caller is None or caller["role"] != "driver":
         return None
     tool_input = _tool_input(data)

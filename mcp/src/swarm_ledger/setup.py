@@ -4,20 +4,19 @@ import argparse
 import json
 import os
 import re
-import shutil
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import memory, testing
+from . import env, memory, testing
 from .agentfiles import agent_file_path as role_file
 from .agentfiles import driver_available
 from .db import append_git_excludes, main_git_dir
 from .frontmatter import FrontmatterError
 from .frontmatter import split_document as _split_document
-from .paths import claude_json_path
+from .paths import claude_json_path, python_command
 from .permissions import bypass_disabled, start_mode
 from .settings import SETTINGS_PATH, Settings, load_settings
 
@@ -191,13 +190,6 @@ def merge_role_file(existing: str, template: str) -> tuple[str, list[str], bool]
     if narrowed:
         added.append(f"the role's swarm-ledger tools in place of {WHOLE_LEDGER}")
     return _join_document(frontmatter, template_body), added, user_body != template_body
-
-
-def python_command() -> str:
-    # On Windows, python3 on PATH is often the Microsoft Store stub, which only prints a hint.
-    if os.name == "nt":
-        return "python"
-    return "python3" if shutil.which("python3") else "python"
 
 
 def render_default(template: str) -> str:
@@ -602,6 +594,7 @@ def main(argv: list[str] | None = None) -> int:
     if not repo.is_dir():
         sys.stderr.write(f"{repo} is not a folder\n")
         return 1
+    env.utf8_stdout()
     print(run_setup(repo, args.time_full_run).text())
     return 0
 

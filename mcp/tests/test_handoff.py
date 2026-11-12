@@ -652,6 +652,9 @@ def test_accept_incomplete_creates_a_deferral_and_run_finish_refuses_until_decid
     assert file_row["state"] == "incomplete"
     assert file_row["released_at"] is not None
 
+    # Handed up through SQL: this test isolates the approval's own deferral check.
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE phases SET state = 'handed_up' WHERE phase_id = ?", (ctx["phase_id"],))
     with pytest.raises(LedgerError, match="deferral"):
         ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
 
@@ -662,6 +665,7 @@ def test_accept_incomplete_creates_a_deferral_and_run_finish_refuses_until_decid
         "agreed",
         "acceptable for this run",
     )
+    ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "working")
     _accept_module_and_phase(ledger, ctx)
     ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
     result = ledger.run_finish("oracle", ctx["oracle_id"], "success")

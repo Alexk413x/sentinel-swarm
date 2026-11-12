@@ -191,6 +191,12 @@ class LedgerError(Exception):
     pass
 
 
+class SpawnDeferred(LedgerError):
+    # A spawn refused for a reason that clears by itself: a pause or a parallelism cap. A
+    # queued spawn waits for it; any other refusal drops the queued spawn.
+    pass
+
+
 @contextmanager
 def ledger_errors() -> Iterator[None]:
     try:

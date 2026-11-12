@@ -98,7 +98,9 @@ listing again for the scan. See "Parked agents" and "Memory" in
   seconds it prints one line per unnotified watchdog directive, marks it notified, and
   writes `runs.watch_heartbeat_at`. It also prints, once, each `PushNotification` call
   the Oracle owes the user. It exits when the run is not active. The newest
-  listener owns the run, and an older one exits.
+  listener owns the run, and an older one exits. It writes UTF-8 whatever the
+  platform's encoding, so a directive with a character outside the Windows ANSI code
+  page still prints; setup's report does the same.
 - Each line the listener prints ends with the run's elapsed time, `elapsed <n>s` or
   `elapsed <n>s / <budget>s`, since every line goes to the Oracle. So does the resume
   message below. See "Time signal" in [05-sessions.md](05-sessions.md).

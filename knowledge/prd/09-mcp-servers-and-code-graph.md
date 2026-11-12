@@ -47,7 +47,9 @@
 - The ledger runs no shared MCP servers. Each plugin shares its own servers through its
   own relay.
 - A session reaches every plugin server through the shim's stdio entry,
-  `python .sentinel-swarm/hook.py mcp <plugin_id> <server>`. The shim runs the command
+  `python .sentinel-swarm/hook.py mcp <plugin_id> <server>`. The command is `python` on
+  Windows, and `python3` elsewhere when `python3` is on `PATH`, both in a role file
+  setup writes and in the entries the ledger adds. The shim runs the command
   that the plugin's own `.mcp.json` names, in the plugin's own environment. When that
   command is the plugin's relay, the relay does the sharing.
 - When the plugin's own entry for that server is `"type": "http"`, `session_options`

@@ -608,13 +608,16 @@ def test_run_event_prints_what_the_hook_subprocess_prints(
 def test_run_event_reports_an_unknown_event_and_a_failure_on_stderr(host: Path) -> None:
     assert run_event("nope", "{}", host) == ("", "swarm_ledger.hooks: unknown event 'nope'\n")
     stdout, stderr = run_event("pre_write", "not valid json{", host)
-    assert stdout == ""
+    assert json.loads(stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert stderr.startswith("swarm_ledger.hooks pre_write: ")
+    stdout, stderr = run_event("post_any", "not valid json{", host)
+    assert stdout == ""
+    assert stderr.startswith("swarm_ledger.hooks post_any: ")
 
 
 def test_main_malformed_json_exits_zero_with_empty_stdout(host: Path, repo_root: Path) -> None:
     result = subprocess.run(
-        [sys.executable, "-m", "swarm_ledger.hooks", "pre_write"],
+        [sys.executable, "-m", "swarm_ledger.hooks", "post_any"],
         input="not valid json{",
         capture_output=True,
         text=True,

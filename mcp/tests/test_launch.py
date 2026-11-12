@@ -88,7 +88,7 @@ def test_interactive_puts_the_prompt_first_and_builds_the_flags(env):
     assert "--bg" not in command
     assert _option(command, "--agent") == "swarm-oracle"
     assert _option(command, "--model") == "opus"
-    assert "--permission-mode" not in command
+    assert _option(command, "--permission-mode") == "bypassPermissions"
     assert "--strict-mcp-config" in command
     config = json.loads(_option(command, "--mcp-config"))
     assert config["mcpServers"]["swarm-ledger"] == {

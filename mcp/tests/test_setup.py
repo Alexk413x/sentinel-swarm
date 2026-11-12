@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -178,32 +179,22 @@ def _user_permissions(config_dir: Path, permissions: dict) -> None:
 
 
 def test_setup_reports_each_roles_starting_mode(repo: Path, config_dir: Path):
-    _user_permissions(config_dir, {"defaultMode": "bypassPermissions"})
+    _user_permissions(config_dir, {"defaultMode": "default"})
 
     report = setup.run_setup(repo)
 
     for role in setup.CORE_ROLES:
         assert (
-            f"swarm-{role} starts in bypassPermissions: inherited from the user's settings.json"
+            f"swarm-{role} starts in bypassPermissions: the swarm's default for every role"
             in report.lines
         )
     assert not any(line.startswith("swarm-driver starts") for line in report.lines)
 
 
-def test_setup_reports_the_coder_floor_over_an_inherited_default(repo: Path):
-    report = setup.run_setup(repo)
-
-    assert any(line.startswith("swarm-lead starts in default: inherited") for line in report.lines)
-    assert any(
-        line.startswith("swarm-coder starts in acceptEdits: the Coder's floor over default")
-        for line in report.lines
-    )
-
-
 def test_setup_reports_the_fallback_when_policy_disables_bypass(repo: Path, config_dir: Path):
     _user_permissions(
         config_dir,
-        {"defaultMode": "bypassPermissions", "disableBypassPermissionsMode": "disable"},
+        {"disableBypassPermissionsMode": "disable"},
     )
 
     report = setup.run_setup(repo)
@@ -450,7 +441,7 @@ def test_enabled_project_plugins_do_not_join_new_role_files(
 
 @pytest.mark.parametrize("found", [True, False])
 def test_the_mcp_command_fits_the_platform(monkeypatch: pytest.MonkeyPatch, found: bool):
-    monkeypatch.setattr(setup.shutil, "which", lambda name: f"/usr/bin/{name}" if found else None)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}" if found else None)
     expected = "python" if os.name == "nt" or not found else "python3"
     assert setup.python_command() == expected
     rendered = setup.render_default(setup.role_template("oracle"))

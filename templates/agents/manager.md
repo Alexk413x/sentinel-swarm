@@ -160,7 +160,9 @@ this machine, never a Remote Control one.
    `tests_run` returns `state: "running"`, end your turn: a wake-up names the result
    when the ledger records it.
 2. `phase_update(phase_id, state="handed_up")`. A Manager sets its own phase to
-   `working` or `handed_up`; the Oracle sets every other state.
+   `working` or `handed_up`; the Oracle sets every other state. The ledger sets
+   your phase to `working` at your first `module_add`, and a phase the Oracle sent back
+   is `working` again.
 3. `message_post(to_name=<the Oracle's name>, body=<the phase review>)`: what each module
    delivered, the cross-module test result, open issues, deferrals, the departures
    you agreed to, which now wait on the Oracle, and recorded shortfalls.

@@ -270,6 +270,13 @@ def live_agents(conn: sqlite3.Connection, run_id: int) -> list[dict]:
     return agents
 
 
+_AFTER_DECISION = {
+    "returned": "It was returned: wait for the Coder's new handoff, then decide that one.",
+    "approved": "It is already approved, and an approval is final.",
+    "incomplete": "It was accepted as incomplete, and that decision is final.",
+}
+
+
 class ReviewMixin(LedgerHost):
     # -- Shared helpers ---------------------------------------------------
 
@@ -279,16 +286,25 @@ class ReviewMixin(LedgerHost):
             raise LedgerError(f"{c.name!r} is not the Lead of this file's module")
         return file_row
 
-    def _lead_handoff(self, c: Caller, handoff_id: int) -> tuple[sqlite3.Row, sqlite3.Row]:
+    def _lead_handoff(
+        self, c: Caller, handoff_id: int, *, decision: bool = False
+    ) -> tuple[sqlite3.Row, sqlite3.Row]:
         handoff_row = self.conn.execute(
             "SELECT * FROM handoffs WHERE handoff_id = ?", (handoff_id,)
         ).fetchone()
         if handoff_row is None:
             raise LedgerError(f"unknown handoff_id {handoff_id!r}")
-        if handoff_row["state"] == "superseded":
+        state = handoff_row["state"]
+        if state == "superseded":
             raise LedgerError(
                 f"handoff {handoff_id} is superseded by a later handoff of the file; "
                 "review that one"
+            )
+        if decision and state != "submitted":
+            advice = _AFTER_DECISION.get(state, "Decide the file's latest submitted handoff.")
+            raise LedgerError(
+                f"handoff {handoff_id} is {state}, and a Lead decides only a submitted handoff. "
+                f"{advice}"
             )
         return handoff_row, self._lead_file(c, handoff_row["file_id"])
 
@@ -1091,7 +1107,7 @@ class ReviewMixin(LedgerHost):
     ) -> dict:
         c = resolve(self.conn, caller, agent_id)
         require_role(c, "lead")
-        handoff_row, file_row = self._lead_handoff(c, handoff_id)
+        handoff_row, file_row = self._lead_handoff(c, handoff_id, decision=True)
         if handoff_row["compared_at"] is None:
             raise LedgerError("review_compare has not run for this handoff")
 
@@ -1177,7 +1193,7 @@ class ReviewMixin(LedgerHost):
     ) -> dict:
         c = resolve(self.conn, caller, agent_id)
         require_role(c, "lead")
-        handoff_row, file_row = self._lead_handoff(c, handoff_id)
+        handoff_row, file_row = self._lead_handoff(c, handoff_id, decision=True)
 
         self._block_return_for_open_departures(self.conn, handoff_id)
 
@@ -1472,7 +1488,7 @@ class ReviewMixin(LedgerHost):
             raise LedgerError("accept_incomplete needs a reason: why the work stops short")
         c = resolve(self.conn, caller, agent_id)
         require_role(c, "lead")
-        handoff_row, file_row = self._lead_handoff(c, handoff_id)
+        handoff_row, file_row = self._lead_handoff(c, handoff_id, decision=True)
         if handoff_row["compared_at"] is None:
             raise LedgerError(
                 "review_compare has not run for this handoff; score it blind with "
@@ -1739,8 +1755,6 @@ class ReviewMixin(LedgerHost):
         resolve(conn, caller, agent_id)
         run = self._active_run(conn)
         run_id = run["run_id"]
-        owner_names = agent_names(conn, run_id)
-
         phases = []
         for phase in conn.execute(
             "SELECT * FROM phases WHERE run_id = ? ORDER BY ordinal", (run_id,)
@@ -1764,7 +1778,8 @@ class ReviewMixin(LedgerHost):
                         {
                             "file_id": file_row["file_id"],
                             "path": file_row["path"],
-                            "owner": owner_names.get(file_row["owner_agent_id"]),
+                            # files.owner_agent_id holds the owner's agent name.
+                            "owner": file_row["owner_agent_id"],
                             "state": file_row["state"],
                             "latest_handoff_state": (
                                 latest_handoff["state"] if latest_handoff is not None else None

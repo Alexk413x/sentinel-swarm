@@ -9,7 +9,7 @@ from . import agentfiles, notify
 from .clock import parse_stamp, stamp, utcnow
 from .db import NOW, dict_rows, in_clause, row_dict, write_tx
 from .host import LedgerHost
-from .identity import Caller, LedgerError, require_run, resolve
+from .identity import Caller, LedgerError, SpawnDeferred, require_run, resolve
 from .watchdog import DRIVER_CHECKIN_INTERVAL
 
 SEVERITIES = ("blocker", "major", "minor")
@@ -624,7 +624,7 @@ class DriveMixin(LedgerHost):
                 (run_id, fp, area),
             ).fetchone()
             if paused is not None:
-                raise LedgerError(
+                raise SpawnDeferred(
                     f"fixes in area {area or 'unknown'} are paused: {paused['reason']}. "
                     f"Resolve directive {paused['directive_id']} first"
                 )

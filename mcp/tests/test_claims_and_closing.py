@@ -245,7 +245,7 @@ def test_the_watchdog_flags_an_unlocked_phase_with_no_live_manager(
 
     [finding] = unmanaged()
     assert finding.name == "oracle"
-    assert f"{ctx.phase_id} (p1-phase-1, unlocked; last Manager mgr-p1-phase-1)" in finding.detail
+    assert f"{ctx.phase_id} (p1-phase-1, working; last Manager mgr-p1-phase-1)" in finding.detail
     assert "phase-2" not in finding.detail
 
 

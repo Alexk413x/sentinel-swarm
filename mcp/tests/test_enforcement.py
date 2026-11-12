@@ -378,6 +378,7 @@ def _insert_full_run(ledger: Ledger, ctx: dict) -> None:
 
 def _approve_empty_phase(ledger: Ledger, ctx: dict, manager: dict) -> None:
     phase_id = manager["phase"]["phase_id"]
+    ledger.phase_update(manager["name"], manager["agent_id"], phase_id, "working")
     ledger.phase_update(manager["name"], manager["agent_id"], phase_id, "handed_up")
     _insert_full_run(ledger, ctx)
     ledger.phase_review(

@@ -152,6 +152,47 @@ describe('gates', () => {
   })
 })
 
+describe("a subagent's call and a gate's deny", () => {
+  const CALLS = [
+    { event: 'pre_agent', call: { tool: 'Agent', subagent_type: 'general-purpose', prompt: 'x' } },
+    { event: 'pre_write', call: { tool: 'Write', file_path: 'a.txt', content: 'x' } },
+    { event: 'pre_shell', call: { tool: 'Bash', command: 'ls' } },
+    { event: 'pre_shell', call: { tool: 'PowerShell', command: 'ls' } },
+    { event: 'pre_monitor', call: { tool: 'Monitor', command: 'sleep 1' } },
+    { event: 'pre_send_message', call: { tool: 'SendMessage', to: 'someone', message: 'hi' } },
+    { event: 'pre_skill', call: { tool: 'Skill', skill: 'map-explore' } },
+    { event: 'pre_ledger', call: { tool: 'mcp__swarm-ledger__run_status' } },
+  ]
+
+  for (const { event, call } of CALLS) {
+    test(`a deny from the server stops ${call.tool} as { deny }`, async ($, on) => {
+      const w = world(on, { answers: { [event]: DENY(`no ${event}`) } })
+      await start($, 'swarm-driver', 'sess-driver')
+      const result = await $.tool.call(call as never)
+      expect(result).toEqual({ deny: `no ${event}` })
+      expect(w.events().filter(name => name !== 'session_start')).toEqual([event])
+    })
+
+    test(`a subagent's ${call.tool} call posts the loop's id and the parent session, without agent_type`, async ($, on) => {
+      const w = world(on, { answers: { [event]: DENY('no') } })
+      await start($, 'swarm-driver', 'sess-driver')
+      await $.tool.call({ ...call, agentId: 'sub-loop-1' } as never)
+      const body = w.posts.find(p => p.event === event)?.body
+      expect(body).toMatchObject({ agent_id: 'sub-loop-1', session_id: 'sess-driver', hook_event_name: 'PreToolUse' })
+      expect(body).not.toHaveProperty('agent_type')
+    })
+  }
+
+  test("the main thread's call carries no agent_id and keeps its agent_type", async ($, on) => {
+    const w = world(on, { answers: { pre_write: DENY('no') } })
+    await start($, 'swarm-driver', 'sess-driver')
+    await $.tool.call({ tool: 'Write', file_path: 'a.txt', content: 'x' } as never)
+    const body = w.posts.find(p => p.event === 'pre_write')?.body
+    expect(body).toMatchObject({ session_id: 'sess-driver', agent_type: 'swarm-driver' })
+    expect(body).not.toHaveProperty('agent_id')
+  })
+})
+
 describe('a permission prompt held for the run panel', () => {
   const ASK = { decision: 'ask', reason: 'Write outside the allowed working directories' } as const
   const OPENED = { request_id: 4, hold_seconds: 300, wait_seconds: 25, expires_at: '2026-10-30T12:05:00.000Z' }

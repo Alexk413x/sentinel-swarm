@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 from . import frontmatter
 from .auth import ledger_entry
 from .identity import ROLES, LedgerError
-from .paths import config_dir, same_path
+from .paths import config_dir, python_command, same_path
 from .permissions import start_mode
 
 LEDGER_SERVER = "swarm-ledger"
@@ -242,8 +242,10 @@ def _plugin_key(plugin_id: str, server: str) -> str:
 
 
 def optional_servers(repo_root: Path, role: str | None = None) -> dict[str, Any]:
+    command = python_command()
+
     def entry(plugin: str, server: str) -> dict[str, Any]:
-        return {"command": "python", "args": [".sentinel-swarm/hook.py", "mcp", plugin, server]}
+        return {"command": command, "args": [".sentinel-swarm/hook.py", "mcp", plugin, server]}
 
     servers = {
         server: entry(plugin, server)

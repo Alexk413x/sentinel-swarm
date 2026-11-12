@@ -7,7 +7,7 @@ from . import lock, memory, procs, sessions
 from .clock import parse_stamp, stamp
 from .db import NOW, dict_rows, in_clause, write_tx
 from .host import LedgerHost
-from .identity import LedgerError
+from .identity import LedgerError, SpawnDeferred
 from .queries import PARK_SET, UNPARK_SET, unread_count
 
 CHILD_ROLES = ("manager", "lead", "coder", "driver")
@@ -118,9 +118,9 @@ class CapacityMixin(LedgerHost):
             try:
                 self._require_spawnable(brief, entry["child_name"])
                 self._require_spawn_slot(brief, listing)
+            except SpawnDeferred:
+                continue
             except LedgerError as exc:
-                if "paused" in str(exc) or "cap" in str(exc):
-                    continue
                 self._drop_queued(entry, str(exc))
                 continue
             if self._reserve(entry["role"]) is not None:
@@ -468,7 +468,7 @@ class CapacityMixin(LedgerHost):
             self.conn.execute(
                 "SELECT a.*, p.state AS phase_state, m.state AS module_state, "
                 "(SELECT r.outcome FROM reviews r WHERE r.module_id = a.module_id "
-                "AND r.kind = 'module' ORDER BY r.review_id DESC LIMIT 1) AS module_review "
+                "AND r.kind = 'manager' ORDER BY r.review_id DESC LIMIT 1) AS module_review "
                 "FROM agents a LEFT JOIN phases p ON p.phase_id = a.phase_id "
                 "LEFT JOIN modules m ON m.module_id = a.module_id "
                 "WHERE a.run_id = ? AND a.ended_at IS NULL AND a.state = 'parked' "

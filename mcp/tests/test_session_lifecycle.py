@@ -147,6 +147,28 @@ def test_the_watchdog_releases_a_parked_lead_and_then_its_manager_once_their_wor
     assert event.endswith("its phase is handed_up")
 
 
+def test_the_watchdog_releases_a_parked_lead_whose_latest_module_review_is_accepted(
+    ledger: Ledger, claude: MovingClaude
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    _gone(claude, ctx.lead[1])
+    _parked_long_ago(ledger, ctx.lead[1])
+    assert ledger.release_finished_parked(utcnow()) == []
+
+    # The row module_review stores: its kind is 'manager', and the module is not approved yet.
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "INSERT INTO reviews (module_id, reviewer_agent_id, subject_agent_id, kind, outcome) "
+            "VALUES (?, ?, ?, 'manager', 'accepted')",
+            (ctx.module_id, ctx.manager[1], ctx.lead[1]),
+        )
+    released = ledger.release_finished_parked(utcnow())
+
+    assert [a["name"] for a in released] == [ctx.lead[0]]
+    assert released[0]["release_reason"].endswith("its module_review is accepted")
+    assert _row(ledger, ctx.lead[1])["state"] == "released"
+
+
 def test_a_parked_parent_is_kept_while_recent_unfinished_or_owed_a_wake_up(
     ledger: Ledger, claude: MovingClaude
 ) -> None:

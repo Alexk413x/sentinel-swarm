@@ -251,7 +251,8 @@
   ledger findings for the Oracle.
 - **Subagents:** it is the one role allowed subagents, and only cartographer's own:
   `map-driver` and `map-reviewer`. The Oracle does not run them, so its context stays
-  small.
+  small. A subagent's Write, shell, and Skill calls are gated as the Driver's: it writes
+  no project file, runs only `build_command`, and calls `map-test` before `map-explore`.
 - **Owns:** one exploration: the build, the device session, and every finding it
   records, with evidence in cartographer's run folder.
 - **Must not:** write or edit a project file. It has no Write or Edit tool. It must not

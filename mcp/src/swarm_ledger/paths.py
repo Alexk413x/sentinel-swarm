@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from contextlib import suppress
 from pathlib import Path
 
@@ -30,3 +31,11 @@ def same_path(raw: object, root: Path) -> bool:
 def unlink_quiet(path: Path) -> None:
     with suppress(OSError):
         path.unlink()
+
+
+def python_command() -> str:
+    # The command an MCP entry that runs the shim starts. On Windows, python3 on PATH is often
+    # the Microsoft Store stub, which only prints a hint.
+    if os.name == "nt":
+        return "python"
+    return "python3" if shutil.which("python3") else "python"

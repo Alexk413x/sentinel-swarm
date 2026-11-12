@@ -199,6 +199,45 @@ def test_a_queued_spawn_whose_parent_ended_is_dropped(
     assert state == "dropped"
 
 
+def test_a_queued_spawn_refused_for_good_is_dropped_whatever_its_name(
+    ledger: Ledger, claude: MovingClaude, free: dict
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    # The refusal names the child, and this name holds both "cap" and "paused".
+    name = _brief_coder(ledger, ctx, "paused-capacity")
+    free["mb"] = 1_000
+    ledger.agent_spawn(*ctx.lead, name)
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE files SET released_at = '2026-01-01T00:00:00.000Z'")
+    free["mb"] = 64_000
+
+    assert ledger.start_queued_spawns(claude.listing) == []
+
+    row = ledger.conn.execute("SELECT state FROM spawn_queue").fetchone()
+    assert row["state"] == "dropped"
+
+
+def test_a_queued_spawn_into_a_paused_phase_stays_queued(
+    ledger: Ledger, claude: MovingClaude, free: dict
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    name = _brief_coder(ledger, ctx, "c1")
+    free["mb"] = 1_000
+    ledger.agent_spawn(*ctx.lead, name)
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE phases SET paused_at = '2026-01-01T00:00:00.000Z', pause_reason = 'a fix'"
+        )
+    free["mb"] = 64_000
+
+    assert ledger.start_queued_spawns(claude.listing) == []
+    assert ledger.conn.execute("SELECT state FROM spawn_queue").fetchone()["state"] == "queued"
+
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE phases SET paused_at = NULL, pause_reason = NULL")
+    assert [s["name"] for s in ledger.start_queued_spawns(claude.listing)] == [name]
+
+
 def test_unknown_free_memory_admits_the_spawn(
     ledger: Ledger, claude: MovingClaude, free: dict
 ) -> None:

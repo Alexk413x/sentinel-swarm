@@ -17,10 +17,10 @@ claude "You are <name>. Read your brief from the swarm ledger and follow it." --
 ```
 
 - `--permission-mode` comes from the role's `permission_mode` setting, never from the
-  role file. A role with no setting inherits the user's `permissions.defaultMode`, and
-  the launcher passes no flag, except that a Coder that would inherit `default` gets
-  `acceptEdits`, and a role that would start in `bypassPermissions` while policy sets
-  `permissions.disableBypassPermissionsMode` gets `acceptEdits`. See "Permission mode"
+  role file. A role with no setting starts in `bypassPermissions`, and a role that
+  would start in `bypassPermissions` while policy sets
+  `permissions.disableBypassPermissionsMode` gets `acceptEdits`. Every launch passes
+  the flag. See "Permission mode"
   in [11-setup-and-settings.md](11-setup-and-settings.md). The same rule applies to
   `agent_resume`, the watchdog's Oracle resume, and the launcher.
 - The prompt goes before the options, because `--allowedTools` takes a space-separated
@@ -589,10 +589,11 @@ for the measured figures.
   counts for 60 seconds, and only while its server runs. Other swarms' queued spawns do
   not count: two runs that each held back for the other's queue would both wait.
 - **Start queued spawns.** Each watchdog pass starts queued spawns oldest first, while
-  they fit. It skips one whose phase is paused or that a parallelism cap holds back,
-  and drops one whose brief was acknowledged, whose parent ended, whose start failed, or
+  they fit. It skips one whose phase is paused, whose fix a Driver pattern stop pauses,
+  or that a parallelism cap holds back, and drops one whose brief was acknowledged, whose parent ended, whose start failed, or
   that is a Coder whose file has no live claim for it, with a ledger message to the
-  parent that says why. A start that fails on an unreadable `~/.claude.json` stays
+  parent that says why. The ledger tells the two apart by the refusal's type
+  (`SpawnDeferred`), not by its text, which names the child. A start that fails on an unreadable `~/.claude.json` stays
   queued; see "An unreadable ~/.claude.json" below. A parent cancels a queued spawn with
   `agent_release(<child name>)`, which keeps the brief and the claim; `release_file` on
   the queued Coder's path drops its spawn too. While a spawn is queued, the

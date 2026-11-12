@@ -4,8 +4,6 @@ import json
 import os
 from pathlib import Path
 
-import pytest
-
 from swarm_ledger import permissions
 from swarm_ledger.agentfiles import agent_file_path, session_options
 from swarm_ledger.auth import ensure_token
@@ -36,44 +34,27 @@ def _flag(options: list[str]) -> str | None:
     return options[options.index("--permission-mode") + 1]
 
 
-def test_an_unset_mode_inherits_and_passes_no_flag(tmp_path: Path) -> None:
-    _user({"defaultMode": "bypassPermissions"})
+def test_an_unset_mode_starts_in_bypass_whatever_the_user_inherits(tmp_path: Path) -> None:
+    _user({"defaultMode": "plan"})
+    _settings_file(tmp_path / ".claude" / "settings.local.json", {"defaultMode": "default"})
 
-    start = permissions.start_mode(tmp_path, "lead", None)
+    for role in ("oracle", "manager", "lead", "coder", "driver"):
+        start = permissions.start_mode(tmp_path, role, None)
 
-    assert start.mode == "bypassPermissions"
-    assert start.flag is None
-    assert start.source == "inherited from the user's settings.json"
-
-
-def test_the_repo_settings_outrank_the_users(tmp_path: Path) -> None:
-    _user({"defaultMode": "bypassPermissions"})
-    _settings_file(tmp_path / ".claude" / "settings.json", {"defaultMode": "plan"})
-    _settings_file(tmp_path / ".claude" / "settings.local.json", {"defaultMode": "acceptEdits"})
-
-    assert permissions.inherited_mode(tmp_path) == (
-        "acceptEdits",
-        "inherited from .claude/settings.local.json",
-    )
+        assert (start.mode, start.flag) == ("bypassPermissions", "bypassPermissions")
+        assert start.source == "the swarm's default for every role"
 
 
-def test_managed_settings_outrank_every_other_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    managed = tmp_path / "managed-settings.json"
-    _settings_file(managed, {"defaultMode": "default"})
-    monkeypatch.setattr(permissions, "managed_settings_path", lambda platform=None: managed)
-    _user({"defaultMode": "bypassPermissions"})
+def test_an_unknown_configured_mode_reads_as_unset(tmp_path: Path) -> None:
+    start = permissions.start_mode(tmp_path, "lead", "yolo")
 
-    assert permissions.inherited_mode(tmp_path)[0] == "default"
+    assert (start.mode, start.flag) == ("bypassPermissions", "bypassPermissions")
 
 
-def test_the_coder_gets_accept_edits_over_an_inherited_default(tmp_path: Path) -> None:
-    coder = permissions.start_mode(tmp_path, "coder", None)
-    lead = permissions.start_mode(tmp_path, "lead", None)
+def test_manual_is_a_mode_a_role_may_be_set_to(tmp_path: Path) -> None:
+    start = permissions.start_mode(tmp_path, "lead", "manual")
 
-    assert (coder.mode, coder.flag) == ("acceptEdits", "acceptEdits")
-    assert (lead.mode, lead.flag) == ("default", None)
+    assert (start.mode, start.flag) == ("manual", "manual")
 
 
 def test_a_configured_mode_is_passed_as_the_flag(tmp_path: Path) -> None:
@@ -86,14 +67,16 @@ def test_a_configured_mode_is_passed_as_the_flag(tmp_path: Path) -> None:
 
 
 def test_policy_that_disables_bypass_falls_back_to_accept_edits(tmp_path: Path) -> None:
-    _user({"defaultMode": "bypassPermissions", "disableBypassPermissionsMode": "disable"})
+    _user({"disableBypassPermissionsMode": "disable"})
 
-    inherited = permissions.start_mode(tmp_path, "manager", None)
+    unset = permissions.start_mode(tmp_path, "manager", None)
     configured = permissions.start_mode(tmp_path, "oracle", "bypassPermissions")
+    other = permissions.start_mode(tmp_path, "lead", "plan")
 
-    assert (inherited.mode, inherited.flag) == ("acceptEdits", "acceptEdits")
+    assert (unset.mode, unset.flag) == ("acceptEdits", "acceptEdits")
     assert (configured.mode, configured.flag) == ("acceptEdits", "acceptEdits")
-    assert "disableBypassPermissionsMode" in inherited.source
+    assert "disableBypassPermissionsMode" in unset.source
+    assert (other.mode, other.flag) == ("plan", "plan")
 
 
 def test_the_setting_is_read_per_role_and_drops_unknown_modes(tmp_path: Path) -> None:
@@ -105,17 +88,20 @@ def test_the_setting_is_read_per_role_and_drops_unknown_modes(tmp_path: Path) ->
     )
 
     assert load_settings(tmp_path).permission_mode == {"oracle": "bypassPermissions"}
+    path.write_text("---\npermission_mode:\n  lead: manual\n---\n", encoding="utf-8")
+    assert load_settings(tmp_path).permission_mode == {"lead": "manual"}
 
 
 def test_session_options_ignore_the_role_files_permission_mode(tmp_path: Path) -> None:
     _role_file(tmp_path, "lead", "permissionMode: plan\n")
-    _user({"defaultMode": "bypassPermissions"})
+    _user({"defaultMode": "default"})
 
-    assert _flag(session_options(tmp_path, "lead", None, URL)) is None
+    assert _flag(session_options(tmp_path, "lead", None, URL)) == "bypassPermissions"
     assert _flag(session_options(tmp_path, "lead", None, URL, permission_mode="plan")) == "plan"
 
 
-def test_session_options_pass_the_coder_floor(tmp_path: Path) -> None:
-    _role_file(tmp_path, "coder")
+def test_session_options_pass_bypass_for_every_role(tmp_path: Path) -> None:
+    for role in ("oracle", "manager", "lead", "coder", "driver"):
+        _role_file(tmp_path, role)
 
-    assert _flag(session_options(tmp_path, "coder", None, URL)) == "acceptEdits"
+        assert _flag(session_options(tmp_path, role, None, URL)) == "bypassPermissions"

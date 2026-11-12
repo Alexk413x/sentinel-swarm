@@ -201,23 +201,20 @@ its tools load. A session loads plugin tools when it starts, and setup cannot ru
 
 ## Permission mode
 
-Every role session starts in the user's own permission mode unless the settings file
-names one. On Alex's machine that is `bypassPermissions`. `permissions.start_mode`
+Every role session starts in `bypassPermissions` unless the settings file names another
+mode for its role. A background session that prompts waits until a person answers, so
+the swarm runs every role as autonomously as Claude Code allows. `permissions.start_mode`
 decides each launch's `--permission-mode`, for `agent_spawn`, `agent_resume`, the
-watchdog's Oracle resume, and the launcher:
+watchdog's Oracle resume, and the launcher, and every launch passes the flag:
 
 1. `permission_mode.<role>` in the settings file, when it names a mode Claude Code
-   knows (`default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions`), is
-   passed as the flag.
-2. Otherwise the role inherits: the launcher passes no flag, and the session takes
-   `permissions.defaultMode` from the highest of managed settings,
-   `.claude/settings.local.json`, `.claude/settings.json`, and the user's
-   `settings.json` that sets it, else `default`.
-3. A Coder that would inherit `default` gets `--permission-mode acceptEdits`, because a
-   background session in `default` stalls for good on a file write (see
-   [13-platform-facts.md](13-platform-facts.md)).
-4. When any of those files sets `permissions.disableBypassPermissionsMode: "disable"`,
-   a role that would start in `bypassPermissions` gets `--permission-mode acceptEdits`.
+   knows (`default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions`,
+   `manual`), is passed as the flag.
+2. Otherwise the flag is `bypassPermissions`, for every role. The user's own
+   `permissions.defaultMode` does not decide a role session's mode.
+3. When managed settings, `.claude/settings.local.json`, `.claude/settings.json`, or the
+   user's `settings.json` sets `permissions.disableBypassPermissionsMode: "disable"`, a
+   role that would start in `bypassPermissions` gets `--permission-mode acceptEdits`.
 
 The role file's `permissionMode` is never read; setup removes it. The swarm's limits
 hold in every mode: the write, shell, `SendMessage`, and `AskUserQuestion` gates are
@@ -334,7 +331,7 @@ descriptions stay out of every session's context.
 | `effort.<role>` | `medium` for every role | `--effort <level>` for that role's sessions. A settings file with no `effort` key gets `medium` for every role; a role left empty runs at its model's default. A brief's own `effort` overrides it |
 | `prompt_cache_ttl.<role>` | `5m` for the Coder, empty for the others | `promptCacheTtl` (`"5m"` or `"1h"`) for that role's sessions |
 | `role_parallelism_cap.<role>` | empty | Cap on that role's own live sessions in the run |
-| `permission_mode.<role>` | empty for every role | `--permission-mode <mode>` for that role's sessions. Empty inherits the user's `permissions.defaultMode`; an unknown value reads as empty. See "Permission mode" above |
+| `permission_mode.<role>` | empty for every role | `--permission-mode <mode>` for that role's sessions. Empty starts the role in `bypassPermissions`; an unknown value reads as empty. See "Permission mode" above |
 | `permission_hold_seconds` | 300 | How long a role session holds a call Claude Code would ask the person about, so the user can allow or deny it in the run panel. Unanswered by then, the session shows Claude Code's own prompt, answered in agent view. `0` turns holding off; a negative value reads as `0`; a value that is not a whole number reads as 300. Each hold reads the settings file again. See "Answering a permission prompt in the panel" in [17-run-panel.md](17-run-panel.md) |
 | `notify` | `[os, push]` | How the user hears that the Driver finished or hit an error, that an issue ended round 3 below the floor, that the run paused or resumed, that a session or the Oracle waits on the user (`needs_user`), or that the run stalled (`run_stalled`). `os`: the ledger server shows a desktop notification. `push`: the Oracle owes a `PushNotification` call. `[]` or `""` turns both off; a single value reads as a one-item list; unknown values are dropped; an unset key, or `notify:` with no value, keeps both. See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md) |
 | `max_workers` | 8 | Worker processes for the ledger server's tool calls, and as many again for its hooks. `0` runs every call in the server process, one at a time. A negative value reads as `0`; a value that is not a whole number reads as 8. The server reads it at start. See [06-ledger-server.md](06-ledger-server.md) |

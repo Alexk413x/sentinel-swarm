@@ -110,16 +110,18 @@ It is safe to run again, and it prints what it changed and what it found:
 
 - `.claude/agents/swarm-oracle.md`, `swarm-manager.md`, `swarm-lead.md`, and
   `swarm-coder.md`, from the plugin's templates. Each file sets its role's model,
-  color, tools, and MCP servers. It sets no permission mode: each role starts in your
-  own `permissions.defaultMode` unless `permission_mode.<role>` in
-  `.claude/sentinel-swarm.local.md` names one, and setup prints the mode each role
+  color, tools, and MCP servers. It sets no permission mode: each role starts in
+  `bypassPermissions` unless `permission_mode.<role>` in
+  `.claude/sentinel-swarm.local.md` names another, and setup prints the mode each role
   starts in. Setup adds no MCP server
   beyond the template's. A session gets the a11y servers when the host has a11y
   installed.
 - When a role file already exists, it keeps the user's frontmatter values, adds any
   key the template has that the file lacks, and replaces the prompt body. Run it
   again after a plugin upgrade.
-- `.sentinel-swarm/hook.py`, the shim every role's hooks call.
+- `.sentinel-swarm/hook.py`, the shim that relays the plugin MCP servers, runs the
+  watchdog listener, and runs a hook when the plugin's mod cannot reach the ledger
+  server.
 - `worktree.bgIsolation: "none"` in `.claude/settings.local.json`, so every session
   works in the one shared working tree.
 - `.sentinel-swarm/`, `.claude/agents/swarm-*.md`, `.claude/codebase-kg.local.md`, and
@@ -128,14 +130,14 @@ It is safe to run again, and it prints what it changed and what it found:
   role files commits them on purpose.
 
 The role files are the user's to edit. Tell the user so: each role's model, tools,
-and hooks live in its own file.
+and MCP servers live in its own file.
 
 ## 6. Trust the repo
 
 The last line of the output says whether the repo is trusted. A background session
-refuses to start in an untrusted folder, and Claude Code runs the role files' hooks
-only in a trusted folder. When the repo is not trusted, show the user the command the
-output prints. They run it once in a terminal, accept the trust prompt, and exit.
+refuses to start in an untrusted folder. When the repo is not trusted, show the user
+the command the output prints. They run it once in a terminal, accept the trust
+prompt, and exit.
 
 ## 7. Report
 

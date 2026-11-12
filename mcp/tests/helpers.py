@@ -291,6 +291,7 @@ def bootstrap_module(ledger: Ledger, *, watch_armed_ms: int | None = None) -> di
     register_agent(ledger, "mgr-agent", "manager", parent_agent_id=oracle_id)
     manager = ledger.brief_ack("mgr-p1-phase-1", "mgr-agent")
 
+    # The first module_add sets the unlocked phase to working.
     module = ledger.module_add("mgr-p1-phase-1", "mgr-agent", phase_id, "module-1")
     module_id = module["module_id"]
 

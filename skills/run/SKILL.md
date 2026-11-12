@@ -15,8 +15,7 @@ Starts a full sentinel-swarm run: a PRD in, built and reviewed code out.
 2. `/sentinel-swarm:setup` has run in this repo. It writes the role files in
    `.claude/agents/`, the hook shim, and the settings the sessions need.
 3. The host repo is trusted. A background session refuses to start in an untrusted
-   folder, and Claude Code runs the role files' hooks only in a trusted folder.
-   `setup` reports this and prints the command to fix it.
+   folder. `setup` reports this and prints the command to fix it.
 4. `.claude/sentinel-swarm.local.md` exists and its `test_command` is filled in. The
    command must contain `{target}`, for example
    `python -m pytest -q -p no:cacheprovider {target}`. Every test run in the swarm

@@ -212,8 +212,8 @@ class Settings:
     # Per-role promptCacheTtl ("5m" or "1h") for agent_spawn; a role with no entry keeps the
     # Claude Code default.
     prompt_cache_ttl: dict[str, str] = field(default_factory=dict)
-    # Per-role --permission-mode for every launch; a role with no entry inherits the user's
-    # permissions.defaultMode (see permissions.start_mode).
+    # Per-role --permission-mode for every launch; a role with no entry starts in
+    # bypassPermissions (see permissions.start_mode).
     permission_mode: dict[str, str] = field(default_factory=dict)
     # Per-role cap on that role's own live sessions in the run, on top of parallelism_cap.
     role_parallelism_cap: dict[str, int] = field(default_factory=dict)

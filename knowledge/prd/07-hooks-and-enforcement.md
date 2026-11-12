@@ -96,7 +96,12 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
 - **Gates.** A `tool.call` hook per gating event (`pre_agent`, `pre_ask`, `pre_write`,
   `pre_shell`, `pre_monitor`, `pre_send_message`, `pre_skill` for the Driver,
   `pre_ledger`) posts the classic `PreToolUse` input, with `agent_id` set to the
-  loop's id for a subagent's call. A `deny` answer becomes `{ deny }`; an
+  loop's id for a subagent's call, and with `session_id` still the parent session's. A
+  subagent is gated as its parent session's agent: for a Write, shell, or Skill call,
+  the ledger resolves an unknown `agent_id` through `session_id`, so a Driver's
+  subagents write no project file, run only `build_command`, and cannot call
+  `map-explore` before `map-test`. `pre_ledger` does not do this and stamps the
+  subagent's own id, so a subagent is never stamped as its parent. A `deny` answer becomes `{ deny }`; an
   `updatedInput` answer rewrites the call's arguments, which is how `pre_ledger`
   stamps `agent_id`. A `tool.call` hook runs before Claude Code's permission check and
   its prompt, so a deny returns to the agent at once in every permission mode,
@@ -109,9 +114,12 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
 - **Fail closed.** When the post fails (no `server.json`, no valid token, no 200 with
   the repo header, or no answer within 10 s), the mod runs the shim itself, `python3`
   then `python .sentinel-swarm/hook.py hook <event>`, which tries the server and then
-  `uv run`. When neither answers, a gate denies with "sentinel-swarm cannot check
-  this call: <reason>; run /sentinel-swarm:setup". Each gate also carries a `.catch`
-  that denies when the hook throws or outruns its budget.
+  runs the hook through `mcp/launch/ledger.py` on the base interpreter. When neither
+  answers, a gate denies with "sentinel-swarm cannot check this call: <reason>; run
+  /sentinel-swarm:setup". Each gate also carries a `.catch`
+  that denies when the hook throws or outruns its budget. The server's own answer to a
+  gating event that crashed is the same deny (see "A broken gating hook denies" below),
+  so the mod maps it to `{ deny }` like any other.
 - **Other events.** `classic.SessionStart` adds the answer's `additionalContext`;
   `classic.Stop` maps `decision: block` to `block`; `classic.PostToolUse` posts
   `post_any` and waits for it after the tools `post_any` covers, posts `post_activity`
@@ -149,14 +157,23 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
 ## Rules every ledger hook follows
 
 - A hook blocks by printing a JSON decision and exiting 0. It never uses exit code 2.
-- A broken ledger hook allows: `swarm_ledger.hooks` catches every exception, writes one
-  line to stderr, and prints nothing.
+- A broken gating hook denies. When the handler of a gating event (`pre_agent`,
+  `pre_write`, `pre_shell`, `pre_monitor`, `pre_send_message`, `pre_skill`, `pre_ledger`)
+  raises, `swarm_ledger.hooks` writes one line to stderr and answers a `PreToolUse` deny
+  with "sentinel-swarm cannot check this call: <error>; run /sentinel-swarm:setup". When
+  the error is SQLite's locked or busy `OperationalError`, it first runs the whole
+  attempt once more on a fresh ledger, and denies only when that fails too. `pre_ask`
+  and every non-gating event keep the old rule: the exception is swallowed, one line goes
+  to stderr, and the answer is empty, which allows. The set of gating events lives in
+  `swarm_ledger.hooks`; the shim template keeps its own copy, and a test holds the two
+  equal. The ledger connection closes on every path.
 - Before its handler runs, every hook from a session id the ledger does not know
   re-keys a resumed agent to that id when it matches a pending resume. See "Re-keying a
   resumed session" in [05-sessions.md](05-sessions.md).
-- Apart from `pre_write`'s records-folder rule, `pre_ledger`, and `pre_monitor`'s
-  `agent_type` check, a hook ignores a caller the registry does not know, so a non-swarm
-  session in the same repo passes. An agent that has ended counts as unknown.
+- Apart from `pre_write`'s records-folder rule, `pre_write`'s and `pre_shell`'s
+  `agent_type` check for a swarm session that is not a live agent, `pre_ledger`, and
+  `pre_monitor`'s `agent_type` check, a hook ignores a caller the registry does not
+  know, so a non-swarm session in the same repo passes. An agent that has ended counts as unknown.
 
 ## What each hook does
 
@@ -188,14 +205,16 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   is not working; it denies any other target and lists the allowed ones. See
   "Messages" in [05-sessions.md](05-sessions.md). A caller the registry does not know,
   or one with no run yet, passes.
-- `pre_skill`: in the Driver's agent file only. For a Driver with an open exploration,
+- `pre_skill`: a mod gate on the `Skill` tool that applies to the Driver role only.
+  For a Driver with an open exploration,
   it records `drive_requests.map_test_at` when the skill in `tool_input.skill` is
   `map-test` or `cartographer:map-test`, and denies `map-explore` or
   `cartographer:map-explore` while `map_test_at` is empty, naming `map-test`. Any other
   skill, and any other caller, passes. No override rule covers it. Claude Code fires
   `PreToolUse` with the `Skill` matcher when the model calls the tool, not when a user
   types `/skill`; the hooks reference says so, and the field name comes from the
-  `Skill` tool's input schema. It has not run live.
+  `Skill` tool's input schema. It has not run live. A Driver's subagent's `Skill` call is
+  judged as the Driver's.
 - `pre_write`: while a run is active or paused, denies anyone a write into the records
   folder, unconditionally; the records folder is the ledger's own state, so no
   override rule covers it either. Denies a write by any role but the
@@ -207,7 +226,8 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   `.claude/` included. It also denies a write from a session whose `agent_type` is
   `swarm-<role>` but that is not a live agent of the run, such as a released agent or a
   resumed session not yet re-keyed, and asks it to call `ledger_info()`, whose
-  `pre_ledger` re-keys a pending resume.
+  `pre_ledger` re-keys a pending resume. A subagent's write is judged as its parent
+  session's agent, so a Driver's subagent writes no project file.
 - `pre_ask`: while a run is active or paused, denies `AskUserQuestion` to a swarm
   session (by registry or by `agent_type`) whose `claude agents --json` entry has kind
   `background`, since nobody sees the question there and the run would wait on it. The
@@ -224,7 +244,12 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   whitespace folded; the Manager may run nothing else. A Driver may run only a command
   that starts with the profile's `build_command`. Apart from a named host command, a
   command with `;`, `&`, `|`, `<`, `>`, a backtick, a newline, or `$(` is denied. An
-  override of rule `shell` lets one command through.
+  override of rule `shell` lets one command through. Like `pre_write`, it denies a
+  command from a session whose `agent_type` is `swarm-<role>` but that is not a live
+  agent of the run. The deny says the session is not a live agent of the run, so it runs
+  no shell command, and tells it to call `ledger_info()`. A session with no `swarm-`
+  `agent_type` passes, and nothing changes while no run is live. A subagent's command
+  is judged under its parent session's role.
 - `pre_monitor`: allows exactly one `Monitor` call from a swarm session, the Oracle's
   watchdog call. It denies every other one and names the allowed call. A session not
   yet in the ledger counts as a swarm session when its `agent_type` is `swarm-<role>`.
@@ -252,8 +277,9 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   nothing more, and after a Coder's write marks its file stale, so the handoff needs a
   newer self review. On the Oracle's `PushNotification` call, it marks one owed
   notification sent, whatever the call's result, even after the run finished.
-- `post_activity`: runs with `async: true` after every tool, so no tool call waits for
-  it. It returns at once for the tools `post_any` covers, so the two never both run for
+- `post_activity`: the mod posts it after every tool `post_any` does not cover and does
+  not wait for the answer, so no tool call waits for it. The handler returns at once
+  for the tools `post_any` covers, so the two never both run for
   one call. Otherwise it writes the heartbeat and current activity and records the
   transcript path. It sets an idle agent to working only when the agent's last move to
   `idle` came before `sentinel_swarm_fired_at`: an async hook can land after the Stop

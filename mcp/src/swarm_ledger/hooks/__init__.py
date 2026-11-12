@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 from .. import env
@@ -40,27 +41,74 @@ LISTING_EVENTS = frozenset({"session_start", "pre_ledger"})
 CLOSING_EVENTS = frozenset({"stop", "session_end"})
 
 
+# The events that gate a tool call. A crash in one of these denies instead of allowing, so a
+# broken ledger cannot let a call through unchecked. templates/hook_shim.py is standalone and
+# keeps its own copy; a test holds the two equal.
+GATING_EVENTS = frozenset(
+    {
+        "pre_agent",
+        "pre_write",
+        "pre_shell",
+        "pre_monitor",
+        "pre_send_message",
+        "pre_skill",
+        "pre_ledger",
+    }
+)
+_LOCKED = ("database is locked", "database table is locked", "database is busy")
+
+
+def _is_locked(exc: Exception) -> bool:
+    return isinstance(exc, sqlite3.OperationalError) and any(
+        phrase in str(exc).lower() for phrase in _LOCKED
+    )
+
+
+def _attempt(event_name: str, handler, raw: str, root: Path | None) -> dict | None:
+    data = json.loads(raw) if raw.strip() else {}
+    ledger = env.open_ledger(root)
+    try:
+        if isinstance(data, dict) and not data.get("agent_id"):
+            ledger.adopt_session(
+                data.get("session_id"),
+                use_listing=event_name in LISTING_EVENTS,
+                unpark=event_name not in CLOSING_EVENTS,
+            )
+        return handler(ledger, data)
+    finally:
+        ledger.conn.close()
+
+
+def _cannot_check(exc: Exception) -> dict:
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": (
+                f"sentinel-swarm cannot check this call: {exc}; run /sentinel-swarm:setup"
+            ),
+        }
+    }
+
+
 def run_event(event_name: str, raw: str, root: Path | None = None) -> tuple[str, str]:
     handler = HANDLERS.get(event_name)
     if handler is None:
         return "", f"swarm_ledger.hooks: unknown event {event_name!r}\n"
 
-    # A hook must never lock the user out: any failure here is swallowed and
-    # allows silently, with only a stderr line for a developer to find.
+    # A gating event that crashes fails closed: a locked database gets one more attempt on a
+    # fresh ledger, and any other failure (or a second lock) denies the call. Any other event
+    # swallows the failure and answers empty, which allows, with only a stderr line.
+    result: dict | None
     try:
-        data = json.loads(raw) if raw.strip() else {}
-        ledger = env.open_ledger(root)
         try:
-            if isinstance(data, dict) and not data.get("agent_id"):
-                ledger.adopt_session(
-                    data.get("session_id"),
-                    use_listing=event_name in LISTING_EVENTS,
-                    unpark=event_name not in CLOSING_EVENTS,
-                )
-            result = handler(ledger, data)
-        finally:
-            ledger.conn.close()
+            result = _attempt(event_name, handler, raw, root)
+        except Exception as exc:
+            if event_name not in GATING_EVENTS or not _is_locked(exc):
+                raise
+            result = _attempt(event_name, handler, raw, root)
     except Exception as exc:
-        return "", f"swarm_ledger.hooks {event_name}: {exc}\n"
+        answer = json.dumps(_cannot_check(exc)) if event_name in GATING_EVENTS else ""
+        return answer, f"swarm_ledger.hooks {event_name}: {exc}\n"
 
     return (json.dumps(result) if result is not None else ""), ""

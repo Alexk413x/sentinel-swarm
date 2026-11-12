@@ -28,6 +28,7 @@ from .identity import (
     EFFORT_LEVELS,
     Caller,
     LedgerError,
+    SpawnDeferred,
     child_roles_of,
     require_role,
     require_run,
@@ -39,13 +40,23 @@ from .oversight import OversightMixin
 from .queries import UNPARK_SET, latest_live_oracle
 from .repo import RepoMixin
 from .report import ReportMixin
-from .review import ReviewMixin, agent_names, live_agents, run_summary
+from .review import ReviewMixin, live_agents, run_summary
 from .settings import Settings, load_settings
 from .waits import WaitsMixin, open_file_waits
 
 _RESUME_POINTER = "Re-read your brief and your inbox in the ledger."
 _RESUME_WINDOW_S = 120
 _PHASE_STATES = ("planned", "unlocked", "working", "handed_up", "approved")
+# The only moves phase_update makes. Approved is final. unlocked -> planned is the Oracle's
+# re-lock of a phase nobody has started. The ledger's own writers (a returned phase review, a
+# change-request fix wave) reopen a handed-up phase directly and do not pass through here.
+_PHASE_MOVES = {
+    "planned": ("unlocked",),
+    "unlocked": ("working", "planned"),
+    "working": ("handed_up",),
+    "handed_up": ("approved", "working"),
+    "approved": (),
+}
 _LIVE_RUN = "state IN ('active', 'paused')"
 SLUG_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 # A build command that serves or watches reloads on edits, and the Driver must test the build
@@ -591,7 +602,6 @@ class Ledger(
                 (run_id,),
             )
         )
-        names = agent_names(conn, run_id)
         files = dict_rows(
             conn.execute(
                 "SELECT files.* FROM files "
@@ -602,7 +612,8 @@ class Ledger(
             )
         )
         for file_row in files:
-            file_row["owner"] = names.get(file_row.pop("owner_agent_id"))
+            # files.owner_agent_id holds the owner's agent name, not an agent id.
+            file_row["owner"] = file_row.pop("owner_agent_id")
         issues = dict_rows(
             conn.execute(
                 "SELECT * FROM issues WHERE run_id = ? AND state = 'open' ORDER BY issue_id",
@@ -796,11 +807,22 @@ class Ledger(
                 c.phase_id != phase_id or state not in ("working", "handed_up")
             ):
                 raise LedgerError("a Manager sets only its own phase to working or handed_up")
-            if (
-                conn.execute("SELECT 1 FROM phases WHERE phase_id = ?", (phase_id,)).fetchone()
-                is None
-            ):
-                raise LedgerError(f"unknown phase_id {phase_id!r}")
+            phase_row = conn.execute(
+                "SELECT state, run_id FROM phases WHERE phase_id = ?", (phase_id,)
+            ).fetchone()
+            if phase_row is None or phase_row["run_id"] != c.run_id:
+                raise LedgerError(f"unknown phase_id {phase_id!r} in this run")
+            current = phase_row["state"]
+            legal = _PHASE_MOVES.get(current, ())
+            if state not in legal:
+                raise LedgerError(
+                    f"phase {phase_id} is {current}, so phase_update cannot set it to {state}. "
+                    f"Legal next states: {', '.join(legal) if legal else 'none (final)'}"
+                )
+            if current == "unlocked" and state == "planned":
+                if c.role != "oracle":
+                    raise LedgerError("only the Oracle re-locks a phase")
+                self._require_phase_unstarted(conn, phase_id)
 
             if state == "approved":
                 self._approve_phase(conn, phase_id)
@@ -832,6 +854,23 @@ class Ledger(
         if state == "handed_up":
             phase["next"] = self.next_step(wakeup)
         return phase
+
+    @staticmethod
+    def _require_phase_unstarted(conn: sqlite3.Connection, phase_id: int) -> None:
+        # Started means any trace of work: an agent (live or ended) in the phase, a module, or a
+        # brief for the phase.
+        for table, label in (
+            ("agents", "an agent"),
+            ("modules", "a module"),
+            ("briefs", "a brief"),
+        ):
+            row = conn.execute(
+                f"SELECT 1 FROM {table} WHERE phase_id = ? LIMIT 1", (phase_id,)
+            ).fetchone()
+            if row is not None:
+                raise LedgerError(
+                    f"phase {phase_id} already has {label}, so it has started and stays unlocked"
+                )
 
     @staticmethod
     def _require_deps_approved(conn: sqlite3.Connection, phase_id: int) -> None:
@@ -963,6 +1002,11 @@ class Ledger(
                 (phase_id, name),
             )
             module_id = cur.lastrowid
+            # The Manager's first module starts the phase, so no prompt step has to.
+            conn.execute(
+                "UPDATE phases SET state = 'working' WHERE phase_id = ? AND state = 'unlocked'",
+                (phase_id,),
+            )
             conn.executemany(
                 "INSERT OR IGNORE INTO module_deps (module_id, depends_on_module_id) VALUES (?, ?)",
                 [(module_id, dep_id) for dep_id in depends_on],
@@ -1536,7 +1580,7 @@ class Ledger(
                 (brief["phase_id"],),
             ).fetchone()
             if paused is not None:
-                raise LedgerError(
+                raise SpawnDeferred(
                     f"phase {brief['phase_id']} is paused: {paused['pause_reason']}; call "
                     "phase_resume before spawning into it"
                 )
@@ -1585,7 +1629,7 @@ class Ledger(
             )
             live = own_live + other_swarms
             if live >= cap:
-                raise LedgerError(
+                raise SpawnDeferred(
                     f"the parallelism cap of {cap} is reached ({live} live sessions, "
                     f"{other_swarms} from other swarms on this machine); call agent_spawn again "
                     "after a release frees a slot"
@@ -1598,7 +1642,7 @@ class Ledger(
                 (brief["run_id"], role),
             ).fetchone()["n"]
             if live_role >= role_cap:
-                raise LedgerError(
+                raise SpawnDeferred(
                     f"the {role} parallelism cap of {role_cap} is reached ({live_role} live "
                     f"{role} sessions); call agent_spawn again after a release frees a slot"
                 )

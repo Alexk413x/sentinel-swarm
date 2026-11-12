@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import sys
 from pathlib import Path
 
@@ -495,3 +496,30 @@ def test_the_monitor_prints_an_owed_push_once(ledger: Ledger, claude: FakeClaude
         )
     ]
     assert watch.poll(ledger.conn, now) == (True, [])
+
+
+def test_the_listener_prints_a_directive_outside_the_ansi_code_page(
+    ledger: Ledger, claude: FakeClaude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ledger.run_start(prd="Build X", session_id="sess-1")
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "INSERT INTO directives (run_id, source, sender_name, body) "
+            "VALUES (1, 'watchdog', 'watchdog', 'coder-1 is stuck → resume it')"
+        )
+    # A piped stdout on Windows under -I -S: the ANSI code page, which has no arrow.
+    raw = io.BytesIO()
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(raw, encoding="cp1252"))
+    real_poll, calls = watch.poll, []
+
+    def poll_once(conn, now, owner=None):
+        calls.append(now)
+        return real_poll(conn, now, owner) if len(calls) == 1 else (False, [])
+
+    monkeypatch.setattr(watch, "poll", poll_once)
+
+    assert watch.main(["--repo", str(ledger.repo_root)]) == 0
+
+    sys.stdout.flush()
+    printed = raw.getvalue().decode("utf-8")
+    assert "Watchdog directive 1: coder-1 is stuck → resume it" in printed

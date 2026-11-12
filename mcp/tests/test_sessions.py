@@ -325,24 +325,26 @@ def test_agent_spawn_starts_the_session_with_the_role_files_flags(
         ledger.session_name(ctx.run_id, "lead-p1-module-1"),
     ]
     options = args[4:]
-    assert options[:8] == [
+    assert options[:10] == [
         "--agent",
         "swarm-lead",
         "--model",
         "sonnet",
         "--effort",
         "medium",
+        "--permission-mode",
+        "bypassPermissions",
         "--strict-mcp-config",
         "--mcp-config",
     ]
-    config = json.loads(options[8])
+    config = json.loads(options[10])
     assert config["mcpServers"]["swarm-ledger"] == {
         "type": "http",
         "url": "http://127.0.0.1:4321/mcp",
         "headers": {"Authorization": f"Bearer {auth.read_token(host)}"},
     }
     assert config["mcpServers"]["codebase-kg"]["command"] == "python"
-    assert options[9:] == [
+    assert options[11:] == [
         "--allowedTools",
         "Read,SendMessage,mcp__swarm-ledger",
         "--settings",
