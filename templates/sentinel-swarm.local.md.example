@@ -56,6 +56,12 @@ watchdog:
   # The context window in tokens. Leave it unset to take it from the model: 1000000 for
   # Sonnet, Opus, and Fable, 200000 for Haiku. A value here applies to every session.
   # context_window: 1000000
+  # The context window per model family, for a family whose window differs from the built-in
+  # one. A key is a lower-case part of the model name; "default" covers every other model.
+  # Unset, Haiku gets 200000 and every other model 1000000. context_window above wins.
+  # context_windows:
+  #   haiku: 200000
+  #   default: 1000000
   # The ledger server exits after this many minutes with no active run, or a paused
   # run, and no session of the run running. A parked Manager or Lead whose work is done
   # is released after this many minutes parked.
@@ -189,6 +195,18 @@ role_parallelism_cap:
 # call finds none free, up to this many, and stops one after 60 seconds idle. 0 runs every
 # call in the server process, one at a time.
 max_workers: 8
+# USD per million tokens, per model family, for the report's costs. A family listed here
+# replaces only the rates it names; a family with no built-in row (a new model) needs all
+# five. A key is a lower-case part of the model name; the longest match wins. Unset, the
+# built-in list prices apply: fable 10/50/0.25/12.5/20, opus 4/20/0.20/5/8,
+# sonnet 2/10/0.20/2.5/4, haiku 1/5/0.10/1.25/2 (input/output/cache read/5m write/1h write).
+# pricing:
+#   sonnet:
+#     input: 2.0
+#     output: 10.0
+#     cache_read: 0.20
+#     cache_write_5m: 2.5
+#     cache_write_1h: 4.0
 ---
 
 # sentinel-swarm local settings

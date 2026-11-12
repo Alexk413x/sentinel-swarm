@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +38,16 @@ def _no_managed_settings(
 
     missing = tmp_path_factory.mktemp("managed") / "managed-settings.json"
     monkeypatch.setattr(permissions, "managed_settings_path", lambda platform=None: missing)
+
+
+@pytest.fixture(autouse=True)
+def _default_prices() -> Iterator[None]:
+    # load_settings applies the settings file's `pricing` to the process; a test that loads
+    # one must not change the next test's rates.
+    from swarm_ledger import pricing
+
+    yield
+    pricing.configure(None)
 
 
 @pytest.fixture(autouse=True)

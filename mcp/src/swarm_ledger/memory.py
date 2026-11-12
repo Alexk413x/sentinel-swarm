@@ -96,7 +96,12 @@ def default_parallelism_cap(total: int | None) -> int | None:
 
 def _mac_free_mb() -> int | None:
     output = subprocess.run(
-        ["vm_stat"], capture_output=True, text=True, timeout=_COMMAND_TIMEOUT_S, check=True
+        ["vm_stat"],
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=_COMMAND_TIMEOUT_S,
+        check=True,
     ).stdout
     return parse_vm_stat(output)
 
@@ -128,7 +133,8 @@ def process_rss_mb(pid: int) -> int | None:
         output = subprocess.run(
             ["ps", "-o", "rss=", "-p", str(pid)],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_COMMAND_TIMEOUT_S,
         ).stdout.strip()
         return int(output) // 1024 if output else None
@@ -157,19 +163,29 @@ def _windows_rss_mb(pid: int) -> int | None:
         ]
 
     query_limited_information = 0x1000
-    handle = ctypes.windll.kernel32.OpenProcess(query_limited_information, False, pid)
+    # Private WinDLLs: argtypes set on the shared ctypes.windll would change it for every module.
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    handle_type, dword = wintypes.HANDLE, wintypes.DWORD
+    kernel32.OpenProcess.restype = handle_type
+    kernel32.OpenProcess.argtypes = [dword, wintypes.BOOL, dword]
+    kernel32.CloseHandle.argtypes = [handle_type]
+    psapi.GetProcessMemoryInfo.argtypes = [
+        handle_type,
+        ctypes.POINTER(ProcessMemoryCounters),
+        dword,
+    ]
+    handle = kernel32.OpenProcess(query_limited_information, False, pid)
     if not handle:
         return None
     try:
         counters = ProcessMemoryCounters()
         counters.cb = ctypes.sizeof(ProcessMemoryCounters)
-        if not ctypes.windll.psapi.GetProcessMemoryInfo(
-            handle, ctypes.byref(counters), counters.cb
-        ):
+        if not psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
             return None
         return int(counters.WorkingSetSize // (1024 * 1024))
     finally:
-        ctypes.windll.kernel32.CloseHandle(handle)
+        kernel32.CloseHandle(handle)
 
 
 def session_pids() -> dict[str, int]:

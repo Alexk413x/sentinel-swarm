@@ -7,6 +7,7 @@ import socket
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from helpers import ledger_for, make_host
@@ -122,7 +123,7 @@ def _kinds(findings: list[watchdog.Finding]) -> list[tuple[str, str]]:
     return [(f.name, f.kind) for f in findings]
 
 
-def _scan(ledger: Ledger, claude: FakeClaude, now: datetime, **settings: int):
+def _scan(ledger: Ledger, claude: FakeClaude, now: datetime, **settings: Any):
     return watchdog.scan(ledger.conn, claude.listing, now, WatchdogSettings(**settings))
 
 
@@ -677,7 +678,7 @@ class Exits:
         self.count += 1
 
 
-def _dog(ledger: Ledger, exits: Exits, **settings: int) -> watchdog.Watchdog:
+def _dog(ledger: Ledger, exits: Exits, **settings: Any) -> watchdog.Watchdog:
     return watchdog.Watchdog(
         ledger.repo_root,
         ledger.conn,
@@ -718,6 +719,12 @@ def test_a_failed_session_listing_skips_the_pass(
     assert _directives(ledger) == []
 
 
+def _resume_claim_expired(ledger: Ledger) -> None:
+    # The claim of an Oracle resume lasts 120 real seconds; the ticks here step a made-up clock.
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE agents SET resume_started_at = NULL")
+
+
 def _wakes(ledger: Ledger) -> list[str]:
     return [
         r["reason"]
@@ -745,7 +752,9 @@ def test_the_watchdog_wakes_a_stopped_oracle_at_most_every_five_minutes_then_pau
     assert claude.resumed == [(ORACLE, message)]
     dog.tick(now + timedelta(minutes=2))
     assert len(claude.resumed) == 1
+    _resume_claim_expired(ledger)
     dog.tick(now + timedelta(minutes=6))
+    _resume_claim_expired(ledger)
     dog.tick(now + timedelta(minutes=12))
     assert len(claude.resumed) == 3
     assert len(_wakes(ledger)) == 3
@@ -767,6 +776,7 @@ def test_oracle_activity_resets_the_wake_attempts(
     dog = _dog(ledger, Exits())
     dog.tick(now)
     for minutes in (1, 6, 12):
+        _resume_claim_expired(ledger)
         dog.tick(now + timedelta(minutes=minutes))
     with write_tx(ledger.conn) as conn:
         conn.execute(
@@ -774,6 +784,7 @@ def test_oracle_activity_resets_the_wake_attempts(
             (watchdog.stamp(now + timedelta(minutes=13)), ORACLE),
         )
 
+    _resume_claim_expired(ledger)
     dog.tick(now + timedelta(minutes=18))
 
     assert ledger.conn.execute("SELECT state FROM runs").fetchone()[0] == "active"
