@@ -95,6 +95,10 @@ const paying = new Set<Promise<void>>()
 const sendingTexts = new Map<string, number>()
 let selfWakePending = true
 let selfWakeTimer = false
+let panelTimer = false
+// The ledger server's port and token per repo, read from .sentinel-swarm/ once and read again
+// only after a post fails, so a server restarted on a new port is found.
+const endpoints = new Map<string, { port: number; token: string }>()
 
 const PANE = 'swarm-run'
 const TITLE = 'Swarm'
@@ -131,7 +135,7 @@ export const register: Register = on => {
     const result = await next(e)
     const text = field(answer, 'additionalContext')
     return text === undefined ? result : { ...result, additionalContext: [...(result.additionalContext ?? []), text] }
-  })
+  }).catch(($, e, next) => next(e))
 
   for (const { tool, event, role, skip } of PRE_TOOL_GATES) {
     on('tool.call', { tool }, ($, e, next) => (skip?.(e) ? next(e) : judge($, e, next, event, role))).catch(($, e, next) =>
@@ -172,13 +176,13 @@ export const register: Register = on => {
       void pay($, s)
     }
     return next(e)
-  })
+  }).catch(($, e, next) => next(e))
 
   on('classic.PreCompact', async ($, e, next) => {
     const s = await active($)
     if (s !== null) await runHook($, s, 'pre_compact', { ...e, [TRANSPORT_KEY]: 'mod' }).catch(() => null)
     return next(e)
-  })
+  }).catch(($, e, next) => next(e))
 
   on('classic.Stop', async ($, e, next) => {
     const s = await active($)
@@ -189,13 +193,13 @@ export const register: Register = on => {
     const result = await next(e)
     const reason = isRecord(answer) && answer.decision === 'block' ? String(answer.reason ?? '') : undefined
     return reason ? { ...result, block: reason } : result
-  })
+  }).catch(($, e, next) => next(e))
 
   on('classic.SessionEnd', async ($, e, next) => {
     const s = await active($)
     if (s !== null) await runHook($, s, 'session_end', { ...e, [TRANSPORT_KEY]: 'mod' }).catch(() => null)
     return next(e)
-  })
+  }).catch(($, e, next) => next(e))
 
   // SendMessage resolves a name after the hooks, and a stale or Remote Control session can carry
   // the same name: a swarm session name goes to the live session by id instead.
@@ -246,17 +250,22 @@ export const register: Register = on => {
       inputSchema: REPO_INPUT,
       isDeferred: true,
     })
-    $.clock.every(REFRESH_MS, () => void refreshIfOpen($))
+    if (!panelTimer) {
+      panelTimer = true
+      $.clock.every(REFRESH_MS, () => void refreshIfOpen($))
+    }
     if ((await active($)) !== null) keepSelfWake($)
     return next(e)
   })
 
-  on('tool.call', { tool: OPEN_TOOL }, async ($, e) => ({ result: await openPanel($, typeof e.repo === 'string' ? e.repo : '') }))
+  on('tool.call', { tool: OPEN_TOOL }, async ($, e) => ({ result: await openPanel($, typeof e.repo === 'string' ? e.repo : '') })).catch(
+    (_$, _e, next) => ({ result: `The swarm panel did not open: ${errorText(next.error)}` }),
+  )
 
   on('tool.call', { tool: STATUS_TOOL }, async ($, e) => {
     const repo = (typeof e.repo === 'string' && e.repo.trim()) || (await $.session.cwd())
     return { result: JSON.stringify({ running: await isRunning($, repo), repo }) }
-  })
+  }).catch((_$, _e, next) => ({ result: `The swarm status is unknown: ${errorText(next.error)}` }))
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const elements = $.ui.resolve(e)
@@ -648,11 +657,17 @@ async function adopt(
   $: EngineInterface,
   e: { session_id: string; transcript_path: string; cwd: string; agent_type?: string; agent_id?: string },
 ): Promise<SentinelSwarmSession | null> {
+  // A subagent's start says nothing about the session, so it changes nothing.
+  if (e.agent_id !== undefined) return null
   const role = ROLE_TYPE.exec(e.agent_type ?? '')?.[1]
-  const found: SentinelSwarmSession | null =
-    role !== undefined && e.agent_id === undefined
+  let found: SentinelSwarmSession | null =
+    role !== undefined
       ? { sessionId: e.session_id, agentType: e.agent_type ?? '', role, cwd: e.cwd, transcriptPath: e.transcript_path }
       : null
+  // A later start of an adopted session (after a compact or a clear) may carry no agent_type:
+  // it never downgrades the session.
+  const held = await active($)
+  if (found === null && held !== null && held.sessionId === e.session_id) found = held
   session = found
   await $.state.set(sessionRef, found).catch(() => undefined)
   return found
@@ -685,7 +700,33 @@ async function runHook($: EngineInterface, s: SentinelSwarmSession, event: strin
 }
 
 async function post($: EngineInterface, s: SentinelSwarmSession, event: string, payload: Record<string, unknown>): Promise<Answer> {
-  const [port, token] = await Promise.all([serverPort($, s.cwd), serverToken($, s.cwd)])
+  const cached = endpoints.get(s.cwd)
+  try {
+    return await postTo($, s, event, payload, cached ?? (await readEndpoint($, s.cwd)))
+  } catch (err) {
+    if (cached === undefined) throw err
+    // The server may have restarted: a changed port or token is tried once before the shim.
+    endpoints.delete(s.cwd)
+    const fresh = await readEndpoint($, s.cwd)
+    if (fresh.port === cached.port && fresh.token === cached.token) throw err
+    return postTo($, s, event, payload, fresh)
+  }
+}
+
+async function readEndpoint($: EngineInterface, cwd: string): Promise<{ port: number; token: string }> {
+  const [port, token] = await Promise.all([serverPort($, cwd), serverToken($, cwd)])
+  const found = { port, token }
+  endpoints.set(cwd, found)
+  return found
+}
+
+async function postTo(
+  $: EngineInterface,
+  s: SentinelSwarmSession,
+  event: string,
+  payload: Record<string, unknown>,
+  { port, token }: { port: number; token: string },
+): Promise<Answer> {
   const answer = await within(
     $,
     SLOW_MS[event] ?? FAST_MS,

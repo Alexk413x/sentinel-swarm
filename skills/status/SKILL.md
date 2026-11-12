@@ -19,7 +19,8 @@ while a run is live and after it has finished.
 From the root of the working tree the swarm is building in:
 
 ```bash
-python - <<'PY'
+python="$(command -v py >/dev/null 2>&1 && echo 'py -3' || { command -v python3 >/dev/null 2>&1 && echo python3; } || echo python)"
+$python - <<'PY'
 import sqlite3, pathlib, sys
 db = pathlib.Path(".sentinel-swarm/ledger.db")
 if not db.is_file():
@@ -91,12 +92,11 @@ for d in q("SELECT * FROM deferrals WHERE run_id=? AND state='open' ORDER BY def
 PY
 ```
 
-Use `python3` in place of `python` on a host where only that name exists.
-
 ## Recent activity
 
 ```bash
-python - <<'PY'
+python="$(command -v py >/dev/null 2>&1 && echo 'py -3' || { command -v python3 >/dev/null 2>&1 && echo python3; } || echo python)"
+$python - <<'PY'
 import sqlite3
 conn = sqlite3.connect("file:.sentinel-swarm/ledger.db?mode=ro", uri=True)
 conn.row_factory = sqlite3.Row
@@ -108,7 +108,8 @@ PY
 ## Latest scores for one file
 
 ```bash
-python - <<'PY'
+python="$(command -v py >/dev/null 2>&1 && echo 'py -3' || { command -v python3 >/dev/null 2>&1 && echo python3; } || echo python)"
+$python - <<'PY'
 import sqlite3
 FILE_ID = 1
 conn = sqlite3.connect("file:.sentinel-swarm/ledger.db?mode=ro", uri=True)

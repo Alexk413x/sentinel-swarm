@@ -8,7 +8,8 @@ frontmatter, and `mcp/launch/ledger.py setup` removes any ledger command hook it
 finds in one.
 
 The mod acts only in a session whose `agent_type` is `swarm-<role>` and that has no
-`agent_id`, so every other session in the host repo is left alone.
+`agent_id`, so every other session in the host repo is left alone. A later
+`SessionStart` of that session without an `agent_type` keeps it adopted.
 `register.test.ts` holds its tests; run them with `claude plugin test .`. See "The mod"
 in `knowledge/prd/07-hooks-and-enforcement.md` for the full contract.
 
@@ -22,7 +23,8 @@ Oracle unless `claude plugin list` shows sentinel-swarm enabled, and the ledger 
 ## How a hook reaches the ledger
 
 The mod posts each hook's input to `POST /hook/<event>` itself, with the token and
-the repo header, and falls back to running the shim when the post fails. It also
+the repo header, and falls back to running the shim when the post fails. It reads the port and token once
+and again only after a failed post, so a server restarted on a new port is found. It also
 posts `owed`, `wake_sent`, `self_owed`, `inbox_take`, `inbox_ack`, and `inbox_release`:
 it pays the session's owed wake-ups with `$.session.send`, submits a recorded test
 result to its own idle session with `$.prompt.submit`, and reads the inbox into a
@@ -64,7 +66,7 @@ The per-event behavior lives in `mcp/src/swarm_ledger/hooks/events.py`, as funct
 
 ## Hooks per role
 
-| Event | Matcher | Ledger hook event | Roles |
+| Claude Code event (mod hook) | Matcher | Ledger hook event | Roles |
 |---|---|---|---|
 | `SessionStart` | all | `session_start` | all |
 | `PreToolUse` | `Agent` | `pre_agent`, which denies, except a Driver's `map-driver` and `map-reviewer` calls | all |
@@ -77,7 +79,7 @@ The per-event behavior lives in `mcp/src/swarm_ledger/hooks/events.py`, as funct
 | `PreToolUse` | `mcp__swarm-ledger__.*` | `pre_ledger` | all |
 | `tool.check` (mod hook) | Claude Code's own `ask` that a person would answer | `permission_request`, `permission_wait`, `permission_close`, which hold the call for the run panel's Allow or Deny | all |
 | `PostToolUse` | `SendMessage\|PushNotification\|Monitor\|Write\|Edit\|MultiEdit\|NotebookEdit` | `post_any` | all |
-| `PostToolUse` | all, `async: true` | `post_activity`, which skips the tools `post_any` covers | all |
+| `PostToolUse` | all, posted without waiting | `post_activity`, which skips the tools `post_any` covers | all |
 | `PostToolUse` | `Bash\|PowerShell` | `post_shell` | coder |
 | `PreCompact` | all | `pre_compact` | all |
 | `Stop` | all | `stop` | all |
@@ -88,7 +90,7 @@ The per-event behavior lives in `mcp/src/swarm_ledger/hooks/events.py`, as funct
 
 `post_any` stays synchronous after the tools whose records the Stop hook and
 `handoff_submit` read: owed wake-ups, notifications, the watchdog arm time, and stale
-files. `post_activity` runs in the background after every other tool and records only
+files. `post_activity` is posted without waiting after every other tool and records only
 the heartbeat, the current activity, and the transcript path, sets an idle agent to
 working, and records each `Grep` and `Glob` as a graph gap. The mod and the shim stamp the input with the time it fired, so a `post_activity` that
 lands after the agent's Stop hook does not set the agent working again.

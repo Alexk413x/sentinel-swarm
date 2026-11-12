@@ -159,8 +159,11 @@ the project's code in the host repo itself. Tracking is `local` only.
 
 - Every connection opens with WAL, `synchronous=NORMAL`, foreign keys on, and a 5-second
   busy timeout. Every write runs inside `BEGIN IMMEDIATE`.
-- `migrate` applies `schema.sql`, at schema version 1, every time a connection opens the
-  ledger for writing. Every statement in it is `IF NOT EXISTS`, so a ledger from an
+- `migrate` applies `schema.sql`, at schema version 1, when a connection opens the ledger
+  for writing and the database's `PRAGMA user_version` is not the digest of the file (a
+  ledger an earlier release made holds 0), then stores the digest. An open that finds the
+  digest and the version row reads only: it runs no script and takes no write lock, which
+  matters because every hook opens a ledger. Every statement in it is `IF NOT EXISTS`, so a ledger from an
   earlier release gains the tables and indexes added since. It gains no new column: a
   release that adds a column to an existing table still needs a fresh ledger (delete
   `.sentinel-swarm/ledger.db`). The run panel opens the ledger read-only, so it skips a

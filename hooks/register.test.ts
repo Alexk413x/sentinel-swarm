@@ -86,6 +86,68 @@ describe('which sessions the mod acts in', () => {
   })
 })
 
+describe('a later SessionStart', () => {
+  test('without an agent_type does not switch the gates off in an adopted session', async ($, on) => {
+    const w = world(on, { answers: { pre_write: DENY('no') } })
+    await start($)
+    await $.classic.SessionStart({ source: 'compact', session_id: 'sess-lead', cwd: CWD, transcript_path: 't.jsonl' } as never)
+    const result = await $.tool.call({ tool: 'Write', file_path: 'a.txt', content: 'x' })
+    expect(JSON.stringify(result)).toContain('no')
+    expect(w.writes).toEqual([])
+  })
+
+  test('from a subagent changes nothing and posts nothing', async ($, on) => {
+    const w = world(on, { answers: { pre_write: DENY('no') } })
+    await start($)
+    const before = w.posts.length
+    await $.classic.SessionStart({ source: 'startup', session_id: 'sess-lead', agent_id: 'sub-1', agent_type: 'swarm-coder', cwd: CWD, transcript_path: 't.jsonl' } as never)
+    expect(w.posts.length).toBe(before)
+    const result = await $.tool.call({ tool: 'Write', file_path: 'a.txt', content: 'x' })
+    expect(JSON.stringify(result)).toContain('no')
+  })
+
+  test('from another session without a role ends the adoption', async ($, on) => {
+    const w = world(on, { answers: { pre_write: DENY('no') } })
+    await start($)
+    await $.classic.SessionStart({ source: 'startup', session_id: 'sess-other', cwd: CWD, transcript_path: 't.jsonl' } as never)
+    await $.tool.call({ tool: 'Write', file_path: 'a.txt', content: 'x' })
+    expect(w.writes.length).toBe(1)
+  })
+})
+
+describe('the ledger server endpoint', () => {
+  test('is read once, and again after a failed post finds the server on a new port', async ($, on) => {
+    const reads: string[] = []
+    const urls: string[] = []
+    let port = 47999
+    on('fs.read', (_$, e) => {
+      const path = e.path.replace(/\\/g, '/')
+      reads.push(path)
+      if (path === `${CWD}/.sentinel-swarm/server.json`) return { value: JSON.stringify({ port }) }
+      if (path === `${CWD}/.sentinel-swarm/http-token`) return { value: `${TOKEN}\n` }
+      throw new Error(`ENOENT: ${e.path}`)
+    })
+    on('http.fetch', (_$, e) => {
+      urls.push(e.url)
+      if (!e.url.includes(`:${port}/`)) throw new Error('connection refused')
+      return { value: { status: 200, ok: true, headers: { 'x-sentinel-swarm-repo': encodeURIComponent(CWD) }, text: '' } }
+    })
+    on('process.run', () => ({ value: { ...RAN_OK, exitCode: 1, stdout: '' } }))
+    on('classic.SessionStart', () => ({}))
+    on('classic.PreCompact', () => ({}))
+    await start($)
+    await $.classic.PreCompact({} as never)
+    await $.classic.PreCompact({} as never)
+    expect(reads.filter(path => path.endsWith('server.json')).length).toBe(1)
+    port = 48123
+    await $.classic.PreCompact({} as never)
+    expect(urls[urls.length - 1]).toBe('http://127.0.0.1:48123/hook/pre_compact')
+    expect(reads.filter(path => path.endsWith('server.json')).length).toBe(2)
+    await $.classic.PreCompact({} as never)
+    expect(reads.filter(path => path.endsWith('server.json')).length).toBe(2)
+  })
+})
+
 describe('gates', () => {
   test('a ledger deny stops the tool and names the reason', async ($, on) => {
     const w = world(on, { answers: { pre_write: DENY('only a Coder writes project files') } })

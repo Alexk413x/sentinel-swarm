@@ -18,7 +18,11 @@
   from a session the mod never checked in for. See "Launch" in
   [11-setup-and-settings.md](11-setup-and-settings.md) and "The mod check-in" below.
 
-| Event | Matcher | Ledger hook event | Roles |
+The mod runs one function hook per row, in a swarm role session only. The first column
+is the Claude Code event the hook subscribes to (`classic.<Event>` or `tool.call`), not
+a command hook in a role file; the matcher is the tool name the hook filters on.
+
+| Claude Code event (mod hook) | Matcher | Ledger hook event | Roles |
 |---|---|---|---|
 | `SessionStart` | all | `session_start` | all |
 | `PreToolUse` | `Agent` | `pre_agent` | all |
@@ -31,7 +35,7 @@
 | `PreToolUse` | `mcp__swarm-ledger__.*` | `pre_ledger` | all |
 | `tool.check` (mod hook) | Claude Code's own `ask` that a person would answer | `permission_request`, `permission_wait`, `permission_close` | all |
 | `PostToolUse` | `SendMessage\|PushNotification\|Monitor\|Write\|Edit\|MultiEdit\|NotebookEdit` | `post_any` | all |
-| `PostToolUse` | all, `async: true` | `post_activity` | all |
+| `PostToolUse` | all, posted without waiting | `post_activity` | all |
 | `PostToolUse` | `Bash\|PowerShell` | `post_shell` | Coder |
 | `PreCompact` | all | `pre_compact` | all |
 | `Stop` | all | `stop` | all |
@@ -90,6 +94,9 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
 
 - **Which sessions.** At `classic.SessionStart` the mod takes every session whose
   `agent_type` is `swarm-<role>` on the main thread (no `agent_id`, so not a subagent).
+  A `SessionStart` that carries an `agent_id` is ignored. A later `SessionStart` of the
+  adopted session id with no `swarm-<role>` `agent_type` (after a compact or a clear)
+  keeps the session; only a different session id without a role ends the adoption.
   It keeps the session id, the transcript path, the folder, and the role in `$.state`,
   so a reload of the module keeps them. Every hook returns `next(e)` at once in any
   other session. The mod does not read the role file.
@@ -111,8 +118,10 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   name, so `pre_send_message` would refuse it. The `SendMessage` gate passes a call
   whose `message` is a wake-up text the mod is sending at that moment: the ledger
   ran the recipient check when it listed that wake-up.
-- **Fail closed.** When the post fails (no `server.json`, no valid token, no 200 with
-  the repo header, or no answer within 10 s), the mod runs the shim itself, `python3`
+- **Fail closed.** The mod reads `server.json` and `http-token` once per repo and keeps
+  them in memory. When the post fails (no `server.json`, no valid token, no 200 with
+  the repo header, or no answer within 10 s), it reads both again, and posts once more
+  if the port or token changed (a restarted server). Otherwise the mod runs the shim itself, `python3`
   then `python .sentinel-swarm/hook.py hook <event>`, which tries the server and then
   runs the hook through `mcp/launch/ledger.py` on the base interpreter. When neither
   answers, a gate denies with "sentinel-swarm cannot check this call: <reason>; run
@@ -151,7 +160,9 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
 - **Stability.** Claude Code documents the mod API as early access that moves between
   releases. The mod facts in [13-platform-facts.md](13-platform-facts.md) hold for the
   Claude Code build and date shown with each. A guard without a `.catch` fails open, so
-  every gate carries one.
+  every gate carries one, and so does every other hook: the `classic.*` hooks fall
+  through to `next(e)`, and the `open_panel` and `swarm_status` tool handlers return an
+  error result.
 - **Tests.** `hooks/register.test.ts` runs under `claude plugin test .`.
 
 ## Rules every ledger hook follows
@@ -282,14 +293,19 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   for the tools `post_any` covers, so the two never both run for
   one call. Otherwise it writes the heartbeat and current activity and records the
   transcript path. It sets an idle agent to working only when the agent's last move to
-  `idle` came before `sentinel_swarm_fired_at`: an async hook can land after the Stop
+  `idle` came before `sentinel_swarm_fired_at`: a hook posted without waiting can land after the Stop
   hook, and the tool call it reports came before the stop. After a `Grep` or `Glob` by a
   swarm session, it writes a `graph_gaps` row: the run, the agent, the tool, the
   pattern, the path, and the first 20 result paths from `tool_response`. codebase-kg's
   own gate decides whether the search may run; this only records it.
-- `post_shell`: after a Coder's shell call, lists changed paths with `git status`.
-  A change outside the Coder's claim, other claimed files of the run, the records
-  folder, and `knowledge/` is recorded as a `violation` event and posted to its Lead.
+- `post_shell`: after a Coder's shell call, lists changed paths with `git status
+  --porcelain -z`, which gives NUL-separated, unquoted paths (a rename record carries
+  the old path as a second field, which is skipped). A change outside the Coder's claim,
+  other claimed files of the run, the records folder, and `knowledge/` is recorded as a
+  `violation` event, one path per line in its reason, and posted to its Lead. There is
+  no baseline of what was already changed before the command, so each stray path is
+  reported once per agent: a path an earlier `violation` event of the same agent
+  names is not reported again.
 - `pre_compact`: adds one to the agent's `context_overflow_count`.
 - `stop`: first, for any role, when the caller owes itself an unsent test-result
   wake-up and the stop does not follow the hook's own block, marks it sent and blocks

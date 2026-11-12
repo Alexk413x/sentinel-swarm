@@ -9,7 +9,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Literal
 
-from . import setup
+from . import env, setup
 from .sessions import child_env, claude_binary, dev_channel_args
 from .sessions import plugin_load_problem as _plugin_load_problem
 
@@ -135,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--transcript", type=Path, help="with --headless: the stream-json file")
     parser.add_argument("prompt")
     args = parser.parse_args(argv)
+    env.utf8_stdout()
     if args.transcript is not None and not args.headless:
         parser.error("--transcript works only with --headless")
     mode: Mode = "bg" if args.bg else "headless" if args.headless else "interactive"

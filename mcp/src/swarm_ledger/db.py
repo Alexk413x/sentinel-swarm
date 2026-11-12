@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import zlib
 from collections.abc import Collection, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -92,16 +93,43 @@ def write_tx(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
         conn.execute("COMMIT")
 
 
+def _schema_stamp(script: str) -> int:
+    # A 31-bit digest of schema.sql, kept in the database's user_version: it fits the signed
+    # 32-bit field, and a ledger an older release made holds 0, so it always migrates once.
+    return zlib.crc32(script.encode("utf-8")) & 0x7FFFFFFF
+
+
 def migrate(conn: sqlite3.Connection) -> None:
+    script = _SCHEMA_PATH.read_text(encoding="utf-8")
+    stamp = _schema_stamp(script)
+    # Reads only, so an open with nothing to migrate takes no write lock. This is the common
+    # case: every hook opens a ledger.
+    if conn.execute("PRAGMA user_version").fetchone()[0] == stamp:
+        row = _version_row(conn)
+        if row is not None:
+            if row != 1:
+                raise RuntimeError(f"unsupported ledger schema version {row}")
+            return
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_version ("
         "id INTEGER PRIMARY KEY CHECK (id = 1), "
         "version INTEGER NOT NULL)"
     )
-    row = conn.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()
-    if row is not None and row["version"] != 1:
-        raise RuntimeError(f"unsupported ledger schema version {row['version']}")
+    row = _version_row(conn)
+    if row is not None and row != 1:
+        raise RuntimeError(f"unsupported ledger schema version {row}")
     # Every statement in schema.sql is IF NOT EXISTS, so this adds new tables to an
     # existing ledger; a new column in an existing table still needs a new ledger.
-    conn.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
+    conn.executescript(script)
     conn.execute("INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 1)")
+    conn.execute(f"PRAGMA user_version = {stamp}")
+
+
+def _version_row(conn: sqlite3.Connection) -> int | None:
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'"
+    ).fetchone()
+    if exists is None:
+        return None
+    row = conn.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()
+    return None if row is None else row[0]

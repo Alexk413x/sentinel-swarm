@@ -1192,7 +1192,7 @@ def test_post_shell_flags_only_paths_no_claim_in_the_run_covers(
         "tests/test_b.py",
         "coder-p1-module-1-b",
     )
-    porcelain = "?? src/a.py\n?? src/b.py\n?? tests/test_b.py\n?? stray.txt\n"
+    porcelain = "?? src/a.py\0?? src/b.py\0?? tests/test_b.py\0?? stray.txt\0"
 
     def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess:
         assert "--untracked-files=all" in args
@@ -1209,6 +1209,64 @@ def test_post_shell_flags_only_paths_no_claim_in_the_run_covers(
         )
     ]
     assert reasons == ["changed files outside its claim: stray.txt"]
+
+
+def _post_shell_reasons(ledger: Ledger, coder: dict, monkeypatch, porcelain: str) -> list[str]:
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(args, 0, stdout=porcelain, stderr="")
+
+    monkeypatch.setattr(events.subprocess, "run", fake_run)
+    events.handle_post_shell(ledger, {"session_id": coder["agent_id"]})
+    return [
+        row["reason"]
+        for row in ledger.conn.execute(
+            "SELECT reason FROM agent_events WHERE agent_id = ? AND to_state = 'violation'",
+            (coder["agent_id"],),
+        )
+    ]
+
+
+def test_post_shell_reports_each_stray_path_once_per_agent(
+    ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _bootstrap(ledger)
+    coder = _spawn_coder(ledger, ctx, "a", "src/a.py", "tests/test_a.py")
+    _post_shell_reasons(ledger, coder, monkeypatch, "?? stray.txt\0")
+    again = _post_shell_reasons(ledger, coder, monkeypatch, "?? stray.txt\0")
+    assert again == ["changed files outside its claim: stray.txt"]
+    both = _post_shell_reasons(ledger, coder, monkeypatch, "?? stray.txt\0?? other.txt\0")
+    assert both == [
+        "changed files outside its claim: stray.txt",
+        "changed files outside its claim: other.txt",
+    ]
+    messages = ledger.conn.execute(
+        "SELECT COUNT(*) FROM messages WHERE body LIKE 'Violation:%'"
+    ).fetchone()[0]
+    assert messages == 2
+
+
+def test_post_shell_reads_nul_separated_paths_and_rename_records(
+    ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _bootstrap(ledger)
+    coder = _spawn_coder(ledger, ctx, "a", "src/a.py", "tests/test_a.py")
+    porcelain = "?? café notes.txt\0R  new name.txt\0old name.txt\0 M src/a.py\0"
+    reasons = _post_shell_reasons(ledger, coder, monkeypatch, porcelain)
+    assert reasons == ["changed files outside its claim: café notes.txt\nnew name.txt"]
+
+
+def test_pre_write_reads_a_notebook_path(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    coder1 = _spawn_coder(ledger, ctx, "1", "src/mine.py", "tests/test_mine.py")
+    _spawn_coder(ledger, ctx, "2", "src/theirs.nb", "tests/test_theirs.py")
+    data = {
+        "agent_id": coder1["agent_id"],
+        "tool_input": {"notebook_path": str(ledger.repo_root / "src" / "theirs.nb")},
+    }
+    result = events.handle_pre_write(ledger, data)
+    assert result is not None
+    assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "coder-p1-module-1-2" in result["hookSpecificOutput"]["permissionDecisionReason"]
 
 
 def test_token_totals_count_each_response_once_and_price_its_model(tmp_path: Path) -> None:

@@ -318,7 +318,7 @@ def handle_pre_write(ledger: Ledger, data: dict) -> dict | None:
     if _active_run_row(ledger) is None:
         return None
 
-    raw_path = str(_tool_input(data).get("file_path") or "")
+    raw_path = _tool_path(data)
     rel = _repo_relative(ledger, raw_path)
 
     if rel is not None and (rel == _RECORDS_DIR or rel.startswith(f"{_RECORDS_DIR}/")):
@@ -666,8 +666,7 @@ def handle_post_any(ledger: Ledger, data: dict) -> None:
             ledger.wakeups_sent(caller["agent_id"], to)
 
     if tool_name in _WRITE_TOOLS and caller["role"] == "coder":
-        raw_path = str(_tool_input(data).get("file_path") or "")
-        rel = _repo_relative(ledger, raw_path)
+        rel = _repo_relative(ledger, _tool_path(data))
         if rel is not None:
             ledger.mark_stale(caller["agent_id"], rel)
     return
@@ -725,15 +724,25 @@ def _content_paths(text: str) -> list[str]:
 
 
 def _parse_porcelain(output: str) -> list[str]:
+    # `status --porcelain -z`: NUL-separated records with unquoted paths. A rename or copy
+    # record ("XY new") is followed by one more field, the old path.
     paths = []
-    for line in output.splitlines():
-        if len(line) < 4:
+    fields = iter(output.split("\0"))
+    for field in fields:
+        if len(field) < 4:
             continue
-        rest = line[3:].strip()
-        if " -> " in rest:
-            rest = rest.split(" -> ", 1)[1].strip()
-        paths.append(rest.strip('"'))
+        paths.append(field[3:])
+        if field[0] in "RC" or field[1] in "RC":
+            next(fields, None)
     return paths
+
+
+_VIOLATION_PREFIX = "changed files outside its claim: "
+
+
+def _tool_path(data: dict) -> str:
+    tool_input = _tool_input(data)
+    return str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
 
 
 def handle_post_shell(ledger: Ledger, data: dict) -> None:
@@ -745,10 +754,12 @@ def handle_post_shell(ledger: Ledger, data: dict) -> None:
 
     try:
         result = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=all"],
+            ["git", "status", "--porcelain", "-z", "--untracked-files=all"],
             cwd=ledger.repo_root,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
@@ -778,10 +789,22 @@ def handle_post_shell(ledger: Ledger, data: dict) -> None:
         and not p.startswith(f"{_RECORDS_DIR}/")
         and not p.startswith("knowledge/")
     ]
+    # Each stray path is reported once per agent. Without a baseline, a file the Coder did not
+    # write (the user's own edit, build output) would post a new violation after every shell
+    # call. A report's paths are stored newline-separated.
+    reported = {
+        path
+        for row in ledger.conn.execute(
+            "SELECT reason FROM agent_events WHERE agent_id = ? AND to_state = 'violation'",
+            (caller["agent_id"],),
+        )
+        for path in (row["reason"] or "").removeprefix(_VIOLATION_PREFIX).split("\n")
+    }
+    violations = [p for p in dict.fromkeys(violations) if p not in reported]
     if not violations:
         return
 
-    reason = f"changed files outside its claim: {', '.join(violations)}"
+    reason = _VIOLATION_PREFIX + "\n".join(violations)
     with write_tx(ledger.conn) as conn:
         conn.execute(
             "INSERT INTO agent_events (agent_id, from_state, to_state, reason) "
@@ -794,7 +817,10 @@ def handle_post_shell(ledger: Ledger, data: dict) -> None:
     ).fetchone()
     if parent is not None:
         ledger.message_post(
-            caller["name"], caller["agent_id"], parent["name"], f"Violation: {reason}"
+            caller["name"],
+            caller["agent_id"],
+            parent["name"],
+            f"Violation: {_VIOLATION_PREFIX}{', '.join(violations)}",
         )
     return
 

@@ -66,6 +66,8 @@ def test_connect_adds_a_missing_table_to_an_existing_ledger(tmp_path: Path) -> N
     db_path = tmp_path / "ledger.db"
     conn = connect(db_path)
     conn.execute("DROP TABLE permission_requests")
+    # A ledger an older release made has no schema stamp, so it migrates on its next open.
+    conn.execute("PRAGMA user_version = 0")
     conn.close()
     conn = connect(db_path)
     try:
@@ -73,6 +75,30 @@ def test_connect_adds_a_missing_table_to_an_existing_ledger(tmp_path: Path) -> N
         assert "permission_requests" in {row["name"] for row in rows}
     finally:
         conn.close()
+
+
+def test_a_second_open_runs_no_schema_script_and_takes_no_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "ledger.db"
+    connect(db_path).close()
+    executed: list[str] = []
+    real_connect = sqlite3.connect
+
+    def traced(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        conn.set_trace_callback(executed.append)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", traced)
+    connect(db_path).close()
+    writes = [
+        sql
+        for sql in executed
+        if sql.lstrip().upper().startswith(("CREATE", "INSERT", "BEGIN", "UPDATE", "DELETE"))
+        or "user_version =" in sql
+    ]
+    assert writes == []
 
 
 def _columns(conn: sqlite3.Connection, table: str) -> set[str]:

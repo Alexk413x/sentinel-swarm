@@ -11,7 +11,7 @@ claude_bin="${CLAUDE_BIN:-claude}"
 copy="${TMPDIR:-/tmp}/sentinel-swarm-evals-$(date +%s)"
 mkdir -p "$copy"
 (cd "$root" && tar cf - --exclude=.venv --exclude=__pycache__ --exclude=.pytest_cache \
-  --exclude=.ruff_cache --exclude=evals/results .claude-plugin assets skills hooks templates mcp evals) |
+  --exclude=.ruff_cache --exclude=evals/results .claude-plugin assets skills hooks templates types mcp evals) |
   (cd "$copy" && tar xf -)
 # An eval run starts from an empty configuration, where the codebase-kg dependency is not
 # installed, and a plugin with a missing dependency loads no skill.

@@ -17,7 +17,15 @@ report, setup, and testing. The code graph maps every document, so codebase-kg's
   sessions and draws the run panel, with the panel's pure helpers in `panel.ts`.
   `register.test.ts` holds its tests (`claude plugin test .`). The README
   has the per-role hook table.
-- `assets/` — `icon.png`, the plugin icon that OS notifications show.
+- `assets/` — `icon.png`, the plugin icon that OS notifications show, and `icon-error.png`,
+  `icon-success.png`, and `icon-warning.png`, the notification's own image for a notice
+  of that level (`notify.py`; with no level it shows `icon.png`).
+- `.codex-plugin/` — `plugin.json`, the Codex manifest, and `hooks/hooks.json`, empty
+  and declaring that the mod is not supported under Codex.
+- `copilot/` — the Copilot status companion: a README and one skill
+  (`skills/sentinel-swarm/`) that reads a run's records. It is not a plugin package.
+- `types/` — `index.d.ts`, the mod's type declarations, which `plugin.json` names in
+  `types`.
 - `templates/` — `agents/<role>.md`, the five role templates that setup writes to a host
   repo's `.claude/agents/swarm-<role>.md`; `hook_shim.py`, which setup writes to
   `.sentinel-swarm/hook.py`; and the `.local.md` settings example. The plugin has no
@@ -49,7 +57,9 @@ report, setup, and testing. The code graph maps every document, so codebase-kg's
 - `.github/workflows/` — `ci.yml`, the backup checks, and `release.yml`, which tags
   `sentinel-swarm--v<version>` and force-pushes the `release` branch: `main` without
   `.claude`, `AGENTS.md`, `.gitattributes`, `.githooks`, `.github`, `.gitignore`, `evals`,
-  `knowledge`, `plans`, `scripts`, `hooks/register.test.ts`, and `mcp/tests`.
+  `knowledge`, `plans`, `scripts`, `hooks/register.test.ts`, `mcp/tests`, and
+  `mcp/src/swarm_ledger/server.py` (the fastmcp server, a dev dependency that only the
+  catalog generator and the tests import).
 - `LICENSE` — the no-resale licence: Apache 2.0 terms plus the no-resale and
   prohibited-use conditions. `CHANGELOG.md` takes one `## [<version>] — <date> — <title>`
   entry per release; the release workflow reads the title from it.
