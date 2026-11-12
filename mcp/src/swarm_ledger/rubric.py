@@ -288,6 +288,11 @@ def validate_ratings(ratings: list[Rating], applicable: dict[str, str | None]) -
                 raise ValueError(f"{dimension}: missing ratings for criteria {missing}")
         elif dimension in rated:
             raise ValueError(f"{dimension}: rated but marked not applicable ({reason})")
+    if not rated:
+        raise ValueError(
+            "every dimension is marked not applicable, so nothing is scored: rate at least "
+            "the dimensions that apply to this file"
+        )
 
 
 def dimension_scores(ratings: list[Rating]) -> dict[str, float]:
@@ -308,6 +313,8 @@ def passes(
         for dimension, score in scores.items()
         if score < t.target
     ]
+    if not scores:
+        reasons.append("no dimension is rated")
     reasons.extend(
         f"{rating.dimension}.{rating.criterion}: {rating.value} is below the "
         f"criterion floor of {t.criterion_floor}"

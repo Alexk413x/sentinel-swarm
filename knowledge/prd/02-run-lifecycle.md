@@ -26,7 +26,8 @@ message. The Oracle then calls, in order:
 6. `guidelines_set(body)`: the architecture, stack, conventions, commands, and every
    assumption about the PRD. Lower layers read it with `guidelines_get`.
 7. `phase_add(name, depends_on)` once per phase, in dependency order. The stored name
-   is `p<ordinal>-<name>`; see "Names" in [01-roles.md](01-roles.md).
+   is `p<ordinal>-<name>`; see "Names" in [01-roles.md](01-roles.md). `depends_on`
+   names phases of this run; `phase_add` refuses an id from another run.
 8. `phase_update(phase_id, "unlocked")` for each phase with no dependency.
 9. Arm the watchdog listener. See "Watchdog" in [08-watchdog.md](08-watchdog.md).
 
@@ -108,7 +109,8 @@ message. The Oracle then calls, in order:
 - `brief_create(child_name, child_role, model, body, phase_id, module_id, file_id,
   contract)` refuses a caller whose role is not the child role's parent, a model outside
   the child's approved list, a name a live agent holds, a second unacknowledged brief
-  for one name, and a name off the pattern in "Names" in [01-roles.md](01-roles.md).
+  for one name in the same run (a brief an earlier run left behind does not count), and a
+  name off the pattern in "Names" in [01-roles.md](01-roles.md).
 - It also checks the scope ids against the caller. An Oracle's Manager brief needs a
   `phase_id` of the run whose phase is not `planned`. A Manager's Lead brief needs a
   `module_id` of the Manager's own phase. A Lead's Coder brief needs a `file_id` of the
@@ -151,7 +153,8 @@ message. The Oracle then calls, in order:
 - `release_file(path)` drops a claim that is no longer needed, with its products. It
   refuses while the owning Coder is live: release the Coder first with
   `agent_release`. When the owner is a queued spawn, it drops that spawn, so a Coder
-  never starts on a released claim. `who_owns(path)` names the live owner.
+  never starts on a released claim. Only the Lead of the file's module may release it.
+  `who_owns(path)` names the live owner.
 - `agent_release(<child name>)` on a queued child cancels its spawn and keeps its brief
   and its claim.
 - `agent_spawn`, and the queue when memory frees, refuse a Coder whose file has no live
@@ -321,7 +324,8 @@ sessions.
   deferred files, records each named file as incomplete with its reason, drops the
   queued spawns, sets the run to `closed` with `outcome` and `closed_by` (`oracle` or
   `launcher`), releases every agent and stops their sessions, writes the report, and
-  releases the run lock. Called by the Oracle, the server then stops the Oracle's
+  releases the run lock (as soon as the run is closed, before the report is written, so a
+  report that fails to write never leaves the repo locked). Called by the Oracle, the server then stops the Oracle's
   session and exits, as after `run_finish`. From the launcher it also stops a
   background Oracle session, and the server exits after `idle_exit_minutes`.
 
@@ -399,7 +403,10 @@ when" in [05-sessions.md](05-sessions.md).
   (`drive_requests.state = 'open'`), and a Manager, Lead, or Coder still live in the
   run: a new exploration starts only after every fix has finished. It writes the
   Driver's brief and starts its session the same way `brief_create` and `agent_spawn`
-  do, under the name `driver-e<ordinal>`, and returns the loop's current status.
+  do, under the name `driver-e<ordinal>`, and returns the loop's current status. When the
+  brief or the start is refused, the request is abandoned, so it never blocks the next
+  `drive_request`. A start queued for memory leaves the request's `agent_id` empty until
+  the queued Driver makes its first exploration call, which links it.
 - Every finding has a fixed shape, filled as fully as possible: a fingerprint (the
   check, the location, and what it saw), a title, the steps to reproduce, the expected
   and actual result, a severity (blocker, major, or minor), the area, and the evidence
@@ -488,7 +495,8 @@ when" in [05-sessions.md](05-sessions.md).
   a row fix nothing, and the Oracle reports what is left. The loop also watches for
   patterns of bugs; on one, the Oracle pauses fixes in that area and reports it.
   - The ledger tracks each finding by fingerprint and counts each later exploration
-    that still finds it as one fix attempt. The patterns are a regression (a fixed
+    that still finds it as one fix attempt, however many times that exploration reports
+    it. The patterns are a regression (a fixed
     finding returns), fixes causing bugs (new findings in the areas of the findings the
     last wave fixed, at least as many as it fixed), and ping-pong (two findings that take
     turns across the last 4 explorations). `drive_done` files each condition as an open
@@ -601,7 +609,8 @@ tells the user" in [04-agreements.md](04-agreements.md).
   `plan_unlocked`, the Oracle's Stop hook, and the watchdog's stall check all treat a
   paused phase's handoffs, claims, and unlocked state as waiting, not as pending work,
   so they neither nag the Oracle nor report a stall over it. `phase_resume(phase_ids)`
-  clears the pause on named phases once the blocker is gone.
+  clears the pause on named phases once the blocker is gone. `phases=[]` names no phase,
+  so `run_pause` refuses it; leave `phases` out to pause the whole run.
 - The user's next message, or `/sentinel-swarm:resume`, leads the Oracle to call
   `run_start`, which sets the run back to `active` and clears any clear-check. A scoped pause does not touch the
   run's own state, so it never needs `run_start` to clear it; only `phase_resume` does.

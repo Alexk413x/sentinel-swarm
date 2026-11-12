@@ -4,7 +4,7 @@ import os
 import sys
 from pathlib import Path
 
-from swarm_ledger.testing import SUMMARY_CHARS, run_tests, summarize_output
+from swarm_ledger.testing import SUMMARY_CHARS, _parse_counts, run_tests, summarize_output
 
 _PYTHON = f'"{sys.executable}"' if " " in sys.executable else sys.executable
 
@@ -191,3 +191,26 @@ def test_summarize_output_keeps_the_tail_of_a_pass_or_an_unknown_format() -> Non
 
     other = "x" * 10000 + "\nFAIL\tpkg 0.1s\n"
     assert summarize_output(other, ok=False) == other[-SUMMARY_CHARS:]
+
+
+def test_a_logged_line_with_counts_does_not_fail_a_green_run() -> None:
+    output = (
+        "1 failed attempt, retrying\n2 skipped files in the cache\n"
+        "============ 5 passed in 0.12s ============\n"
+    )
+    counts = _parse_counts(output)
+    assert (counts.passed, counts.failed, counts.skipped, counts.errors) == (5, 0, 0, 0)
+
+
+def test_the_runners_summary_line_is_the_verdict_for_jest_and_vitest() -> None:
+    jest = "Test Suites: 1 failed, 2 passed, 3 total\nTests:       1 failed, 5 passed, 6 total\n"
+    jest_counts = _parse_counts(jest)
+    assert (jest_counts.passed, jest_counts.failed) == (5, 1)
+    vitest = " Test Files  1 failed | 2 passed (3)\n      Tests  3 failed | 12 passed (15)\n"
+    vitest_counts = _parse_counts(vitest)
+    assert (vitest_counts.passed, vitest_counts.failed) == (12, 3)
+
+
+def test_output_with_no_recognised_summary_line_is_still_scanned() -> None:
+    counts = _parse_counts("collected\nran 3 passed checks and 1 failed one\n")
+    assert (counts.passed, counts.failed) == (3, 1)

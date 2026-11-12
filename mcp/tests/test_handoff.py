@@ -596,6 +596,78 @@ def test_attempt_record_classifies_regression_and_restores_the_version(ledger: L
     assert "# revised" not in path.read_text(encoding="utf-8")
 
 
+def test_attempt_record_refuses_an_attempt_that_is_already_classified(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    name = "round_plateau"
+    assert (
+        _round_trip(
+            ledger,
+            ctx,
+            name,
+            round1_overrides={"testing": 8},
+            round2_overrides={"testing": 8},
+            targeted=["testing"],
+        )
+        == "plateau"
+    )
+    file_id = file_id_for(ledger, f"pkg/{name}.py")
+    attempts_before = ledger.conn.execute("SELECT COUNT(*) AS n FROM attempts").fetchone()["n"]
+    with pytest.raises(LedgerError, match="already classified"):
+        ledger.attempt_record("lead-p1-module-1", ctx["lead"]["agent_id"], file_id)
+    assert (
+        ledger.conn.execute("SELECT COUNT(*) AS n FROM attempts").fetchone()["n"] == attempts_before
+    )
+
+
+def test_attempt_record_compares_with_the_kept_version_after_a_regression(
+    ledger: Ledger,
+) -> None:
+    ctx = bootstrap_module(ledger)
+    name = "round_regression"
+    path = ledger_path_for(ledger, name)
+    original = path.read_text(encoding="utf-8")
+    assert (
+        _round_trip(
+            ledger,
+            ctx,
+            name,
+            round1_overrides={},
+            round2_overrides={"meets_the_brief": 3},
+            targeted=["meets_the_brief"],
+        )
+        == "regression"
+    )
+    coder_name = f"coder-p1-module-1-{name.replace('_', '-')}"
+    file_id = file_id_for(ledger, f"pkg/{name}.py")
+    lead_id = ctx["lead"]["agent_id"]
+    coder_id = ledger.conn.execute(
+        "SELECT agent_id FROM agents WHERE name = ? ORDER BY agent_id DESC LIMIT 1", (coder_name,)
+    ).fetchone()["agent_id"]
+    handoff2_id = ledger.conn.execute(
+        "SELECT MAX(handoff_id) AS n FROM handoffs WHERE file_id = ?", (file_id,)
+    ).fetchone()["n"]
+    ledger.return_work("lead-p1-module-1", lead_id, handoff2_id, [], ["meets_the_brief"])
+
+    # A second fix scores as badly as the discarded one. Against the discarded review that is
+    # a plateau; against the kept version it is a regression, and the restore must land on the
+    # kept handoff, not on the regressed one.
+    touch_module(ledger.repo_root, name, "revised again")
+    ledger.score_record(coder_name, coder_id, file_id, all_ratings(10), all_applicable(), "self")
+    ledger.brief_read(coder_id, coder_name)
+    ledger.handoff_submit(coder_name, coder_id, file_id, [], [])
+    ledger.score_record(
+        "lead-p1-module-1",
+        lead_id,
+        file_id,
+        all_ratings(overrides={"meets_the_brief": 3}),
+        all_applicable(),
+        "lead",
+    )
+    result = ledger.attempt_record("lead-p1-module-1", lead_id, file_id)
+    assert result["outcome"] == "regression"
+    assert path.read_text(encoding="utf-8") == original
+
+
 def ledger_path_for(ledger: Ledger, name: str) -> Path:
     return ledger.repo_root / "pkg" / f"{name}.py"
 
@@ -758,6 +830,23 @@ def test_agreement_decide_refuses_a_decider_outside_the_deferrals_scope(
         "lead-p1-module-1", ctx["lead"]["agent_id"], deferral["deferral_id"], "agreed", "ok"
     )
     assert decided["state"] == "agreed"
+
+
+def test_agreement_decide_is_final_a_denied_deferral_cannot_be_flipped(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    coder = spawn_coder(ledger, ctx, "coder-p1-module-1-final", "pkg/good.py", "tests/test_good.py")
+    file_id = file_id_for(ledger, "pkg/good.py")
+    deferral = ledger.deferral_propose(
+        "coder-p1-module-1-final", coder["agent_id"], "later", file_id, kind="file"
+    )
+    lead = ("lead-p1-module-1", ctx["lead"]["agent_id"])
+    ledger.agreement_decide(*lead, deferral["deferral_id"], "denied", "not acceptable")
+    with pytest.raises(LedgerError, match="already denied"):
+        ledger.agreement_decide(*lead, deferral["deferral_id"], "agreed", "changed my mind")
+    row = ledger.conn.execute(
+        "SELECT state FROM deferrals WHERE deferral_id = ?", (deferral["deferral_id"],)
+    ).fetchone()
+    assert row["state"] == "denied"
 
 
 # -- analytics_query and report_build ------------------------------------------------------

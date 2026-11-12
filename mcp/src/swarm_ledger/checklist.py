@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .agreements import test_run_passed
 from .db import ledger_path, open_readonly
 from .identity import LedgerError
 from .metrics import run_metrics
@@ -91,8 +92,11 @@ def _full_test_check(conn: sqlite3.Connection, run_id: int) -> Check:
     ).fetchone()
     if row is None:
         return Check("the last full test run passed", False, "no full-scope test run recorded")
-    detail = f"exit_code={row['exit_code']} passed={row['passed']} failed={row['failed']}"
-    return Check("the last full test run passed", row["exit_code"] == 0, detail)
+    detail = (
+        f"state={row['state']} exit_code={row['exit_code']} passed={row['passed']} "
+        f"failed={row['failed']} errors={row['errors'] or 0}"
+    )
+    return Check("the last full test run passed", test_run_passed(row), detail)
 
 
 def _directives_check(conn: sqlite3.Connection, run_id: int) -> Check:

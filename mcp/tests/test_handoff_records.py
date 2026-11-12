@@ -267,6 +267,33 @@ def test_restoring_a_deletion_version_deletes_the_file(ledger: Ledger) -> None:
     assert not (ledger.repo_root / "docs" / "prd.md").exists()
 
 
+def test_restoring_a_test_version_writes_the_test_file_and_marks_the_file_stale(
+    ledger: Ledger,
+) -> None:
+    ctx = bootstrap_module(ledger)
+    coder = spawn_coder(ledger, ctx, "coder-p1-module-1-good", "pkg/good.py", "tests/test_good.py")
+    source = ledger.repo_root / "pkg" / "good.py"
+    test = ledger.repo_root / "tests" / "test_good.py"
+    source_text, test_text = source.read_text(encoding="utf-8"), test.read_text(encoding="utf-8")
+    handoff = _hand_off(ledger, coder, coder["file_id"])
+    test_version_id = ledger.conn.execute(
+        "SELECT test_version_id FROM handoffs WHERE handoff_id = ?", (handoff["handoff_id"],)
+    ).fetchone()["test_version_id"]
+    test.write_text("# changed\n", encoding="utf-8")
+    source.write_text("# changed\n", encoding="utf-8")
+    ledger.conn.execute(
+        "UPDATE files SET stale_since = NULL WHERE file_id = ?", (coder["file_id"],)
+    )
+
+    restored = ledger.version_restore(coder["name"], coder["agent_id"], test_version_id)
+
+    assert restored["path"] == "tests/test_good.py"
+    assert test.read_text(encoding="utf-8") == test_text
+    assert source.read_text(encoding="utf-8") == "# changed\n", "the source file is untouched"
+    assert source_text != "# changed\n"
+    assert _file(ledger, coder["file_id"])["stale_since"] is not None
+
+
 def test_the_coders_shell_allows_git_rm_of_its_own_paths_only(ledger: Ledger) -> None:
     ctx = bootstrap_module(ledger)
     coder = spawn_coder(ledger, ctx, "coder-p1-module-1-good", "pkg/good.py", "tests/test_good.py")

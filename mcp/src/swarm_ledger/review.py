@@ -86,6 +86,10 @@ def _criterion_text(dimension: str, criterion: str) -> str:
     return _CRITERION_TEXT.get((dimension, criterion), f"{dimension}.{criterion}")
 
 
+# Marks attempt_record writes on what a regression discarded.
+_REGRESSED_REVIEW = '{"regressed": true}'
+_REGRESSED_HANDOFF = "regressed: restored by attempt_record"
+
 ISSUE_OPEN_ROUND = {"manager": 2, "oracle": 3}
 
 
@@ -1286,14 +1290,22 @@ class ReviewMixin(LedgerHost):
         require_role(c, "lead")
         file_row = self._lead_file(c, file_id)
 
-        lead_reviews = self.conn.execute(
+        # The new review is the file's latest. It is compared with the latest review of the
+        # kept version, so a review that a regression discarded is never the baseline.
+        after_review = self.conn.execute(
             "SELECT * FROM reviews WHERE file_id = ? AND kind = 'lead' "
-            "ORDER BY review_id DESC LIMIT 2",
+            "ORDER BY review_id DESC LIMIT 1",
             (file_id,),
-        ).fetchall()
-        if len(lead_reviews) < 2:
+        ).fetchone()
+        before_review = None
+        if after_review is not None:
+            before_review = self.conn.execute(
+                "SELECT * FROM reviews WHERE file_id = ? AND kind = 'lead' AND review_id < ? "
+                "AND details_json IS NOT ? ORDER BY review_id DESC LIMIT 1",
+                (file_id, after_review["review_id"], _REGRESSED_REVIEW),
+            ).fetchone()
+        if after_review is None or before_review is None:
             raise LedgerError("need two lead reviews to classify an attempt")
-        after_review, before_review = lead_reviews[0], lead_reviews[1]
         after_scores = self._scores_for(after_review["review_id"])
         before_scores = self._scores_for(before_review["review_id"])
 
@@ -1303,6 +1315,11 @@ class ReviewMixin(LedgerHost):
         ).fetchone()
         if last_attempt is None:
             raise LedgerError("no attempt is pending for this file")
+        if last_attempt["outcome"] is not None:
+            raise LedgerError(
+                f"the latest attempt on file {file_id} is already classified "
+                f"({last_attempt['outcome']}); return the work again to start a new attempt"
+            )
         targeted = set(json.loads(last_attempt["targeted_json"] or "[]"))
 
         outcome = rubric.classify(before_scores, after_scores, targeted, self.settings.rubric)
@@ -1323,6 +1340,18 @@ class ReviewMixin(LedgerHost):
                 "UPDATE attempts SET outcome = ? WHERE attempt_id = ?",
                 (outcome, last_attempt["attempt_id"]),
             )
+            if outcome == "regression":
+                # Mark what the regression discarded, so the next attempt compares with the
+                # kept version and a later regression does not restore this one.
+                conn.execute(
+                    "UPDATE reviews SET details_json = ? WHERE review_id = ?",
+                    (_REGRESSED_REVIEW, after_review["review_id"]),
+                )
+                conn.execute(
+                    "UPDATE handoffs SET decided_notes = ? WHERE handoff_id = "
+                    "(SELECT MAX(handoff_id) FROM handoffs WHERE file_id = ?)",
+                    (_REGRESSED_HANDOFF, file_id),
+                )
             rounds, escalated, notices = self._advance_issue_rounds(
                 conn, c, file_row, open_issues, outcome, kept_scores, kept_ratings
             )
@@ -1339,9 +1368,12 @@ class ReviewMixin(LedgerHost):
         }
 
     def _regression_restore_point(self, file_id: int) -> sqlite3.Row:
+        # The latest handoff is the one regressing; the one to restore is the latest earlier
+        # handoff that an earlier regression did not discard.
         handoffs = self.conn.execute(
-            "SELECT * FROM handoffs WHERE file_id = ? ORDER BY handoff_id DESC LIMIT 2",
-            (file_id,),
+            "SELECT * FROM handoffs WHERE file_id = ? AND decided_notes IS NOT ? "
+            "ORDER BY handoff_id DESC LIMIT 2",
+            (file_id, _REGRESSED_HANDOFF),
         ).fetchall()
         if len(handoffs) < 2:
             raise LedgerError("no earlier handoff to restore for a regression")
@@ -1653,6 +1685,11 @@ class ReviewMixin(LedgerHost):
         ).fetchone()
         if row is None:
             raise LedgerError(f"unknown deferral_id {deferral_id!r}")
+        if row["state"] != "open":
+            raise LedgerError(
+                f"deferral {deferral_id} is already {row['state']}; a decision is final. "
+                "File a new deferral to ask again"
+            )
         kind = row["kind"] or "file"
 
         if row["arbiter_agent_id"] is not None:
@@ -1733,7 +1770,14 @@ class ReviewMixin(LedgerHost):
         if file_row is None or file_row["owner_agent_id"] != c.name:
             raise LedgerError(f"{caller!r} does not own the file for version {version_id!r}")
 
-        target_path = self.repo_root / file_row["path"]
+        # A test file's version is stored under its source file's id, so the handoff that
+        # names it says which path it belongs to.
+        is_test_version = self.conn.execute(
+            "SELECT 1 FROM handoffs WHERE file_id = ? AND test_version_id = ?",
+            (file_row["file_id"], version_id),
+        ).fetchone()
+        restored_path = file_row["test_path"] if is_test_version else file_row["path"]
+        target_path = self.repo_root / restored_path
         if version_row["deleted"]:
             target_path.unlink(missing_ok=True)
         elif version_row["stored_path"]:
@@ -1744,9 +1788,14 @@ class ReviewMixin(LedgerHost):
             target_path.write_bytes(version_row["content"])
 
         with write_tx(self.conn) as conn:
+            # The file changed under its last self-review, as with file_delete.
+            conn.execute(
+                f"UPDATE files SET stale_since = {NOW} WHERE file_id = ?",
+                (file_row["source_file_id"] or file_row["file_id"],),
+            )
             self._log_event(conn, agent_id, c.role, c.role, "version_restore")
 
-        return {"file_id": file_row["file_id"], "path": file_row["path"], "version_id": version_id}
+        return {"file_id": file_row["file_id"], "path": restored_path, "version_id": version_id}
 
     # -- Reporting ------------------------------------------------------------------
 

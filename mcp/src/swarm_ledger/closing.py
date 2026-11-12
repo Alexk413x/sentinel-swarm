@@ -196,6 +196,10 @@ class ClosingMixin(LedgerHost):
                 (run_id,),
             ).fetchall()
 
+        # The run is no longer live, so its lock goes now: a report that fails to write must
+        # not leave the repo locked against the next run_start.
+        lock.release(self.repo_root, run_id)
+
         report = self.write_report(run_id)
         with write_tx(self.conn) as conn:
             for row in oracles:
@@ -206,7 +210,6 @@ class ClosingMixin(LedgerHost):
                 )
                 self._log_event(conn, row["agent_id"], row["state"], "released", "run_close")
         stopped = [] if oracle is not None else _stop_sessions(oracles)
-        lock.release(self.repo_root, run_id)
 
         result = row_dict(self.conn, "runs", "run_id", run_id)
         result["report_path"] = report["path"]

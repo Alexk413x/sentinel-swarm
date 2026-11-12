@@ -651,3 +651,15 @@ CREATE TABLE IF NOT EXISTS released_processes (
     recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (agent_id, pid)
 );
+
+-- Lookups the server and the watchdog run constantly. Each is IF NOT EXISTS, like every
+-- statement here, so an existing ledger gains them on its next open.
+CREATE INDEX IF NOT EXISTS idx_files_module ON files (module_id);
+CREATE INDEX IF NOT EXISTS idx_handoffs_file ON handoffs (file_id);
+CREATE INDEX IF NOT EXISTS idx_reviews_file_kind ON reviews (file_id, kind);
+CREATE INDEX IF NOT EXISTS idx_scores_review ON scores (review_id);
+CREATE INDEX IF NOT EXISTS idx_issues_file_state ON issues (file_id, state);
+CREATE INDEX IF NOT EXISTS idx_briefs_child ON briefs (child_name);
+CREATE INDEX IF NOT EXISTS idx_agents_run ON agents (run_id);
+CREATE INDEX IF NOT EXISTS idx_agent_events_agent ON agent_events (agent_id);
+CREATE INDEX IF NOT EXISTS idx_wakeups_to_agent ON wakeups (to_agent_id);

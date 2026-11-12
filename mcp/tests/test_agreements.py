@@ -305,6 +305,23 @@ def test_cr_verify_failure_reopens_accepted_and_owes_the_recipient(ledger: Ledge
     assert any(w["reason"] == "cr_verify" for w in owed)
 
 
+def test_a_failed_verification_needs_new_test_evidence_to_complete_again(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    coder = spawn_coder(ledger, ctx, "coder-p1-module-1-good", "pkg/good.py", "tests/test_good.py")
+    cr = ledger.cr_open(
+        "mgr-p1-phase-1", ctx["manager"]["agent_id"], "pkg/good.py", "please fix it"
+    )
+    _accept_and_complete(ledger, coder, cr)
+    ledger.cr_verify("mgr-p1-phase-1", ctx["manager"]["agent_id"], cr["cr_id"], False, "no")
+
+    with pytest.raises(LedgerError, match="no passing test run"):
+        ledger.cr_complete("coder-p1-module-1-good", coder["agent_id"], cr["cr_id"], "again")
+
+    ledger.tests_run("coder-p1-module-1-good", coder["agent_id"], "file", "tests/test_good.py")
+    done = ledger.cr_complete("coder-p1-module-1-good", coder["agent_id"], cr["cr_id"], "again")
+    assert done["state"] == "completed"
+
+
 def test_cr_verify_success_marks_verified(ledger: Ledger) -> None:
     ctx = bootstrap_module(ledger)
     coder = spawn_coder(ledger, ctx, "coder-p1-module-1-good", "pkg/good.py", "tests/test_good.py")

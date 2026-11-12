@@ -10,7 +10,7 @@ with verified evidence.
 | `cr_open(path, body)` | Any role | Routes to the file's live owner, else its module's live Lead, else its phase's live Manager, else the Oracle. Refuses a path no module plans, and a caller who is the recipient. Owes the recipient a wake-up |
 | `cr_accept(cr_id, accept, reason)` | The recipient | `open` to `accepted` or `declined`. A decline needs a reason. Owes the requester a wake-up |
 | `cr_complete(cr_id, notes)` | The recipient, or, once the recipient has ended, its nearest live ancestor | `accepted` to `completed`. A Coder recipient needs its own passing file-scope test run of the path or its test file since acceptance. Any other recipient, and an ancestor standing in, needs such a run by anyone, or an approved handoff of the file since acceptance. For a file with no `test_path`, any recipient needs instead the file's latest handoff submitted since acceptance, `submitted` or `approved`, recorded as `evidence_handoff_id`. Owes the requester a wake-up |
-| `cr_verify(cr_id, ok, notes)` | The requester while it is live, else its nearest live ancestor | `completed` to `verified`, or back to `accepted` with the notes and a wake-up to the recipient |
+| `cr_verify(cr_id, ok, notes)` | The requester while it is live, else its nearest live ancestor | `completed` to `verified`, or back to `accepted` with the notes and a wake-up to the recipient, whose next `cr_complete` needs evidence newer than the evidence that failed |
 | `cr_list(state)` | Any role | The requests the caller opened or received. The Oracle sees every request in the run |
 
 - `handoff_submit` refuses while a Coder's accepted request on the file is not
@@ -106,6 +106,8 @@ outside the run.
   module, a Manager only in its own phase, and the Oracle anywhere in its run. The
   deferral's file sets its module and phase. A deferral with no file takes the
   proposer's.
+- A decision is final: `agreement_decide` refuses a deferral that is no longer `open`,
+  so a denial is never flipped to agreed. The proposer files a new deferral to ask again.
 - A `prd` deferral also needs a `user_chat` directive of the run created after the
   deferral, named in `directive_id`. The deferral records it.
 - Whether the proposer chose the right kind is not checked. A decider who sees the kind

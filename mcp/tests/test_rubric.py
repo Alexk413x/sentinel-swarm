@@ -162,6 +162,18 @@ def test_validate_ratings_rejects_an_empty_set() -> None:
         validate_ratings([], {})
 
 
+def test_validate_ratings_rejects_every_dimension_marked_not_applicable() -> None:
+    applicable: dict[str, str | None] = {key: "does not apply" for key in all_applicable()}
+    with pytest.raises(ValueError, match="nothing is scored"):
+        validate_ratings([], applicable)
+
+
+def test_a_score_set_with_no_rated_dimension_does_not_pass() -> None:
+    ok, reasons = passes({}, [], Thresholds())
+    assert ok is False
+    assert reasons == ["no dimension is rated"]
+
+
 def test_validate_ratings_rejects_a_dimension_left_out_of_a_partial_set() -> None:
     applicable = _only("meets_the_brief")
     del applicable["security"]

@@ -114,6 +114,18 @@ def test_total_attempts_cap_stops_even_with_gaps() -> None:
     assert fp["total_attempts"] >= STOP_ATTEMPTS_TOTAL
 
 
+def test_a_finding_reported_twice_in_one_exploration_is_one_attempt() -> None:
+    status = compute_loop_status(
+        requests=[{"request_id": o, "ordinal": o, "state": "done"} for o in (1, 2)],
+        findings=[{"request_id": 1, "fingerprint": "F1", "area": "a"}] * 3
+        + [{"request_id": 2, "fingerprint": "F1", "area": "a"}] * 3,
+    )
+    fp = status["fingerprints"]["F1"]
+    assert fp["total_attempts"] == 1
+    assert fp["attempts_in_a_row"] == 1
+    assert fp["stop"] is False
+
+
 def test_regression_is_detected_when_a_fixed_finding_returns() -> None:
     status = compute_loop_status(
         requests=[{"request_id": o, "ordinal": o, "state": "done"} for o in (1, 2, 3)],
@@ -292,6 +304,54 @@ def test_drive_request_refuses_a_second_open_exploration(
     ledger.drive_request("oracle", ctx["oracle_id"], "first pass")
     with pytest.raises(LedgerError, match="is still open"):
         ledger.drive_request("oracle", ctx["oracle_id"], "second pass")
+
+
+def test_a_refused_driver_spawn_does_not_leave_an_open_exploration(
+    ledger: Ledger, claude: FakeClaude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = bootstrap_oracle(ledger, claude)
+    real_spawn = ledger.agent_spawn
+
+    def refuse(*args: object, **kwargs: object) -> dict:
+        raise LedgerError("no slot")
+
+    monkeypatch.setattr(ledger, "agent_spawn", refuse)
+    with pytest.raises(LedgerError, match="no slot"):
+        ledger.drive_request("oracle", ctx["oracle_id"], "first pass")
+    row = ledger.conn.execute("SELECT state FROM drive_requests").fetchone()
+    assert row["state"] == "abandoned"
+
+    monkeypatch.setattr(ledger, "agent_spawn", real_spawn)
+    again = ledger.drive_request("oracle", ctx["oracle_id"], "second pass")
+    assert again["state"] == "open"
+    assert again["ordinal"] == 2
+
+
+def test_a_queued_driver_spawn_is_linked_when_the_driver_starts(
+    ledger: Ledger, claude: FakeClaude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = bootstrap_oracle(ledger, claude)
+    monkeypatch.setattr(
+        ledger,
+        "agent_spawn",
+        lambda *a, **k: {"queued": True, "queue_id": 1, "child_name": "driver-e1"},
+    )
+    request = ledger.drive_request("oracle", ctx["oracle_id"], "cover everything")
+    assert request["agent_id"] is None
+    assert request["state"] == "open"
+
+    register_agent(ledger, "driver-e1-agent", "driver")
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET name = 'driver-e1', run_id = ? WHERE agent_id = 'driver-e1-agent'",
+            (ctx["run_id"],),
+        )
+    finding = {**_FINDING, "fingerprint": "F1"}
+    ledger.drive_issue("driver-e1", "driver-e1-agent", request["request_id"], finding)
+    row = ledger.conn.execute(
+        "SELECT agent_id FROM drive_requests WHERE request_id = ?", (request["request_id"],)
+    ).fetchone()
+    assert row["agent_id"] == "driver-e1-agent"
 
 
 def test_drive_request_refuses_while_a_fix_is_running(ledger: Ledger, claude: FakeClaude) -> None:
