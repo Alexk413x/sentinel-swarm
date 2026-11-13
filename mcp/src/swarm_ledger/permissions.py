@@ -18,10 +18,11 @@ PERMISSION_MODES = (
     "manual",
 )
 BYPASS = "bypassPermissions"
-# Every role starts in this mode unless permission_mode.<role> names another: a background
-# session that prompts stalls until a person answers, and the mod's gates hold in every mode.
+# A role starts in this mode when neither permission_mode.<role> nor the user's own
+# permissions.defaultMode names one: a background session that prompts stalls until a person
+# answers, and the mod's gates hold in every mode.
 DEFAULT_MODE = BYPASS
-DEFAULT_SOURCE = "the swarm's default for every role"
+DEFAULT_SOURCE = "the swarm's default: no settings file sets permissions.defaultMode"
 FALLBACK = "acceptEdits"
 SETTINGS_FILE = "sentinel-swarm.local.md"
 
@@ -61,6 +62,14 @@ def _sources(repo_root: Path) -> list[tuple[str, Path]]:
     ]
 
 
+def inherited_mode(repo_root: Path) -> tuple[str, str] | None:
+    for label, path in _sources(repo_root):
+        mode = _permissions(path).get("defaultMode")
+        if isinstance(mode, str) and mode in PERMISSION_MODES:
+            return mode, f"permissions.defaultMode in {label}"
+    return None
+
+
 def bypass_disabled(repo_root: Path) -> bool:
     return any(
         _permissions(path).get("disableBypassPermissionsMode") == "disable"
@@ -69,10 +78,13 @@ def bypass_disabled(repo_root: Path) -> bool:
 
 
 def start_mode(repo_root: Path, role: str, configured: str | None) -> StartMode:
-    """The mode a role's session starts in. The launch always passes it as `--permission-mode`,
-    so the user's own `permissions.defaultMode` never decides a role session's mode."""
+    """The mode a role's session starts in; the launch always passes it as `--permission-mode`.
+    Only `permission_mode.<role>` raises a role above the user's own `permissions.defaultMode`."""
+    inherited = inherited_mode(repo_root)
     if configured in PERMISSION_MODES:
         mode, source = str(configured), f"permission_mode.{role} in {SETTINGS_FILE}"
+    elif inherited is not None:
+        mode, source = inherited
     else:
         mode, source = DEFAULT_MODE, DEFAULT_SOURCE
     if mode == BYPASS and bypass_disabled(repo_root):

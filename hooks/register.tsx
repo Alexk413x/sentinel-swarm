@@ -91,6 +91,8 @@ const sessionRef = { plugin: 'sentinel-swarm', key: 'session' } as const
 
 let session: SentinelSwarmSession | null | undefined
 const sending = new Set<number>()
+// Wake-ups whose send outlived SEND_MS: the send may still land, so they are not sent again.
+const late = new Set<number>()
 const paying = new Set<Promise<void>>()
 const sendingTexts = new Map<string, number>()
 let selfWakePending = true
@@ -794,13 +796,13 @@ async function payOwed($: EngineInterface, s: SentinelSwarmSession): Promise<voi
   const answer = await post($, s, 'owed', base(s)).catch(() => null)
   const listed = isRecord(answer) && Array.isArray(answer.wakeups) ? (answer.wakeups as Owed[]) : []
   const owed = listed
-    .map(wakeup => ({ ...wakeup, wakeup_ids: wakeup.wakeup_ids.filter(id => !sending.has(id)) }))
+    .map(wakeup => ({ ...wakeup, wakeup_ids: wakeup.wakeup_ids.filter(id => !sending.has(id) && !late.has(id)) }))
     .filter(wakeup => wakeup.wakeup_ids.length > 0)
   if (owed.length === 0) return
   const ids = owed.flatMap(wakeup => wakeup.wakeup_ids)
   ids.forEach(id => sending.add(id))
   try {
-    const delivered = (await Promise.all(owed.map(wakeup => deliver($, wakeup)))).flat()
+    const delivered = (await Promise.all(owed.map(wakeup => deliver($, s, wakeup)))).flat()
     if (delivered.length > 0) await post($, s, 'wake_sent', { ...base(s), wakeup_ids: delivered }).catch(() => null)
   } finally {
     ids.forEach(id => sending.delete(id))
@@ -829,22 +831,41 @@ function isOwnSend(e: { message?: unknown }): boolean {
   return typeof e.message === 'string' && sendingTexts.has(e.message)
 }
 
-async function deliver($: EngineInterface, wakeup: Owed): Promise<number[]> {
+async function deliver($: EngineInterface, s: SentinelSwarmSession, wakeup: Owed): Promise<number[]> {
   const to: SessionSendAddress = { sessionId: wakeup.session_id }
   for (const pause of [0, ...SEND_RETRY_MS]) {
     if (pause > 0) await $.clock.sleep(pause)
-    const sent = await sendOwn($, to, wakeup.text).catch(() => undefined)
+    const send = sendOwn($, to, wakeup.text)
+    let timedOut = false
+    const sent = await within($, SEND_MS, send).catch(() => {
+      timedOut = true
+      return undefined
+    })
     if (sent?.isDelivered) return wakeup.wakeup_ids
+    if (timedOut) {
+      settleLate($, s, wakeup.wakeup_ids, send)
+      return []
+    }
     // A session registers 10 to 14 s after it starts; a send before that finds no live session.
     if (sent === undefined || !(NOT_YET_LIVE.test(sent.reason) || CONFIG_UNREADABLE.test(sent.reason))) return []
   }
   return []
 }
 
+// A send runs through every plugin's SendMessage hooks, so a slow hook can hold it past SEND_MS
+// and it still lands. The ledger hears of it when it does; until then nothing sends it again.
+function settleLate($: EngineInterface, s: SentinelSwarmSession, ids: number[], send: Promise<SessionSendResult>): void {
+  ids.forEach(id => late.add(id))
+  void send
+    .then(sent => (sent.isDelivered ? post($, s, 'wake_sent', { ...base(s), wakeup_ids: ids }) : undefined))
+    .catch(() => undefined)
+    .finally(() => ids.forEach(id => late.delete(id)))
+}
+
 async function sendOwn($: EngineInterface, to: SessionSendAddress, text: string): Promise<SessionSendResult> {
   sendingTexts.set(text, (sendingTexts.get(text) ?? 0) + 1)
   try {
-    return await within($, SEND_MS, $.session.send({ to, text }))
+    return await $.session.send({ to, text })
   } finally {
     const left = (sendingTexts.get(text) ?? 1) - 1
     if (left > 0) sendingTexts.set(text, left)

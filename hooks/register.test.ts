@@ -12,7 +12,7 @@ type Options = {
   answers?: Record<string, unknown | ((body: Record<string, unknown>) => unknown)>
   serverDown?: boolean
   shim?: { exitCode: number; stdout: string }
-  send?: (to: string) => SessionSendResult
+  send?: (to: string) => SessionSendResult | Promise<SessionSendResult>
   consume?: boolean
   sendAsTool?: boolean
 }
@@ -51,7 +51,7 @@ function world(on: On, options: Options = {}) {
       const ran = await $.tool.call({ tool: 'SendMessage', to: 'uds:cc-msg-1', message: e.text, tool_use_id: 'toolu_plugin_1' } as never)
       if ('deny' in ran) return { isDelivered: false, reason: String(ran.deny) }
     }
-    return options.send?.(e.to) ?? { isDelivered: true }
+    return (await options.send?.(e.to)) ?? { isDelivered: true }
   })
   on('session.receive', (_$, e) => (options.consume ? { consumed: 'muted' } : { text: e.text }))
   on('classic.SessionStart', () => ({}))
@@ -512,6 +512,24 @@ describe('owed wake-ups', () => {
     const order = w.events()
     expect(order.indexOf('wake_sent')).toBeLessThan(order.indexOf('stop'))
     expect(w.posts.find(p => p.event === 'stop')?.body).not.toHaveProperty('sentinel_swarm_sending')
+  })
+
+  test('a send that lands after the wait is marked sent then, and is not sent twice', async ($, on) => {
+    let land: (sent: SessionSendResult) => void = () => undefined
+    const w = world(on, {
+      answers: { owed: { wakeups: [OWED.wakeups[0]] } },
+      send: () => new Promise<SessionSendResult>(resolve => (land = resolve)),
+    })
+    await start($)
+    const stopped = $.classic.Stop({ stop_hook_active: false } as never)
+    await w.clock.advance(15_000)
+    await stopped
+    expect(w.events()).not.toContain('wake_sent')
+    await $.classic.Stop({ stop_hook_active: false } as never)
+    expect(w.sends.length).toBe(1)
+    land({ isDelivered: true })
+    await w.clock.settle()
+    expect(w.posts.find(p => p.event === 'wake_sent')?.body.wakeup_ids).toEqual([3])
   })
 
   test('a target that never registers stays owed after the last retry', async ($, on) => {

@@ -34,15 +34,62 @@ def _flag(options: list[str]) -> str | None:
     return options[options.index("--permission-mode") + 1]
 
 
-def test_an_unset_mode_starts_in_bypass_whatever_the_user_inherits(tmp_path: Path) -> None:
-    _user({"defaultMode": "plan"})
-    _settings_file(tmp_path / ".claude" / "settings.local.json", {"defaultMode": "default"})
+def test_an_unset_mode_starts_in_bypass_when_no_settings_file_names_a_default(
+    tmp_path: Path,
+) -> None:
+    _user({"allow": ["Read"]})
 
     for role in ("oracle", "manager", "lead", "coder", "driver"):
         start = permissions.start_mode(tmp_path, role, None)
 
         assert (start.mode, start.flag) == ("bypassPermissions", "bypassPermissions")
-        assert start.source == "the swarm's default for every role"
+        assert start.source == "the swarm's default: no settings file sets permissions.defaultMode"
+
+
+def test_an_unset_mode_does_not_go_above_the_users_default_mode(tmp_path: Path) -> None:
+    _user({"defaultMode": "plan"})
+
+    for role in ("oracle", "manager", "lead", "coder", "driver"):
+        start = permissions.start_mode(tmp_path, role, None)
+
+        assert (start.mode, start.flag) == ("plan", "plan")
+        assert start.source == "permissions.defaultMode in the user's settings.json"
+
+
+def test_the_repo_settings_outrank_the_users_default_mode(tmp_path: Path) -> None:
+    _user({"defaultMode": "plan"})
+    _settings_file(tmp_path / ".claude" / "settings.json", {"defaultMode": "acceptEdits"})
+    _settings_file(tmp_path / ".claude" / "settings.local.json", {"defaultMode": "default"})
+
+    start = permissions.start_mode(tmp_path, "coder", None)
+
+    assert (start.mode, start.flag) == ("default", "default")
+    assert start.source == "permissions.defaultMode in .claude/settings.local.json"
+
+
+def test_an_unknown_default_mode_is_skipped(tmp_path: Path) -> None:
+    _user({"defaultMode": "acceptEdits"})
+    _settings_file(tmp_path / ".claude" / "settings.json", {"defaultMode": "yolo"})
+
+    assert permissions.start_mode(tmp_path, "lead", None).mode == "acceptEdits"
+
+
+def test_a_role_setting_may_raise_a_role_above_the_users_default_mode(tmp_path: Path) -> None:
+    _user({"defaultMode": "plan"})
+
+    start = permissions.start_mode(tmp_path, "coder", "bypassPermissions")
+
+    assert (start.mode, start.flag) == ("bypassPermissions", "bypassPermissions")
+    assert start.source == "permission_mode.coder in sentinel-swarm.local.md"
+
+
+def test_an_inherited_bypass_still_falls_back_where_policy_disables_it(tmp_path: Path) -> None:
+    _user({"defaultMode": "bypassPermissions", "disableBypassPermissionsMode": "disable"})
+
+    start = permissions.start_mode(tmp_path, "manager", None)
+
+    assert (start.mode, start.flag) == ("acceptEdits", "acceptEdits")
+    assert "disableBypassPermissionsMode" in start.source
 
 
 def test_an_unknown_configured_mode_reads_as_unset(tmp_path: Path) -> None:
@@ -96,11 +143,11 @@ def test_session_options_ignore_the_role_files_permission_mode(tmp_path: Path) -
     _role_file(tmp_path, "lead", "permissionMode: plan\n")
     _user({"defaultMode": "default"})
 
-    assert _flag(session_options(tmp_path, "lead", None, URL)) == "bypassPermissions"
+    assert _flag(session_options(tmp_path, "lead", None, URL)) == "default"
     assert _flag(session_options(tmp_path, "lead", None, URL, permission_mode="plan")) == "plan"
 
 
-def test_session_options_pass_bypass_for_every_role(tmp_path: Path) -> None:
+def test_session_options_pass_bypass_for_every_role_with_no_default_mode(tmp_path: Path) -> None:
     for role in ("oracle", "manager", "lead", "coder", "driver"):
         _role_file(tmp_path, role)
 

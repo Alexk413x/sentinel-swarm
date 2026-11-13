@@ -92,8 +92,8 @@
   `node_modules/@anthropic-ai/claude-code/bin/claude.exe` beside a `claude.cmd` shim. No
   npm install has been checked for that layout; the plain-text rewrite covers the case
   where it is absent.
-- **Bypass on a fresh config.** Every role starts with `--permission-mode
-  bypassPermissions`. No run has shown a background session accept it on a machine that
+- **Bypass on a fresh config.** With no `permissions.defaultMode` set, every role starts
+  with `--permission-mode bypassPermissions`. No run has shown a background session accept it on a machine that
   has never accepted bypass mode.
 - **Closing a run, live.** `run_close`, `ledger.py close`, `file_accept_incomplete`,
   `file_delete`, product claims, and the `commands` shell rule are built and

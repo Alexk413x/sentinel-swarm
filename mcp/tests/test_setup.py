@@ -185,7 +185,7 @@ def test_setup_reports_each_roles_starting_mode(repo: Path, config_dir: Path):
 
     for role in setup.CORE_ROLES:
         assert (
-            f"swarm-{role} starts in bypassPermissions: the swarm's default for every role"
+            f"swarm-{role} starts in default: permissions.defaultMode in the user's settings.json"
             in report.lines
         )
     assert not any(line.startswith("swarm-driver starts") for line in report.lines)
