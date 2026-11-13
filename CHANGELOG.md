@@ -2,6 +2,25 @@
 
 All notable changes to the `sentinel-swarm` plugin.
 
+## [0.7.1] — 2026-11-13 — a role starts no higher than your own default mode
+
+### Changed
+
+- A role with no `permission_mode.<role>` setting starts in your own
+  `permissions.defaultMode` when a settings file names one, and in `bypassPermissions`
+  only when none does. In 0.7.0 it started in `bypassPermissions` whatever your default
+  mode was. Only `permission_mode.<role>` raises a role above your default mode.
+
+### Fixed
+
+- A wake-up send that took longer than 15 seconds was recorded as unsent although it
+  landed, so the agent sent it again and the watchdog reported `wake_unsent`. The mod
+  now marks it sent when it lands and does not send it twice. A slow hook from another
+  plugin on `SendMessage` causes the delay.
+- CI could not resolve `astral-sh/setup-uv@v10`; the workflow pins `v10.3.3`.
+- `test_the_detached_runner_records_the_run_by_itself` failed when the runner finished
+  before `tests_run` read the row back.
+
 ## [0.7.0] — 2026-11-12 — every role starts in bypass mode, and the gates fail closed
 
 ### Changed

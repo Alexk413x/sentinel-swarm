@@ -344,8 +344,10 @@ def test_the_detached_runner_records_the_run_by_itself(
     ledger = _ledger(_host(tmp_path))
     _, coder = _coder(ledger)
     run = ledger.tests_run(_CODER, coder["agent_id"], "file", "tests/test_good.py")
-    assert run["state"] == "running"
-    assert _row(ledger, run["test_run_id"])["runner_pid"] is not None
+    # A fast runner can record the run before tests_run reads the row back.
+    assert run["state"] in ("running", "done")
+    if run["state"] == "running":
+        assert _row(ledger, run["test_run_id"])["runner_pid"] is not None
 
     deadline = time.monotonic() + 60
     while _row(ledger, run["test_run_id"])["state"] == "running":

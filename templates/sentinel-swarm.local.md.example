@@ -165,9 +165,10 @@ prompt_cache_ttl:
   driver:
 
 # The permission mode each role's session starts in: default, acceptEdits, plan, auto,
-# dontAsk, bypassPermissions, or manual. Leave a role empty to start it in
-# bypassPermissions, the swarm's default for every role: a background session that prompts
-# waits until you answer. When policy sets permissions.disableBypassPermissionsMode, a role
+# dontAsk, bypassPermissions, or manual. Leave a role empty to start it in your own
+# permissions.defaultMode, or in bypassPermissions when no settings file sets one: a
+# background session that prompts waits until you answer. Only a mode named here raises a
+# role above your own default mode. When policy sets permissions.disableBypassPermissionsMode, a role
 # that would start in bypassPermissions starts in acceptEdits. The role tool lists and the
 # swarm's hooks gate writes, the shell, and SendMessage in every mode.
 permission_mode:

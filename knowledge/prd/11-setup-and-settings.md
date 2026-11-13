@@ -201,18 +201,23 @@ its tools load. A session loads plugin tools when it starts, and setup cannot ru
 
 ## Permission mode
 
-Every role session starts in `bypassPermissions` unless the settings file names another
-mode for its role. A background session that prompts waits until a person answers, so
-the swarm runs every role as autonomously as Claude Code allows. `permissions.start_mode`
+A role session starts in `bypassPermissions` unless the settings file names another
+mode for its role or the user's own `permissions.defaultMode` names one. A background
+session that prompts waits until a person answers, so the swarm runs every role as
+autonomously as the user's settings allow. Only `permission_mode.<role>` raises a role
+above the user's own default mode. `permissions.start_mode`
 decides each launch's `--permission-mode`, for `agent_spawn`, `agent_resume`, the
 watchdog's Oracle resume, and the launcher, and every launch passes the flag:
 
 1. `permission_mode.<role>` in the settings file, when it names a mode Claude Code
    knows (`default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions`,
    `manual`), is passed as the flag.
-2. Otherwise the flag is `bypassPermissions`, for every role. The user's own
-   `permissions.defaultMode` does not decide a role session's mode.
-3. When managed settings, `.claude/settings.local.json`, `.claude/settings.json`, or the
+2. Otherwise, when a settings file sets `permissions.defaultMode` to a mode Claude Code
+   knows, that mode is the flag. The files are read in Claude Code's order, and the
+   first that names a known mode decides: managed settings, `.claude/settings.local.json`,
+   `.claude/settings.json`, then the user's `settings.json`.
+3. Otherwise the flag is `bypassPermissions`, for every role.
+4. When managed settings, `.claude/settings.local.json`, `.claude/settings.json`, or the
    user's `settings.json` sets `permissions.disableBypassPermissionsMode: "disable"`, a
    role that would start in `bypassPermissions` gets `--permission-mode acceptEdits`.
 

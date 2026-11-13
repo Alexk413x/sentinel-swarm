@@ -17,7 +17,9 @@ claude "You are <name>. Read your brief from the swarm ledger and follow it." --
 ```
 
 - `--permission-mode` comes from the role's `permission_mode` setting, never from the
-  role file. A role with no setting starts in `bypassPermissions`, and a role that
+  role file. A role with no setting starts in the user's own
+  `permissions.defaultMode`, or in `bypassPermissions` when no settings file names
+  one, and a role that
   would start in `bypassPermissions` while policy sets
   `permissions.disableBypassPermissionsMode` gets `acceptEdits`. Every launch passes
   the flag. See "Permission mode"
@@ -212,6 +214,10 @@ one. The ledger pushes nothing into a session.
 - The mod sends each entry with `$.session.send({ to: { sessionId }, text })`, all
   targets in parallel. Every role is addressed by session id, the interactive Oracle
   included, never by name.
+- A send that gives no answer within 15 seconds is not counted as sent and is not sent
+  again while it is still in flight: a send runs through every plugin's `SendMessage`
+  hooks, so a slow hook can hold it and it still lands. When it lands, the mod posts
+  `wake_sent` for it then.
 - A send that answers "no live session" is tried again after 2, 4, and 8 more seconds:
   a session registers 10 to 14 s after it starts. Any other refusal ends the attempt.
 - The mod posts `wake_sent` with the ids whose send reported `isDelivered`. The ledger
