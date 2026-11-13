@@ -196,8 +196,7 @@ EOF
 
 # pytest writes bytecode beside the tests; untracked, a Coder's git status reports it as a
 # change outside its claim.
-printf '__pycache__/
-' > .gitignore
+echo '__pycache__/' > .gitignore
 
 cat > pyproject.toml <<'EOF'
 [tool.pytest.ini_options]
