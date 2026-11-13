@@ -2,6 +2,57 @@
 
 All notable changes to the `sentinel-swarm` plugin.
 
+## [0.7.0] — 2026-11-12 — every role starts in bypass mode, and the gates fail closed
+
+### Changed
+
+- Every role session starts with `--permission-mode bypassPermissions`. Where policy sets
+  `permissions.disableBypassPermissionsMode`, it starts with `acceptEdits`. The
+  `permission_mode.<role>` setting still overrides the default, and `manual` is accepted.
+- A gating hook that cannot reach the ledger retries once, then denies the call and names
+  `/sentinel-swarm:setup`. It allowed the call before.
+- A phase moves only along `planned`, `unlocked`, `working`, `handed_up`, `approved`. The
+  ledger sets `working` at the phase's first `module_add`. The Oracle may re-lock an
+  unlocked phase that has not started.
+- A Lead's `approve`, `return_work`, and `accept_incomplete` need a submitted handoff.
+- A subagent of a role session is gated as its parent session. A swarm-typed session with
+  no live agent row is denied its shell calls.
+- Costs come from a table of Anthropic's list prices per model version, read on
+  2026-11-12: for example Fable 5.2 at 8/40 and Haiku 5.5 at 0.10/0.50, with its higher
+  rate for a prompt over 100,000 tokens. The table had one row per family.
+- `migrate` runs the schema only when its digest differs from the database's
+  `user_version`, so an open with nothing to migrate takes no write lock.
+- `post_shell` reports each stray path once per agent.
+- The release branch drops `mcp/src/swarm_ledger/server.py`, which needs the dev-only
+  fastmcp.
+
+### Added
+
+- The `pricing.<family>` and `watchdog.context_windows.<family>` settings override the
+  price table and the context windows without a release.
+- Nine indexes on the ledger's hot lookups. An existing ledger gains them on its next open.
+- Through a Windows `claude.cmd` launcher, the ledger runs the native `claude.exe` beside
+  the shim when it finds it. Otherwise it rewrites the spawn prompt and the resume message
+  into plain text, passes the `--mcp-config` and `--settings` JSON as files under
+  `.sentinel-swarm/launch/`, and refuses a launch whose other arguments hold a character
+  cmd.exe reads.
+
+### Fixed
+
+- A deferred spawn raised a plain error that callers read as a failure; it now raises
+  `SpawnDeferred`.
+- A run's lock is released as soon as the run closes, and `release_file` checks the
+  module that holds the file.
+- `attempt_record` classifies an attempt once and compares against the kept version. A
+  failed `cr_verify` needs newer evidence. A score set must rate at least one dimension.
+  A deferral decision is final.
+- `phase_add` checks its dependencies, a brief check is scoped to its run, and
+  `run_pause` refuses an empty list.
+- `resume_parked` re-lists sessions before it resumes, and a parked row counts as stopped.
+- Every mod handler catches its own errors, the panel timer is guarded, and the mod
+  re-reads the ledger's port and token after a failed post.
+- A subagent's `SessionStart` no longer changes its parent's adopted role.
+
 ## [0.6.1] — 2026-11-01 — the mod is declared unsupported under Codex
 
 ### Fixed
