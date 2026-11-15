@@ -175,14 +175,15 @@ the project's code in the host repo itself. Tracking is `local` only.
   table lacks with `ALTER TABLE ... ADD COLUMN`. The run panel opens the ledger read-only, so it skips a
   table a ledger lacks until a server opens that ledger.
 - Tables, grouped: the plan (`runs`, `phases`, `phase_deps`, `modules`, `module_deps`,
-  `files`, `file_deps`, `guidelines`); agents (`agents`, `agent_events`, `briefs`,
+  `files`, `file_deps`, `file_moves`, `guidelines`); agents (`agents`, `agent_events`, `briefs`,
   `wakeups`); review (`handoffs`, `reviews`, `scores`, `test_runs`, `versions`,
   `attempts`, `issues`, `ideas`); agreements (`change_requests`, `departures`,
   `departure_decisions`, `deferrals`, `overrides`); communication (`messages`,
   `directives`, `watchdog_findings`, `notifications`, `permission_requests`); the Driver (`drive_requests`,
   `drive_findings`, `drive_stops`); the code graph (`graph_gaps`). Read `schema.sql`
   for the columns.
-- `module_deps` and `file_deps` hold the dependencies a dependent's brief waits on, and
+- `module_deps` and `file_deps` hold the dependencies a dependent's brief waits on,
+  `file_moves` the old paths a moved claim replaces, and
   `graph_gaps` the searches the code graph did not answer. Columns that hold a gate's
   state: `briefs.contract` and `briefs.last_read_by_child_at`; `deferrals.kind`,
   `parties_json`, `arbiter_agent_id`, `open_issues_json`, `issue_ids_json`, and
@@ -216,7 +217,7 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
 | Run and plan | `run_start`, `run_status`, `run_pause`, `phase_resume`, `run_finish`, `run_close`, `profile_set`, `guidelines_set`, `guidelines_get`, `phase_add`, `phase_update`, `plan_unlocked`, `module_add` |
 | Repo | `repo_check`, `repo_branch_create` |
 | Briefs and agents | `brief_create`, `brief_get`, `brief_ack`, `agent_spawn`, `agent_resume`, `agent_release` |
-| Ownership | `claim_file` (Lead, Manager), `release_file`, `who_owns`, `wait_for` (Coder, Lead), `file_delete` (Coder) |
+| Ownership | `claim_file` (Lead, Manager), `file_move` (Lead), `release_file`, `who_owns`, `wait_for` (Coder, Lead), `file_delete` (Coder) |
 | Messages and directives | `message_post`, `message_inbox`, `directive_submit`, `directive_inbox`, `directive_ack`, `directive_resolve`, `user_ask` |
 | Tests and graph | `tests_run`, `test_run_get`, `graph_upsert` |
 | Review | `score_record`, `handoff_submit`, `review_compare`, `approve`, `return_work`, `attempt_record`, `accept_incomplete`, `file_accept_incomplete` (Oracle), `version_restore`, `module_review`, `phase_review` |

@@ -81,6 +81,14 @@ CREATE TABLE IF NOT EXISTS files (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_files_path_live
     ON files (path) WHERE released_at IS NULL;
 
+-- The paths a claim replaces: a move's old file and old test file. The claim's Coder
+-- deletes them and re-anchors their graph nodes, but writes to neither.
+CREATE TABLE IF NOT EXISTS file_moves (
+    file_id INTEGER NOT NULL REFERENCES files (file_id) ON DELETE RESTRICT,
+    path TEXT NOT NULL,
+    PRIMARY KEY (file_id, path)
+) WITHOUT ROWID;
+
 CREATE TABLE IF NOT EXISTS agents (
     agent_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,

@@ -1000,6 +1000,21 @@
       ],
       "default": null,
       "description": "For a generated file, such as a build output: the file_id of the live claim it is built from. for_name is that file's Coder, and the product rides its handoff."
+     },
+     "moved_from": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "For a file that replaces others, the old file and old test file it moves: paths no live claim holds. The Coder deletes them with file_delete and re-anchors their graph nodes with graph_upsert."
      }
     },
     "required": [
@@ -1007,6 +1022,53 @@
      "path",
      "test_path",
      "for_name"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "file_move",
+   "title": "File Move",
+   "description": "Moves a live claim of the caller's module to new_path, and its test file to test_path\nwhen given; a Lead calls this. The Coder keeps the claim, deletes the old paths with\nfile_delete, and may re-anchor their graph nodes with graph_upsert. It refuses a handed-up\nfile and a new path another claim holds.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "path": {
+      "type": "string"
+     },
+     "new_path": {
+      "type": "string"
+     },
+     "test_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "The test file's new path. Leave it unset when the test file does not move."
+     }
+    },
+    "required": [
+     "caller",
+     "path",
+     "new_path"
     ]
    },
    "outputSchema": {
@@ -2998,7 +3060,7 @@
   {
    "name": "file_delete",
    "title": "File Delete",
-   "description": "Deletes the Coder's own claimed file, test file, or product from disk; a Coder calls\nthis. handoff_submit records the deletion as the file's version for review.",
+   "description": "Deletes the Coder's own claimed file, test file, product, or a file its claim replaces\nfrom disk; a Coder calls this, and it is the way to delete a file: the shell gate denies\nRemove-Item, rm, and del. handoff_submit records the deletion as the file's version for\nreview, and removes the deleted file's graph anchors.",
    "inputSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -3402,6 +3464,7 @@
   "drive_unavailable",
   "file_accept_incomplete",
   "file_delete",
+  "file_move",
   "graph_upsert",
   "guidelines_get",
   "guidelines_set",

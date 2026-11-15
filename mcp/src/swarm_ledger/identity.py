@@ -121,6 +121,7 @@ ROLE_TOOLS: dict[str, frozenset[str]] = {
             "agent_resume",
             "agent_release",
             "claim_file",
+            "file_move",
             "release_file",
             "wait_for",
             "message_post",

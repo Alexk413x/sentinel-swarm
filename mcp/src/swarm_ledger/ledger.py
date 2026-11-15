@@ -73,6 +73,10 @@ _TOKEN_COLUMNS = (
 )
 
 
+def _slashed(path: str) -> str:
+    return path.strip().replace("\\", "/")
+
+
 def repo_slug(repo_root: Path) -> str:
     return re.sub(r"[^a-z0-9]", "-", repo_root.resolve().name.lower())
 
@@ -2048,10 +2052,14 @@ class Ledger(
         depends_on: list[int] | None = None,
         module_id: int | None = None,
         product_of: int | None = None,
+        moved_from: list[str] | None = None,
     ) -> dict:
         depends_on = depends_on or []
         if test_path is not None and test_path.strip().lower() in ("", "none", "null"):
             test_path = None
+        replaced = [_slashed(p) for p in moved_from or [] if p.strip()]
+        if replaced and product_of is not None:
+            raise LedgerError("a product replaces no file; leave moved_from out")
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
             require_role(c, "lead", "manager")
@@ -2101,6 +2109,7 @@ class Ledger(
                     "one Coder owns one file, so claim this path for a new Coder name, or "
                     "pass product_of when the path is generated from that file"
                 )
+            self._require_replaceable(conn, replaced, {path, test_path}, None)
 
             cur = conn.execute(
                 "INSERT INTO files (module_id, path, test_path, owner_agent_id, state, "
@@ -2126,10 +2135,103 @@ class Ledger(
                 "INSERT OR IGNORE INTO file_deps (file_id, depends_on_file_id) VALUES (?, ?)",
                 [(file_id, dep_id) for dep_id in depends_on],
             )
+            conn.executemany(
+                "INSERT OR IGNORE INTO file_moves (file_id, path) VALUES (?, ?)",
+                [(file_id, old) for old in replaced],
+            )
 
         claimed = row_dict(self.conn, "files", "file_id", file_id)
         claimed["depends_on"] = list(depends_on)
+        if replaced:
+            claimed["moved_from"] = replaced
         return claimed
+
+    @staticmethod
+    def _require_replaceable(
+        conn: sqlite3.Connection,
+        paths: list[str],
+        new_paths: set[str | None],
+        own_file_id: int | None,
+    ) -> None:
+        for old in paths:
+            if old in new_paths:
+                raise LedgerError(f"{old!r} is a path of the new claim, so it replaces nothing")
+            holder = conn.execute(
+                "SELECT file_id FROM files WHERE (path = ? OR test_path = ?) "
+                "AND released_at IS NULL AND file_id IS NOT ?",
+                (old, old, own_file_id),
+            ).fetchone()
+            if holder is not None:
+                raise LedgerError(
+                    f"{old!r} still has a live claim; a file a move replaces is one no claim "
+                    "holds. Release that claim first"
+                )
+
+    def file_move(
+        self,
+        caller: str,
+        agent_id: str,
+        path: str,
+        new_path: str,
+        test_path: str | None = None,
+    ) -> dict:
+        path, new_path = _slashed(path), _slashed(new_path)
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            require_role(c, "lead")
+            row = conn.execute(
+                "SELECT * FROM files WHERE path = ? AND released_at IS NULL "
+                "AND source_file_id IS NULL",
+                (path,),
+            ).fetchone()
+            if row is None:
+                raise LedgerError(f"no live claim for {path!r}")
+            if c.module_id != row["module_id"]:
+                raise LedgerError(f"{caller!r} is not the Lead of the module that holds {path!r}")
+            if row["state"] == "handed_up":
+                raise LedgerError(
+                    f"{path!r} is handed up. Move it after return_work sends it back, or approve "
+                    "the handoff and claim the new path"
+                )
+            new_test = _slashed(test_path) if test_path else row["test_path"]
+            if (new_path, new_test) == (row["path"], row["test_path"]):
+                raise LedgerError(
+                    f"{new_path!r} is already the claim's path and its test_path does not change; "
+                    "nothing to move"
+                )
+            for target in {new_path, new_test} - {row["path"], row["test_path"], None}:
+                taken = conn.execute(
+                    "SELECT 1 FROM files WHERE (path = ? OR test_path = ?) AND released_at IS NULL",
+                    (target, target),
+                ).fetchone()
+                if taken is not None:
+                    raise LedgerError(f"path {target!r} already has a live claim")
+            replaced = [
+                p for p in (row["path"], row["test_path"]) if p and p not in (new_path, new_test)
+            ]
+            conn.execute(
+                "UPDATE files SET path = ?, test_path = ? WHERE file_id = ?",
+                (new_path, new_test, row["file_id"]),
+            )
+            conn.execute(
+                "DELETE FROM file_moves WHERE file_id = ? AND path IN (?, ?)",
+                (row["file_id"], new_path, new_test),
+            )
+            conn.executemany(
+                "INSERT OR IGNORE INTO file_moves (file_id, path) VALUES (?, ?)",
+                [(row["file_id"], old) for old in replaced],
+            )
+
+        moved = row_dict(self.conn, "files", "file_id", row["file_id"])
+        moved["moved_from"] = replaced
+        moved["next"] = (
+            f"Tell {row['owner_agent_id']} with message_post(to_name=..., body=...) that its file "
+            f"is now {new_path} and its test file {new_test}: it writes them there, deletes "
+            f"{', '.join(replaced)} with file_delete, and re-anchors the graph nodes of the old "
+            "paths with graph_upsert. A Coder that has no brief yet reads the new paths from "
+            "its brief, so put them there."
+        )
+        return moved
 
     @staticmethod
     def _claim_module(conn: sqlite3.Connection, c: Caller, module_id: int | None) -> int | None:
@@ -2277,8 +2379,9 @@ class Ledger(
                 "AND file_id = (SELECT file_id FROM agents WHERE agent_id = ?) "
                 "AND (path = ? OR test_path = ? OR EXISTS (SELECT 1 FROM files p "
                 "WHERE p.source_file_id = files.file_id AND p.path = ? "
-                "AND p.released_at IS NULL))",
-                (agent_id, path, path, path),
+                "AND p.released_at IS NULL) OR EXISTS (SELECT 1 FROM file_moves m "
+                "WHERE m.file_id = files.file_id AND m.path = ?))",
+                (agent_id, path, path, path, path),
             )
         return {"path": path, "updated": cur.rowcount > 0}
 
