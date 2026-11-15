@@ -43,7 +43,7 @@ listing again for the scan. See "Parked agents" and "Memory" in
 | `wake_unsent` | A wake-up a live agent owes a live Manager, Lead, Coder, or Driver has been unsent for `unsent_wakeup_minutes`. One finding per target, from its oldest such wake-up. Not reported for a Driver's debt, which `driver_unsent` covers, or for a test result an agent owes itself | The wake call (`SendMessage` or `agent_resume`) for the target. For a parked target: the ledger resumes it once memory allows, or wake it now with that call |
 | `spawn_queued` | A spawn `agent_spawn` queued for memory has waited `queued_spawn_minutes`. Reported on the parent, one finding per queued spawn | Free memory on the machine, lower `memory.headroom_mb`, or `run_pause` and tell the user the run waits on memory |
 | `phase_unmanaged` | A phase is `unlocked` or `working`, not paused, has had a Manager, and has no live one: its Manager released itself or was released before the phase handed up. Reported on the Oracle, one finding for every such phase | Brief and spawn a new Manager for the phase, settle the file that blocks it with `file_accept_incomplete`, or `run_close` a run that cannot finish |
-| `stray_process` | A process recorded at a release, or started under one, still runs a minute after the release: the session's own process, or one its tool shells started. One finding per released agent, listing each process by name and pid. See "Liveness, resume, and release" in [05-sessions.md](05-sessions.md) | Tell the user to stop them: `taskkill /F /T /PID <pid>` on Windows, `kill <pid>` elsewhere |
+| `stray_process` | A process recorded at a release, or started under one, still runs a minute after the release: the session's own process, or one its tool shells started. Each listed process is verified (see below). One finding per released agent, listing each process by name and pid. See "Liveness, resume, and release" in [05-sessions.md](05-sessions.md) | Tell the user to stop them: `taskkill /F /PID <pid> /PID <pid>` on Windows, `kill <pid> <pid>` elsewhere. The command names each verified pid and never takes a process tree (`/T`) |
 | `spinning` | The agent's last `spin_failures` test runs for one scope and target all failed. Does not apply to a Driver, which runs no `tests_run` | Ask its parent to `return_work` or `issue_escalate` |
 | `context_high` | The latest request of the agent, the Oracle included, fills `context_pct` of its window | Have its parent replace it. For the Oracle: `run_pause`, then resume in a fresh session |
 | `stalled` | No session of the run runs; or sessions run, but no member session is busy, no member is `working`, and nothing changed for 2 minutes. Not reported while a directive waits on the user, or while a spawn is queued for memory, which `spawn_queued` reports | Wake the agent whose work is pending: the reviewer of a submitted handoff, an agent with unread messages, or the Lead of a file with an open issue. With no such agent: resume or spawn the owner of the pending work, or, with nothing pending, continue the plan or call `run_finish` |
@@ -58,6 +58,15 @@ listing again for the scan. See "Parked agents" and "Memory" in
 - For the idle stall, "nothing changed" reads the latest agent event, message, and test
   run, and the last write of the Oracle's transcript. The Oracle's own session status
   does not count, because its armed Monitor keeps it `busy`.
+- A `stray_process` finding names only verified processes. A recorded process counts only
+  while a process with its pid still has exactly its recorded start time; a recorded or
+  current start time that is unknown (Windows cannot read it for service processes) fails
+  the check. A process under it counts only when it runs, its parent is a verified process
+  that runs, and it started no later than the child. A child of a dead process never counts,
+  because its parent pid may belong to a reused pid. System and service processes
+  (`svchost`, `System`, `services`, `wininit`, `csrss`, `lsass`, `init`, `systemd`,
+  `launchd`, and similar) never count. The watchdog takes a second process snapshot just
+  before it raises the finding and drops each process that no longer matches.
 - A stall is reported only when two passes in a row see it, since a run passes through
   "no session running" while one session exits and another resumes.
 - A handoff that a newer handoff of the same file superseded is not pending work. The

@@ -501,35 +501,29 @@ def _stray_process_findings(conn: sqlite3.Connection, run_id: int, now: datetime
     if not rows:
         return []
     table = procs.snapshot()
-    children = procs.children_map(table)
     protected = procs.ancestors(table, os.getpid())
     by_agent: dict[str, list[sqlite3.Row]] = {}
     for row in rows:
         by_agent.setdefault(row["agent_id"], []).append(row)
-    findings: list[Finding] = []
+    candidates: dict[str, list[procs.Proc]] = {}
     for agent_id, recorded in by_agent.items():
-        stray: dict[int, procs.Proc] = {}
-        for row in recorded:
-            current = table.get(row["pid"])
-            if current is not None and not procs.same_process(current, row["created"]):
-                continue
-            if current is not None:
-                stray.setdefault(current.pid, current)
-            if row["is_session"]:
-                found = procs.tool_tree(table, row["pid"], row["created"])
-            else:
-                found = procs.descendants(children, row["pid"], row["created"])
-            for proc in found:
-                stray.setdefault(proc.pid, proc)
-        left = [p for pid, p in sorted(stray.items()) if pid not in protected]
+        found = procs.verified_strays(
+            table, [(r["pid"], r["created"], bool(r["is_session"])) for r in recorded], protected
+        )
+        if found:
+            candidates[agent_id] = found
+    if not candidates:
+        return []
+    fresh = procs.snapshot()
+    findings: list[Finding] = []
+    for agent_id, found in candidates.items():
+        left = [p for p in found if procs.identical(fresh.get(p.pid), p.created)]
         if not left:
             continue
-        agent = {"agent_id": agent_id, "name": recorded[0]["name"]}
-        agent["session_name"] = recorded[0]["session_name"]
+        agent = {"agent_id": agent_id, "name": by_agent[agent_id][0]["name"]}
+        agent["session_name"] = by_agent[agent_id][0]["session_name"]
         listed = ", ".join(f"{p.name} (pid {p.pid})" for p in left)
-        pids = " ".join(str(p.pid) for p in left)
-        stop = " ".join(f"/PID {p.pid}" for p in left) if sys.platform == "win32" else pids
-        command = f"taskkill /F /T {stop}" if sys.platform == "win32" else f"kill {stop}"
+        command = stop_command([p.pid for p in left], sys.platform)
         findings.append(
             _finding(
                 agent,
@@ -540,6 +534,12 @@ def _stray_process_findings(conn: sqlite3.Connection, run_id: int, now: datetime
             )
         )
     return findings
+
+
+def stop_command(pids: list[int], platform: str) -> str:
+    if platform == "win32":
+        return "taskkill /F " + " ".join(f"/PID {pid}" for pid in pids)
+    return "kill " + " ".join(str(pid) for pid in pids)
 
 
 def _finding(agent: dict, kind: str, detail: str, next_step: str) -> Finding:

@@ -313,6 +313,131 @@ def test_the_watchdog_reports_a_process_a_released_session_left_running(
     ]
 
 
+def _stray_details(
+    ledger: Ledger,
+    claude: MovingClaude,
+    monkeypatch: pytest.MonkeyPatch,
+    recorded: list[tuple[int, int | None, int]],
+    *snapshots: dict[int, procs.Proc],
+) -> list[str]:
+    ctx, coder, _ = _release_setup(ledger, claude, monkeypatch)
+    ledger.agent_release(*ctx.lead, coder[1])
+    with write_tx(ledger.conn) as conn:
+        conn.execute("DELETE FROM released_processes")
+        conn.executemany(
+            "INSERT INTO released_processes (agent_id, pid, created, is_session) "
+            "VALUES (?, ?, ?, ?)",
+            [(coder[1], *row) for row in recorded],
+        )
+    remaining = list(snapshots)
+
+    def snapshot() -> dict[int, procs.Proc]:
+        return dict(remaining.pop(0) if len(remaining) > 1 else remaining[0])
+
+    monkeypatch.setattr(procs, "snapshot", snapshot)
+    later = utcnow() + timedelta(minutes=2)
+    findings = watchdog.scan(ledger.conn, claude.listing, later, WatchdogSettings())
+    return [f.detail + " | " + f.next_step for f in findings if f.kind == "stray_process"]
+
+
+def test_a_service_process_that_reuses_a_recorded_pid_is_not_a_stray(
+    ledger: Ledger, claude: MovingClaude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    table = {
+        500: procs.Proc(500, 1, None, "svchost.exe"),
+        600: procs.Proc(600, 1, None, "WmiPrvSE.exe"),
+    }
+
+    found = _stray_details(ledger, claude, monkeypatch, [(500, 100, 1), (600, None, 0)], table)
+
+    assert found == []
+
+
+def test_a_process_that_reuses_a_pid_recorded_without_a_start_time_is_not_a_stray(
+    ledger: Ledger, claude: MovingClaude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    table = _table((700, 1, 500, "git.exe"), (701, 700, 510, "git-remote-https.exe"))
+
+    assert _stray_details(ledger, claude, monkeypatch, [(700, None, 0)], table) == []
+
+
+def test_children_of_a_dead_recorded_pid_are_not_strays(
+    ledger: Ledger, claude: MovingClaude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    table = _table(
+        (900, 500, 200, "sh.exe"),
+        (901, 900, 210, "gh.exe"),
+        (902, 600, 220, "bash.exe"),
+        (903, 902, 230, "git.exe"),
+    )
+
+    found = _stray_details(ledger, claude, monkeypatch, [(500, 100, 1), (600, 150, 0)], table)
+
+    assert found == []
+
+
+def test_a_child_whose_start_time_is_unknown_is_not_a_stray(
+    ledger: Ledger, claude: MovingClaude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    table = _table((500, 1, 100, "claude.exe"), (503, 500, 130, "bash.exe"))
+    table[504] = procs.Proc(504, 503, None, "python.exe")
+    table[505] = procs.Proc(505, 504, 170, "node.exe")
+
+    found = _stray_details(ledger, claude, monkeypatch, [(500, 100, 1)], table)
+
+    assert len(found) == 1
+    assert "bash.exe (pid 503)" in found[0]
+    assert "pid 504" not in found[0]
+    assert "pid 505" not in found[0]
+
+
+def test_a_system_process_is_never_a_stray(
+    ledger: Ledger, claude: MovingClaude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    table = _table(
+        (500, 1, 100, "claude.exe"),
+        (503, 500, 130, "bash.exe"),
+        (504, 503, 140, "svchost.exe"),
+    )
+
+    found = _stray_details(ledger, claude, monkeypatch, [(500, 100, 1)], table)
+
+    assert len(found) == 1
+    assert "svchost" not in found[0]
+
+
+def test_a_process_that_exits_before_the_finding_is_raised_is_dropped(
+    ledger: Ledger, claude: MovingClaude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before = _table(
+        (500, 1, 100, "claude.exe"), (503, 500, 130, "bash.exe"), (504, 503, 140, "python.exe")
+    )
+    after = {k: v for k, v in before.items() if k != 504}
+
+    found = _stray_details(ledger, claude, monkeypatch, [(500, 100, 1)], before, after)
+
+    assert len(found) == 1
+    assert "pid 503" in found[0]
+    assert "pid 504" not in found[0]
+
+
+def test_the_stop_command_lists_each_verified_pid_and_never_takes_a_tree() -> None:
+    win = watchdog.stop_command([503, 504], "win32")
+    assert win == "taskkill /F /PID 503 /PID 504"
+    assert "/T" not in win
+    assert watchdog.stop_command([503, 504], "linux") == "kill 503 504"
+
+
+def test_identity_needs_a_known_start_time_on_both_sides() -> None:
+    proc = procs.Proc(7, 1, 100, "x")
+    assert procs.identical(proc, 100)
+    assert not procs.identical(proc, 101)
+    assert not procs.identical(proc, None)
+    assert not procs.identical(procs.Proc(7, 1, None, "x"), 100)
+    assert not procs.identical(procs.Proc(7, 1, None, "x"), None)
+    assert not procs.identical(None, 100)
+
+
 # -- issue 4: machine-wide admission ---------------------------------------------------------------
 
 
