@@ -834,3 +834,192 @@ def test_agent_spawn_records_the_settings_effort_without_a_brief_effort(
     coder = _brief_coder(ledger, ctx, "a")
 
     assert ledger.agent_spawn(*ctx.lead, coder)["effort"] == ledger.settings.effort["coder"]
+
+
+def test_a_live_status_does_not_outrank_a_dead_pid(monkeypatch: pytest.MonkeyPatch) -> None:
+    entry = {"pid": 4242, "sessionId": "s-1", "startedAt": _STARTED_MS, "status": "idle"}
+    born: dict[int, int | None] = {}
+    monkeypatch.setattr(sessions.procs, "created_of", born.get)
+    monkeypatch.setattr(sessions.procs, "created_epoch_ms", lambda created: created)
+
+    assert not sessions.is_running(entry)
+    born[4242] = _STARTED_MS - 2_000
+    assert sessions.is_running(entry)
+    born[4242] = _STARTED_MS + 3_600_000
+    assert not sessions.is_running(entry)
+
+
+def test_a_recorded_pid_judges_an_entry_that_carries_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry = {"kind": "background", "sessionId": "s-1", "status": "idle"}
+    agent = {"session_pid": 4242, "session_pid_created": 700}
+    born: dict[int, int | None] = {}
+    monkeypatch.setattr(sessions.procs, "created_of", born.get)
+
+    assert not sessions.agent_running(entry, agent)
+    born[4242] = 700
+    assert sessions.agent_running(entry, agent)
+    born[4242] = 900
+    assert not sessions.agent_running(entry, agent)
+    assert sessions.agent_running(entry, {"session_pid": None, "session_pid_created": None})
+    assert not sessions.agent_running(None, agent)
+    assert not sessions.agent_running(entry | {"state": "stopped"}, {"session_pid": None})
+
+
+def _kill(monkeypatch: pytest.MonkeyPatch, *pids: int) -> None:
+    monkeypatch.setattr(sessions.procs, "created_of", lambda pid: None if pid in pids else 1)
+
+
+def test_agent_resume_resumes_a_session_whose_listing_entry_outlived_its_process(
+    ledger: Ledger, claude: FakeClaude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    entry = claude.entry(ctx.lead[1])
+    assert entry is not None and entry["status"] == "busy"
+    _kill(monkeypatch, entry["pid"])
+
+    resumed = ledger.agent_resume(*ctx.manager, "lead-p1-module-1")
+
+    assert resumed["message"] is not None
+    assert len(claude.commands("--resume")) == 1
+
+
+def test_agent_resume_trusts_the_recorded_pid_when_the_entry_has_none(
+    ledger: Ledger, claude: FakeClaude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    entry = claude.entry(ctx.lead[1])
+    assert entry is not None
+    del entry["pid"]
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET session_pid = 9001, session_pid_created = 5 WHERE agent_id = ?",
+            (ctx.lead[1],),
+        )
+    monkeypatch.setattr(sessions.procs, "created_of", lambda pid: 5)
+    with pytest.raises(LedgerError, match="still running"):
+        ledger.agent_resume(*ctx.manager, "lead-p1-module-1")
+
+    _kill(monkeypatch, 9001)
+    ledger.agent_resume(*ctx.manager, "lead-p1-module-1")
+    assert len(claude.commands("--resume")) == 1
+
+
+def test_a_resume_forgets_the_old_process(ledger: Ledger, claude: FakeClaude) -> None:
+    ctx = _bootstrap(ledger, claude)
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET session_pid = 9001, session_pid_created = 5 WHERE agent_id = ?",
+            (ctx.lead[1],),
+        )
+    claude.stop_session(ctx.lead[1])
+    ledger.agent_resume(*ctx.manager, "lead-p1-module-1")
+    row = _row(ledger, ctx.lead[1])
+    assert (row["session_pid"], row["session_pid_created"]) == (None, None)
+
+
+# -- releasing and replacing a parked agent ------------------------------------------------------
+
+
+def _park(ledger: Ledger, agent_id: str, reason: str = "its session is not running") -> None:
+    ledger._park(agent_id, reason)
+
+
+def test_agent_release_takes_a_dead_parked_agents_name(
+    ledger: Ledger, claude: FakeClaude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    entry = claude.entry(ctx.lead[1])
+    assert entry is not None
+    _kill(monkeypatch, entry["pid"])
+    _park(ledger, ctx.lead[1])
+    assert _row(ledger, ctx.lead[1])["state"] == "parked"
+
+    released = ledger.agent_release(*ctx.manager, "lead-p1-module-1")
+
+    assert released["state"] == "released"
+    assert _row(ledger, ctx.lead[1])["ended_at"] is not None
+
+
+def test_agent_release_takes_a_session_name(ledger: Ledger, claude: FakeClaude) -> None:
+    ctx = _bootstrap(ledger, claude)
+    _park(ledger, ctx.lead[1])
+    session = ledger.session_name(ctx.run_id, "lead-p1-module-1")
+    ledger.agent_release(*ctx.manager, session)
+    assert _row(ledger, ctx.lead[1])["state"] == "released"
+
+
+def test_agent_release_by_name_still_requires_the_parent(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    second = _brief_second_lead(ledger, ctx)
+    ledger.agent_spawn(*ctx.manager, second)
+    with pytest.raises(LedgerError, match="is not the parent"):
+        ledger.agent_release(*ctx.lead, second)
+
+
+def test_agent_release_of_an_unknown_name_still_fails(ledger: Ledger, claude: FakeClaude) -> None:
+    ctx = _bootstrap(ledger, claude)
+    with pytest.raises(LedgerError, match="unknown agent_id 'nobody'"):
+        ledger.agent_release(*ctx.manager, "nobody")
+
+
+def test_brief_create_replaces_a_dead_agent_that_holds_the_name(
+    ledger: Ledger, claude: FakeClaude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    entry = claude.entry(ctx.lead[1])
+    assert entry is not None
+    _kill(monkeypatch, entry["pid"])
+    _park(ledger, ctx.lead[1])
+
+    ledger.brief_create(
+        *ctx.manager,
+        "lead-p1-module-1",
+        "lead",
+        "sonnet",
+        "Own it again.",
+        module_id=ctx.module_id,
+    )
+
+    assert _row(ledger, ctx.lead[1])["state"] == "released"
+    reason = ledger.conn.execute(
+        "SELECT reason FROM agent_events WHERE agent_id = ? AND to_state = 'released'",
+        (ctx.lead[1],),
+    ).fetchone()["reason"]
+    assert "its session is not running" in reason
+
+
+def test_brief_create_still_refuses_a_name_held_by_a_running_session(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    with pytest.raises(LedgerError, match="a live agent already holds the name"):
+        ledger.brief_create(
+            *ctx.manager,
+            "lead-p1-module-1",
+            "lead",
+            "sonnet",
+            "Own it again.",
+            module_id=ctx.module_id,
+        )
+    assert _row(ledger, ctx.lead[1])["ended_at"] is None
+
+
+def test_brief_create_keeps_a_holder_whose_resume_is_in_flight(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    claude.stop_session(ctx.lead[1])
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET resume_started_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+            "WHERE agent_id = ?",
+            (ctx.lead[1],),
+        )
+    with pytest.raises(LedgerError, match="a live agent already holds the name"):
+        ledger.brief_create(
+            *ctx.manager, "lead-p1-module-1", "lead", "sonnet", "x", module_id=ctx.module_id
+        )

@@ -37,6 +37,7 @@ MONITOR_CALL = (
     f'description="sentinel-swarm watchdog", timeout_ms={MONITOR_TIMEOUT_MS})'
 )
 REGISTER_GRACE = timedelta(minutes=2)
+RESUME_FAILURE_LIMIT = 3
 # A released session can take a moment to exit after claude stop returns.
 STRAY_GRACE = timedelta(minutes=1)
 WAKE_EVERY = timedelta(minutes=5)
@@ -115,7 +116,7 @@ def scan(
             if agent_id in blocked:
                 findings += _blocked_findings(agent, now, settings, by_id)
             elif agent_id not in user_waits:
-                findings += _session_findings(agent, entry, now, settings)
+                findings += _session_findings(conn, agent, entry, now, settings)
             spin = _spinning(conn, agent, settings)
             if spin is not None:
                 parent = names.get(agent["parent_agent_id"]) or "its parent"
@@ -563,17 +564,50 @@ def _not_running(entry: dict | None) -> str:
     return f"is not running (status {entry.get('status')}, state {entry.get('state')})"
 
 
-def _crashed(agent: dict, entry: dict | None, now: datetime) -> list[Finding]:
+def _failed_resumes(conn: sqlite3.Connection, agent: dict) -> int:
+    if agent["parked_at"] is None:
+        return 0
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM agent_events WHERE agent_id = ? AND to_state = 'resume_failed' "
+        "AND at >= ?",
+        (agent["agent_id"], agent["parked_at"]),
+    ).fetchone()
+    return int(row["n"])
+
+
+def _unresumable(
+    conn: sqlite3.Connection, agent: dict, now: datetime, settings: WatchdogSettings
+) -> int:
+    failed = _failed_resumes(conn, agent)
+    last = parse_stamp(agent["last_heartbeat_at"]) or parse_stamp(agent["started_at"])
+    quiet = last is None or now - last >= timedelta(minutes=settings.stuck_minutes)
+    return failed if failed >= RESUME_FAILURE_LIMIT and quiet else 0
+
+
+def _crashed(agent: dict, entry: dict | None, now: datetime, unresumable: int = 0) -> list[Finding]:
     state = logical_state(agent)
     started = parse_stamp(agent["started_at"])
     overdue = started is not None and now - started > REGISTER_GRACE
     if state != "working" and not (state == "registered" and overdue):
         return []
+    detail = f"the ledger says {state}, but its session {_not_running(entry)}"
+    if unresumable:
+        return [
+            _finding(
+                agent,
+                "crashed",
+                f"{detail}; {unresumable} resumes failed and it has shown no activity since",
+                "Its conversation cannot be resumed. Read what it left in the ledger with "
+                "directive_inbox() and status_tree(), then have its parent release it with "
+                f"agent_release(target_agent_id={json.dumps(agent['agent_id'])}) and brief a "
+                "replacement under the same name.",
+            )
+        ]
     return [
         _finding(
             agent,
             "crashed",
-            f"the ledger says {state}, but its session {_not_running(entry)}",
+            detail,
             f"Resume it with agent_resume(target_name={json.dumps(agent['name'])}).",
         )
     ]
@@ -595,11 +629,14 @@ def _release_step(agent_id: str) -> str:
 
 
 def _session_findings(
-    agent: dict, entry: dict | None, now: datetime, settings: WatchdogSettings
+    conn: sqlite3.Connection,
+    agent: dict,
+    entry: dict | None,
+    now: datetime,
+    settings: WatchdogSettings,
 ) -> list[Finding]:
-    running = entry is not None and sessions.is_running(entry)
-    if not running:
-        return _crashed(agent, entry, now)
+    if not sessions.agent_running(entry, agent):
+        return _crashed(agent, entry, now, _unresumable(conn, agent, now, settings))
 
     if agent["state"] != "working":
         return []

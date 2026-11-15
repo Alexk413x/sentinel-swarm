@@ -405,12 +405,20 @@ fails as ambiguous, or goes to the offline entry and waits there for good. See
 ## Liveness, resume, and release
 
 - A session is running when its status and state in `claude agents --json` are not
-  `stopped`, `exited`, `crashed`, `failed`, `killed`, `dead`, or `completed`, and either
-  its `status` is `busy`, `idle`, or `waiting`, or its `pid` names a process that exists
-  and was created no later than a minute after the entry's `startedAt` (a later process
-  holds a reused pid). State `done` counts as running. An entry with neither, such as
+  `stopped`, `exited`, `crashed`, `failed`, `killed`, `dead`, or `completed`, and, when
+  the entry carries a `pid`, that pid names a process that exists and was created no
+  later than a minute after the entry's `startedAt` (a later process holds a reused
+  pid). An entry with a pid is judged by its process alone: a killed session's entry can
+  keep its last `status`. An entry with no pid is running when its `status` is `busy`,
+  `idle`, or `waiting`. State `done` counts as running. An entry with neither, such as
   one a reboot left with only `state: "blocked"`, is not running, so `run_start` and
   `agent_resume` do not refuse on it.
+- For an agent the ledger also judges by the process it recorded: when the entry has no
+  pid and the agent row holds a `session_pid`, the session runs only while that process
+  exists and its creation time matches `session_pid_created`. `agent_resume`, the
+  watchdog's parking and `crashed` check, and the wake-up resume use this rule
+  (`sessions.agent_running`). A resume clears the recorded pid, and the next memory
+  sample records the new process's.
 - `agent_resume(target_name)` resumes a live agent of the run whose session is not
   running, with `claude --resume <session id> --bg "<pointer>" --name <session name>`
   and the role's launch options, because `--resume` restores the conversation but not
@@ -451,7 +459,9 @@ fails as ambiguous, or goes to the offline entry and waits there for good. See
   `stray_process`, but only after it verifies each process by its pid and exact start
   time and by its parent chain back to a recorded process; see
   [08-watchdog.md](08-watchdog.md).
-- `agent_release(target_agent_id)` releases a child of the caller. The Oracle may also
+- `agent_release(target_agent_id)` releases a child of the caller. It takes the agent's
+  id, or the name or session name of a live agent of the caller's run, so a parent can
+  release a parked or dead child it knows only by name. The Oracle may also
   release an agent whose parent has ended, such as a Lead left live under a released
   Manager. The other releases are automatic. Every release hands the released agent's
   `open` and `accepted` change
@@ -471,6 +481,13 @@ parent releases it. Its replacement takes over the children.
   the same name to the new agent, in the bind's write transaction. A Manager's and a
   Lead's names are fixed by their phase and module, so a replacement in the same scope
   carries the same name.
+- `brief_create` refuses a name that a live agent holds. Before it refuses, it releases a
+  holder of the caller's run whose session is not running (judged as in "Liveness,
+  resume, and release"), when the caller is the holder's parent, or the Oracle and the
+  holder's parent has ended. The release's agent event says "its session is not running,
+  and a replacement is briefed under the name". It leaves a holder whose resume is in
+  flight, and a holder whose session runs. When `claude agents --json` fails, it
+  releases nothing and refuses.
 - `brief_create(replaces=<agent_id>)` names an ended agent of the child's role whose
   children the child takes over under another name. It refuses an agent that is still
   live, one of another role, or one outside the run.
@@ -550,6 +567,10 @@ than keep an alias.
 - `crashed` still reports a `working` or late `registered` agent whose session is gone,
   and the Oracle resumes it with `agent_resume`. A failed resume is logged as a
   `resume_failed` agent event, and the agent stays parked.
+- A parked agent is judged not running by its process, not by a stale listing entry, so
+  a dead session is parked and resumed like a retired one. The watchdog never releases a
+  parked agent that holds unfinished work: after 3 failed resumes and a quiet heartbeat,
+  `crashed` tells its parent to release it and brief a replacement. See [08-watchdog.md](08-watchdog.md).
 
 ## What stops when
 

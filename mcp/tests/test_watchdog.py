@@ -159,6 +159,67 @@ def test_a_registered_agent_crashed_only_after_the_grace(
     assert _kinds(_scan(ledger, claude, now)) == [("old", "crashed")]
 
 
+def _parked_working(ledger: Ledger, agent_id: str, role: str, now: datetime, beat_age: int) -> None:
+    _agent(
+        ledger,
+        agent_id,
+        role,
+        "working",
+        started=now - timedelta(hours=3),
+        heartbeat=now - timedelta(minutes=beat_age),
+    )
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET state = 'parked', state_before_park = 'working', "
+            "parked_at = ?, park_reason = 'its session is not running' WHERE agent_id = ?",
+            (watchdog.stamp(now - timedelta(hours=1)), agent_id),
+        )
+
+
+def _failed_resumes(ledger: Ledger, agent_id: str, count: int) -> None:
+    with write_tx(ledger.conn) as conn:
+        for _ in range(count):
+            conn.execute(
+                "INSERT INTO agent_events (agent_id, from_state, to_state, reason) "
+                "VALUES (?, NULL, 'resume_failed', 'claude --resume failed')",
+                (agent_id,),
+            )
+
+
+def test_a_dead_agent_whose_resumes_keep_failing_is_reported_for_release(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _oracle_running(claude)
+    _parked_working(ledger, "sess-lead-1", "lead", now, beat_age=120)
+    _failed_resumes(ledger, "sess-lead-1", 3)
+
+    (finding,) = _scan(ledger, claude, now)
+
+    assert (finding.name, finding.kind) == ("lead-1", "crashed")
+    assert "3 resumes failed" in finding.detail
+    assert 'agent_release(target_agent_id="sess-lead-1")' in finding.next_step
+    assert "agent_resume" not in finding.next_step
+
+
+def test_a_dead_agent_is_resumed_until_its_resumes_have_failed_repeatedly(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _oracle_running(claude)
+    _parked_working(ledger, "sess-lead-1", "lead", now, beat_age=120)
+    _parked_working(ledger, "sess-coder-1", "coder", now, beat_age=1)
+    _failed_resumes(ledger, "sess-lead-1", 2)
+    _failed_resumes(ledger, "sess-coder-1", 5)
+
+    findings = _scan(ledger, claude, now)
+
+    assert [f.next_step for f in findings] == [
+        'Resume it with agent_resume(target_name="coder-1").',
+        'Resume it with agent_resume(target_name="lead-1").',
+    ]
+
+
 def test_an_idle_or_handed_up_agent_whose_session_exited_is_normal(
     ledger: Ledger, claude: FakeClaude, now: datetime
 ) -> None:
