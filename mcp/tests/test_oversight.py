@@ -700,6 +700,8 @@ def _approve_phase_with_files(
 ) -> dict:
     (host / "README.md").write_text("base\n", encoding="utf-8")
     _git(host, "init", "-q", "-b", "main")
+    _git(host, "config", "user.email", "t@example.com")
+    _git(host, "config", "user.name", "t")
     _git(host, "add", "-A")
     _git(host, "commit", "-q", "-m", "init")
     if branch is not None:
@@ -748,6 +750,8 @@ def test_a_phase_commit_takes_only_plain_files_inside_the_repo(tmp_path: Path) -
     root.mkdir()
     (root / "README.md").write_text("base\n", encoding="utf-8")
     _git(root, "init", "-q", "-b", "main")
+    _git(root, "config", "user.email", "t@example.com")
+    _git(root, "config", "user.name", "t")
     _git(root, "add", "-A")
     _git(root, "commit", "-q", "-m", "init")
     _git(root, "checkout", "-q", "-b", "run-1")
