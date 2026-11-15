@@ -107,3 +107,16 @@ def recent_activity(raw: object, limit: int = RECENT_STEPS) -> list[dict]:
             elif kind == "tool_result" and block.get("is_error"):
                 steps.append({"at": at, "kind": "error", "text": _result_text(block)})
     return steps[-limit:]
+
+
+def usage_limit_stop(raw: object) -> dict | None:
+    records = _tail(raw)
+    if not records:
+        return None
+    last = records[-1]
+    if last.get("type") != "assistant" or not last.get("isApiErrorMessage"):
+        return None
+    if last.get("error") != "rate_limit":
+        return None
+    text = " ".join(str(b.get("text") or "") for b in _blocks(last) if b.get("type") == "text")
+    return {"at": last.get("timestamp"), "text": one_line(text, STEP_CHARS)}

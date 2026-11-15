@@ -1251,6 +1251,8 @@ class Watchdog:
         except LedgerError as exc:
             self._log(f"skipped a pass: {exc}")
             listing = None
+        if run is not None and run["state"] == "active":
+            run = self._pause_on_usage_limit(run, now)
         if run is not None and run["state"] == "active" and listing is not None:
             listing = self._memory_pass(listing, now)
             findings = scan(self.conn, listing, now, self.settings)
@@ -1271,12 +1273,83 @@ class Watchdog:
             self._remind(run, now)
         self._check_idle(run, listing, now)
 
+    def _limited_agents(self, run_id: int) -> list[tuple[sqlite3.Row, dict]]:
+        found: list[tuple[sqlite3.Row, dict]] = []
+        for agent in self.conn.execute(
+            "SELECT * FROM agents WHERE run_id = ? AND ended_at IS NULL "
+            "AND transcript_path IS NOT NULL ORDER BY started_at",
+            (run_id,),
+        ):
+            stop = transcript.usage_limit_stop(agent["transcript_path"])
+            if stop is not None:
+                found.append((agent, stop))
+        return found
+
+    def _pause_on_usage_limit(self, run: sqlite3.Row, now: datetime) -> sqlite3.Row:
+        resumed = self.conn.execute(
+            "SELECT MAX(e.at) FROM agent_events e JOIN agents a ON a.agent_id = e.agent_id "
+            "WHERE a.run_id = ? AND e.from_state = 'paused' AND e.to_state = 'active'",
+            (run["run_id"],),
+        ).fetchone()[0]
+        after = parse_stamp(resumed)
+        limited = [
+            (agent, stop)
+            for agent, stop in self._limited_agents(run["run_id"])
+            if after is None or (parse_stamp(stop["at"]) or now) > after
+        ]
+        if not limited:
+            return run
+        text = limited[0][1]["text"]
+        reset = pauses.usage_reset(text, now)
+        check = f"{pauses.USAGE_CHECK}@{stamp(reset)}" if reset is not None else None
+        reason = (
+            f"the account hit its usage limit ({text}); {len(limited)} session(s) stopped on "
+            "it, and they are woken when the run resumes"
+        )
+        oracle = latest_live_oracle(self.conn, run["run_id"])
+        with write_tx(self.conn) as conn:
+            notice = pauses.record_pause(
+                conn,
+                run["run_id"],
+                oracle["agent_id"] if oracle else "watchdog",
+                reason,
+                check,
+                self.notify_channels,
+                now,
+            )
+        notify.deliver(notice, self.notify_channels, log=self._log)
+        self._log(f"run {run['run_id']} paused: {reason}")
+        return self.conn.execute("SELECT * FROM runs WHERE run_id = ?", (run["run_id"],)).fetchone()
+
+    def _wake_limited(self, run_id: int) -> None:
+        oracle = latest_live_oracle(self.conn, run_id)
+        if oracle is None:
+            return
+        with write_tx(self.conn) as conn:
+            for agent, _ in self._limited_agents(run_id):
+                if agent["agent_id"] == oracle["agent_id"] or not agent["session_name"]:
+                    continue
+                conn.execute(
+                    "INSERT INTO wakeups (run_id, from_agent_id, to_agent_id, to_name, "
+                    "to_session_name, reason, pointer) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        run_id,
+                        oracle["agent_id"],
+                        agent["agent_id"],
+                        agent["name"],
+                        agent["session_name"],
+                        pauses.USAGE_WAKE_REASON,
+                        "The account's usage limit reset and the run resumed. Continue the step "
+                        "the limit stopped.",
+                    ),
+                )
+
     def _try_clear_check(self, run: sqlite3.Row, now: datetime) -> sqlite3.Row:
-        check = pauses.CHECKS.get(run["pause_check"] or "")
+        check, arg = pauses.split_check(run["pause_check"])
         if check is None:
             return run
         try:
-            passed = check.passes(self.repo_root)
+            passed = check.passes(self.repo_root, arg, now)
         except Exception as exc:
             self._log(f"the clear-check {check.name} failed: {type(exc).__name__}: {exc}")
             return run
@@ -1295,6 +1368,8 @@ class Watchdog:
             )
         notify.deliver(notice, self.notify_channels, log=self._log)
         self._log(f"run {run['run_id']}: {note}")
+        if check.name == pauses.USAGE_CHECK:
+            self._wake_limited(run["run_id"])
         return self.conn.execute("SELECT * FROM runs WHERE run_id = ?", (run["run_id"],)).fetchone()
 
     def _remind(self, run: sqlite3.Row, now: datetime) -> None:

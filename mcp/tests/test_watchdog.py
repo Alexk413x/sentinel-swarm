@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from helpers import ledger_for, make_host
 
-from swarm_ledger import notify, serve, sessions, wake, watch, watchdog
+from swarm_ledger import notify, pauses, serve, sessions, wake, watch, watchdog
 from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import HANDLERS as _HANDLERS
 from swarm_ledger.hooks import events
@@ -1625,3 +1625,99 @@ def test_resolving_a_directive_needs_user_notifies_once(
         f"needs_user:{asked['directive_id']}"
     ]
     assert len(os_notifications) == 1
+
+
+def _limited(path: Path, text: str, at: str = "2026-11-15T06:19:25.545Z") -> Path:
+    record = {
+        "type": "assistant",
+        "timestamp": at,
+        "isApiErrorMessage": True,
+        "error": "rate_limit",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": text}]},
+    }
+    return _records(path, _tool_use("Bash", {"command": "npm test"}), _TOOL_RESULT, record)
+
+
+def test_a_usage_limit_stop_pauses_the_run_instead_of_needing_the_user(
+    ledger: Ledger, claude: FakeClaude, now: datetime, tmp_path: Path
+) -> None:
+    _run_id(ledger)
+    limit = "You've hit your session limit · resets 3pm (America/Los_Angeles)"
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET transcript_path = ? WHERE agent_id = ?",
+            (str(_limited(tmp_path / "oracle.jsonl", limit)), ORACLE),
+        )
+    claude.run(ORACLE, "host-oracle", status="idle", state="blocked")
+    old = now - timedelta(minutes=30)
+    coder_log = _limited(tmp_path / "coder.jsonl", limit)
+    _agent(
+        ledger, "sess-coder-1", "coder", "working", started=old, heartbeat=old, transcript=coder_log
+    )
+    claude.run("sess-coder-1", status="idle", state="blocked")
+
+    _dog(ledger, Exits()).tick(now)
+
+    run = ledger.conn.execute("SELECT * FROM runs").fetchone()
+    assert run["state"] == "paused"
+    assert run["pause_check"].startswith("usage_limit@")
+    reason = ledger.conn.execute(
+        "SELECT reason FROM agent_events WHERE to_state = 'paused'"
+    ).fetchone()[0]
+    assert "usage limit" in reason and "2 session(s)" in reason
+    kinds = [r[0] for r in ledger.conn.execute("SELECT kind FROM watchdog_findings")]
+    assert "needs_user" not in kinds
+
+
+def test_a_usage_limit_pause_resumes_after_the_reset_and_wakes_the_stopped(
+    ledger: Ledger, claude: FakeClaude, now: datetime, tmp_path: Path
+) -> None:
+    _run_id(ledger)
+    claude.run(ORACLE, "host-oracle", status="idle")
+    old = now - timedelta(minutes=30)
+    coder_log = _limited(tmp_path / "coder.jsonl", "You've hit your limit · resets 3pm")
+    _agent(
+        ledger, "sess-coder-1", "coder", "working", started=old, heartbeat=old, transcript=coder_log
+    )
+    claude.run("sess-coder-1", status="idle", state="blocked")
+    reset = now + timedelta(hours=1)
+    with write_tx(ledger.conn) as conn:
+        pauses.record_pause(
+            conn,
+            1,
+            ORACLE,
+            "the account hit its usage limit",
+            f"usage_limit@{watchdog.stamp(reset)}",
+            (),
+            now,
+        )
+    dog = _dog(ledger, Exits())
+
+    dog.tick(now + timedelta(minutes=30))
+    assert ledger.conn.execute("SELECT state FROM runs").fetchone()[0] == "paused"
+
+    dog.tick(reset + timedelta(minutes=3))
+
+    assert ledger.conn.execute("SELECT state FROM runs").fetchone()[0] == "active"
+    owed = ledger.conn.execute(
+        "SELECT from_agent_id, to_agent_id, reason FROM wakeups WHERE sent_at IS NULL"
+    ).fetchall()
+    assert [(r[0], r[1]) for r in owed] == [(ORACLE, "sess-coder-1")]
+    assert owed[0][2] == pauses.USAGE_WAKE_REASON
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("You've hit your weekly limit · resets Nov 18, 6am (America/Los_Angeles)", (11, 18, 6, 0)),
+        ("You've hit your session limit · resets 3pm (America/Los_Angeles)", (11, 15, 15, 0)),
+        ("You've hit your limit · resets 3:30am", (11, 16, 3, 30)),
+    ],
+)
+def test_the_reset_time_is_read_from_the_limit_message(text: str, expected: tuple) -> None:
+    now = datetime(2026, 11, 15, 10, 0).astimezone()
+    reset = pauses.usage_reset(text, now)
+    assert reset is not None
+    local = reset.astimezone()
+    assert (local.month, local.day, local.hour, local.minute) == expected
+    assert pauses.usage_reset("You've hit your limit", now) is None

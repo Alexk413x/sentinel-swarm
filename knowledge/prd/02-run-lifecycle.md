@@ -612,11 +612,27 @@ tells the user" in [04-agreements.md](04-agreements.md).
   notifies the user ("resumed:<paused_at>", level done). `run_pause` refuses a check
   name it does not know. A paused run with a clear-check keeps the ledger server up past
   `idle_exit_minutes`. The checks live in `pauses.CHECKS`, one `ClearCheck` each (a
-  name, a label, and a function of the repo root), so a new check is one entry:
+  name, a label, and a function of the repo root, the check's argument, and the time),
+  so a new check is one entry. `runs.pause_check` holds the name, or `<name>@<argument>`:
 
   | Check | Passes when |
   |---|---|
   | `config_parses` | the config file `~/.claude.json` (under `CLAUDE_CONFIG_DIR` when set) parses as a JSON object |
+  | `usage_limit@<reset time>` | 2 minutes have passed since the reset time. Only the watchdog sets it; `run_pause` takes `config_parses` alone |
+- **A usage-limit stop.** When the account hits its usage limit, every session stops at
+  once, and its transcript ends in an assistant record with `isApiErrorMessage` and
+  `error: "rate_limit"`, such as "You've hit your weekly limit · resets Nov 18, 6am
+  (America/Los_Angeles)". Before each scan of an active run, the watchdog reads each live
+  agent's transcript tail; when any ends in such a stop that is newer than the run's last
+  resume, it pauses the whole run with the reason "the account hit its usage limit
+  (<message>); <n> session(s) stopped on it", instead of raising `needs_user`, `blocked`,
+  or wake-up findings for the stopped sessions. It reads the reset time from the message
+  (`resets 3pm`, `resets 3:30am`, or `resets Nov 18, 6am`), in the machine's local time,
+  and names `usage_limit@<that time>` as the clear-check; a message it cannot read
+  pauses with no clear-check, for the user's `ledger.py resume`. When the check passes,
+  the run resumes as above, and the watchdog also owes each stopped agent but the
+  Oracle a wake-up from the Oracle (`usage_limit_reset`), which the Oracle's mod
+  delivers at its next ledger call, so the stopped sessions continue.
 - When only some phases are blocked, the Oracle calls `run_pause(reason, phases=[...])`
   instead. The run stays `active`; only the named phases get a `paused_at` and
   `pause_reason`. `agent_spawn` refuses a brief whose `phase_id` names a paused phase.
