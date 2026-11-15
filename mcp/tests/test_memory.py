@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -18,7 +19,7 @@ from test_sessions import (
 )
 
 from swarm_ledger import lock, memory, watchdog
-from swarm_ledger.clock import utcnow
+from swarm_ledger.clock import stamp, utcnow
 from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import events
 from swarm_ledger.ledger import Ledger
@@ -444,6 +445,234 @@ def test_no_pressure_parks_nobody(ledger: Ledger, claude: MovingClaude, free: di
     assert ledger.park_idle_parents(claude.listing) == []
 
 
+def _blocked_coder(
+    ledger: Ledger, claude: MovingClaude, ctx: Ctx, slug: str, silent_minutes: int = 20
+) -> tuple[str, str]:
+    coder = _spawn_coder(ledger, ctx, slug)
+    entry = claude.entry(coder[1])
+    assert entry is not None
+    entry["status"] = "waiting"
+    _silent_for(ledger, coder[1], silent_minutes)
+    return coder
+
+
+def _silent_for(ledger: Ledger, agent_id: str, minutes: int) -> None:
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET last_heartbeat_at = ? WHERE agent_id = ?",
+            (stamp(utcnow() - timedelta(minutes=minutes)), agent_id),
+        )
+
+
+def _queue_a_spawn(ledger: Ledger, ctx: Ctx, free: dict, mb: int = 1_000) -> str:
+    name = _brief_coder(ledger, ctx, "queued")
+    free["mb"] = mb
+    assert ledger.agent_spawn(*ctx.lead, name)["queued"] is True
+    return name
+
+
+def test_a_coder_blocked_for_minutes_is_parked_while_a_spawn_waits_for_memory(
+    ledger: Ledger, claude: MovingClaude, free: dict
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    coder = _blocked_coder(ledger, claude, ctx, "c1")
+    _queue_a_spawn(ledger, ctx, free)
+
+    parked = ledger.park_blocked_coders(claude.listing, utcnow())
+
+    row = _row(ledger, coder[1])
+    assert [p["name"] for p in parked] == [coder[0]]
+    assert claude.commands("stop") == [["stop", row["bg_id"]]]
+    assert row["parked_at"] is not None and row["state"] == "parked"
+    assert row["state_before_park"] == "idle"
+    assert "blocker" in row["park_reason"] and "10 minutes" in row["park_reason"]
+    assert _row(ledger, ctx.lead[1])["parked_at"] is None
+
+
+def test_an_idle_coder_silent_for_minutes_is_parked_too(
+    ledger: Ledger, claude: MovingClaude, free: dict
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    coder = _spawn_coder(ledger, ctx, "c1")
+    ledger.agent_idle(coder[1], "stop")
+    entry = claude.entry(coder[1])
+    assert entry is not None
+    entry["status"] = "idle"
+    _silent_for(ledger, coder[1], 20)
+    _queue_a_spawn(ledger, ctx, free)
+
+    parked = ledger.park_blocked_coders(claude.listing, utcnow())
+
+    assert [p["name"] for p in parked] == [coder[0]]
+
+
+def test_blocked_coders_stay_while_no_spawn_waits(
+    ledger: Ledger, claude: MovingClaude, free: dict
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    _blocked_coder(ledger, claude, ctx, "c1")
+    free["mb"] = 1_000
+    assert ledger.park_blocked_coders(claude.listing, utcnow()) == []
+    assert claude.commands("stop") == []
+
+
+def test_the_most_idle_coders_are_parked_and_only_as_many_as_the_spawn_needs(
+    ledger: Ledger, claude: MovingClaude, free: dict
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    newer = _blocked_coder(ledger, claude, ctx, "c1", silent_minutes=15)
+    oldest = _blocked_coder(ledger, claude, ctx, "c2", silent_minutes=60)
+    middle = _blocked_coder(ledger, claude, ctx, "c3", silent_minutes=30)
+    _queue_a_spawn(ledger, ctx, free)
+    need = memory.estimate_mb(ledger.conn, "coder")
+    free["mb"] = 1_500 + need - 1
+
+    parked = ledger.park_blocked_coders(claude.listing, utcnow())
+
+    assert [p["name"] for p in parked] == [oldest[0]]
+    free["mb"] = 1_500
+    again = ledger.park_blocked_coders(claude.listing, utcnow())
+    assert [p["name"] for p in again] == [middle[0]]
+    assert _row(ledger, newer[1])["parked_at"] is None
+
+
+def test_the_memory_freed_by_parked_parents_counts_against_the_shortfall(
+    ledger: Ledger, claude: MovingClaude, free: dict
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    _blocked_coder(ledger, claude, ctx, "c1")
+    _queue_a_spawn(ledger, ctx, free)
+    free["mb"] = 1_500
+    covered = memory.estimate_mb(ledger.conn, "coder")
+    assert ledger.park_blocked_coders(claude.listing, utcnow(), freed_mb=covered) == []
+
+
+@pytest.mark.parametrize(
+    "hold",
+    [
+        "recent heartbeat",
+        "owed a wake-up",
+        "owes a wake-up",
+        "unread message",
+        "open test run",
+        "pending request",
+        "held permission",
+        "session busy",
+        "setting off",
+    ],
+)
+def test_a_coder_that_is_not_idle_on_a_blocker_is_not_parked(
+    ledger: Ledger, claude: MovingClaude, free: dict, tmp_path: Path, hold: str
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    coder = _blocked_coder(ledger, claude, ctx, "c1")
+    if hold == "recent heartbeat":
+        _silent_for(ledger, coder[1], 9)
+    elif hold == "owed a wake-up":
+        ledger.message_post(*ctx.lead, coder[0], "an answer")
+    elif hold == "owes a wake-up":
+        ledger.message_post(*coder, ctx.lead[0], "a question")
+    elif hold == "unread message":
+        ledger.message_post(*ctx.lead, coder[0], "a note")
+        with write_tx(ledger.conn) as conn:
+            conn.execute("DELETE FROM wakeups")
+    elif hold == "open test run":
+        with write_tx(ledger.conn) as conn:
+            conn.execute(
+                "INSERT INTO test_runs (run_id, agent_id, scope, state) "
+                "VALUES (?, ?, 'file', 'running')",
+                (ctx.run_id, coder[1]),
+            )
+    elif hold == "pending request":
+        transcript = tmp_path / "coder.jsonl"
+        use = {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}
+        record = {"type": "assistant", "message": {"role": "assistant", "content": [use]}}
+        transcript.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        with write_tx(ledger.conn) as conn:
+            conn.execute(
+                "UPDATE agents SET transcript_path = ? WHERE agent_id = ?",
+                (str(transcript), coder[1]),
+            )
+    elif hold == "held permission":
+        with write_tx(ledger.conn) as conn:
+            conn.execute(
+                "INSERT INTO permission_requests (run_id, agent_id, tool, summary, expires_at) "
+                "VALUES (?, ?, 'Bash', 'ls', ?)",
+                (ctx.run_id, coder[1], stamp(utcnow() + timedelta(minutes=5))),
+            )
+    elif hold == "session busy":
+        entry = claude.entry(coder[1])
+        assert entry is not None
+        entry["status"] = "busy"
+    else:
+        ledger.settings.memory.park_blocked_minutes = 0
+    _queue_a_spawn(ledger, ctx, free)
+
+    assert ledger.park_blocked_coders(claude.listing, utcnow()) == []
+    assert claude.commands("stop") == []
+    assert _row(ledger, coder[1])["parked_at"] is None
+
+
+def test_a_failed_stop_clears_a_blocked_coders_park(
+    ledger: Ledger, claude: MovingClaude, free: dict
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    coder = _blocked_coder(ledger, claude, ctx, "c1")
+    _queue_a_spawn(ledger, ctx, free)
+    claude.fail["stop"] = "boom"
+
+    assert ledger.park_blocked_coders(claude.listing, utcnow()) == []
+
+    row = _row(ledger, coder[1])
+    assert row["parked_at"] is None and row["state"] != "parked"
+
+
+def test_a_parked_blocked_coder_resumes_when_its_lead_answers(
+    ledger: Ledger, claude: MovingClaude, free: dict
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    coder = _blocked_coder(ledger, claude, ctx, "c1")
+    _queue_a_spawn(ledger, ctx, free)
+    ledger.park_blocked_coders(claude.listing, utcnow())
+    ledger.message_post(*ctx.lead, coder[0], "use the second option")
+    free["mb"] = 64_000
+
+    resumed = ledger.resume_parked(claude.listing)
+
+    assert [r["agent"]["name"] for r in resumed] == [coder[0]]
+    assert claude.resumed != []
+    row = ledger.conn.execute("SELECT * FROM agents WHERE name = ?", (coder[0],)).fetchone()
+    assert row["parked_at"] is None
+
+
+def test_a_parked_blocked_coder_raises_no_crashed_finding(
+    ledger: Ledger, claude: MovingClaude, free: dict
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    coder = _blocked_coder(ledger, claude, ctx, "c1")
+    _queue_a_spawn(ledger, ctx, free)
+    ledger.park_blocked_coders(claude.listing, utcnow())
+
+    found = watchdog.scan(ledger.conn, claude.listing, utcnow(), WatchdogSettings())
+
+    assert [f for f in found if f.name == coder[0] and f.kind == "crashed"] == []
+
+
+def test_the_watchdog_parks_a_blocked_coder_for_a_queued_spawn(
+    ledger: Ledger, claude: MovingClaude, free: dict, host: Path
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    coder = _blocked_coder(ledger, claude, ctx, "c1")
+    _queue_a_spawn(ledger, ctx, free)
+    dog = watchdog.Watchdog(
+        host, ledger.conn, ledger.settings.watchdog, exit_server=lambda: None, ledger=ledger
+    )
+
+    dog.tick(utcnow())
+
+    assert _row(ledger, coder[1])["parked_at"] is not None
+
+
 # -- the watchdog --------------------------------------------------------------------------------
 
 
@@ -504,14 +733,17 @@ def test_the_memory_settings_load_from_the_settings_file(tmp_path: Path) -> None
     defaults = load_settings(make_host(tmp_path / "a", settings_text()))
     assert defaults.memory.headroom_mb == 1_500
     assert defaults.memory.park_idle_parents is True
+    assert defaults.memory.park_blocked_minutes == 10
     assert defaults.watchdog.unsent_wakeup_minutes == 5
     swaps = [
         ("headroom_mb: 1500", "headroom_mb:"),
         ("park_idle_parents: true", "park_idle_parents: false"),
+        ("park_blocked_minutes: 10", "park_blocked_minutes: 0"),
     ]
     changed = load_settings(make_host(tmp_path / "b", settings_text(swaps=swaps)))
     assert changed.memory.headroom_mb is None
     assert changed.memory.park_idle_parents is False
+    assert changed.memory.park_blocked_minutes == 0
     assert Settings.from_snapshot(changed.snapshot()).memory == changed.memory
 
 

@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import notify, pauses, permission, procs, rekey, sessions, testrun, transcript, wake
+from . import memory, notify, pauses, permission, procs, rekey, sessions, testrun, transcript, wake
 from .clock import parse_stamp, stamp, utcnow
 from .db import NOW, write_tx
 from .identity import ROLES, LedgerError
@@ -1283,6 +1283,13 @@ class Watchdog:
         if ledger is None:
             return listing
         changed = False
+        freed_by_coders = [0]
+
+        def park_blocked_coders() -> list[dict]:
+            parked = ledger.park_blocked_coders(listing, now)
+            freed_by_coders[0] = len(parked) * memory.estimate_mb(ledger.conn, "coder")
+            return parked
+
         steps: list[tuple[str, Callable[[], object]]] = [
             ("sample memory", lambda: ledger.sample_memory(listing)),
             (
@@ -1291,7 +1298,11 @@ class Watchdog:
             ),
             ("resume parked agents", lambda: ledger.resume_parked(listing)),
             ("start queued spawns", lambda: ledger.start_queued_spawns(listing)),
-            ("park idle parents", lambda: ledger.park_idle_parents(listing)),
+            ("park blocked coders", park_blocked_coders),
+            (
+                "park idle parents",
+                lambda: ledger.park_idle_parents(listing, freed_by_coders[0]),
+            ),
             ("release finished parked parents", lambda: ledger.release_finished_parked(now)),
         ]
         for label, step in steps:

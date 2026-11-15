@@ -83,6 +83,9 @@ memory:
   # Under memory pressure, the watchdog stops an idle Manager or Lead whose children still
   # work and resumes it when a wake-up is owed to it. false leaves that to the daemon.
   park_idle_parents: true
+  # While a spawn waits for memory, the watchdog stops a Coder that has sat idle on a blocker
+  # with no activity for this many minutes, and resumes it when its Lead answers. 0 turns it off.
+  park_blocked_minutes: 10
 
 # Left empty; the setup skill fills this in from the plugin's test_command option, set
 # at install, or else the detected stack.

@@ -670,6 +670,22 @@ for the measured figures.
   has no unread messages, checked in the same transaction that sets `parked_at`, with
   the reason "the ledger stopped it under memory pressure while its children work". A
   failed stop clears the flag. The first wake-up owed to it resumes it.
+- **Park blocked Coders.** While a spawn waits in the queue, and free memory is below
+  the shortfall above, each watchdog pass stops Coders that sit idle on a blocker, before
+  it parks idle parents, and the parents then cover only what is left of the shortfall.
+  `memory.park_blocked_minutes` (10; `0` turns it off) sets how long a Coder is quiet.
+  The ledger stops one only when all of these hold: its session runs and has ended its
+  turn (a `working` Coder's session reports `waiting` or `blocked`; an `idle` Coder's
+  session is not `busy`); its last heartbeat, or its start, is older than the setting;
+  its session has no pending tool request in its transcript and no held permission
+  request; it owes and is owed no unsent wake-up, has no unread message, and has no
+  test run in state `running`, checked in the same transaction that sets `parked_at`.
+  It takes the most idle first and stops only as many as the shortfall needs, by the
+  role's estimate. The park sets `state_before_park` to `idle`, so `crashed` does not
+  report it, and its reason reads "the ledger stopped it: idle on a blocker with no
+  activity for over <n> minutes while a spawn waits for memory". A failed stop clears
+  the flag and restores the state. Its Lead's answer (`message_post`, `return_work`, or
+  a `SendMessage` to it) owes it a wake-up, and the resume path above brings it back.
 
 ## An unreadable ~/.claude.json
 
