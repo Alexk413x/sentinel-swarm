@@ -2,7 +2,7 @@
 
 All notable changes to the `sentinel-swarm` plugin.
 
-## [0.8.1] — 2026-11-15 — the model you name wins
+## [0.8.1] — 2026-11-15 — the model you name wins, and parked agents resume
 
 ### Added
 
@@ -21,6 +21,13 @@ All notable changes to the `sentinel-swarm` plugin.
 
 ### Fixed
 
+- A parked agent resumed under memory pressure died on each resume. Each attempt
+  re-keyed it to a session id that never wrote a transcript, so every later resume found
+  "No conversation found". Every resume path now waits for free memory and takes one
+  claim, a resume starts from the newest session id that has a transcript, and an agent
+  with none left is reported for replacement from its brief. The watchdog keeps one
+  `crashed` finding per agent with the count and cause of failed resumes, and records
+  why each resume exited.
 - `models.oracle: [fable, opus]` had no effect, since the Oracle's role file names
   `model: opus`. Name the Oracle's model with `--model`, or set it in the role file.
 
