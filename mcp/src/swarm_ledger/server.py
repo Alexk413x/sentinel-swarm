@@ -513,8 +513,11 @@ def override_grant(
 ) -> dict[str, Any]:
     """Grants a one-time override of a rule for an agent; the Oracle calls this.
 
-    Refuses a target_agent_name that names the Oracle itself: the Oracle must never
-    grant itself a write or shell override.
+    rule is write, shell, or cr_complete. A cr_complete override with a target that starts
+    with "CR <id>" lets target_agent_name complete that change request once with no
+    evidence, when its work landed where cr_complete cannot see it. Refuses a
+    target_agent_name that names the Oracle itself: the Oracle must never grant itself a
+    write or shell override.
     """
     ...
 

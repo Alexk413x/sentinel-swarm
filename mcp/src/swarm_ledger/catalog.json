@@ -1340,7 +1340,7 @@
   {
    "name": "override_grant",
    "title": "Override Grant",
-   "description": "Grants a one-time override of a rule for an agent; the Oracle calls this.\n\nRefuses a target_agent_name that names the Oracle itself: the Oracle must never\ngrant itself a write or shell override.",
+   "description": "Grants a one-time override of a rule for an agent; the Oracle calls this.\n\nrule is write, shell, or cr_complete. A cr_complete override with a target that starts\nwith \"CR <id>\" lets target_agent_name complete that change request once with no\nevidence, when its work landed where cr_complete cannot see it. Refuses a\ntarget_agent_name that names the Oracle itself: the Oracle must never grant itself a\nwrite or shell override.",
    "inputSchema": {
     "type": "object",
     "additionalProperties": false,
