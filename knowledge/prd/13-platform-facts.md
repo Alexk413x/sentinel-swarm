@@ -243,6 +243,16 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   `pid`, `sessionId`, and `procStart`, the process start time as a Windows FILETIME
   (100 ns units since 1601), which equals `GetProcessTimes`'s creation time for that pid.
   Seen for interactive sessions; not yet checked for a background one. (2026-10-30)
+- Claude Code 2.1.325 on Windows: the plain `claude agents --json` listing gives a live
+  background session a `pid` and a `status` (`busy` or `idle`) beside its `state`
+  (`working`, `done`, `blocked`). An entry for a session with no process, such as one
+  left from before a reboot, keeps only `id`, `kind`, `cwd`, `startedAt`, `sessionId`,
+  `name`, and its last `state`, often `blocked`, with no `pid` or `status`, until
+  `claude stop <id>` removes it. `startedAt` is in epoch milliseconds. (2026-11-14)
+- Claude Code shows `state: "blocked"` for a background session that ended its turn on
+  a work blocker, and for an idle Oracle, in sessions running in `bypassPermissions`
+  with no prompt pending: about 30 such sessions in one run. A `blocked` state alone
+  does not mean a person is asked anything. (2026-11-14)
 - With two runs live on one machine, `~/.claude.json` failed to parse ("JSON Parse
   error: Unexpected EOF") for several hours on 2026-10-28. Claude Code wrote whole-size
   `.claude.json.corrupted.<time>` copies to `~/.claude/backups/` at 08:25, 08:44, and

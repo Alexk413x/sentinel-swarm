@@ -39,6 +39,26 @@ def _shell(ledger: Ledger, agent_id: str, command: str) -> dict | None:
     )
 
 
+def test_setup_warns_about_shell_operators_in_command_templates(tmp_path: Path) -> None:
+    settings = settings_text(
+        test_command="cd apps/web && npx vitest run {target}",
+        lint_command="cd apps/web && npm run lint",
+        build_command="npx --prefix apps/web vite build",
+    )
+    repo = make_host(tmp_path / "host", settings)
+    report = setup.SetupReport()
+
+    setup.check_command_operators(repo, report)
+
+    assert [line.split(":", 2)[1].strip() for line in report.lines] == [
+        "test_command 'cd apps/web && npx vitest run {target}' uses a shell operator",
+        "lint_command 'cd apps/web && npm run lint' uses a shell operator",
+    ]
+    assert all("the Coder's shell gate denies" in line for line in report.lines)
+    subdir_form = "npx --prefix apps/web vitest run --root apps/web {target}"
+    assert all(subdir_form in line for line in report.lines)
+
+
 def test_the_commands_setting_loads_each_named_host_command(host: Path) -> None:
     commands = load_settings(host).commands
     assert commands == [

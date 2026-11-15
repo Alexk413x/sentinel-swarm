@@ -58,6 +58,18 @@ Fill `build_command` and `lint_command` the same way, from what the repo actuall
 uses, for example `npm run build` and `npx eslint .`, or `uv run ruff check`. Both
 are optional; the shell gate allows them for Coders when they are set.
 
+Never write a shell operator (`&&`, `;`, `|`, `>`, `$(`) in the test, build, or lint
+command. The Coder's shell gate denies every command with one, and `{target}` is a
+path from the repo root. For an app in a subdirectory, name the directory in the
+command instead of `cd apps/web && ...`:
+
+| Need | Command |
+|---|---|
+| vitest in `apps/web` | `npx --prefix apps/web vitest run --root apps/web {target}` |
+| an npm script in `apps/web` | `npm --prefix apps/web run lint` |
+
+Setup prints a warning for each command that has an operator.
+
 `commands` lists named host commands outside test, build, and lint, such as the rebuild
 of a derived file: each entry has `name`, `run`, `cwd`, and `interpreter`. The Coder's
 and the Manager's shell gates allow each one. Step 5's output proposes the commands the

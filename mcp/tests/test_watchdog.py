@@ -245,30 +245,127 @@ def test_a_session_waiting_on_a_permission_prompt_needs_the_user(
     assert "open the session host-r1-asking in agent view" in findings[0].next_step
 
 
-@pytest.mark.parametrize(
-    "extra",
-    [
-        {"status": "waiting", "waitingFor": "MCP server prompt"},
-        {"status": "waiting"},
-        {"status": None, "state": "waiting"},
-        {"status": "idle", "state": "blocked"},
-    ],
-)
-def test_any_waiting_status_needs_the_user(
-    ledger: Ledger, claude: FakeClaude, now: datetime, extra: dict
+_WAITS = [
+    {"status": "waiting", "waitingFor": "MCP server prompt"},
+    {"status": "waiting"},
+    {"status": "idle", "state": "waiting"},
+    {"status": "idle", "state": "blocked"},
+]
+
+
+@pytest.mark.parametrize("extra", _WAITS)
+def test_a_waiting_status_with_a_pending_request_needs_the_user(
+    ledger: Ledger, claude: FakeClaude, now: datetime, tmp_path: Path, extra: dict
 ) -> None:
     _run_id(ledger)
     _oracle_running(claude)
-    _agent(ledger, "sess-asking", "coder", "working", started=now, heartbeat=now)
+    transcript = _records(tmp_path / "coder.jsonl", _tool_use("Bash", {"command": "npm ci"}))
+    _agent(
+        ledger, "sess-asking", "coder", "working", started=now, heartbeat=now, transcript=transcript
+    )
     claude.run("sess-asking", **extra)
 
     findings = _scan(ledger, claude, now)
 
     assert _kinds(findings) == [("asking", "needs_user")]
     default = "the user (blocked)" if extra.get("state") == "blocked" else "input"
-    assert findings[0].detail.startswith(
-        f"its session host-r1-asking waits on {extra.get('waitingFor') or default}"
+    assert findings[0].detail == (
+        f"its session host-r1-asking waits on {extra.get('waitingFor') or default}: Bash npm ci"
     )
+
+
+@pytest.mark.parametrize("extra", _WAITS)
+def test_a_waiting_status_with_no_request_is_not_the_users(
+    ledger: Ledger, claude: FakeClaude, now: datetime, tmp_path: Path, extra: dict
+) -> None:
+    _run_id(ledger)
+    _oracle_running(claude)
+    transcript = _records(
+        tmp_path / "coder.jsonl", _tool_use("Bash", {"command": "npm run lint"}), _TOOL_RESULT
+    )
+    _agent(
+        ledger, "sess-ended", "coder", "working", started=now, heartbeat=now, transcript=transcript
+    )
+    claude.run("sess-ended", **extra)
+
+    assert _scan(ledger, claude, now) == []
+
+
+def test_a_blocked_session_with_no_request_goes_to_its_parent_once_quiet(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _oracle_running(claude)
+    old = now - timedelta(minutes=20)
+    _agent(ledger, "sess-lead-1", "lead", "working", started=old, heartbeat=now)
+    claude.run("sess-lead-1")
+    _agent(
+        ledger, "sess-coder-1", "coder", "working", started=old, heartbeat=old, parent="sess-lead-1"
+    )
+    claude.run("sess-coder-1", status="idle", state="blocked")
+
+    findings = _scan(ledger, claude, now)
+
+    assert _kinds(findings) == [("coder-1", "blocked")]
+    assert findings[0].detail == (
+        "its session host-r1-coder-1 ended its turn blocked on its work, with no permission "
+        "prompt or tool request pending, and has shown no activity for 20 minutes"
+    )
+    assert findings[0].next_step.startswith('Wake lead-1 (SendMessage(to="host-r1-lead-1")')
+    assert "blocked" not in watchdog.USER_KINDS
+    assert _scan(ledger, claude, now, stuck_minutes=30) == []
+
+
+def test_a_blocked_oracle_with_no_request_is_not_reported(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    claude.run(ORACLE, "host-oracle", status="idle", state="blocked")
+
+    assert _scan(ledger, claude, now) == []
+
+
+def test_a_coder_on_a_superseded_file_is_only_reported_for_release(
+    ledger: Ledger, claude: FakeClaude, now: datetime, tmp_path: Path
+) -> None:
+    run_id = _run_id(ledger)
+    _oracle_running(claude)
+    old = now - timedelta(minutes=30)
+    transcript = _records(tmp_path / "old.jsonl", _tool_use("Bash", {"command": "npm ci"}))
+    _agent(ledger, "sess-lead-1", "lead", "working", started=old, heartbeat=now)
+    claude.run("sess-lead-1")
+    _agent(
+        ledger,
+        "sess-old",
+        "coder",
+        "working",
+        started=old,
+        heartbeat=old,
+        parent="sess-lead-1",
+        transcript=transcript,
+    )
+    claude.run("sess-old", status="idle", state="blocked")
+    with write_tx(ledger.conn) as conn:
+        phase = conn.execute(
+            "INSERT INTO phases (run_id, name, ordinal, state) VALUES (?, 'p1-x', 1, 'working')",
+            (run_id,),
+        ).lastrowid
+        module = conn.execute(
+            "INSERT INTO modules (phase_id, name, state) VALUES (?, 'm', 'working')", (phase,)
+        ).lastrowid
+        file_id = conn.execute(
+            "INSERT INTO files (module_id, path, owner_agent_id, state, released_at) "
+            "VALUES (?, 'src/a.ts', 'old', 'superseded', ?)",
+            (module, watchdog.stamp(old)),
+        ).lastrowid
+        conn.execute("UPDATE agents SET file_id = ? WHERE agent_id = 'sess-old'", (file_id,))
+
+    findings = _scan(ledger, claude, now)
+
+    assert _kinds(findings) == [("old", "superseded")]
+    assert findings[0].detail == f"its file {file_id} (src/a.ts) was superseded by a later claim"
+    assert 'agent_release(target_agent_id="sess-old")' in findings[0].next_step
+    assert findings[0].next_step.startswith("Ask lead-1 to release it")
 
 
 def test_an_oracle_waiting_on_its_own_question_needs_the_user(
@@ -332,11 +429,17 @@ def test_a_run_where_nobody_works_and_nothing_is_owed_is_run_stalled(
 
 
 def test_a_waiting_session_does_not_count_as_working_for_run_stalled(
-    ledger: Ledger, claude: FakeClaude, now: datetime
+    ledger: Ledger, claude: FakeClaude, now: datetime, tmp_path: Path
 ) -> None:
-    _quiet_run(ledger, claude, now)
+    old = _quiet_run(ledger, claude, now)
+    question = {"questions": [{"question": "Which database?"}]}
+    transcript = _records(tmp_path / "oracle.jsonl", _tool_use("AskUserQuestion", question))
+    os.utime(transcript, (old.timestamp(), old.timestamp()))
     with write_tx(ledger.conn) as conn:
-        conn.execute("UPDATE agents SET state = 'working' WHERE agent_id = ?", (ORACLE,))
+        conn.execute(
+            "UPDATE agents SET state = 'working', transcript_path = ? WHERE agent_id = ?",
+            (str(transcript), ORACLE),
+        )
     claude.listing[0] |= {"status": "waiting", "waitingFor": "input needed"}
     asked = ledger.directive_submit("user_chat", "alex", "Which database?")
     ledger.directive_resolve("oracle", ORACLE, asked["directive_id"], "needs_user", "Ask Alex.")
@@ -1203,9 +1306,20 @@ def test_a_busy_oracle_is_left_to_its_listener(
 
 
 def test_needs_user_and_run_stalled_notify_the_user(
-    ledger: Ledger, claude: FakeClaude, now: datetime, os_notifications: list[list[str]]
+    ledger: Ledger,
+    claude: FakeClaude,
+    now: datetime,
+    os_notifications: list[list[str]],
+    tmp_path: Path,
 ) -> None:
-    _quiet_run(ledger, claude, now)
+    old = _quiet_run(ledger, claude, now)
+    transcript = _records(tmp_path / "lead.jsonl", _tool_use("Bash", {"command": "npm ci"}))
+    os.utime(transcript, (old.timestamp(), old.timestamp()))
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET transcript_path = ? WHERE agent_id = 'sess-lead-1'",
+            (str(transcript),),
+        )
     claude.listing[1] |= {"status": "waiting", "waitingFor": "permission prompt"}
 
     _dog(ledger, Exits()).tick(now)
@@ -1341,17 +1455,25 @@ def test_an_open_question_is_reminded_and_zero_turns_reminders_off(
 
 
 def test_a_session_blocked_on_the_user_is_reminded_until_it_clears(
-    ledger: Ledger, claude: FakeClaude, now: datetime, monkeypatch: pytest.MonkeyPatch
+    ledger: Ledger,
+    claude: FakeClaude,
+    now: datetime,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     shown: list[str] = []
     monkeypatch.setattr(notify, "show", lambda message, **_: shown.append(message))
     _run_id(ledger)
     _oracle_running(claude)
-    _agent(ledger, "sess-asking", "coder", "working", started=now, heartbeat=now)
+    transcript = _records(tmp_path / "coder.jsonl", _tool_use("Bash", {"command": "npm ci"}))
+    _agent(
+        ledger, "sess-asking", "coder", "working", started=now, heartbeat=now, transcript=transcript
+    )
     entry = claude.run("sess-asking", status="waiting", waitingFor="permission prompt")
     dog = _dog(ledger, Exits(), remind_minutes=30)
     reminder = (
-        "1 session(s) wait on you: asking, its session host-r1-asking waits on permission prompt"
+        "1 session(s) wait on you: asking, its session host-r1-asking waits on permission "
+        "prompt: Bash npm ci"
     )
 
     dog.tick(now)

@@ -12,6 +12,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from pathlib import Path
 
+from . import procs
 from .identity import LedgerError
 from .paths import claude_json_path, config_dir
 
@@ -46,6 +47,12 @@ _LABELS = ("agents", "plugin", "stop", "--resume", "--bg")
 # Not "done": a background session reports state "done" once its turn ends, while its process
 # still runs and takes messages. Resuming it with --resume starts a second session.
 _DEAD = frozenset({"stopped", "exited", "crashed", "failed", "killed", "dead", "completed"})
+# A session the daemon no longer runs, such as one left from before a reboot, stays in the
+# listing with its last state and no pid or status, so only these statuses or a live process
+# count as running.
+_LIVE_STATUSES = frozenset({"busy", "idle", "waiting"})
+# A process created this long after the session started holds a reused pid.
+_PID_REUSE_GRACE_MS = 60_000
 _TIMEOUT_S = 60.0
 # Many sessions starting and stopping at once can leave ~/.claude.json truncated for a while;
 # every claude command fails to read it until a later write completes it.
@@ -305,10 +312,22 @@ def list_sessions(*, retry: bool = False) -> list[dict]:
 
 def is_running(entry: dict) -> bool:
     states = {str(entry.get(key) or "").lower() for key in ("status", "state")}
-    # Claude Code 2.1.284 prints no pid for a background session; the plain listing holds only
-    # active ones, so a background entry without a dead state is running.
-    present = bool(entry.get("pid")) or entry.get("kind") == "background"
-    return present and not (states & _DEAD)
+    if states & _DEAD:
+        return False
+    if str(entry.get("status") or "").lower() in _LIVE_STATUSES:
+        return True
+    return _process_alive(entry.get("pid"), entry.get("startedAt"))
+
+
+def _process_alive(pid: object, started_ms: object) -> bool:
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    created = procs.created_of(pid)
+    if created is None:
+        return False
+    if not isinstance(started_ms, (int, float)):
+        return True
+    return procs.created_epoch_ms(created) <= started_ms + _PID_REUSE_GRACE_MS
 
 
 def find_session(sessions: list[dict], session_id: str) -> dict | None:

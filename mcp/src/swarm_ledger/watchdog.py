@@ -5,7 +5,7 @@ import os
 import sqlite3
 import sys
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -100,12 +100,22 @@ def scan(
             "waitingFor": HELD_WAIT,
         }
     names = {a["agent_id"]: a["name"] for a in agents}
+    by_id = {a["agent_id"]: a for a in agents}
+    superseded = _superseded_coders(conn, run["run_id"])
+    user_findings, user_waits, blocked = _classify_waits(agents, by_session, held, superseded)
 
     findings: list[Finding] = []
     for agent in agents:
-        entry = by_session.get(agent["agent_id"])
+        agent_id = agent["agent_id"]
+        entry = by_session.get(agent_id)
+        if agent_id in superseded:
+            findings.append(_superseded_finding(agent, superseded[agent_id], by_id))
+            continue
         if agent["role"] in _MEMBER_ROLES:
-            findings += _session_findings(agent, entry, now, settings)
+            if agent_id in blocked:
+                findings += _blocked_findings(agent, now, settings, by_id)
+            elif agent_id not in user_waits:
+                findings += _session_findings(agent, entry, now, settings)
             spin = _spinning(conn, agent, settings)
             if spin is not None:
                 parent = names.get(agent["parent_agent_id"]) or "its parent"
@@ -118,13 +128,14 @@ def scan(
                         "or issue_escalate.",
                     )
                 )
-        elif agent["role"] == "driver" and not waiting_on_user(entry):
+        elif agent["role"] == "driver" and agent_id not in user_waits:
             findings += _driver_findings(conn, agent, entry, now)
         context = _context_high(agent, settings)
         if context is not None:
             findings.append(_finding(agent, "context_high", context, _context_step(agent, names)))
 
-    findings += _needs_user_findings(agents, by_session, held)
+    waits = user_waits | blocked
+    findings += user_findings
     findings += _landed_wait_findings(conn, run["run_id"], agents, by_session)
     findings += _unsent_findings(conn, run["run_id"], agents, by_session, now, settings)
     findings += _queued_findings(conn, run["run_id"], agents, now, settings)
@@ -134,13 +145,13 @@ def scan(
     stalled = _stalled(conn, run, agents, by_session, now)
     if stalled is not None:
         findings.append(stalled)
-    run_stalled = _run_stalled(conn, run, agents, by_session, now, settings)
+    run_stalled = _run_stalled(conn, run, agents, by_session, now, settings, waits, user_waits)
     if run_stalled is not None:
         findings.append(run_stalled)
     return findings
 
 
-def waiting_on_user(entry: dict | None) -> str | None:
+def session_wait(entry: dict | None) -> str | None:
     if entry is None:
         return None
     waiting = " ".join(str(entry.get("waitingFor") or "").split())
@@ -154,33 +165,102 @@ def waiting_on_user(entry: dict | None) -> str | None:
     return None
 
 
-def _needs_user_findings(
-    agents: list[dict], by_session: dict[str, dict], held: dict[str, dict]
-) -> list[Finding]:
+def _classify_waits(
+    agents: list[dict],
+    by_session: dict[str, dict],
+    held: dict[str, dict],
+    skip: Mapping[str, object],
+) -> tuple[list[Finding], set[str], set[str]]:
+    # Claude Code also reports "waiting" or "blocked" for a session that ended its turn on a
+    # work blocker, and for an idle Oracle; only a held or pending request needs a person.
     findings: list[Finding] = []
+    user_waits: set[str] = set()
+    blocked: set[str] = set()
     for agent in agents:
-        waiting = waiting_on_user(by_session.get(agent["agent_id"]))
+        agent_id = agent["agent_id"]
+        if agent_id in skip:
+            continue
+        waiting = session_wait(by_session.get(agent_id))
         if waiting is None:
             continue
         session = agent["session_name"] or agent["name"]
-        asked = held.get(agent["agent_id"])
+        asked = held.get(agent_id)
         if asked is not None:
+            user_waits.add(agent_id)
             findings.append(_held_finding(agent, session, asked))
             continue
         request = pending_request(agent.get("transcript_path"))
-        detail = f"its session {session} waits on {waiting}"
-        if request:
-            detail = f"{detail}: {request}"
+        if request is None:
+            blocked.add(agent_id)
+            continue
+        user_waits.add(agent_id)
         findings.append(
             _finding(
                 agent,
                 "needs_user",
-                detail,
+                f"its session {session} waits on {waiting}: {request}",
                 f"The user has been notified. Tell the user to open the session {session} in "
                 "agent view and answer it, and keep the rest of the run moving.",
             )
         )
-    return findings
+    return findings, user_waits, blocked
+
+
+def _blocked_findings(
+    agent: dict, now: datetime, settings: WatchdogSettings, by_id: dict[str, dict]
+) -> list[Finding]:
+    if agent["state"] != "working":
+        return []
+    last = parse_stamp(agent["last_heartbeat_at"]) or parse_stamp(agent["started_at"])
+    if last is None or now - last < timedelta(minutes=settings.stuck_minutes):
+        return []
+    session = agent["session_name"] or agent["name"]
+    label = json.dumps(session)
+    parent = by_id.get(agent["parent_agent_id"] or "")
+    if parent is None or parent["role"] == "oracle":
+        step = (
+            f"Ask it what blocks it with SendMessage(to={label}), then unblock it, or have it "
+            "call issue_escalate, or release it."
+        )
+    else:
+        parent_label = json.dumps(parent["session_name"] or parent["name"])
+        step = (
+            f"Wake {parent['name']} (SendMessage(to={parent_label})) to unblock {agent['name']}: "
+            "answer its question, return_work with new direction, or release it."
+        )
+    return [
+        _finding(
+            agent,
+            "blocked",
+            f"its session {session} ended its turn blocked on its work, with no permission "
+            f"prompt or tool request pending, and has shown no activity for "
+            f"{_minutes(now - last)} minutes",
+            step,
+        )
+    ]
+
+
+def _superseded_coders(conn: sqlite3.Connection, run_id: int) -> dict[str, sqlite3.Row]:
+    rows = conn.execute(
+        "SELECT a.agent_id, f.file_id, f.path FROM agents a JOIN files f ON f.file_id = a.file_id "
+        "WHERE a.run_id = ? AND a.role = 'coder' AND a.ended_at IS NULL "
+        "AND f.state = 'superseded'",
+        (run_id,),
+    ).fetchall()
+    return {row["agent_id"]: row for row in rows}
+
+
+def _superseded_finding(agent: dict, file_row: sqlite3.Row, by_id: dict[str, dict]) -> Finding:
+    parent = by_id.get(agent["parent_agent_id"] or "")
+    who = parent["name"] if parent is not None else "its parent"
+    return _finding(
+        agent,
+        "superseded",
+        f"its file {file_row['file_id']} ({file_row['path']}) was superseded by a later claim",
+        f"Ask {who} to release it with "
+        f"agent_release(target_agent_id={json.dumps(agent['agent_id'])}); the later claim owns "
+        "the file, and the session holds memory.",
+    )
 
 
 def _held_finding(agent: dict, session: str, asked: dict) -> Finding:
@@ -257,6 +337,8 @@ def _run_stalled(
     by_session: dict[str, dict],
     now: datetime,
     settings: WatchdogSettings,
+    waits: set[str],
+    user_waits: set[str],
 ) -> Finding | None:
     oracle = next((a for a in agents if a["role"] == "oracle"), None)
     after = timedelta(minutes=settings.stuck_minutes)
@@ -270,7 +352,7 @@ def _run_stalled(
     for agent in agents:
         entry = by_session.get(agent["agent_id"])
         running = entry is not None and sessions.is_running(entry)
-        if agent["state"] == "working" and running and not waiting_on_user(entry):
+        if agent["state"] == "working" and running and agent["agent_id"] not in waits:
             return None
     if conn.execute(
         "SELECT 1 FROM wakeups w JOIN agents t ON t.agent_id = w.to_agent_id "
@@ -283,11 +365,7 @@ def _run_stalled(
     last = max((s for s in stamps if s is not None), default=None)
     if last is None or now - last < after:
         return None
-    waiting = [
-        a["session_name"] or a["name"]
-        for a in agents
-        if waiting_on_user(by_session.get(a["agent_id"]))
-    ]
+    waiting = [a["session_name"] or a["name"] for a in agents if a["agent_id"] in user_waits]
     detail = (
         f"no agent of the run has worked and no wake-up has been owed for {_minutes(now - last)} "
         "minutes"
@@ -546,9 +624,6 @@ def _release_step(agent_id: str) -> str:
 def _session_findings(
     agent: dict, entry: dict | None, now: datetime, settings: WatchdogSettings
 ) -> list[Finding]:
-    if waiting_on_user(entry):
-        return []
-
     running = entry is not None and sessions.is_running(entry)
     if not running:
         return _crashed(agent, entry, now)
@@ -1318,7 +1393,7 @@ class Watchdog:
         self, run: sqlite3.Row, oracle: sqlite3.Row, entry: dict | None, count: int, first: int
     ) -> None:
         session = oracle["session_name"] or oracle["name"]
-        asks = waiting_on_user(entry)
+        asks = session_wait(entry) if pending_request(oracle["transcript_path"]) else None
         state = f"waits on {asks}" if asks else "sits idle with no watchdog listener"
         with write_tx(self.conn) as conn:
             notice = notify.record(

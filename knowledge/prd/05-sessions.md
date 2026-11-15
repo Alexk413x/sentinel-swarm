@@ -404,10 +404,13 @@ fails as ambiguous, or goes to the offline entry and waits there for good. See
 
 ## Liveness, resume, and release
 
-- A session is running when `claude agents --json` shows a `pid`, or lists it with
-  `kind: "background"` (Claude Code 2.1.284 prints no `pid` for one), and its status and
-  state are not `stopped`, `exited`, `crashed`, `failed`, `killed`, `dead`, or
-  `completed`. State `done` counts as running.
+- A session is running when its status and state in `claude agents --json` are not
+  `stopped`, `exited`, `crashed`, `failed`, `killed`, `dead`, or `completed`, and either
+  its `status` is `busy`, `idle`, or `waiting`, or its `pid` names a process that exists
+  and was created no later than a minute after the entry's `startedAt` (a later process
+  holds a reused pid). State `done` counts as running. An entry with neither, such as
+  one a reboot left with only `state: "blocked"`, is not running, so `run_start` and
+  `agent_resume` do not refuse on it.
 - `agent_resume(target_name)` resumes a live agent of the run whose session is not
   running, with `claude --resume <session id> --bg "<pointer>" --name <session name>`
   and the role's launch options, because `--resume` restores the conversation but not

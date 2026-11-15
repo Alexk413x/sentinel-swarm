@@ -31,7 +31,7 @@ from ..queries import (
     submitted_handoffs,
     unread_count,
 )
-from ..settings import command_line
+from ..settings import SHELL_OPERATORS, command_line
 from ..watchdog import MONITOR_CALL, REGISTER_GRACE, WATCH_COMMAND
 
 _RECORDS_DIR = ".sentinel-swarm"
@@ -52,7 +52,6 @@ _START_CONTEXT_CAP = 9_500
 _DRIVER_SUBAGENTS = frozenset(
     {"map-driver", "map-reviewer", "cartographer:map-driver", "cartographer:map-reviewer"}
 )
-_SHELL_OPERATORS = re.compile(r"[;&|<>`\n]|\$\(")
 _SEARCH_TOOLS = frozenset({"Grep", "Glob"})
 _GAP_PATHS = 20
 _CONTENT_LINE = re.compile(r"^((?:[A-Za-z]:)?[^:]+):\d+[:-]")
@@ -396,7 +395,7 @@ def _command_allowed(ledger: Ledger, command: str, caller: dict) -> bool:
     role = caller["role"]
     if _host_command(ledger, command, role):
         return True
-    if _SHELL_OPERATORS.search(command):
+    if SHELL_OPERATORS.search(command):
         return False
     try:
         argv = shlex.split(command, posix=_POSIX)

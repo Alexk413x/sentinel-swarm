@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, TypeVar
@@ -30,6 +31,7 @@ DEFAULT_MAX_WORKERS = 8
 DEFAULT_HEADROOM_MB = 1500
 _FALSE_WORDS = frozenset({"false", "no", "off", "0"})
 PROFILE_KEYS = ("test_command", "build_command", "lint_command")
+SHELL_OPERATORS = re.compile(r"[;&|<>`\n]|\$\(")
 TEST_SCOPES = ("file", "module", "phase", "full")
 DEFAULT_TEST_TIMEOUT_S = 600
 DEFAULT_PERMISSION_HOLD_S = 300

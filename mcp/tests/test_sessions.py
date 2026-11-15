@@ -269,7 +269,7 @@ def test_parse_bg_id_reads_the_backgrounded_line(output: str) -> None:
 def test_is_live_reads_status_and_pid(claude: FakeClaude) -> None:
     claude.add("s-running", "a")
     claude.listing.append({"pid": 5, "sessionId": "s-stopped", "status": "stopped"})
-    claude.listing.append({"sessionId": "s-no-pid", "status": "idle"})
+    claude.listing.append({"kind": "background", "sessionId": "s-no-pid", "state": "blocked"})
     claude.listing.append({"pid": 6, "sessionId": "s-turn-done", "status": "idle", "state": "done"})
     assert sessions.is_live("s-running") is True
     assert sessions.is_live("s-turn-done") is True
@@ -703,6 +703,27 @@ def test_run_start_resumes_a_run_whose_oracle_session_is_dead(
     assert resumed["oracle"]["session_name"] == "my-host-oracle"
 
 
+def test_run_start_resumes_past_a_stale_entry_left_by_a_reboot(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    claude.add(_ORACLE_SESSION, "my-host-oracle")
+    first = ledger.run_start(prd="Build X", session_id=_ORACLE_SESSION)
+    claude.listing[:] = [
+        {
+            "id": "3d4ff845",
+            "kind": "background",
+            "sessionId": _ORACLE_SESSION,
+            "name": "my-host-oracle",
+            "startedAt": 1794460341935,
+            "state": "blocked",
+        }
+    ]
+    claude.add("sess-new", "my-host-oracle")
+    resumed = ledger.run_start(prd="ignored", session_id="sess-new")
+    assert resumed["resumed"] is True
+    assert resumed["run"]["run_id"] == first["run"]["run_id"]
+
+
 def test_run_start_refuses_when_it_cannot_list_sessions_to_check(
     ledger: Ledger, claude: FakeClaude
 ) -> None:
@@ -751,11 +772,43 @@ def test_dev_channels_go_last_on_spawn_and_resume(
     assert claude.calls[-1][0] == ["--resume", "3378dc08-full-id", "--bg", "Re-read.", *tail]
 
 
-def test_a_background_entry_without_a_pid_counts_as_running() -> None:
+_STARTED_MS = 1_794_460_341_935
+
+
+def test_a_background_entry_without_a_pid_or_status_is_not_running() -> None:
     entry = {"id": "fda406cd", "kind": "background", "sessionId": "s-1", "state": "blocked"}
+    assert not sessions.is_running(entry)
+    assert not sessions.is_running(entry | {"state": "working"})
+
+
+@pytest.mark.parametrize("status", ["busy", "idle", "waiting"])
+def test_a_live_status_counts_as_running(status: str) -> None:
+    entry = {"kind": "background", "sessionId": "s-1", "status": status, "state": "done"}
     assert sessions.is_running(entry)
     assert not sessions.is_running(entry | {"state": "stopped"})
-    assert not sessions.is_running({"kind": "interactive", "sessionId": "s-2", "status": "idle"})
+
+
+def test_a_pid_counts_only_while_its_process_started_with_the_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry = {"pid": 4242, "sessionId": "s-1", "startedAt": _STARTED_MS, "state": "blocked"}
+    born: dict[int, int | None] = {}
+    monkeypatch.setattr(sessions.procs, "created_of", born.get)
+    monkeypatch.setattr(sessions.procs, "created_epoch_ms", lambda created: created)
+
+    assert not sessions.is_running(entry)
+    born[4242] = _STARTED_MS - 2_000
+    assert sessions.is_running(entry)
+    born[4242] = _STARTED_MS + 3_600_000
+    assert not sessions.is_running(entry)
+
+
+def test_created_epoch_ms_reads_the_platforms_creation_time() -> None:
+    if sys.platform == "win32":
+        filetime = _STARTED_MS * 10_000 + 116_444_736_000_000_000
+        assert sessions.procs.created_epoch_ms(filetime) == _STARTED_MS
+    else:
+        assert sessions.procs.created_epoch_ms(_STARTED_MS // 1000) == _STARTED_MS // 1000 * 1000
 
 
 def test_a_briefs_effort_overrides_the_settings_and_is_recorded(

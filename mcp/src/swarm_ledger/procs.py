@@ -14,6 +14,7 @@ SHELLS = frozenset({"bash", "sh", "zsh", "dash", "fish", "cmd", "powershell", "p
 _KERNEL32: Any = None
 _ENTRY: Any = None
 _INVALID_HANDLE = 2**64 - 1 if sys.maxsize > 2**32 else 2**32 - 1
+_FILETIME_EPOCH = 116_444_736_000_000_000
 
 
 @dataclass(frozen=True)
@@ -124,6 +125,12 @@ def terminate(proc: Proc) -> bool:
         return True
     except OSError:
         return False
+
+
+def created_epoch_ms(created: int) -> int:
+    if sys.platform == "win32":
+        return (created - _FILETIME_EPOCH) // 10_000
+    return created * 1000
 
 
 def created_of(pid: int) -> int | None:

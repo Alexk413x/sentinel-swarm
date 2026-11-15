@@ -352,6 +352,14 @@ name in `commands`; see `pre_shell` in
 needs, such as an export, edit, and build loop over data files, goes in `commands`
 under its own name, not behind `build_command`.
 
+The gate denies any command that holds a shell operator (`;`, `&`, `|`, `<`, `>`, a
+backtick, a newline, or `$(`), so a `test_command`, `test_command_by_scope` entry,
+`build_command`, or `lint_command` written as `cd apps/web && npm run lint` is refused
+to every Coder, and `tests_run` resolves a repo-relative `{target}` from the repo root,
+not from `apps/web`. Setup warns about each such template and shows the subdirectory
+form, which names the directory in the command: `npx --prefix apps/web vitest run --root
+apps/web {target}`, or `npm --prefix apps/web run lint`.
+
 ## Plugin features
 
 Evaluated against the plugin manifest and settings reference:
