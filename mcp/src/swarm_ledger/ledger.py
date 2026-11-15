@@ -2057,6 +2057,7 @@ class Ledger(
                 "JOIN phases p ON p.phase_id = m.phase_id WHERE p.run_id = ?)",
                 (path, file_id, c.run_id),
             )
+            self._carry_crs_to_file(conn, c.run_id, path, file_id)
             conn.executemany(
                 "INSERT OR IGNORE INTO file_deps (file_id, depends_on_file_id) VALUES (?, ?)",
                 [(file_id, dep_id) for dep_id in depends_on],

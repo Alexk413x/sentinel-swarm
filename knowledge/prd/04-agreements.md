@@ -9,7 +9,7 @@ with verified evidence.
 |---|---|---|
 | `cr_open(path, body)` | Any role | Routes to the file's live owner, else its module's live Lead, else its phase's live Manager, else the Oracle. Refuses a path no module plans, and a caller who is the recipient. Owes the recipient a wake-up |
 | `cr_accept(cr_id, accept, reason)` | The recipient | `open` to `accepted` or `declined`. A decline needs a reason. Owes the requester a wake-up |
-| `cr_complete(cr_id, notes)` | The recipient, or, once the recipient has ended, its nearest live ancestor | `accepted` to `completed`. A Coder recipient needs its own passing file-scope test run of the path or its test file since acceptance. Any other recipient, and an ancestor standing in, needs such a run by anyone, or an approved handoff of the file since acceptance. For a file with no `test_path`, any recipient needs instead the file's latest handoff submitted since acceptance, `submitted` or `approved`, recorded as `evidence_handoff_id`. Owes the requester a wake-up |
+| `cr_complete(cr_id, notes)` | The recipient, or, once the recipient has ended, its nearest live ancestor | `accepted` to `completed`. A Coder recipient needs its own passing file-scope test run of the path or its test file since acceptance. Any other recipient, and an ancestor standing in, needs such a run by anyone, or an approved handoff of the file since acceptance. For a file with no `test_path`, any recipient needs instead the file's latest handoff submitted since acceptance, `submitted` or `approved`, recorded as `evidence_handoff_id`. Evidence on any later file with the same path in the run counts as evidence on the request's file. A granted `cr_complete` override for the request stands in for the evidence (see "Overrides"). Owes the requester a wake-up |
 | `cr_verify(cr_id, ok, notes)` | The requester while it is live, else its nearest live ancestor | `completed` to `verified`, or back to `accepted` with the notes and a wake-up to the recipient, whose next `cr_complete` needs evidence newer than the evidence that failed |
 | `cr_list(state)` | Any role | The requests the caller opened or received. The Oracle sees every request in the run |
 
@@ -23,6 +23,9 @@ with verified evidence.
   ancestor a message that names the request and the next call. A released agent never
   strands a request, and no release refuses because of one. `completed` requests stay
   with the recipient, since `cr_verify` belongs to the requester's side.
+- A claim of a path that supersedes an earlier file on it moves every `open`, `accepted`,
+  or `completed` request on the superseded files to the new file. The request keeps its
+  recipient and requester. A `verified` or `declined` request stays where it is.
 - `phase_update(handed_up)` refuses while a request on a file of the phase is
   `accepted`, naming each request and its recipient. The Manager closes it, or has the
   recipient close it, before the phase hands up.
@@ -149,21 +152,28 @@ The responsible level:
   ledger consumes it on first use. `override_consume` matches the caller's run, so an
   unused override from an earlier run never applies to an agent of the same name in a
   later one.
-- Two rules take overrides: `write` (the target is the repo-relative path, or the path
-  as given for a file outside the repo) in the write gate, and `shell` (the target is
-  the exact command) in the shell gate. `override_grant` accepts any rule name; a grant
-  for another rule is recorded and never used.
+- Three rules take overrides: `write` (the target is the repo-relative path, or the path
+  as given for a file outside the repo) in the write gate, `shell` (the target is
+  the exact command) in the shell gate, and `cr_complete` in `cr_complete`.
+  `override_grant` accepts any rule name; a grant for another rule is recorded and
+  never used.
+- A `cr_complete` override names the agent that calls `cr_complete`, the recipient or the
+  ancestor standing in, and a target that starts with `CR <cr_id>`. The rule may carry a
+  description after a colon, as in `cr_complete: <why>`. `cr_complete` looks for
+  evidence first. Only when it finds none does it consume the override, and then it
+  completes the request with no evidence test run or handoff recorded and notes the
+  override id in `completion_notes`. An override that finds evidence stays unused.
 - Every override is a ledger record, and the report lists it with its reason.
 - The Oracle must not use an override to write a project file itself.
   The Oracle's agent file has no write tool. `override_grant` also refuses a
   `target_agent_name` that names the Oracle itself, so the Oracle cannot grant its own
   session a write or shell override.
-- Only the write and shell gates ever consume an override. The records-folder denial in
-  `pre_write`, the identity stamp in `pre_ledger`, the `Agent` denial in `pre_agent`
-  (every role but the Driver, and the Driver outside cartographer's `map-driver` and
-  `map-reviewer`), the `Monitor` denial in `pre_monitor`, and the `SendMessage` denial
-  in `pre_send_message` and `pre_skill` are unconditional; no rule-level exception fits them, so they
-  never check for one.
+- Only the write and shell gates and `cr_complete` ever consume an override. The
+  records-folder denial in `pre_write`, the identity stamp in `pre_ledger`, the `Agent`
+  denial in `pre_agent` (every role but the Driver, and the Driver outside cartographer's
+  `map-driver` and `map-reviewer`), the `Monitor` denial in `pre_monitor`, and the
+  `SendMessage` denial in `pre_send_message` and `pre_skill` are unconditional; no
+  rule-level exception fits them, so they never check for one.
 
 ## Directives
 
