@@ -442,7 +442,9 @@ fails as ambiguous, or goes to the offline entry and waits there for good. See
 - The release records the session's process and every process it found in
   `released_processes`, and logs how many it stopped in the release's agent event. The
   watchdog reports any of them still running, and any process started under them, as
-  `stray_process`; see [08-watchdog.md](08-watchdog.md).
+  `stray_process`, but only after it verifies each process by its pid and exact start
+  time and by its parent chain back to a recorded process; see
+  [08-watchdog.md](08-watchdog.md).
 - `agent_release(target_agent_id)` releases a child of the caller. The Oracle may also
   release an agent whose parent has ended, such as a Lead left live under a released
   Manager. The other releases are automatic. Every release hands the released agent's
