@@ -55,11 +55,11 @@ Oracle turn:
 
 ```bash
 python="$(command -v py >/dev/null 2>&1 && echo 'py -3' || { command -v python3 >/dev/null 2>&1 && echo python3; } || echo python)"
-$python -I -S "${CLAUDE_PLUGIN_ROOT}/mcp/launch/ledger.py" runresume --sender "<your name>"
+$python -I -S "${CLAUDE_PLUGIN_ROOT}/mcp/launch/ledger.py" resume --sender "<your name>"
 ```
 
 It sets the run back to `active`, starts the ledger server when it is not running, and
-files a watchdog directive that wakes the Oracle. `runpause --reason "<why>"` is the
+files a watchdog directive that wakes the Oracle. `pause --reason "<why>"` is the
 matching command that pauses a run without the Oracle; see the `run` skill.
 
 ## What run_start does on a resume

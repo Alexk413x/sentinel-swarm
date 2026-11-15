@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from helpers import bootstrap_module
 
-from swarm_ledger import env, runpause, runresume, serve, watch
+from swarm_ledger import env, pause, resume, serve, watch
 from swarm_ledger.clock import utcnow
 from swarm_ledger.ledger import Ledger
 
@@ -40,7 +40,7 @@ def _run(ledger: Ledger) -> dict:
 
 
 def _pause(ledger: Ledger, *extra: str, reason: str = "I have to leave") -> int:
-    return runpause.main(["--repo", str(ledger.repo_root), "--reason", reason, *extra])
+    return pause.main(["--repo", str(ledger.repo_root), "--reason", reason, *extra])
 
 
 def test_pause_command_pauses_the_run_and_records_who_paused_it(
@@ -138,7 +138,7 @@ def test_resume_command_clears_the_pause_and_files_a_wake_directive(
     _pause(ledger)
     capsys.readouterr()
 
-    assert runresume.main(["--repo", str(ledger.repo_root), "--sender", "alex"]) == 0
+    assert resume.main(["--repo", str(ledger.repo_root), "--sender", "alex"]) == 0
 
     run = _run(ledger)
     assert (run["state"], run["pause_check"], run["paused_at"]) == ("active", None, None)
@@ -161,11 +161,11 @@ def test_resume_command_clears_the_pause_and_files_a_wake_directive(
 def test_resume_command_refuses_a_run_that_is_not_paused(
     ledger: Ledger, capsys: pytest.CaptureFixture[str], started_servers: list[Path]
 ) -> None:
-    assert runresume.main(["--repo", str(ledger.repo_root)]) == 1
+    assert resume.main(["--repo", str(ledger.repo_root)]) == 1
     assert "no active run" in capsys.readouterr().err
     bootstrap_module(ledger)
 
-    assert runresume.main(["--repo", str(ledger.repo_root)]) == 1
+    assert resume.main(["--repo", str(ledger.repo_root)]) == 1
 
     assert "not paused" in capsys.readouterr().err
     assert started_servers == []
@@ -177,13 +177,13 @@ def test_resume_command_clears_a_pause_that_names_a_clear_check(
     ctx = bootstrap_module(ledger)
     ledger.run_pause("oracle", ctx["oracle_id"], "config broke", clear_check="config_parses")
 
-    assert runresume.main(["--repo", str(ledger.repo_root)]) == 0
+    assert resume.main(["--repo", str(ledger.repo_root)]) == 0
 
     run = _run(ledger)
     assert (run["state"], run["pause_check"]) == ("active", None)
 
 
-@pytest.mark.parametrize("command", ["runpause", "runresume"])
+@pytest.mark.parametrize("command", ["pause", "resume"])
 def test_the_launcher_runs_the_pause_commands(command: str) -> None:
     done = subprocess.run(
         [sys.executable, "-I", "-S", str(LAUNCHER), command, "--help"],

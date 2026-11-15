@@ -16,7 +16,7 @@ SOURCES = ("outside_session", "user_chat", "skill")
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="ledger.py runpause",
+        prog="ledger.py pause",
         description="Pause the live run from outside the Oracle's session.",
     )
     parser.add_argument("--repo", type=Path, default=None, help="host repo root; default: cwd")

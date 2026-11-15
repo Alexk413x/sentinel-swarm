@@ -79,7 +79,7 @@ point, run the pause command from the host repo root:
 
 ```bash
 python="$(command -v py >/dev/null 2>&1 && echo 'py -3' || { command -v python3 >/dev/null 2>&1 && echo python3; } || echo python)"
-$python -I -S "${CLAUDE_PLUGIN_ROOT}/mcp/launch/ledger.py" runpause --reason "<why>" --sender "<your name>"
+$python -I -S "${CLAUDE_PLUGIN_ROOT}/mcp/launch/ledger.py" pause --reason "<why>" --sender "<your name>"
 ```
 
 It pauses the run as the Oracle's `run_pause` does: the run becomes `paused`, the user
@@ -89,7 +89,7 @@ It exits 1 with the ledger's reason when no run is active or the run is already 
 To continue, run the resume command:
 
 ```bash
-$python -I -S "${CLAUDE_PLUGIN_ROOT}/mcp/launch/ledger.py" runresume --sender "<your name>"
+$python -I -S "${CLAUDE_PLUGIN_ROOT}/mcp/launch/ledger.py" resume --sender "<your name>"
 ```
 
 It sets the run back to `active`, starts the ledger server when it is not running, and

@@ -14,7 +14,7 @@ from .queries import live_run
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="ledger.py runresume",
+        prog="ledger.py resume",
         description="Resume a paused run from outside the Oracle's session.",
     )
     parser.add_argument("--repo", type=Path, default=None, help="host repo root; default: cwd")
