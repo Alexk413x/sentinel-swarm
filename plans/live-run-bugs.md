@@ -18,9 +18,9 @@ its run is live.
 | 8 | Every Coder lints the whole app | Fixed on `fix/live-run-bugs` |
 | 9 | Idle blocked Coders hold the memory queue | Fixed on `fix/live-run-bugs` |
 | 10 | Re-claim churn | Watch only |
-| 11 | Moving a file breaks the claim, the tests, and the graph | Open; overlaps 13 |
+| 11 | Moving a file breaks the claim, the tests, and the graph | Fixed on `fix/live-run-bugs` |
 | 12 | A change request stays tied to a superseded file | Fixed on `fix/live-run-bugs` |
-| 13 | Deletion Coders block on the shell gate | Open; overlaps 11 |
+| 13 | Deletion Coders block on the shell gate | Fixed on `fix/live-run-bugs` |
 | 14 | Stray-process attribution is wrong | Fixed on `fix/live-run-bugs` |
 | 15 | Directives sit open with no acknowledgement | Fixed on `fix/live-run-bugs` |
 | 16 | Planned phases show no brief in the panel | Fixed on `fix/live-run-bugs` |
