@@ -144,6 +144,22 @@ class MemorySettings:
     park_blocked_minutes: int = DEFAULT_PARK_BLOCKED_MINUTES
 
 
+@dataclass
+class SessionNotifications:
+    alerts: bool = False
+    push: bool = False
+
+
+def normalize_session_notifications(raw: object) -> SessionNotifications:
+    fields_ = raw if isinstance(raw, dict) else {}
+
+    def on(key: str) -> bool:
+        value = fields_.get(key, False)
+        return str(value).strip().lower() not in _FALSE_WORDS | {"", "none"}
+
+    return SessionNotifications(alerts=on("alerts"), push=on("push"))
+
+
 def normalize_context_windows(raw: object) -> dict[str, int]:
     if not isinstance(raw, dict):
         return {}
@@ -252,6 +268,7 @@ class Settings:
     # Per-role cap on that role's own live sessions in the run, on top of parallelism_cap.
     role_parallelism_cap: dict[str, int] = field(default_factory=dict)
     notify: list[str] = field(default_factory=lambda: list(NOTIFY_CHANNELS))
+    session_notifications: SessionNotifications = field(default_factory=SessionNotifications)
     max_workers: int = DEFAULT_MAX_WORKERS
     permission_hold_seconds: int = DEFAULT_PERMISSION_HOLD_S
     # USD per million tokens by model family, merged onto pricing.DEFAULT_PRICES:
@@ -370,6 +387,7 @@ def load_settings(repo_root: Path) -> Settings:
         permission_mode=permission_mode,
         role_parallelism_cap=role_parallelism_cap,
         notify=normalize_notify(data.get("notify")),
+        session_notifications=normalize_session_notifications(data.get("session_notifications")),
         max_workers=normalize_max_workers(data.get("max_workers")),
         permission_hold_seconds=normalize_hold_seconds(data.get("permission_hold_seconds")),
         pricing=price_overrides,

@@ -386,10 +386,23 @@ def session_options(
     if tools:
         tools += [f"mcp__{server}" for server in extra if f"mcp__{server}" not in tools]
         options += ["--allowedTools", ",".join(tools)]
-    settings_json = SESSION_SETTINGS
+    payload = json.loads(SESSION_SETTINGS)
     if prompt_cache_ttl:
-        payload = json.loads(SESSION_SETTINGS)
         payload["promptCacheTtl"] = prompt_cache_ttl
-        settings_json = json.dumps(payload)
-    options += ["--settings", settings_json]
+    payload.update(_notification_settings(repo_root, role))
+    options += ["--settings", json.dumps(payload)]
     return options
+
+
+def _notification_settings(repo_root: Path, role: str) -> dict[str, object]:
+    from .settings import load_settings
+
+    settings = load_settings(repo_root)
+    wanted = settings.session_notifications
+    found: dict[str, object] = {
+        "inputNeededNotifEnabled": wanted.push,
+        "agentPushNotifEnabled": wanted.push or (role == "oracle" and "push" in settings.notify),
+    }
+    if not wanted.alerts:
+        found["preferredNotifChannel"] = "notifications_disabled"
+    return found

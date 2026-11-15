@@ -156,6 +156,17 @@ commit_phases: true
 # makes one. An empty list, [], turns both off.
 notify: [os, push]
 
+# Claude Code's own notifications from each session the swarm starts, separate from the
+# ledger's notices above. alerts: the session's desktop or terminal alerts (Claude Code's
+# preferredNotifChannel), such as "needs your input" or "finished" in agent view. push:
+# the session's pushes to the Claude app when it needs an action or decides to notify
+# (inputNeededNotifEnabled, agentPushNotifEnabled). Both are off, so a run of many sessions
+# stays quiet; the Oracle keeps its push whenever notify includes push. No setting stops
+# claude.ai browser alerts for a Remote Control session.
+session_notifications:
+  alerts: false
+  push: false
+
 # agent_spawn and the launcher pass --effort <level> for a role listed here; a brief's own
 # effort overrides it. Values are Claude Code's own: low, medium, high, xhigh, max. medium
 # is the documented starting point for Opus 5.5 and for well-specified agentic coding on

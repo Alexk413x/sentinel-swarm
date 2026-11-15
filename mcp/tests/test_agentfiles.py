@@ -142,9 +142,44 @@ def test_session_options_builds_the_flags_from_the_role_file(tmp_path: Path) -> 
         "--allowedTools",
         "Read,Write,SendMessage,mcp__swarm-ledger",
         "--settings",
-        SESSION_SETTINGS,
+        options[options.index("--settings") + 1],
     ]
     assert json.loads(SESSION_SETTINGS) == {"worktree": {"bgIsolation": "none"}}
+    assert json.loads(options[options.index("--settings") + 1]) == {
+        "worktree": {"bgIsolation": "none"},
+        "preferredNotifChannel": "notifications_disabled",
+        "inputNeededNotifEnabled": False,
+        "agentPushNotifEnabled": False,
+    }
+
+
+def _session_settings(tmp_path: Path, role: str, notify_block: str) -> dict:
+    _write(tmp_path, role, f"---\nname: swarm-{role}\n---\nbody\n")
+    settings_dir = tmp_path / ".claude"
+    settings_dir.mkdir(exist_ok=True)
+    (settings_dir / "sentinel-swarm.local.md").write_text(
+        f"---\n{notify_block}---\n", encoding="utf-8"
+    )
+    options = session_options(tmp_path, role, None, "http://127.0.0.1:1/mcp")
+    return json.loads(options[options.index("--settings") + 1])
+
+
+def test_session_notifications_turn_each_destination_on(tmp_path: Path) -> None:
+    settings = _session_settings(
+        tmp_path, "coder", "session_notifications:\n  alerts: true\n  push: true\n"
+    )
+    assert "preferredNotifChannel" not in settings
+    assert settings["inputNeededNotifEnabled"] is True
+    assert settings["agentPushNotifEnabled"] is True
+
+
+def test_the_oracle_keeps_push_while_notify_has_push(tmp_path: Path) -> None:
+    on = _session_settings(tmp_path, "oracle", "notify: [os, push]\n")
+    assert on["agentPushNotifEnabled"] is True
+    assert on["inputNeededNotifEnabled"] is False
+    assert on["preferredNotifChannel"] == "notifications_disabled"
+    off = _session_settings(tmp_path, "oracle", "notify: [os]\n")
+    assert off["agentPushNotifEnabled"] is False
 
 
 def test_session_options_leaves_out_what_the_file_does_not_set(tmp_path: Path) -> None:
