@@ -155,6 +155,12 @@ def test_a_test_run_with_collection_errors_does_not_count_as_passed() -> None:
         "skipped": 0,
         "allowed_skipped": 0,
         "passed": 3,
+        "build_command": None,
+        "build_exit_code": None,
     }
     assert run_passed(green) is True  # type: ignore[arg-type]
     assert run_passed({**green, "errors": 2}) is False  # type: ignore[arg-type]
+    built = {**green, "build_command": "npm run build"}
+    assert run_passed({**built, "build_exit_code": 0}) is True  # type: ignore[arg-type]
+    assert run_passed({**built, "build_exit_code": 1}) is False  # type: ignore[arg-type]
+    assert run_passed(built) is False  # type: ignore[arg-type]

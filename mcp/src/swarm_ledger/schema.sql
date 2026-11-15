@@ -260,7 +260,13 @@ CREATE TABLE IF NOT EXISTS test_runs (
     runner_pid INTEGER,
     duration_ms INTEGER,
     finished_at TEXT,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    -- A full run also runs the profile's build_command once its tests pass. build_command is
+    -- set when the run starts; build_exit_code stays NULL until the build ends (-1: timed out).
+    build_command TEXT,
+    build_exit_code INTEGER,
+    build_output TEXT,
+    build_duration_ms INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_test_runs_running

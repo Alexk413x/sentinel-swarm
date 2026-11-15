@@ -105,6 +105,19 @@ def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
 
 
+def test_connect_adds_a_missing_column_to_an_existing_ledger(tmp_path: Path) -> None:
+    db_path = tmp_path / "ledger.db"
+    conn = connect(db_path)
+    conn.execute("ALTER TABLE test_runs DROP COLUMN build_command")
+    conn.execute("PRAGMA user_version = 0")
+    conn.close()
+    conn = connect(db_path)
+    try:
+        assert "build_command" in _columns(conn, "test_runs")
+    finally:
+        conn.close()
+
+
 def test_new_ledger_has_the_session_columns(tmp_path: Path) -> None:
     conn = connect(tmp_path / "ledger.db")
     try:

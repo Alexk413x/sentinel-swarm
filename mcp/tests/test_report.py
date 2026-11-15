@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from helpers import bootstrap_module
+from helpers import bootstrap_module, insert_passing_test_run
 
 from swarm_ledger.db import write_tx
 from swarm_ledger.ledger import Ledger
@@ -177,6 +177,16 @@ def test_report_final_test_run_section_shows_the_last_full_scope_run(ledger: Led
     report = ledger.write_report(ctx["run_id"])["text"]
     assert "## Final test run" in report
     assert "- 12 passed, 1 failed, 0 skipped, exit 1" in report
+
+
+def test_report_final_test_run_section_shows_the_build(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    insert_passing_test_run(
+        ledger, ctx["run_id"], ctx["oracle_id"], "full", build=("npm run build", 1, "boom")
+    )
+    report = ledger.write_report(ctx["run_id"])["text"]
+    final = report.split("## Final test run", 1)[1].split("##", 1)[0]
+    assert "- Build `npm run build`: failed, exit 1" in final
 
 
 def test_report_final_test_run_section_notes_when_none_recorded(ledger: Ledger) -> None:

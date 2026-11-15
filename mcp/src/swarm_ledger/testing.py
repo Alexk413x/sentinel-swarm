@@ -72,6 +72,14 @@ class Executed:
 
 
 @dataclass
+class BuildResult:
+    exit_code: int
+    output: str
+    duration_ms: int
+    reason: str | None
+
+
+@dataclass
 class _Counts:
     passed: int = 0
     failed: int = 0
@@ -329,6 +337,21 @@ def result_of(command: str, executed: Executed, allowed_skips: Sequence[str] = (
         ok=ok,
         reason=reason,
         allowed_skipped=allowed,
+    )
+
+
+def build_result(executed: Executed) -> BuildResult:
+    if executed.timed_out:
+        reason: str | None = "build timed out"
+    elif executed.exit_code != 0:
+        reason = f"build failed: exit code {executed.exit_code}"
+    else:
+        reason = None
+    return BuildResult(
+        exit_code=-1 if executed.timed_out else executed.exit_code,
+        output=_cap_output(executed.output),
+        duration_ms=executed.duration_ms,
+        reason=reason,
     )
 
 

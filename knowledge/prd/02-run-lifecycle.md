@@ -286,7 +286,12 @@ for a phase in `handed_up`.
 
 - `accepted` refuses unless the Oracle recorded a clean `tests_run(scope="full")`
   after the hand-up. The refusal names the scope and the command it needs, and the
-  latest full run since the hand-up: still running, or not clean with its reason; no approved or incomplete file of the phase lacks a test file while
+  latest full run since the hand-up: still running, or not clean with its reason. When
+  the profile sets `build_command`, the clean full run must also have built with that
+  command (the full run runs it after its tests; see [06-ledger-server.md](06-ledger-server.md)),
+  and a failed build refuses with the build's command, exit code, and the last 2,000
+  characters of its output. A full run made before `build_command` was set does not
+  count; no approved or incomplete file of the phase lacks a test file while
   the code graph anchors a function or class in it; `low_score_notes` holds a
   non-empty note, keyed by `file_id`, for each file whose latest Lead review has a
   dimension below the target; and `scores` rates completeness, integration, and open

@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,7 @@ from helpers import (
 )
 
 from swarm_ledger import review, setup, testing, testrun
-from swarm_ledger.clock import utcnow
+from swarm_ledger.clock import stamp, utcnow
 from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import events
 from swarm_ledger.identity import LedgerError
@@ -294,6 +295,133 @@ def test_phase_review_names_the_scope_and_a_run_still_in_flight(
     running = ledger.tests_run("oracle", ctx["oracle_id"], "full")
     message = ledger._full_run_needed(ledger.conn, phase)
     assert f"Test run {running['test_run_id']} is still running" in message
+
+
+# -- the build in a full run ---------------------------------------------------------------
+
+
+def _py(code: str) -> str:
+    return f'{_PYTHON} -c "{code}"'
+
+
+def _full_with_build(tmp_path: Path, build: str, swaps: list[tuple[str, str]] | None = None):
+    ledger = _ledger(_host(tmp_path, full_target="tests", swaps=swaps))
+    ctx = bootstrap_module(ledger)
+    ledger.profile_set("oracle", ctx["oracle_id"], build_command=build)
+    return ledger, ctx
+
+
+def test_a_full_run_runs_the_build_after_the_tests_and_records_it(tmp_path: Path) -> None:
+    ledger, ctx = _full_with_build(tmp_path, _py("print('built')"))
+    result = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    assert result["ok"] is True
+    assert result["build"]["state"] == "passed"
+    assert result["build"]["exit_code"] == 0
+    row = _row(ledger, result["test_run_id"])
+    assert (row["build_command"], row["build_exit_code"]) == (_py("print('built')"), 0)
+    assert "built" in row["build_output"]
+    assert ledger._passing_full_test_after(ledger.conn, ctx["run_id"], None)
+
+
+def test_a_failing_build_fails_the_full_run_and_carries_its_output(tmp_path: Path) -> None:
+    build = _py("import sys; print('Module not found: next/headers'); sys.exit(3)")
+    ledger, ctx = _full_with_build(tmp_path, build)
+    result = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    assert result["ok"] is False
+    assert "build" in result["reason"]
+    assert result["build"]["state"] == "failed"
+    assert result["build"]["exit_code"] == 3
+    assert "Module not found: next/headers" in result["build"]["output"]
+    assert (result["passed"], result["failed"]) == (3, 0)
+    assert not ledger._passing_full_test_after(ledger.conn, ctx["run_id"], None)
+    row = ledger.conn.execute(
+        "SELECT * FROM test_runs WHERE test_run_id = ?", (result["test_run_id"],)
+    ).fetchone()
+    assert "build failed" in testrun.wake_pointer(row)
+
+
+def test_the_build_does_not_run_when_the_tests_fail(tmp_path: Path) -> None:
+    failing = _py("import sys; sys.exit(1)")
+    ledger, ctx = _full_with_build(
+        tmp_path,
+        _py("print('built')"),
+        swaps=[("  full:\n", f"  full: {failing} {{target}}\n")],
+    )
+    result = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    assert result["ok"] is False
+    assert _row(ledger, result["test_run_id"])["build_exit_code"] is None
+    assert result["build"]["state"] == "not run"
+
+
+def test_a_full_run_with_no_build_command_records_no_build(tmp_path: Path) -> None:
+    ledger = _ledger(_host(tmp_path, full_target="tests"))
+    ctx = bootstrap_module(ledger)
+    result = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    assert result["ok"] is True
+    assert "build" not in result
+    row = _row(ledger, result["test_run_id"])
+    assert (row["build_command"], row["build_exit_code"]) == (None, None)
+
+
+def test_a_reused_full_run_does_not_build_twice(tmp_path: Path) -> None:
+    counter = (tmp_path / "builds.txt").as_posix()
+    ledger, ctx = _full_with_build(tmp_path, _py(f"open('{counter}', 'a').write('x')"))
+    first = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    again = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    assert first["ok"] and again["ok"]
+    assert again["reused"] is True
+    assert again["build"]["state"] == "passed"
+    assert (tmp_path / "builds.txt").read_text(encoding="utf-8") == "x"
+    assert ledger._passing_full_test_after(ledger.conn, ctx["run_id"], None)
+
+
+def test_a_full_run_made_before_the_build_command_was_set_does_not_count(tmp_path: Path) -> None:
+    ledger = _ledger(_host(tmp_path, full_target="tests"))
+    ctx = bootstrap_module(ledger)
+    first = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    assert ledger._passing_full_test_after(ledger.conn, ctx["run_id"], None)
+    ledger.profile_set("oracle", ctx["oracle_id"], build_command=_py("print('built')"))
+    assert not ledger._passing_full_test_after(ledger.conn, ctx["run_id"], None)
+    second = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    assert second["test_run_id"] != first["test_run_id"]
+    assert second["reused"] is False
+    assert ledger._passing_full_test_after(ledger.conn, ctx["run_id"], None)
+
+
+def test_the_build_runs_in_the_detached_runner_not_the_request_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = _hold_runs(monkeypatch)
+    ledger, ctx = _full_with_build(tmp_path, _py("print('built')"))
+    running = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    assert running["state"] == "running"
+    assert started == [running["test_run_id"]]
+    assert _row(ledger, running["test_run_id"])["build_exit_code"] is None
+
+    testrun.run(ledger.repo_root, ledger.db_path, running["test_run_id"])
+    done = ledger.test_run_get("oracle", ctx["oracle_id"], running["test_run_id"])
+    assert (done["state"], done["ok"], done["build_exit_code"]) == ("done", True, 0)
+
+
+def test_a_full_run_with_a_build_may_outlive_one_timeout_before_the_sweep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _hold_runs(monkeypatch)
+    ledger, ctx = _full_with_build(tmp_path, _py("print('built')"))
+    running = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    past = utcnow() - timedelta(seconds=600 + testrun.OVERRUN_GRACE_S + 60)
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE test_runs SET created_at = ? WHERE test_run_id = ?",
+            (stamp(past), running["test_run_id"]),
+        )
+    assert testrun.sweep(ledger.conn) == []
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE test_runs SET build_command = NULL WHERE test_run_id = ?",
+            (running["test_run_id"],),
+        )
+    assert testrun.sweep(ledger.conn) == [running["test_run_id"]]
 
 
 # -- abandoned runs ---------------------------------------------------------------------
