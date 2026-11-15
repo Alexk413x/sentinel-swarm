@@ -614,6 +614,26 @@ tells the user" in [04-agreements.md](04-agreements.md).
   so they neither nag the Oracle nor report a stall over it. `phase_resume(phase_ids)`
   clears the pause on named phases once the blocker is gone. `phases=[]` names no phase,
   so `run_pause` refuses it; leave `phases` out to pause the whole run.
+- **A pause from the user.** The user pauses a live run without the Oracle, for example
+  to leave, with `mcp/launch/ledger.py runpause --reason <text> [--sender <name>]
+  [--source outside_session|user_chat|skill] [--repo <root>]`. It pauses through
+  `pauses.record_pause`, as `run_pause` does: the run becomes `paused` with the agent
+  event on the Oracle, the `pause:<event_id>` notification, and the Oracle's owed push.
+  The pause reason ends "(paused by <sender>)", with sender "the user" by default. It also
+  files an open directive from `--source` (default `outside_session`) that tells the
+  Oracle who paused and why, so the Oracle learns of the pause at its next
+  `directive_inbox`, and the Oracle's watch listener ends as it does for an Oracle pause.
+  It exits 1 when no run is live, the run is already paused, or the reason is empty. It
+  pauses the whole run only, never a phase.
+- **A resume from the user.** `mcp/launch/ledger.py runresume [--sender <name>] [--repo
+  <root>]` resumes a paused run without the Oracle's `run_start`. It sets the run back to
+  `active`, clears any clear-check, records the agent event "<sender> resumed the run"
+  from `paused` to `active`, and files a `watchdog` directive that tells the Oracle to arm
+  its Monitor again, continue, and resolve it and any open pause directive. The
+  watchdog's wake path delivers that directive as it does the clear-check one. Because the
+  server exits while a run stays paused, the command starts the ledger server (`ensure_server`)
+  so the watchdog runs. It exits 1 when no run is live or the run is not paused. When the
+  Oracle's session is gone, `/sentinel-swarm:resume` starts a new one instead.
 - The user's next message, or `/sentinel-swarm:resume`, leads the Oracle to call
   `run_start`, which sets the run back to `active` and clears any clear-check. A scoped pause does not touch the
   run's own state, so it never needs `run_start` to clear it; only `phase_resume` does.

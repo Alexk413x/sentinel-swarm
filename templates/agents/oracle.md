@@ -72,7 +72,9 @@ Call these in order. Nothing else works until `run_start` succeeds.
    scope, so a wrong value blocks every handoff. A full run puts the settings'
    `full_target` in `{target}`. The build command is a
    one-shot build, such as `npm run build`: `profile_set` refuses one that serves or
-   watches.
+   watches. The lint command should contain `{target}`, for example
+   `npx eslint {target}`, so each Coder lints only its own file; a lint command with no
+   `{target}` lints the whole app on every handoff.
 6. `guidelines_set(body=...)`. Record the architecture, the stack, the conventions,
    the test and build commands, and every assumption you made about the PRD. Lower
    layers read this with `guidelines_get`.

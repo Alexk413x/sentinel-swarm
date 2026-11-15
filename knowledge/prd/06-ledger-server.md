@@ -143,7 +143,10 @@
   steers a live run with `mcp/launch/ledger.py directive [--repo <root>] [--source
   skill|outside_session|user_chat] [--sender <name>] [--reply-to <id>] "<text>"`, which
   records the directive in the repo's ledger the way `directive_submit` does and prints
-  it as JSON. It exits 1 with the ledger's reason when no run is active.
+  it as JSON. It exits 1 with the ledger's reason when no run is active. The same session
+  pauses and resumes the run without the Oracle with `mcp/launch/ledger.py runpause
+  --reason <text>` and `runresume`; see "Pause and resume" in
+  [02-run-lifecycle.md](02-run-lifecycle.md).
 
 ## Records folder
 

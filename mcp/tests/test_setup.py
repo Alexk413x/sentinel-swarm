@@ -804,3 +804,20 @@ def test_shim_prefers_a_cmd_twin_over_an_extensionless_script(tmp_path: Path, sh
     found = shim.find_executable(str(bin_dir / "kg-shim"), None)
     assert found is not None
     assert Path(found).name.lower() == "kg-shim.cmd"
+
+
+@pytest.mark.parametrize(
+    ("relative", "phrase"),
+    [
+        ("skills/setup/SKILL.md", "npx eslint {target}"),
+        ("templates/sentinel-swarm.local.md.example", "npx eslint {target}"),
+        ("templates/agents/coder.md", "lint command holds `{target}`"),
+        ("templates/agents/oracle.md", "lint command should contain `{target}`"),
+    ],
+)
+def test_the_lint_command_target_is_documented_where_setup_and_the_coder_read_it(
+    repo_root: Path, relative: str, phrase: str
+) -> None:
+    text = " ".join((repo_root / relative).read_text(encoding="utf-8").split())
+
+    assert phrase in text

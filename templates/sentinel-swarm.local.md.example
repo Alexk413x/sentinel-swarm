@@ -110,7 +110,10 @@ allowed_skips: []
 slow_tests: []
 # Left empty; the setup skill fills this in from the detected stack.
 build_command:
-# Left empty; the setup skill fills this in from the detected stack.
+# Left empty; the setup skill fills this in from the detected stack. Put {target} where the
+# linter takes a path, such as npx eslint {target}: each Coder then lints only its own file,
+# and the shell gate allows exactly that command. Without {target}, every Coder runs the
+# command as written, which lints the whole app.
 lint_command:
 
 # Named host commands outside test, build, and lint, such as the rebuild of a derived file.

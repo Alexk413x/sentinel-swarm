@@ -326,7 +326,8 @@ descriptions stay out of every session's context.
 | `full_target` | empty | What a full run puts in `{target}`, such as `tests`. A full run never runs with an empty target: when the full command contains `{target}` and this is empty, `tests_run(scope="full")` refuses, unless the call passes a target |
 | `allowed_skips` | `[]` | Texts that mark a skip as an environment skip the host expects. A skip whose pytest `-rs` line (`SKIPPED [n] <path>:<line>: <reason>`), or `-v` line, contains one of them counts as clean. Every other skip fails the run |
 | `slow_tests` | `[]` | pytest node ids or path prefixes that run only when a brief asks: the ledger appends `--deselect <id>` for each to a pytest command, and `tests_run(include_slow=true)` leaves them in. Another stack runs them every time |
-| `build_command`, `lint_command` | empty | Optional; the Coder's shell gate allows them, and the Driver's allows `build_command` only |
+| `build_command` | empty | Optional; the Coder's shell gate allows a command that starts with it, and the Driver's allows `build_command` only |
+| `lint_command` | empty | Optional. Put `{target}` where the linter takes a path, for example `npx eslint {target}`, so each Coder lints only its own file. With `{target}`, the Coder's shell gate allows exactly the command with `{target}` replaced by one of the Coder's own claimed paths (its file, its test file, or a product), and every other token as written; it denies any other path and the whole app. Without `{target}`, the gate allows a command that starts with `lint_command`, as for `build_command`. The Driver's gate never allows it. Setup writes the per-file form |
 | `commands` | empty | Named host commands outside test, build, and lint, such as the rebuild of a derived file. Each entry has `name`, `run`, `cwd` (default `.`), and `interpreter`; an entry with no `name` or `run` is dropped. The Coder's and the Manager's shell gates allow each exactly as `cd <cwd> && <interpreter> <run>`, or `<interpreter> <run>` when `cwd` is `.`. A failing `tests_run` whose output names a command's `name` or `run` lists that command in its result's `commands`. See "pre_shell" in [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md) |
 | `memory.headroom_mb` | 1500 | Megabytes of free memory the ledger keeps. `agent_spawn` queues a session whose role's estimate would take free memory below it, the watchdog starts it once memory frees, and a parked agent's resume follows the same rule. Empty admits every spawn. See "Memory" in [05-sessions.md](05-sessions.md) |
 | `memory.park_idle_parents` | `true` | Under memory pressure, the watchdog stops an idle Manager or Lead whose children still work and resumes it when a wake-up is owed to it. `false` leaves idle parents to the daemon |
@@ -345,9 +346,9 @@ descriptions stay out of every session's context.
 
 `-p no:cacheprovider` keeps parallel pytest runs from contending on `.pytest_cache`.
 
-A Coder's shell gate allows only a command that starts with `test_command`,
-`build_command`, or `lint_command`, read-only git, and the host commands the settings
-name in `commands`; see `pre_shell` in
+A Coder's shell gate allows only a command that starts with `test_command` or
+`build_command`, a `lint_command` as the table above describes, read-only git, and the
+host commands the settings name in `commands`; see `pre_shell` in
 [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md). Any other step the work
 needs, such as an export, edit, and build loop over data files, goes in `commands`
 under its own name, not behind `build_command`.

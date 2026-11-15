@@ -297,6 +297,65 @@ def test_pre_shell_denies_operators_and_foreign_commands(ledger: Ledger, command
     assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
+def _shell(ledger: Ledger, coder: dict, command: str) -> dict | None:
+    data = {"agent_id": coder["agent_id"], "tool_input": {"command": command}}
+    return events.handle_pre_shell(ledger, data)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "npx eslint src/mine.py --max-warnings 0",
+        "npx eslint tests/test_mine.py --max-warnings 0",
+        pytest.param(
+            "npx eslint src\\mine.py --max-warnings 0",
+            marks=pytest.mark.skipif(os.name != "nt", reason="a backslash path is Windows-only"),
+        ),
+    ],
+)
+def test_pre_shell_allows_the_lint_command_on_the_coders_own_file(
+    ledger: Ledger, command: str
+) -> None:
+    ledger.settings.lint_command = "npx eslint {target} --max-warnings 0"
+    ctx = _bootstrap(ledger)
+    coder = _spawn_coder(ledger, ctx, "ln", "src/mine.py", "tests/test_mine.py")
+
+    assert _shell(ledger, coder, command) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "npx eslint . --max-warnings 0",
+        "npx eslint src --max-warnings 0",
+        "npx eslint src/other.py --max-warnings 0",
+        "npx eslint src/mine.py src/other.py --max-warnings 0",
+        "npx eslint src/mine.py",
+        "npx eslint src/mine.py --max-warnings 0 --fix",
+        "npx eslint --max-warnings 0",
+    ],
+)
+def test_pre_shell_denies_a_lint_command_with_target_on_any_other_path(
+    ledger: Ledger, command: str
+) -> None:
+    ledger.settings.lint_command = "npx eslint {target} --max-warnings 0"
+    ctx = _bootstrap(ledger)
+    coder = _spawn_coder(ledger, ctx, "lo", "src/mine.py", "tests/test_mine.py")
+
+    result = _shell(ledger, coder, command)
+
+    assert result is not None
+    assert "npx eslint {target} --max-warnings 0" in _reason(result)
+
+
+def test_pre_shell_keeps_a_lint_command_without_target_as_a_prefix(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+    coder = _spawn_coder(ledger, ctx, "lp", "src/mine.py", "tests/test_mine.py")
+
+    assert _shell(ledger, coder, "ruff check") is None
+    assert _shell(ledger, coder, "ruff check src") is None
+
+
 def test_pre_shell_denies_a_lead(ledger: Ledger) -> None:
     ctx = _bootstrap(ledger)
     data = {"agent_id": ctx["lead"]["agent_id"], "tool_input": {"command": "git status"}}
