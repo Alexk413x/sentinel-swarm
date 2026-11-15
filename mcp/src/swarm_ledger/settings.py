@@ -29,6 +29,7 @@ SETTINGS_PATH = Path(".claude") / "sentinel-swarm.local.md"
 NOTIFY_CHANNELS = ("os", "push")
 DEFAULT_MAX_WORKERS = 8
 DEFAULT_HEADROOM_MB = 1500
+DEFAULT_PARK_BLOCKED_MINUTES = 10
 _FALSE_WORDS = frozenset({"false", "no", "off", "0"})
 PROFILE_KEYS = ("test_command", "build_command", "lint_command")
 SHELL_OPERATORS = re.compile(r"[;&|<>`\n]|\$\(")
@@ -140,6 +141,7 @@ class WatchdogSettings:
 class MemorySettings:
     headroom_mb: int | None = DEFAULT_HEADROOM_MB
     park_idle_parents: bool = True
+    park_blocked_minutes: int = DEFAULT_PARK_BLOCKED_MINUTES
 
 
 def normalize_context_windows(raw: object) -> dict[str, int]:
@@ -167,7 +169,17 @@ def normalize_memory(raw: object) -> MemorySettings:
         except ValueError:
             headroom = None
     park = str(data.get("park_idle_parents", True)).strip().lower()
-    return MemorySettings(headroom_mb=headroom, park_idle_parents=park not in _FALSE_WORDS)
+    blocked = DEFAULT_PARK_BLOCKED_MINUTES
+    if "park_blocked_minutes" in data and not isinstance(data["park_blocked_minutes"], bool):
+        try:
+            blocked = max(0, int(str(data["park_blocked_minutes"]).strip()))
+        except ValueError:
+            pass
+    return MemorySettings(
+        headroom_mb=headroom,
+        park_idle_parents=park not in _FALSE_WORDS,
+        park_blocked_minutes=blocked,
+    )
 
 
 def normalize_commands(raw: object) -> list[dict[str, str]]:

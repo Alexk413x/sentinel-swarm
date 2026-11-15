@@ -2,8 +2,9 @@
 
 The watchdog is a background job, not a role. It detects and reports. It never replaces a
 Manager, Lead, or Coder. Its only resumes and stops serve memory: it resumes a parked
-agent that is owed a wake-up once memory allows, starts queued spawns, stops an idle
-parent under memory pressure, and releases a parked parent whose work is done; see
+agent that is owed a wake-up once memory allows, starts queued spawns, stops a Coder idle on
+a blocker while a spawn waits, stops an idle parent under memory pressure, and releases a
+parked parent whose work is done; see
 "Memory" and "Parked agents" in [05-sessions.md](05-sessions.md). It
 resumes the Oracle when the Oracle's session is not running, so that a report can reach
 the Oracle at all, and it resumes a paused run whose clear-check passes. What only the
@@ -25,8 +26,8 @@ outlives the tool call" in [06-ledger-server.md](06-ledger-server.md).
 Before the scan, each pass of an active run runs the memory steps in this order, each
 on its own so a failure in one is logged and the next still runs: sample each session's
 memory and record each running session's pid, park agents whose session is gone,
-resume parked agents that are owed a wake-up, start queued spawns, park idle parents,
-and release finished parked parents. When a step changed anything, the pass reads the
+resume parked agents that are owed a wake-up, start queued spawns, park blocked Coders,
+park idle parents, and release finished parked parents. When a step changed anything, the pass reads the
 listing again for the scan. See "Parked agents" and "Memory" in
 [05-sessions.md](05-sessions.md).
 
@@ -182,4 +183,4 @@ parked before the watchdog releases it), `unsent_wakeup_minutes` (5; 0 turns
 `wake_unsent` off), `queued_spawn_minutes` (10; 0 turns `spawn_queued` off),
 `remind_minutes` (30; 0 shows each notification once). `stuck_minutes` also sets
 `run_stalled`'s window. The memory steps read `memory.headroom_mb` and
-`memory.park_idle_parents`; see [11-setup-and-settings.md](11-setup-and-settings.md).
+`memory.park_idle_parents`, and `memory.park_blocked_minutes`; see [11-setup-and-settings.md](11-setup-and-settings.md).
