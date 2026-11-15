@@ -103,6 +103,18 @@ lint scope (8).
     denied the command (the path form, the flags, or the claim). With bug 11, deleting
     a moved file has no working path, so stale copies stayed on disk and show as `!` on
     an approved module.
+
+    Root cause, from the transcripts of `coder-p1-platform-header-shim-rm` and
+    `coder-p1-platform-guard-shim-rm` (files 82 and 83, both `incomplete`):
+    - The Windows Coder ran `Remove-Item` in PowerShell. The gate's denial listed the
+      allowed shell commands and `git rm`, but not the ledger's `file_delete(path)`,
+      which the Coder template names and which is the working path.
+    - The other Coder deleted its file, but `handoff_submit` refused twice because the
+      graph node `studio_guard_shim` still anchored the deleted file, and a Coder cannot
+      delete a node. This is bug 11's graph problem. Fix together with 11: a deletion
+      handoff removes the deleted file's anchors, or lets the Coder delete a node that
+      anchors only its own deleted file; and the shell gate names `file_delete` when it
+      denies a delete command (`Remove-Item`, `rm`, `del`).
 14. **Stray-process attribution is wrong.** The watchdog attributed `svchost.exe`, a
     network git process, and `gh` to Coders: PID reuse or the user's own processes.
     Match each PID's creation time and parent chain before raising a finding, and never
