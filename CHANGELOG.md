@@ -70,6 +70,9 @@ All notable changes to the `sentinel-swarm` plugin.
   Lead to release it.
 - The run panel listed waiting sessions with no request and dropped what you typed on
   each refresh.
+- A claim or move could name a path outside the repo or in its records, which a Coder
+  could then delete. Claimed paths are plain repo paths outside `.git`, `.claude`, and
+  `.sentinel-swarm`, and a phase commit passes them to git as literal paths.
 
 ## [0.7.1] — 2026-11-13 — a role starts no higher than your own default mode
 
