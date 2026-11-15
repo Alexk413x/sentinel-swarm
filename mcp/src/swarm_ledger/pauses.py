@@ -9,6 +9,7 @@ from pathlib import Path
 
 from . import notify
 from .clock import stamp
+from .identity import LedgerError
 from .paths import claude_json_path
 
 CONFIG_CHECK = "config_parses"
@@ -41,6 +42,18 @@ CHECKS: dict[str, ClearCheck] = {
 def pause_message(reason: str, check: str | None) -> str:
     clears = f" It resumes by itself once {CHECKS[check].label}." if check in CHECKS else ""
     return f"Run paused: {reason.strip().rstrip('.')}.{clears} {RESUME_HINT}"
+
+
+def user_command_oracle(conn: sqlite3.Connection, run_id: int) -> str:
+    """The agent id a pause or resume from outside the Oracle's session records its event on."""
+    row = conn.execute(
+        "SELECT agent_id FROM agents WHERE run_id = ? AND role = 'oracle' "
+        "ORDER BY (ended_at IS NULL) DESC, started_at DESC LIMIT 1",
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        raise LedgerError("the run has no Oracle")
+    return str(row["agent_id"])
 
 
 def record_pause(
@@ -99,6 +112,70 @@ def clear_resume(conn: sqlite3.Connection, run: sqlite3.Row, agent_id: str, now:
             f"The watchdog resumed the run: {label}, which cleared the pause. Arm the watchdog "
             "Monitor again and continue the plan. Then resolve this directive with "
             "directive_resolve.",
+            at,
+        ),
+    )
+    return note
+
+
+def user_pause(
+    conn: sqlite3.Connection,
+    run: sqlite3.Row,
+    agent_id: str,
+    reason: str,
+    who: str,
+    source: str,
+    channels: Sequence[str],
+    now: datetime,
+) -> dict | None:
+    """Pauses an active run for a user outside the Oracle, in the caller's write transaction.
+
+    Records the pause as `run_pause` does and files a directive that tells the Oracle who paused.
+    """
+    reason = reason.strip()
+    notice = record_pause(
+        conn, run["run_id"], agent_id, f"{reason} (paused by {who})", None, channels, now
+    )
+    conn.execute(
+        "INSERT INTO directives (run_id, source, sender_name, body, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            run["run_id"],
+            source,
+            who,
+            f"{who} paused the run from outside your session: {reason}. Finish the step in "
+            "hand and stop; the run stays paused until the user resumes it. Resolve this "
+            "directive with directive_resolve after the run resumes.",
+            stamp(now),
+        ),
+    )
+    return notice
+
+
+def user_resume(
+    conn: sqlite3.Connection, run: sqlite3.Row, agent_id: str, who: str, now: datetime
+) -> str:
+    """Resumes a paused run for a user outside the Oracle, in the caller's write transaction."""
+    at = stamp(now)
+    conn.execute(
+        "UPDATE runs SET state = 'active', pause_check = NULL, paused_at = NULL "
+        "WHERE run_id = ? AND state = 'paused'",
+        (run["run_id"],),
+    )
+    note = f"{who} resumed the run"
+    conn.execute(
+        "INSERT INTO agent_events (agent_id, from_state, to_state, reason, at) "
+        "VALUES (?, 'paused', 'active', ?, ?)",
+        (agent_id, note, at),
+    )
+    conn.execute(
+        "INSERT INTO directives (run_id, source, sender_name, body, created_at) "
+        "VALUES (?, 'watchdog', 'watchdog', ?, ?)",
+        (
+            run["run_id"],
+            f"{who} resumed the run from outside your session, which cleared the pause. Arm "
+            "the watchdog Monitor again and continue the plan. Then resolve this directive "
+            "and any open pause directive with directive_resolve.",
             at,
         ),
     )
