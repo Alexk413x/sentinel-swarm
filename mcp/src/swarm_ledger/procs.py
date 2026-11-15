@@ -171,12 +171,12 @@ def survivors(
     found: dict[int, Proc] = {}
     for pid, created in recorded:
         current = table.get(pid)
-        if current is not None and same_process(current, created):
+        if current is not None and identical(current, created):
             found[pid] = current
-        if current is None or same_process(current, created):
-            for proc in descendants(children, pid, created):
+        if current is None or identical(current, created):
+            for proc in descendants(children, pid, created, strict=True):
                 found.setdefault(proc.pid, proc)
-    return [proc for pid, proc in found.items() if pid not in protected]
+    return [proc for pid, proc in found.items() if pid not in protected and not is_system(proc)]
 
 
 def ancestors(table: dict[int, Proc], pid: int) -> set[int]:
@@ -189,11 +189,13 @@ def ancestors(table: dict[int, Proc], pid: int) -> set[int]:
 
 
 def terminate(proc: Proc) -> bool:
+    if proc.created is None or is_system(proc):
+        return False
     try:
         if sys.platform == "win32":
             return _windows_terminate(proc)
         current = snapshot().get(proc.pid)
-        if not same_process(current, proc.created):
+        if not identical(current, proc.created):
             return False
         os.kill(proc.pid, 9)
         return True
@@ -353,7 +355,7 @@ def _windows_terminate(proc: Proc) -> bool:
     if not handle:
         return False
     try:
-        if proc.created is not None and _windows_handle_created(k, handle) != proc.created:
+        if _windows_handle_created(k, handle) != proc.created:
             return False
         return bool(k.TerminateProcess(handle, 1))
     finally:

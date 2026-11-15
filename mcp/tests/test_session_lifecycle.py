@@ -187,7 +187,7 @@ def test_a_parked_parent_is_kept_while_recent_unfinished_or_owed_a_wake_up(
 # -- issue 13: process-tree release ----------------------------------------------------------------
 
 
-def _table(*rows: tuple[int, int, int, str]) -> dict[int, procs.Proc]:
+def _table(*rows: tuple[int, int, int | None, str]) -> dict[int, procs.Proc]:
     return {pid: procs.Proc(pid, ppid, created, name) for pid, ppid, created, name in rows}
 
 
@@ -214,6 +214,27 @@ def test_survivors_follow_new_children_and_skip_reused_pids_and_protected_ones()
     left = procs.survivors(table, [(503, 130), (504, 140)], protected=set())
     assert sorted(p.pid for p in left) == [503, 507]
     assert procs.survivors(table, [(503, 130)], protected={507}) == [table[503]]
+
+
+def test_survivors_never_include_a_process_whose_start_time_is_unknown() -> None:
+    table = _table(
+        (503, 500, None, "svchost.exe"), (508, 1, None, "gh.exe"), (509, 508, 170, "git.exe")
+    )
+    assert procs.survivors(table, [(503, 130), (508, None)], protected=set()) == []
+    service = _table((503, 1, 130, "svchost.exe"))
+    assert procs.survivors(service, [(503, 130)], protected=set()) == []
+
+
+def test_terminate_refuses_a_process_whose_start_time_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.undo()
+    killed: list[int] = []
+    monkeypatch.setattr(procs, "snapshot", lambda: {7: procs.Proc(7, 1, None, "node.exe")})
+    monkeypatch.setattr(procs, "_windows_terminate", lambda proc: killed.append(proc.pid) or True)
+    monkeypatch.setattr(procs.os, "kill", lambda pid, sig: killed.append(pid))
+    assert procs.terminate(procs.Proc(7, 1, None, "node.exe")) is False
+    assert killed == []
 
 
 def test_ps_output_parses_into_the_process_table() -> None:

@@ -439,9 +439,12 @@ fails as ambiguous, or goes to the offline entry and waits there for good. See
 - The session's other children are its MCP servers. They exit with the session, and a
   plugin's relay among them can start the machine's one shared server that other
   sessions use, so a release leaves them alone.
-- A process counts as a child only when it started after its parent, because a parent
-  pid can name a dead process whose pid was reused. A process is terminated only while
-  its start time still matches the one recorded.
+- A process counts as a child only when both start times are known and it started after
+  its parent, because a parent pid can name a dead process whose pid was reused. A
+  process is terminated only while its start time is known and still matches the one
+  recorded, and never a system or service process (`svchost`, `services`, `lsass`,
+  `systemd`, `launchd`, and the like). Windows cannot read a service process's start
+  time, so an unknown start time never counts as a match.
 - The release records the session's process and every process it found in
   `released_processes`, and logs how many it stopped in the release's agent event. The
   watchdog reports any of them still running, and any process started under them, as
