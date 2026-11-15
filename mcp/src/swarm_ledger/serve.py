@@ -340,6 +340,7 @@ def _start_watchdog(root: Path, path: Path, settings: Settings) -> None:
         exit_server=lambda: _exit_now(path, root),
         activity=lambda: front.last_call_at,
         notify_channels=settings.notify,
+        notify_events=settings.notify_events,
         ledger=Ledger(root, db_path=env.db_path_for(root), settings=settings),
     )
 

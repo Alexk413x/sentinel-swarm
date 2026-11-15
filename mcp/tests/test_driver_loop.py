@@ -8,10 +8,12 @@ from helpers import (
     SWARM_ROLES,
     FakeClaude,
     bootstrap_oracle,
+    ledger_for,
     make_swarm_host,
     register_agent,
     role_template,
     settings_text,
+    write_settings,
 )
 
 from swarm_ledger import notify
@@ -681,3 +683,35 @@ def test_no_floor_notification_before_the_last_round_or_above_the_floor(
 
     assert result["notifications"] == []
     assert _notifications(ledger) == []
+
+
+@pytest.mark.parametrize(
+    ("value", "shown", "rows"), [("false", 0, []), ("[os]", 1, [0]), ("[push]", 0, [1])]
+)
+def test_the_rubric_floor_switch_picks_the_channels(
+    host: Path,
+    claude: FakeClaude,
+    os_notifications: list[list[str]],
+    value: str,
+    shown: int,
+    rows: list[int],
+) -> None:
+    write_settings(
+        host,
+        settings_text(
+            test_command="pytest -q {target}",
+            build_command="npm run build",
+            swaps=[("  rubric_floor: true", f"  rubric_floor: {value}")],
+        ),
+    )
+    ledger = ledger_for(host)
+    ctx = _lead_setup(ledger, claude)
+    _lead_review(ledger, ctx["file_id"], security=4)
+    _lead_review(ledger, ctx["file_id"], security=4)
+    _issue_at(ledger, ctx, round_=3, attempts=2)
+
+    result = ledger.attempt_record("lead-p1-mod", "lead-agent", ctx["file_id"])
+
+    assert len(result["notifications"]) == len(rows)
+    assert [n["push_owed"] for n in _notifications(ledger)] == rows
+    assert len(os_notifications) == shown

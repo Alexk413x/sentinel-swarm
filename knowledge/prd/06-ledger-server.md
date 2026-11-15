@@ -349,8 +349,8 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
 - `mcp/launch/ledger.py close [--repo <root>] [--file ID=REASON ...] <outcome>` runs
   `run_close` from a terminal, outside any session, for the run's owner. See "Settling
   a file and closing a run by the Oracle" in [02-run-lifecycle.md](02-run-lifecycle.md).
-- The server itself shows a desktop notification for each notification it records:
-  a Driver event or an issue that ends round 3 below the floor. It runs from
-  `notify.py`, in a background thread, when the settings' `notify` list includes `os`.
+- The server itself shows a desktop notification for each notification it records, of
+  any type in "Notifications" in [02-run-lifecycle.md](02-run-lifecycle.md). It runs
+  from `notify.py`, in a background thread, when the notice's channels include `os`.
   A failure goes to the server log.
-  See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md).
+  See "Notifications" in [02-run-lifecycle.md](02-run-lifecycle.md).

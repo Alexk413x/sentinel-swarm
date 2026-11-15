@@ -213,7 +213,8 @@ The responsible level:
 - Every `needs_user` directive notifies the user once, with the question:
   `directive_resolve(..., "needs_user", question)` and `user_ask(question)` record a
   `needs_user:<directive_id>` notification at level warning, "The swarm needs you
-  (directive <id>): <question>", shown and owed like a Driver notification. The
+  (directive <id>): <question>", shown and owed like a Driver notification, as set by
+  `notify_events.needs_user`. The
   watchdog repeats it every `watchdog.remind_minutes` while it stays open.
 - `user_ask(question)` is the Oracle's way to ask the user something no directive
   carries. It inserts an open directive with source `oracle`, the Oracle as sender, the
@@ -235,7 +236,8 @@ The responsible level:
 |---|---|
 | Only the user can unblock it, and the run can continue afterwards | Notifies the user now, with `run_pause` |
 | An issue ends round 3 below the floor | Notifies the user now: `attempt_record` records the notification, the ledger server shows an OS notification, and the Oracle's Stop hook blocks until the Oracle sends the `PushNotification` it owes. See "Escalation" in [03-scoring-and-review.md](03-scoring-and-review.md). |
-| The Driver finishes, or hits an error | Notifies the user now: the ledger server shows an OS notification itself, and the Oracle's Stop hook blocks until the Oracle sends the `PushNotification` it owes. See "Driver notifications" in [02-run-lifecycle.md](02-run-lifecycle.md) |
+| The Driver finishes, or hits an error | Notifies the user now: the ledger server shows an OS notification itself, and the Oracle's Stop hook blocks until the Oracle sends the `PushNotification` it owes. See "Notifications" in [02-run-lifecycle.md](02-run-lifecycle.md) |
+| A phase is approved, or the run finishes or closes | The ledger notifies the user. A module acceptance notifies only when `notify_events.module_approved` is on. |
 | Only the user can answer a directive | Resolves it `needs_user`; the ledger notifies the user with the question. |
 | Only the user can answer a question no directive carries | `user_ask(question)` in a background run, never `AskUserQuestion`; the ledger notifies the user. The Oracle keeps the rest of the run moving. |
 | The watchdog reports a session waiting on the user (`needs_user`) or a stalled run (`run_stalled`) | The ledger has notified the user already. The Oracle keeps the rest of the run moving. |
@@ -245,4 +247,7 @@ A pause notification states what the user must fix, and that saying "continue" o
 running `/sentinel-swarm:resume` continues the run. A Driver notification is the
 ledger's recorded one-line message, which the Oracle sends unchanged.
 
-The user is notified when the Driver finishes or hits an error.
+Each notification type has its own switch in `notify_events`. The Oracle owes a
+`PushNotification` only for a notice the ledger recorded with `push` among its channels:
+a type that is off, or limited to `os`, owes none, and the Oracle's Stop hook never asks
+for one.

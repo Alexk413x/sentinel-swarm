@@ -4,7 +4,7 @@ import json
 import os
 import re
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from swarm_ledger import auth
@@ -27,6 +27,21 @@ def settings_text(*, swaps: Iterable[tuple[str, str]] = (), **commands: str) -> 
     for old, new in swaps:
         text = text.replace(old, new)
     return text
+
+
+def settings_with_events(
+    events: Mapping[str, str] | None = None, swaps: Iterable[tuple[str, str]] = ()
+) -> str:
+    text = settings_text(test_command="pytest -q {target}")
+    for old, new in swaps:
+        text = text.replace(old, new)
+    head, marker, tail = text.partition("\nnotify_events:\n")
+    for key, value in (events or {}).items():
+        tail, count = re.subn(
+            rf"^  {key}:.*$", f"  {key}: {value}", tail, count=1, flags=re.MULTILINE
+        )
+        assert marker and count == 1, key
+    return head + marker + tail
 
 
 def write_settings(root: Path, text: str) -> None:

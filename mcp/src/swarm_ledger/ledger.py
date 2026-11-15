@@ -359,11 +359,11 @@ class Ledger(
                     oracle["agent_id"],
                     reason,
                     pauses.CONFIG_CHECK,
-                    self.settings.notify,
+                    self.settings.channels_for("run_paused"),
                     utcnow(),
                 )
                 paused = True
-        notify.deliver(notice, self.settings.notify)
+        notify.deliver(notice)
         label = pauses.CHECKS[pauses.CONFIG_CHECK].label
         note = f" The ledger paused the run; it resumes by itself once {label}." if paused else ""
         return sessions.ConfigParseError(f"{reason}.{note}")
@@ -603,9 +603,15 @@ class Ledger(
             if run["state"] == "paused":
                 raise LedgerError("the run is already paused; run_start resumes it")
             notice = pauses.record_pause(
-                conn, run["run_id"], c.agent_id, reason, clear_check, self.settings.notify, utcnow()
+                conn,
+                run["run_id"],
+                c.agent_id,
+                reason,
+                clear_check,
+                self.settings.channels_for("run_paused"),
+                utcnow(),
             )
-        notify.deliver(notice, self.settings.notify)
+        notify.deliver(notice)
 
         return row_dict(self.conn, "runs", "run_id", run["run_id"]) | {"reason": reason}
 
@@ -741,6 +747,15 @@ class Ledger(
                 (run_id,),
             ).fetchall():
                 self._release_agent(conn, row["agent_id"], "run_finish")
+            notice = notify.record(
+                conn,
+                run_id,
+                kind="done",
+                event_key=f"run_finished:{run_id}",
+                message=f"The swarm run finished: {outcome}",
+                channels=self.settings.channels_for("run_finished"),
+            )
+        notify.deliver(notice)
 
         # The run is no longer live, so its lock goes now: a report that fails to write must
         # not leave the repo locked against the next run_start.
@@ -951,7 +966,28 @@ class Ledger(
             phase["next"] = self.next_step(wakeup)
         if state == "approved":
             phase["commit"] = self._commit_phase(c.agent_id, phase)
+            self._notify_phase_approved(phase)
         return phase
+
+    def _notify_phase_approved(self, phase: dict) -> None:
+        commit = phase["commit"]
+        message = f"Phase {phase['phase_id']} ({phase['name']}) approved"
+        kind = "done"
+        if commit["committed"]:
+            message += f", committed as {commit['sha']}"
+        elif self.settings.commit_phases:
+            message += f", not committed: {commit['reason']}"
+            kind = "warning"
+        with write_tx(self.conn) as conn:
+            notice = notify.record(
+                conn,
+                phase["run_id"],
+                kind=kind,
+                event_key=f"phase_approved:{phase['phase_id']}",
+                message=message,
+                channels=self.settings.channels_for("phase_approved"),
+            )
+        notify.deliver(notice)
 
     def _commit_phase(self, agent_id: str, phase: dict) -> dict:
         if not self.settings.commit_phases:

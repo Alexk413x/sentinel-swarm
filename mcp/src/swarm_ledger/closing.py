@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from . import lock, sessions, settle
+from . import lock, notify, sessions, settle
 from .agreements import test_run_passed
 from .db import NOW, in_clause, row_dict, write_tx
 from .host import LedgerHost
@@ -195,6 +195,15 @@ class ClosingMixin(LedgerHost):
                 "SELECT * FROM agents WHERE run_id = ? AND role = 'oracle' AND ended_at IS NULL",
                 (run_id,),
             ).fetchall()
+            notice = notify.record(
+                conn,
+                run_id,
+                kind="warning" if reasons else "done",
+                event_key=f"run_finished:{run_id}",
+                message=f"The swarm run closed by {closed_by}: {outcome}",
+                channels=self.settings.channels_for("run_finished"),
+            )
+        notify.deliver(notice)
 
         # The run is no longer live, so its lock goes now: a report that fails to write must
         # not leave the repo locked against the next run_start.

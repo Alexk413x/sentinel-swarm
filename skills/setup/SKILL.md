@@ -19,6 +19,12 @@ ${CLAUDE_PLUGIN_ROOT}/templates/sentinel-swarm.local.md.example
 Keep every key. The ledger reads this frontmatter, and a renamed key is ignored. When
 the file already exists, edit it in place instead of overwriting the user's values.
 
+The template's `notify_events` block switches each notification type on or off:
+`true` uses the `notify` channels, `false` sends nothing, and a list such as `[os]`
+uses only those channels. For a file made before the block existed, the setup script's
+report lists the keys the file lacks, with a block to paste. Show the user that block
+and add it only when they ask. A missing key uses its default.
+
 ## 2. Fill in the commands
 
 When the user set the plugin's `test_command` option (`${user_config.test_command}`),
@@ -123,6 +129,8 @@ It is safe to run again, and it prints what it changed and what it found:
 - With `--time-full-run`, it runs the full suite once and warns when the run takes
   more than half of `test_timeout_s`. Offer the user this run: it takes as long as the
   suite does.
+- The `notify_events` keys the settings file lacks, with a block to paste. Setup does
+  not edit the file. Pass the block on to the user.
 
 - `.claude/agents/swarm-oracle.md`, `swarm-manager.md`, `swarm-lead.md`, and
   `swarm-coder.md`, from the plugin's templates. Each file sets its role's model,
@@ -159,4 +167,5 @@ prompt, and exit.
 
 Say what was detected, what was written, and anything the user must confirm by hand:
 a test command you could not infer, every warning the test check printed, a missing
-dependency, a repo with no git checkout, or a repo that is not trusted yet.
+dependency, a repo with no git checkout, a repo that is not trusted yet, or the
+`notify_events` block setup offered for an older settings file.

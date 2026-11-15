@@ -616,10 +616,12 @@ CREATE TABLE IF NOT EXISTS notifications (
     -- One row per event: drive_done:<request_id>, directive:<directive_id>,
     -- drive_unavailable:<directive_id>, issue:<issue_id> for an issue that ended its
     -- last round below the floor, pause:<event_id>, needs_user:<directive_id>,
-    -- resumed:<event_id>, or oracle_unreachable:<directive_id>.
+    -- resumed:<event_id>, oracle_unreachable:<directive_id>, phase_approved:<phase_id>,
+    -- module_approved:<review_id>, or run_finished:<run_id>.
     event_key TEXT NOT NULL,
     message TEXT NOT NULL,
-    -- 1 when the settings' notify list holds push: the run's Oracle owes a PushNotification.
+    -- 1 when the type's channels (settings notify and notify_events) hold push: the run's
+    -- Oracle owes a PushNotification. A type with no channel records no row.
     push_owed INTEGER NOT NULL DEFAULT 0,
     -- Set when the Oracle's watchdog Monitor printed the owed call.
     announced_at TEXT,

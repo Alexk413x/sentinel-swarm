@@ -821,3 +821,85 @@ def test_the_lint_command_target_is_documented_where_setup_and_the_coder_read_it
     text = " ".join((repo_root / relative).read_text(encoding="utf-8").split())
 
     assert phrase in text
+
+
+_EVENTS = [
+    "needs_user",
+    "run_stalled",
+    "run_paused",
+    "pause_reminder",
+    "run_resumed",
+    "oracle_unreachable",
+    "rubric_floor",
+    "driver",
+    "phase_approved",
+    "module_approved",
+    "run_finished",
+]
+
+
+def _write_local_settings(repo: Path, frontmatter: str) -> tuple[Path, str]:
+    path = repo / ".claude" / "sentinel-swarm.local.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = f"---\n{frontmatter}---\n# notes\n"
+    path.write_text(text, encoding="utf-8", newline="\n")
+    return path, text
+
+
+def _events_lines(report: setup.SetupReport) -> list[str]:
+    return [line for line in report.lines if "notify_events" in line]
+
+
+def _full_events_body() -> str:
+    return "".join(f"  {event}: true\n" for event in _EVENTS)
+
+
+def test_setup_without_a_settings_file_says_nothing_about_notify_events(repo: Path):
+    assert _events_lines(setup.run_setup(repo)) == []
+
+
+def test_setup_reports_a_ready_to_paste_block_when_notify_events_is_missing(repo: Path):
+    path, text = _write_local_settings(repo, "notify: [os, push]\n# keep this comment\n")
+
+    report = setup.run_setup(repo)
+
+    [line] = _events_lines(report)
+    assert ".claude/sentinel-swarm.local.md" in line
+    block = line.split("frontmatter:\n", 1)[1]
+    defaults = {event: event != "module_approved" for event in _EVENTS}
+    assert yaml.safe_load(block) == {"notify_events": defaults}
+    assert path.read_text(encoding="utf-8") == text
+
+
+def test_setup_reports_only_the_missing_notify_events_keys(repo: Path):
+    path, text = _write_local_settings(
+        repo, "notify_events:\n  driver: [os]\n  needs_user: false\n"
+    )
+
+    report = setup.run_setup(repo)
+
+    [line] = _events_lines(report)
+    assert "lacks run_stalled, run_paused" in line
+    assert "needs_user" not in line and "driver" not in line
+    block = line.split("notify_events:\n", 1)[1]
+    assert yaml.safe_load(block) == {
+        event: event != "module_approved"
+        for event in _EVENTS
+        if event not in ("needs_user", "driver")
+    }
+    assert path.read_text(encoding="utf-8") == text
+
+
+def test_setup_is_quiet_when_every_notify_events_key_is_present(repo: Path):
+    _write_local_settings(repo, f"notify_events:\n{_full_events_body()}")
+
+    assert _events_lines(setup.run_setup(repo)) == []
+
+
+def test_setup_warns_about_an_unknown_notify_events_key(repo: Path):
+    _write_local_settings(repo, f"notify_events:\n{_full_events_body()}  run_finnished: true\n")
+
+    [line] = _events_lines(setup.run_setup(repo))
+
+    assert line.startswith("warning:")
+    assert "run_finnished" in line
