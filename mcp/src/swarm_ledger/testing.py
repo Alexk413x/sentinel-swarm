@@ -19,6 +19,7 @@ _MAX_OUTPUT_CHARS = 20000
 SUMMARY_CHARS = 4000
 _TRACEBACK_CHARS = 2500
 _PASS_TAIL_CHARS = 500
+_FILE_SCOPE_MARK = "file-scope"
 _FAILURES_RE = re.compile(r"^=+ (FAILURES|ERRORS) =+$", re.MULTILINE)
 _SECTION_RE = re.compile(r"^(_{3,} .* _{3,}|=+ .* =+)$", re.MULTILINE)
 _SHORT_SUMMARY_RE = re.compile(r"^=+ short test summary info =+$", re.MULTILINE)
@@ -223,13 +224,20 @@ def _git(repo_root: Path, *args: str, stdin: str | None = None) -> str | None:
     return done.stdout if done.returncode == 0 else None
 
 
-def tree_fingerprint(repo_root: Path, claimed: list[str]) -> str | None:
+def tree_fingerprint(repo_root: Path, claimed: list[str], whole_tree: bool = True) -> str | None:
     head = _git(repo_root, "rev-parse", "HEAD")
-    tracked = _git(repo_root, "status", "--porcelain", "-z", "--untracked-files=no")
-    if head is None or tracked is None:
+    if head is None:
         return None
+    parts = [head]
+    if whole_tree:
+        tracked = _git(repo_root, "status", "--porcelain", "-z", "--untracked-files=no")
+        if tracked is None:
+            return None
+        parts.append(tracked)
+    else:
+        parts.append(_FILE_SCOPE_MARK)
     digest = hashlib.sha256()
-    for part in (head, tracked):
+    for part in parts:
         digest.update(part.encode("utf-8", errors="replace"))
     for path in sorted(set(claimed)):
         target = repo_root / path

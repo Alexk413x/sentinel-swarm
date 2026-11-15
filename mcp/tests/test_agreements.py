@@ -1637,3 +1637,72 @@ def test_tests_run_runs_again_after_a_file_changes(ledger: Ledger, host: Path) -
     )
 
     assert changed["reused"] is False
+
+
+def _coder_with_deps(
+    ledger: Ledger, ctx: dict, name: str, path: str, test_path: str | None, deps: list[int]
+) -> dict:
+    claimed = ledger.claim_file(
+        "lead-p1-module-1", ctx["lead"]["agent_id"], path, test_path, name, depends_on=deps
+    )
+    ledger.brief_create(
+        "lead-p1-module-1",
+        ctx["lead"]["agent_id"],
+        name,
+        "coder",
+        "sonnet",
+        "Implement it.",
+        module_id=ctx["module_id"],
+        file_id=claimed["file_id"],
+        contract="BASE: int",
+    )
+    register_agent(ledger, f"{name}-agent", "coder", parent_agent_id=ctx["lead"]["agent_id"])
+    return ledger.brief_ack(name, f"{name}-agent")
+
+
+def test_a_file_run_is_reused_while_other_coders_edit_their_files(
+    ledger: Ledger, host: Path
+) -> None:
+    (host / "README.md").write_text("tracked\n", encoding="utf-8")
+    _git_repo(host)
+    ctx = bootstrap_module(ledger)
+    coder = spawn_coder(ledger, ctx, "coder-p1-module-1-good", "pkg/good.py", "tests/test_good.py")
+    other = spawn_coder(ledger, ctx, "coder-p1-module-1-other", "pkg/other.py", None)
+    assert other["file_id"]
+    first = ledger.tests_run(
+        "coder-p1-module-1-good", coder["agent_id"], "file", "tests/test_good.py"
+    )
+
+    (host / "pkg" / "other.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (host / "README.md").write_text("edited by another phase\n", encoding="utf-8")
+    again = ledger.tests_run(
+        "coder-p1-module-1-good", coder["agent_id"], "file", "tests/test_good.py"
+    )
+
+    assert first["ok"] is True
+    assert again["reused"] is True
+    assert again["reused_from"] == first["test_run_id"]
+
+
+def test_a_file_run_runs_again_after_a_file_it_depends_on_changes(
+    ledger: Ledger, host: Path
+) -> None:
+    _git_repo(host)
+    ctx = bootstrap_module(ledger)
+    base = _coder_with_deps(ledger, ctx, "coder-p1-module-1-base", "pkg/base.py", None, [])
+    coder = _coder_with_deps(
+        ledger,
+        ctx,
+        "coder-p1-module-1-good",
+        "pkg/good.py",
+        "tests/test_good.py",
+        [base["file_id"]],
+    )
+    ledger.tests_run("coder-p1-module-1-good", coder["agent_id"], "file", "tests/test_good.py")
+
+    (host / "pkg" / "base.py").write_text("BASE = 3\n", encoding="utf-8")
+    changed = ledger.tests_run(
+        "coder-p1-module-1-good", coder["agent_id"], "file", "tests/test_good.py"
+    )
+
+    assert changed["reused"] is False

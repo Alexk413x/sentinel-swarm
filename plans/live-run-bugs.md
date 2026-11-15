@@ -28,6 +28,8 @@ its run is live.
 | 18 | The phase gate never runs the build | Fixed on `fix/live-run-bugs` |
 | 19 | Per-phase commits are impossible while later phases write | Open; needs a design decision |
 | 20 | A dead parked session cannot be resumed, released, or replaced | Fixed on `fix/live-run-bugs` |
+| 21 | File-scope test runs are never reused while other Coders edit | Fixed on `fix/live-run-bugs` |
+| 22 | A usage-limit stop reads as user waits, and the run does not recover | Open |
 
 Suggested grouping for later sessions: panel work (5, 16, 17); file moves and
 deletions (11, 13, 12); process and memory hygiene (6, 14, 9); run control (7, 15);
@@ -154,6 +156,24 @@ lint scope (8).
     have the watchdog release agents whose process is gone and whose heartbeat is
     stale. Check first how much the bug 3 liveness rule already covers: the "stale
     message pipe" may be a separate check.
+
+21. **File-scope test runs are never reused while other Coders edit, so `handoff_submit`
+    loops.** `tests_run` fingerprinted a file run with `git status` and every file
+    claimed anywhere in the run, so with three phases editing, the fingerprint changed
+    before a run recorded: `_require_handoff_evidence` never found a reusable run,
+    started a fresh one, and refused with "still running" on every call. One file had 5
+    green runs at 7/7 and no handoff. The live run carries a hotfix in the installed
+    0.7.1, which installing a release overwrites. Fix: a file run hashes `HEAD`, its own
+    file, test file, products, and the files it depends on (`file_deps`), not the rest
+    of the tree; module, phase, and full runs keep the whole-tree fingerprint. Earlier
+    file runs stop matching once, after an upgrade.
+22. **A usage-limit stop reads as user waits, and the run does not recover after the
+    reset.** The account hit its usage limit and every session went idle at once. The
+    watchdog raised `needs_user` for the Oracle, the Leads, and the Coders, plus unsent
+    wake-ups. Nothing moved for over 4 hours after the reset, until someone messaged the
+    Oracle by hand. Fix: detect a usage-limit stop from the transcript or the listing,
+    pause the run with that reason instead of raising findings, and resume on its own
+    after the reset (or with `ledger.py resume`).
 
 ## Belongs to codebase-kg
 

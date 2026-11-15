@@ -185,6 +185,12 @@ refuses unless:
    and every skip named by `allowed_skips`. A run still going after the 20-second wait
    refuses the handoff with its `test_run_id`; the Coder ends its turn, and once the
    wake-up names the result, `handoff_submit` reuses that run on the unchanged tree.
+   A file run's tree is `HEAD` plus the content of the file, its test file, its
+   products, and the files it depends on (`file_deps`), not the rest of the tree, since
+   other Coders edit the run's other files the whole time; module, phase, and full runs
+   fingerprint `HEAD`, `git status` of every tracked change, and every file claimed in
+   the run. A file run recorded before this rule never matches again, so the first
+   handoff after an upgrade runs its tests once more.
    A deleted file whose test file is deleted too runs no tests.
 4. The code graph is current for the file, and neither the file nor its test file is stale against its recorded baseline. See "The code graph" in [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
    A binary file is read as bytes: its anchors need no symbol check. A deleted file

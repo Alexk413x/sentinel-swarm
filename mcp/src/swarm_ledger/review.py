@@ -394,6 +394,7 @@ class ReviewMixin(LedgerHost):
         c = resolve(self.conn, caller, agent_id)
         require_role(c, _SCOPE_ROLE[scope])
 
+        file_row = None
         if scope == "file":
             if c.file_id is None:
                 raise LedgerError(f"{caller!r} has no claimed file")
@@ -409,8 +410,12 @@ class ReviewMixin(LedgerHost):
         command = self.test_command_for(scope, target, include_slow)
         build = (self.settings.build_command or None) if scope == "full" else None
         testrun.sweep(self.conn)
-        claimed = self._claimed_paths(c.run_id)
-        fingerprint = tree_fingerprint(self.repo_root, claimed)
+        if file_row is not None:
+            claimed = self._file_scope_paths(file_row)
+            fingerprint = tree_fingerprint(self.repo_root, claimed, whole_tree=False)
+        else:
+            claimed = self._claimed_paths(c.run_id)
+            fingerprint = tree_fingerprint(self.repo_root, claimed)
         if not force:
             earlier = self._reusable_run(c.run_id, command, fingerprint, build)
             if earlier is not None:
@@ -550,6 +555,20 @@ class ReviewMixin(LedgerHost):
             for command in self.settings.commands
             if command["name"] in output or command["run"] in output
         ]
+
+    def _file_scope_paths(self, file_row: sqlite3.Row) -> list[str]:
+        # Other Coders edit the run's other files the whole time, so a file run that hashed
+        # them would never be reused and handoff_submit would wait on a fresh run every call.
+        rows = [
+            file_row,
+            *self._products(file_row["file_id"]),
+            *self.conn.execute(
+                "SELECT f.path, f.test_path FROM file_deps d "
+                "JOIN files f ON f.file_id = d.depends_on_file_id WHERE d.file_id = ?",
+                (file_row["file_id"],),
+            ),
+        ]
+        return [path for row in rows for path in (row["path"], row["test_path"]) if path]
 
     def _claimed_paths(self, run_id: int | None) -> list[str]:
         return [

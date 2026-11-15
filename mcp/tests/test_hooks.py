@@ -56,7 +56,9 @@ def _accept_module_and_phase(ledger: Ledger, ctx: dict) -> None:
         scores=review_scores(),
     )
     ledger.phase_update("mgr-p1-phase-1", ctx["manager"]["agent_id"], ctx["phase_id"], "handed_up")
-    insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+    insert_passing_test_run(
+        ledger, ctx["run_id"], ctx["oracle_id"], "full", build=("npm run build", 0, "")
+    )
     ledger.phase_review(
         "oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ship it", scores=review_scores()
     )
