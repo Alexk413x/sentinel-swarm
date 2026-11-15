@@ -478,6 +478,44 @@ def test_a_needs_user_directive_waits_on_the_user_until_answered(ledger: Ledger)
     assert _run_snapshot(ledger)["waiting"]["questions"] == []
 
 
+def test_the_panel_lists_each_user_directive_with_its_state(ledger: Ledger) -> None:
+    ctx = _build(ledger)
+    first = ledger.directive_submit("user_chat", "alex", "Scope it to phase 1.")
+    ledger.directive_inbox("oracle", ctx["oracle_id"])
+    queued = ledger.directive_submit("outside_session", "alex", "Drop the CLI.")
+    ledger.directive_ack("oracle", ctx["oracle_id"], queued["directive_id"], "after the review")
+    ledger.directive_submit("watchdog", "watchdog", "Not shown.")
+    unread = ledger.directive_submit("user_chat", "alex", "Rename the flag.")
+    done = ledger.directive_submit("user_chat", "alex", "Skip docs.")
+    ledger.directive_resolve("oracle", ctx["oracle_id"], done["directive_id"], "applied", "Done.")
+
+    rows = {d["directive_id"]: d for d in _run_snapshot(ledger)["directives"]}
+
+    assert set(rows) == {d["directive_id"] for d in (first, queued, unread, done)}
+    assert rows[first["directive_id"]]["status"] == "seen"
+    assert rows[queued["directive_id"]]["status"] == "queued"
+    assert rows[queued["directive_id"]]["note"] == "after the review"
+    assert rows[unread["directive_id"]]["status"] == "unread"
+    assert rows[unread["directive_id"]]["body"] == "Rename the flag."
+    assert rows[done["directive_id"]]["status"] == "resolved"
+    assert rows[done["directive_id"]]["outcome"] == "applied"
+
+
+def test_the_panel_reads_a_ledger_that_lacks_the_directive_acknowledgement_columns(
+    ledger: Ledger,
+) -> None:
+    ctx = _build(ledger)
+    sent = ledger.directive_submit("user_chat", "alex", "Scope it to phase 1.")
+    ledger.directive_inbox("oracle", ctx["oracle_id"])
+    with write_tx(ledger.conn) as conn:
+        for column in ("seen_at", "queued_at", "queue_note"):
+            conn.execute(f"ALTER TABLE directives DROP COLUMN {column}")
+
+    [row] = _run_snapshot(ledger)["directives"]
+
+    assert (row["directive_id"], row["status"]) == (sent["directive_id"], "unread")
+
+
 def test_open_needs_user_and_stall_findings_wait_on_the_user(ledger: Ledger) -> None:
     ctx = _build(ledger)
     with write_tx(ledger.conn) as conn:

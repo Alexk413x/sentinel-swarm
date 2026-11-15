@@ -345,7 +345,9 @@ $python -I -S "${CLAUDE_PLUGIN_ROOT}/mcp/launch/ledger.py" directive --source ou
 ```
 
 The Oracle applies it at its next safe point. `--reply-to <directive id>` answers a
-question the Oracle asked.
+question the Oracle asked. The same command with `--status` and no text prints each
+recent directive with its state: `unread`, `seen`, `queued` with the Oracle's note, or
+`resolved` with its outcome.
 
 ## Source of truth
 

@@ -12,6 +12,7 @@ from .clock import parse_stamp, stamp, utcnow
 from .db import ledger_path, open_readonly
 from .lock import pid_alive
 from .paths import config_dir
+from .queries import recent_directives
 
 ROLE_ORDER = {"oracle": 0, "manager": 1, "lead": 2, "coder": 3, "driver": 4}
 SUMMARY_CHARS = 90
@@ -401,6 +402,7 @@ def _run_snapshot(
             "ended": len(started) - len(live),
         },
         "waiting": _waiting(conn, run),
+        "directives": recent_directives(conn, run_id),
     }
 
 

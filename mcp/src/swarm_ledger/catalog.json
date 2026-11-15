@@ -1231,7 +1231,7 @@
   {
    "name": "directive_inbox",
    "title": "Directive Inbox",
-   "description": "Returns the run's open directives; the Oracle calls this.",
+   "description": "Returns the run's open directives and records when the Oracle first read each; the\nOracle calls this.",
    "inputSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -1260,6 +1260,41 @@
     ],
     "type": "object",
     "x-fastmcp-wrap-result": true
+   },
+   "_meta": {
+    "fastmcp": {
+     "tags": []
+    }
+   }
+  },
+  {
+   "name": "directive_ack",
+   "title": "Directive Ack",
+   "description": "Marks an open directive queued, with a note that says when or how it applies, so its\nsender sees the Oracle has it; the Oracle calls this. The directive stays open until\ndirective_resolve.",
+   "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "caller": {
+      "description": "Your own agent name, as the ledger registered it.",
+      "type": "string"
+     },
+     "directive_id": {
+      "type": "integer"
+     },
+     "note": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "caller",
+     "directive_id",
+     "note"
+    ]
+   },
+   "outputSchema": {
+    "additionalProperties": true,
+    "type": "object"
    },
    "_meta": {
     "fastmcp": {
@@ -3357,6 +3392,7 @@
   "deferral_propose",
   "departure_decide",
   "departure_record",
+  "directive_ack",
   "directive_inbox",
   "directive_resolve",
   "drive_checkin",

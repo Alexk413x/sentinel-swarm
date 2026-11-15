@@ -766,6 +766,27 @@ def _directives(ledger: Ledger) -> list[dict]:
     return [dict(r) for r in ledger.conn.execute("SELECT * FROM directives ORDER BY directive_id")]
 
 
+def test_the_watchdog_flags_a_user_directive_the_oracle_has_not_read(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _oracle_running(claude)
+    sent = ledger.directive_submit("user_chat", "alex", "Scope it to phase 1.")
+    ledger.directive_submit("watchdog", "watchdog", "A finding.")
+    after = now + timedelta(minutes=6)
+
+    early = _scan(ledger, claude, now + timedelta(minutes=4))
+    assert [f for f in early if f.kind == "directive_unread"] == []
+    [finding] = [f for f in _scan(ledger, claude, after) if f.kind == "directive_unread"]
+    assert finding.name == "oracle"
+    assert str(sent["directive_id"]) in finding.detail
+    assert "directive_inbox" in finding.next_step
+    assert "directive_unread" not in watchdog.USER_KINDS
+
+    ledger.directive_inbox("oracle", ORACLE)
+    assert [f for f in _scan(ledger, claude, after) if f.kind == "directive_unread"] == []
+
+
 def test_a_finding_is_reported_once_cleared_when_gone_and_reported_again(
     ledger: Ledger, claude: FakeClaude, now: datetime
 ) -> None:

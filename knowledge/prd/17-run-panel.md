@@ -34,6 +34,10 @@ request.
   of its live agents that have not expired (`permissions`: the request id, the agent,
   the tool, the input summary, Claude Code's reason, and when it was asked and
   expires), and a paused run's reason (the reason of the run's latest move to `paused`).
+- Each run also carries `directives`: its open directives from `user_chat`,
+  `outside_session`, and `skill`, plus the 5 newest of them that resolved, each with its
+  state (`unread`, `seen`, `queued`, `needs_user`, or `resolved`), the time of that state,
+  the Oracle's note or resolution, and the outcome. See "Your directives" below.
 - Each agent carries its session id, session name, and transcript path. A child that
   `agent_spawn` queued in `spawn_queue` has a brief but no session yet; it sits in the
   tree under its parent as a queued row, with its brief's task and the queue's reason.
@@ -107,6 +111,20 @@ request.
   to do: check the run with `/sentinel-swarm:status` and message the Oracle, or fix the
   cause and message the Oracle or run `/sentinel-swarm:resume`.
 - The row of an agent with an item shows the warning glyph `⚠` and is never dimmed.
+
+## Your directives
+
+- A live run's section ends with a **Your directives** list, one line for each directive
+  the document's `directives` carries, in the order sent:
+  `#<id> <state> <time ago>[: <note>] · <first 40 characters of the text>`.
+- The state is `unread` (the Oracle has not read it; shown in the warning colour),
+  `seen` (the Oracle read it with `directive_inbox`), `queued` (the Oracle
+  acknowledged it with `directive_ack` and the note says when it applies), `waits on your
+  answer` (a `needs_user` outcome, with the question), or the outcome with the
+  resolution as its note (`applied`, `scheduled`, `declined`, or `answered` for a reply).
+  Resolved lines are dimmed.
+- The list is read-only. A directive from the watchdog, the Driver, or the Oracle's
+  `user_ask` is not listed.
 
 ### Answering a permission prompt in the panel
 

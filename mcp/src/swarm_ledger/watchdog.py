@@ -16,6 +16,7 @@ from .clock import parse_stamp, stamp, utcnow
 from .db import NOW, write_tx
 from .identity import ROLES, LedgerError
 from .queries import (
+    USER_DIRECTIVE_SOURCES,
     latest_live_oracle,
     live_run,
     logical_state,
@@ -141,6 +142,7 @@ def scan(
     findings += _unsent_findings(conn, run["run_id"], agents, by_session, now, settings)
     findings += _queued_findings(conn, run["run_id"], agents, now, settings)
     findings += _unmanaged_phase_findings(conn, run["run_id"], agents)
+    findings += _unread_directive_findings(conn, run["run_id"], agents, now, settings)
     findings += _stray_process_findings(conn, run["run_id"], now)
 
     stalled = _stalled(conn, run, agents, by_session, now)
@@ -457,6 +459,42 @@ def _queued_findings(
             )
         )
     return findings
+
+
+def _unread_directive_findings(
+    conn: sqlite3.Connection,
+    run_id: int,
+    agents: list[dict],
+    now: datetime,
+    settings: WatchdogSettings,
+) -> list[Finding]:
+    oracle = next((a for a in agents if a["role"] == "oracle"), None)
+    after = timedelta(minutes=settings.unsent_wakeup_minutes)
+    if oracle is None or after <= timedelta(0):
+        return []
+    marks = ", ".join("?" for _ in USER_DIRECTIVE_SOURCES)
+    waiting: list[tuple[int, timedelta]] = []
+    for row in conn.execute(
+        "SELECT directive_id, created_at FROM directives WHERE run_id = ? "
+        f"AND source IN ({marks}) AND state = 'open' AND seen_at IS NULL ORDER BY directive_id",
+        (run_id, *USER_DIRECTIVE_SOURCES),
+    ):
+        made = parse_stamp(row["created_at"])
+        if made is not None and now - made >= after:
+            waiting.append((row["directive_id"], now - made))
+    if not waiting:
+        return []
+    ids = ", ".join(str(directive_id) for directive_id, _ in waiting)
+    age = _minutes(max(waited for _, waited in waiting))
+    return [
+        _finding(
+            oracle,
+            "directive_unread",
+            f"directive(s) {ids} from the user have waited unread for up to {age} minutes",
+            "Call directive_inbox() now, then apply each directive or acknowledge one you "
+            "cannot apply at once with directive_ack(directive_id, note).",
+        )
+    ]
 
 
 def _unmanaged_phase_findings(

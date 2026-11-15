@@ -1,8 +1,8 @@
 import type { On, SessionSendResult } from 'claude-code'
 import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 
-import { ALLOWED_REASON, DENIED_REASON, agentFacts, attention, dimmed, flatten, holdForPanel, mark, parseWaiting, startHint, stepLines, taskDetail } from './panel'
-import type { PanelAgent, PanelPermission, PanelRequest, PanelRunView, PanelSessionWait, PanelSnapshot, PanelTask } from '../types'
+import { ALLOWED_REASON, DENIED_REASON, agentFacts, attention, dimmed, directiveLine, flatten, holdForPanel, mark, parseWaiting, startHint, stepLines, taskDetail } from './panel'
+import type { PanelAgent, PanelDirective, PanelPermission, PanelRequest, PanelRunView, PanelSessionWait, PanelSnapshot, PanelTask } from '../types'
 
 const CWD = 'C:/host'
 const TOKEN = 'a'.repeat(40)
@@ -955,6 +955,49 @@ describe('what waits on you', () => {
       waiting: { questions: [{ directive_id: 7, question: '?', asked_at: 'T' }], findings: [], paused: null, permissions: [] },
     })
     expect(attention(view, [SESSION_WAIT])).toEqual([])
+  })
+})
+
+describe('your directives', () => {
+  const NOW = Date.parse('2026-11-14T10:10:00Z')
+  const sent = (overrides: Partial<PanelDirective> = {}): PanelDirective => ({
+    directive_id: 7,
+    source: 'user_chat',
+    sender: 'alex',
+    body: 'Scope it to phase 1.',
+    status: 'unread',
+    at: '2026-11-14T10:05:00Z',
+    note: null,
+    outcome: null,
+    ...overrides,
+  })
+
+  test('each line names the state, its age, the note, and the start of the text', () => {
+    expect(directiveLine(sent(), NOW)).toBe('#7 unread, sent 5m 0s ago · Scope it to phase 1.')
+    expect(directiveLine(sent({ status: 'seen', at: '2026-11-14T10:08:00Z' }), NOW)).toBe('#7 seen 2m 0s ago · Scope it to phase 1.')
+    expect(directiveLine(sent({ status: 'queued', note: 'after the review' }), NOW)).toBe('#7 queued 5m 0s ago: after the review · Scope it to phase 1.')
+    expect(directiveLine(sent({ status: 'resolved', outcome: 'applied', note: 'Updated phase 1.' }), NOW)).toBe('#7 applied 5m 0s ago: Updated phase 1. · Scope it to phase 1.')
+    expect(directiveLine(sent({ status: 'resolved' }), NOW)).toContain('#7 answered')
+    expect(directiveLine(sent({ status: 'needs_user', note: 'Which branch?' }), NOW)).toContain('waits on your answer: Which branch?')
+    expect(directiveLine(sent({ body: 'x'.repeat(80) }), NOW)).toContain(`${'x'.repeat(39)}…`)
+  })
+
+  test('the panel lists them under the run', async ($, on) => {
+    const at = new Date(Date.now() - 300_000).toISOString()
+    const view = runView({ directives: [sent({ at }), sent({ directive_id: 8, status: 'queued', note: 'after the review', at })] })
+    const snapshot: PanelSnapshot = { repo: CWD, generated_at: '', runs: [view] }
+    const clock = mock.clock(on, { now: 1_000 })
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('ui.panes', () => ({ value: [] }))
+    on('process.run', (_$, e) => ({ value: { ...RAN_OK, exitCode: 0, stdout: e.argv[0] === 'claude' ? '[]' : JSON.stringify(snapshot) } }))
+    await $.tool.call({ tool: 'mcp__sentinel-swarm__open_panel', repo: CWD } as never)
+    await clock.settle()
+
+    const ui = await $.ui.mount({ plugin: 'sentinel-swarm', component: 'Pane', requestId: 'swarm-run', surface: 'terminal', props: { title: 'Swarm', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } } as never)
+    expect(await ui.find({ type: 'Text', text: /Your directives/ })).toBeDefined()
+    expect((await ui.find({ key: 'directive:3:7' }))?.text).toMatch(/#7 unread, sent 5m \d+s ago/)
+    expect((await ui.find({ key: 'directive:3:8' }))?.text).toMatch(/#8 queued 5m \d+s ago: after the review/)
+    await ui.unmount()
   })
 })
 

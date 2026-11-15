@@ -16,6 +16,7 @@ import {
   closeSpan,
   continuation,
   dimmed,
+  directiveLine,
   duration,
   flatten,
   holdForPanel,
@@ -648,6 +649,20 @@ export const register: Register = on => {
           </Box>
           {shown && rows.length === 0 && <Text dimColor>No live agents. Show ended to see the whole run.</Text>}
           {shown && rowElements(rows, index)}
+          {shown && live && (view.directives ?? []).length > 0 && (
+            <Box flexDirection="column">
+              <Text bold dimColor>
+                Your directives
+              </Text>
+              {(view.directives ?? []).map(directive => (
+                <Box key={`directive:${run.run_id}:${directive.directive_id}`}>
+                  <Text color={directive.status === 'unread' ? WAIT_COLOR : undefined} dimColor={directive.status === 'resolved'} wrap="truncate-end">
+                    {directiveLine(directive, now)}
+                  </Text>
+                </Box>
+              ))}
+            </Box>
+          )}
         </Box>
       )
     }

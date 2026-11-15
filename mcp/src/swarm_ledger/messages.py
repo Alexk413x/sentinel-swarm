@@ -7,6 +7,7 @@ from . import notify
 from .db import NOW, dict_rows, in_clause, row_dict, write_tx
 from .host import LedgerHost
 from .identity import Caller, LedgerError, require_role, require_run, resolve
+from .queries import DIRECTIVES_RESOLVED_SHOWN, recent_directives
 
 _DIRECTIVE_SOURCES = ("user_chat", "outside_session", "skill", "watchdog", "driver")
 _DIRECTIVE_OUTCOMES = ("applied", "scheduled", "declined", "needs_user")
@@ -194,6 +195,11 @@ class MessagesMixin(LedgerHost):
                 "AND state = 'open' AND notified_at IS NULL",
                 (c.run_id,),
             )
+            conn.execute(
+                f"UPDATE directives SET seen_at = {NOW} WHERE run_id = ? "
+                "AND state = 'open' AND seen_at IS NULL",
+                (c.run_id,),
+            )
             return dict_rows(
                 conn.execute(
                     "SELECT * FROM directives WHERE run_id = ? AND state = 'open' "
@@ -201,6 +207,36 @@ class MessagesMixin(LedgerHost):
                     (c.run_id,),
                 )
             )
+
+    def directive_ack(self, caller: str, agent_id: str, directive_id: int, note: str) -> dict:
+        if not note.strip():
+            raise LedgerError(
+                "directive_ack needs a note that says when or how the directive applies"
+            )
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            require_role(c, "oracle")
+            row = conn.execute(
+                "SELECT state FROM directives WHERE directive_id = ? AND run_id = ?",
+                (directive_id, c.run_id),
+            ).fetchone()
+            if row is None:
+                raise LedgerError(f"unknown directive_id {directive_id!r}")
+            if row["state"] != "open":
+                raise LedgerError(
+                    f"directive {directive_id} is already resolved; directive_ack takes an open one"
+                )
+            conn.execute(
+                f"UPDATE directives SET queued_at = {NOW}, queue_note = ?, "
+                f"seen_at = COALESCE(seen_at, {NOW}) WHERE directive_id = ?",
+                (note, directive_id),
+            )
+        return row_dict(self.conn, "directives", "directive_id", directive_id)
+
+    def directive_status(self, limit: int = DIRECTIVES_RESOLVED_SHOWN) -> list[dict]:
+        with write_tx(self.conn) as conn:
+            run = self._active_run(conn)
+            return recent_directives(conn, run["run_id"], limit)
 
     def watch_armed(self, timeout_ms: int | None) -> dict:
         expires = (

@@ -15,6 +15,9 @@ ADDED_COLUMNS = (
     ("test_runs", "build_exit_code", "INTEGER"),
     ("test_runs", "build_output", "TEXT"),
     ("test_runs", "build_duration_ms", "INTEGER"),
+    ("directives", "seen_at", "TEXT"),
+    ("directives", "queued_at", "TEXT"),
+    ("directives", "queue_note", "TEXT"),
 )
 
 

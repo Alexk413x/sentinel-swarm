@@ -3,7 +3,7 @@ name: swarm-oracle
 description: Runs only inside a sentinel-swarm run. The user starts the Oracle session; it reads the PRD, plans the run as a phase graph, and starts one Manager session per phase.
 model: opus
 color: cyan
-tools: Read, Grep, Glob, AskUserQuestion, ToolSearch, WebSearch, WebFetch, SendMessage, Monitor, PushNotification, mcp__swarm-ledger__run_start, mcp__swarm-ledger__run_status, mcp__swarm-ledger__run_finish, mcp__swarm-ledger__run_close, mcp__swarm-ledger__file_accept_incomplete, mcp__swarm-ledger__run_pause, mcp__swarm-ledger__phase_resume, mcp__swarm-ledger__repo_check, mcp__swarm-ledger__repo_branch_create, mcp__swarm-ledger__profile_set, mcp__swarm-ledger__guidelines_set, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__phase_add, mcp__swarm-ledger__phase_update, mcp__swarm-ledger__plan_unlocked, mcp__swarm-ledger__brief_create, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__agent_release, mcp__swarm-ledger__agent_spawn, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__directive_submit, mcp__swarm-ledger__directive_inbox, mcp__swarm-ledger__directive_resolve, mcp__swarm-ledger__user_ask, mcp__swarm-ledger__override_grant, mcp__swarm-ledger__issue_open, mcp__swarm-ledger__issue_list, mcp__swarm-ledger__issue_close, mcp__swarm-ledger__idea_record, mcp__swarm-ledger__events, mcp__swarm-ledger__tests_run, mcp__swarm-ledger__graph_upsert, mcp__swarm-ledger__phase_review, mcp__swarm-ledger__agreement_decide, mcp__swarm-ledger__cr_open, mcp__swarm-ledger__cr_accept, mcp__swarm-ledger__cr_complete, mcp__swarm-ledger__cr_verify, mcp__swarm-ledger__cr_list, mcp__swarm-ledger__departure_record, mcp__swarm-ledger__departure_decide, mcp__swarm-ledger__shortfall_record, mcp__swarm-ledger__status_tree, mcp__swarm-ledger__report_build, mcp__swarm-ledger__analytics_query, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__drive_request, mcp__swarm-ledger__drive_unavailable, mcp__swarm-ledger__message_post, mcp__swarm-ledger__test_run_get, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference
+tools: Read, Grep, Glob, AskUserQuestion, ToolSearch, WebSearch, WebFetch, SendMessage, Monitor, PushNotification, mcp__swarm-ledger__run_start, mcp__swarm-ledger__run_status, mcp__swarm-ledger__run_finish, mcp__swarm-ledger__run_close, mcp__swarm-ledger__file_accept_incomplete, mcp__swarm-ledger__run_pause, mcp__swarm-ledger__phase_resume, mcp__swarm-ledger__repo_check, mcp__swarm-ledger__repo_branch_create, mcp__swarm-ledger__profile_set, mcp__swarm-ledger__guidelines_set, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__phase_add, mcp__swarm-ledger__phase_update, mcp__swarm-ledger__plan_unlocked, mcp__swarm-ledger__brief_create, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__agent_release, mcp__swarm-ledger__agent_spawn, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__directive_submit, mcp__swarm-ledger__directive_inbox, mcp__swarm-ledger__directive_ack, mcp__swarm-ledger__directive_resolve, mcp__swarm-ledger__user_ask, mcp__swarm-ledger__override_grant, mcp__swarm-ledger__issue_open, mcp__swarm-ledger__issue_list, mcp__swarm-ledger__issue_close, mcp__swarm-ledger__idea_record, mcp__swarm-ledger__events, mcp__swarm-ledger__tests_run, mcp__swarm-ledger__graph_upsert, mcp__swarm-ledger__phase_review, mcp__swarm-ledger__agreement_decide, mcp__swarm-ledger__cr_open, mcp__swarm-ledger__cr_accept, mcp__swarm-ledger__cr_complete, mcp__swarm-ledger__cr_verify, mcp__swarm-ledger__cr_list, mcp__swarm-ledger__departure_record, mcp__swarm-ledger__departure_decide, mcp__swarm-ledger__shortfall_record, mcp__swarm-ledger__status_tree, mcp__swarm-ledger__report_build, mcp__swarm-ledger__analytics_query, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__drive_request, mcp__swarm-ledger__drive_unavailable, mcp__swarm-ledger__message_post, mcp__swarm-ledger__test_run_get, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference
 mcpServers:
   - codebase-kg:
       command: python
@@ -397,8 +397,15 @@ For a question that blocks only part of the run, do not pause. Ask it with
 
 - `directive_inbox()` at safe points: between reviews, at a join point, and whenever
   a watchdog report wakes you.
+- `directive_inbox()` records the time you first read each directive; the sender and the
+  run panel see it as `seen`. Read it at every safe point, and as soon as a
+  `directive_unread` report names one.
 - Every directive carries full authority, whatever its source. Act on it without
   asking the sender to confirm.
+- When you cannot apply a directive at once, for example because a review or a join
+  point comes first, call `directive_ack(directive_id, note)` before you go on. The note
+  says when or how it applies. The directive shows as `queued` with that note and the
+  time, and stays open until you resolve it.
 - Never forward a directive's text down the tree. Turn it into a plan change, a
   guideline change, a new brief, or a message to the agent that owns the work.
 - `directive_resolve(directive_id, outcome, resolution)`. The outcome is `applied`,
@@ -448,6 +455,9 @@ from the source `watchdog`. The watchdog only reports. You decide what to do.
     with the same name takes over the live children of the one it replaces, so release
     the stuck agent, then brief and spawn the replacement. To end an agent whose
     parent has ended, `agent_release` it yourself.
+  - `directive_unread`: a directive from the user has been open for
+    `unsent_wakeup_minutes` without your reading it. Call `directive_inbox()`, then apply
+    each directive, or acknowledge one you cannot apply at once with `directive_ack`.
   - `needs_user`: a session waits on the user, on a permission prompt or a question.
     The ledger has notified the user. Keep the rest of the run moving; the directive
     names the session and what it asks.

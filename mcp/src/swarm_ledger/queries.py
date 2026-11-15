@@ -58,3 +58,51 @@ def unread_count(conn: sqlite3.Connection, run_id: int, name: str) -> int:
         "SELECT COUNT(*) AS n FROM messages WHERE run_id = ? AND to_name = ? AND read_at IS NULL",
         (run_id, name),
     ).fetchone()["n"]
+
+
+USER_DIRECTIVE_SOURCES = ("user_chat", "outside_session", "skill")
+DIRECTIVES_RESOLVED_SHOWN = 5
+
+
+def directive_state(row: Mapping[str, Any] | sqlite3.Row) -> dict[str, Any]:
+    # The panel reads a ledger no server has migrated, so the acknowledgement columns can be absent.
+    keys = set(row.keys())
+    seen_at = row["seen_at"] if "seen_at" in keys else None
+    queued_at = row["queued_at"] if "queued_at" in keys else None
+    queue_note = row["queue_note"] if "queue_note" in keys else None
+    outcome = row["outcome"]
+    if row["state"] == "resolved":
+        status, at, note = "resolved", row["resolved_at"], row["resolution"]
+        outcome = None if outcome == "needs_user" else outcome
+    elif outcome == "needs_user":
+        status, at, note = "needs_user", row["created_at"], row["resolution"]
+    elif queued_at is not None:
+        status, at, note = "queued", queued_at, queue_note
+    elif seen_at is not None:
+        status, at, note = "seen", seen_at, None
+    else:
+        status, at, note = "unread", row["created_at"], None
+    return {
+        "directive_id": row["directive_id"],
+        "source": row["source"],
+        "sender": row["sender_name"],
+        "body": row["body"],
+        "status": status,
+        "at": at or row["created_at"],
+        "note": note,
+        "outcome": outcome,
+    }
+
+
+def recent_directives(
+    conn: sqlite3.Connection, run_id: int, limit: int = DIRECTIVES_RESOLVED_SHOWN
+) -> list[dict[str, Any]]:
+    marks = ", ".join("?" for _ in USER_DIRECTIVE_SOURCES)
+    rows = conn.execute(
+        f"SELECT * FROM directives WHERE run_id = ? AND source IN ({marks}) "
+        "AND (state = 'open' OR directive_id IN (SELECT directive_id FROM directives "
+        f"WHERE run_id = ? AND source IN ({marks}) AND state = 'resolved' "
+        "ORDER BY directive_id DESC LIMIT ?)) ORDER BY directive_id",
+        (run_id, *USER_DIRECTIVE_SOURCES, run_id, *USER_DIRECTIVE_SOURCES, limit),
+    ).fetchall()
+    return [directive_state(row) for row in rows]

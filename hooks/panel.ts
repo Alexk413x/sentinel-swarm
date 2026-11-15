@@ -1,4 +1,4 @@
-import type { PanelAgent, PanelRequest, PanelRunView, PanelSessionWait, PanelStep, PanelTask } from '../types'
+import type { PanelAgent, PanelDirective, PanelRequest, PanelRunView, PanelSessionWait, PanelStep, PanelTask } from '../types'
 
 export const MODEL = /(opus|sonnet|haiku|fable)/i
 export const SPANNING_ROLES: ReadonlySet<string> = new Set(['oracle', 'manager'])
@@ -446,6 +446,22 @@ export function ago(stamp: string | null, now: number): string {
   const seconds = Math.max(0, Math.round((now - Date.parse(stamp)) / 1000))
   if (Number.isNaN(seconds)) return stamp
   return seconds < 60 ? `${seconds}s ago` : `${duration(seconds)} ago`
+}
+
+const DIRECTIVE_TEXT_MAX = 40
+
+export function directiveLine(directive: PanelDirective, now: number): string {
+  const when = ago(directive.at, now)
+  const state = {
+    unread: `unread, sent ${when}`,
+    seen: `seen ${when}`,
+    queued: `queued ${when}`,
+    needs_user: 'waits on your answer',
+    resolved: `${directive.outcome ?? 'answered'} ${when}`,
+  }[directive.status]
+  const body = directive.body.replace(/\s+/g, ' ').trim()
+  const text = body.length <= DIRECTIVE_TEXT_MAX ? body : `${body.slice(0, DIRECTIVE_TEXT_MAX - 1)}…`
+  return `#${directive.directive_id} ${state}${directive.note ? `: ${directive.note}` : ''} · ${text}`
 }
 
 export function agentFacts(agent: PanelAgent, now: number): string[] {
