@@ -1,4 +1,4 @@
-import type { PanelAgent, PanelRequest, PanelRunView, PanelSessionWait, PanelTask } from '../types'
+import type { PanelAgent, PanelRequest, PanelRunView, PanelSessionWait, PanelStep, PanelTask } from '../types'
 
 export const MODEL = /(opus|sonnet|haiku|fable)/i
 export const SPANNING_ROLES: ReadonlySet<string> = new Set(['oracle', 'manager'])
@@ -34,8 +34,9 @@ export type AgentRow = {
   followed: boolean
 }
 export type TaskRow = { kind: 'task'; key: string; prefix: Segment[]; task: PanelTask; open: boolean }
-export type Row = AgentRow | TaskRow
-export type SessionWait = Omit<PanelSessionWait, 'request'>
+export type GroupRow = { kind: 'group'; key: string; prefix: Segment[]; label: string; count: number; open: boolean }
+export type Row = AgentRow | TaskRow | GroupRow
+export type SessionWait = PanelSessionWait
 export type Attention = {
   key: string
   agent: string | null
@@ -52,7 +53,7 @@ export type HoldLedger = {
   close: (requestId: number, state: 'expired' | 'withdrawn') => Promise<unknown>
 }
 
-const INPUT_CHARS = 400
+export const PHASES_OPEN_MAX = 4
 export const ALLOWED_REASON = 'Allowed by the user in the run panel'
 export const DENIED_REASON = 'The user denied this in the run panel'
 
@@ -89,13 +90,14 @@ export function flatten(
     const spanning = SPANNING_ROLES.has(agent.role)
     const below = flatten(agent.children, withEnded, key, isOpen, childLead, own, false, spanning)
     const spacer = { text: spanning || below.length > 0 ? '│ ' : '  ', color: own }
-    const tasks: TaskRow[] = agent.tasks.map(task => ({
+    const taskRows: TaskRow[] = agent.tasks.map(task => ({
       kind: 'task',
       key: `${key}#${task.id}`,
       prefix: [...childLead, spacer],
       task,
       open: isOpen(`${key}#${task.id}`, false),
     }))
+    const tasks: Row[] = root && taskRows.length > 0 ? phaseGroup(`${key}/phases`, taskRows, [...childLead, spacer], isOpen) : taskRows
     const expanded = root || isOpen(key, true)
     const toggle = root || (agent.children.length === 0 && agent.tasks.length === 0) ? null : { open: expanded }
     const agents = below.filter(row => row.kind === 'agent').length
@@ -113,6 +115,12 @@ export function flatten(
     }
     return expanded ? [row, ...(spanning ? closeSpan(section, childLead.length) : section)] : [row]
   })
+}
+
+function phaseGroup(key: string, rows: readonly TaskRow[], prefix: Segment[], isOpen: IsOpen): Row[] {
+  const open = isOpen(key, rows.length <= PHASES_OPEN_MAX)
+  const group: GroupRow = { kind: 'group', key, prefix, label: 'phases not started', count: rows.length, open }
+  return open ? [group, ...rows] : [group]
 }
 
 export function continuation(prefix: readonly Segment[]): Segment[] {
@@ -242,7 +250,8 @@ export function sectionKeys(runs: readonly PanelRunView[]): string[] {
     nodes.flatMap(node => {
       const key = `${parent}/${node.name}`
       const below = walk(node.children, key)
-      return (node.children.length === 0 && node.tasks.length === 0) || node.role === 'oracle' ? below : [key, ...below]
+      if (node.role === 'oracle') return node.tasks.length > 0 ? [`${key}/phases`, ...below] : below
+      return node.children.length === 0 && node.tasks.length === 0 ? below : [key, ...below]
     })
   return runs.flatMap(view => [`run:${view.run.run_id}`, ...walk(view.agents, `run:${view.run.run_id}`)])
 }
@@ -308,53 +317,7 @@ export function waitOf<W extends SessionWait>(agent: PanelAgent, waits: readonly
   return waits.find(wait => wait.sessionId === agent.agent_id || (agent.session_name !== null && wait.name === agent.session_name))
 }
 
-export function pendingRequest(transcript: string): PanelRequest | null {
-  const answered = new Set<string>()
-  const lines = transcript.split('\n')
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i] ?? ''
-    if (!line.includes('"tool_use"') && !line.includes('"tool_result"')) continue
-    let entry: unknown
-    try {
-      entry = JSON.parse(line)
-    } catch {
-      continue
-    }
-    const content = (entry as { message?: { content?: unknown } } | null)?.message?.content
-    if (!Array.isArray(content)) continue
-    for (const block of [...content].reverse()) {
-      if (typeof block !== 'object' || block === null) continue
-      const { type, id, tool_use_id, name, input } = block as Record<string, unknown>
-      if (type === 'tool_result' && typeof tool_use_id === 'string') answered.add(tool_use_id)
-      if (type === 'tool_use' && typeof id === 'string' && !answered.has(id)) return request(String(name ?? ''), input)
-    }
-  }
-  return null
-}
-
-function request(tool: string, input: unknown): PanelRequest {
-  const fields = typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : {}
-  if (tool === 'AskUserQuestion' && Array.isArray(fields.questions)) {
-    const questions = fields.questions.flatMap((q: unknown) => {
-      if (typeof q !== 'object' || q === null) return []
-      const { question, options } = q as Record<string, unknown>
-      const labels = Array.isArray(options) ? options.flatMap(label) : []
-      return [{ question: String(question ?? ''), options: labels }]
-    })
-    return { kind: 'question', questions }
-  }
-  const named = [fields.command, fields.file_path, fields.notebook_path, fields.path, fields.url].find(v => typeof v === 'string')
-  const text = typeof named === 'string' ? named : JSON.stringify(input ?? {})
-  return { kind: 'tool', tool, input: text.length > INPUT_CHARS ? `${text.slice(0, INPUT_CHARS - 1)}…` : text }
-}
-
-function label(option: unknown): string[] {
-  const value = typeof option === 'object' && option !== null ? (option as { label?: unknown }).label : undefined
-  return typeof value === 'string' ? [value] : []
-}
-
-export function requestLines(request: PanelRequest | null): string[] {
-  if (request === null) return ['Agent view shows the request.']
+export function requestLines(request: PanelRequest): string[] {
   if (request.kind === 'tool') return [`${request.tool}: ${request.input}`]
   return request.questions.flatMap(q => [q.question, ...q.options.map(option => `  • ${option}`)])
 }
@@ -373,13 +336,15 @@ export function attention(view: PanelRunView, sessions: readonly PanelSessionWai
   const waiting = new Set<string>()
   for (const agent of agents) {
     const wait = waitOf(agent, sessions)
-    if (wait === undefined) continue
+    // Claude Code also shows waiting or blocked for a session that ended its turn on a work
+    // blocker; only a pending request is something the user can answer.
+    if (wait === undefined || agent.request === null) continue
     waiting.add(agent.name)
     items.push({
       key: `wait:${run}:${agent.name}`,
       agent: agent.name,
       title: WAIT_TITLE[wait.waitingFor] ?? `waits: ${wait.waitingFor}`,
-      lines: requestLines(wait.request),
+      lines: requestLines(agent.request),
       where: `Answer it in agent view (claude agents), on session ${wait.name || agent.name}.`,
       directiveId: null,
       permissionId: null,
@@ -472,4 +437,40 @@ async function pollAnswer(ledger: HoldLedger, id: number, polls: number, aborted
     if (state !== 'open') return null
   }
   return null
+}
+
+const STEP_MARK: Readonly<Record<PanelStep['kind'], string>> = { say: '›', tool: '▸', error: '✕' }
+
+export function ago(stamp: string | null, now: number): string {
+  if (stamp === null) return 'never'
+  const seconds = Math.max(0, Math.round((now - Date.parse(stamp)) / 1000))
+  if (Number.isNaN(seconds)) return stamp
+  return seconds < 60 ? `${seconds}s ago` : `${duration(seconds)} ago`
+}
+
+export function agentFacts(agent: PanelAgent, now: number): string[] {
+  const model = MODEL.exec(agent.model ?? '')?.[1]?.toLowerCase() ?? agent.model ?? 'model not recorded'
+  const session = agent.queued ? 'queued' : agent.parked ? 'parked' : (agent.session ?? 'ended')
+  const work = [agent.phase, agent.module, agent.file].filter(part => part !== null).join(' › ')
+  const facts = [
+    `${agent.role} · ${model}${agent.effort ? ` · ${agent.effort} effort` : ''}`,
+    `ledger ${agent.state} · session ${session}${agent.session_name ? ` (${agent.session_name})` : ''}`,
+    `doing: ${agent.activity ?? 'nothing recorded'} · last heartbeat ${ago(agent.heartbeat_at, now)}`,
+  ]
+  if (work !== '') facts.push(`works on ${work}`)
+  if (agent.unread > 0 || agent.owed > 0) facts.push(`${agent.unread} unread · ${agent.owed} wake-up(s) owed`)
+  if (agent.park_reason) facts.push(`parked: ${agent.park_reason}`)
+  if (agent.ended_at !== null) facts.push(`ended ${ago(agent.ended_at, now)}${agent.end_reason ? `: ${agent.end_reason}` : ''}`)
+  return facts
+}
+
+export function stepLines(steps: readonly PanelStep[] | null, now: number): string[] {
+  if (steps === null) return ['Reading its transcript...']
+  if (steps.length === 0) return ['No steps recorded in its transcript yet.']
+  return steps.map(step => `${STEP_MARK[step.kind]} ${step.text}${step.at === null ? '' : `  · ${ago(step.at, now)}`}`)
+}
+
+export function openHint(agent: PanelAgent): string {
+  const name = agent.session_name ?? agent.name
+  return `To talk to it, run claude agents and open ${name}.`
 }

@@ -1,8 +1,8 @@
 import type { On, SessionSendResult } from 'claude-code'
 import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 
-import { ALLOWED_REASON, DENIED_REASON, attention, dimmed, holdForPanel, mark, parseWaiting, pendingRequest, startHint, taskDetail } from './panel'
-import type { PanelAgent, PanelPermission, PanelRunView, PanelSessionWait, PanelSnapshot, PanelTask } from '../types'
+import { ALLOWED_REASON, DENIED_REASON, agentFacts, attention, dimmed, flatten, holdForPanel, mark, parseWaiting, startHint, stepLines, taskDetail } from './panel'
+import type { PanelAgent, PanelPermission, PanelRequest, PanelRunView, PanelSessionWait, PanelSnapshot, PanelTask } from '../types'
 
 const CWD = 'C:/host'
 const TOKEN = 'a'.repeat(40)
@@ -697,7 +697,7 @@ describe('the run panel', () => {
     expect(String(ran.result)).toBe('Swarm panel opened on C:/fresh.')
     expect(opened).toEqual(['swarm-run'])
     await clock.settle()
-    expect(launched[0]?.slice(-3)).toEqual(['panel', '--repo', 'C:/fresh'])
+    expect(launched.find(argv => argv.includes('panel'))?.slice(-3)).toEqual(['panel', '--repo', 'C:/fresh'])
   })
 
   const view = (ended: boolean) => ({ run: { run_id: 3, ended_at: ended ? '2026-10-27T00:00:00Z' : null } }) as PanelRunView
@@ -740,10 +740,14 @@ function agent(overrides: Partial<PanelAgent> = {}): PanelAgent {
     unread: 0,
     task: task(),
     tasks: [],
+    request: null,
+    recent: null,
     children: [],
     ...overrides,
   }
 }
+
+const WRITE_REQUEST: PanelRequest = { kind: 'tool', tool: 'Write', input: '.claude/scratch/x.py' }
 
 function runView(overrides: Partial<PanelRunView> = {}): PanelRunView {
   const oracle = agent({
@@ -756,7 +760,7 @@ function runView(overrides: Partial<PanelRunView> = {}): PanelRunView {
   })
   return {
     run: { run_id: 3, state: 'active', outcome: null, branch: null, started_at: '2026-10-28T00:00:00Z', ended_at: null, elapsed_s: 60 },
-    agents: [{ ...oracle, children: [agent()] }],
+    agents: [{ ...oracle, children: [agent({ request: WRITE_REQUEST })] }],
     counts: { live: 2 },
     waiting: { questions: [], findings: [], paused: null, permissions: [] },
     ...overrides,
@@ -773,12 +777,7 @@ const HELD: PanelPermission = {
   expires_at: '2026-10-30T12:05:00.000Z',
 }
 
-const SESSION_WAIT: PanelSessionWait = {
-  sessionId: 'sess-coder',
-  name: 'host-r3-coder-a',
-  waitingFor: 'permission prompt',
-  request: { kind: 'tool', tool: 'Write', input: '.claude/scratch/x.py' },
-}
+const SESSION_WAIT: PanelSessionWait = { sessionId: 'sess-coder', name: 'host-r3-coder-a', waitingFor: 'permission prompt' }
 
 describe('which rows the panel dims', () => {
   test('ended, released, parked, gone, approved and not-started rows dim; working rows do not', () => {
@@ -798,6 +797,45 @@ describe('which rows the panel dims', () => {
     expect(mark(agent(), true)).toEqual(['⚠', 'warning'])
     expect(mark(agent({ queued: true, session: null }))).toEqual(['○', undefined])
     expect(mark(agent({ state: 'parked' }))).toEqual(['⏸', 'warning'])
+  })
+})
+
+describe('the phases the Oracle has not started', () => {
+  const phases = (count: number) => Array.from({ length: count }, (_, i) => task({ id: `phase_id:${i + 1}`, name: `p${i + 1}-x`, state: 'planned', status: 'waiting' }))
+  const oracleWith = (count: number) => agent({ agent_id: 'sess-oracle', name: 'oracle', role: 'oracle', tasks: phases(count) })
+  const closed = () => false
+
+  test('sit under one group row that starts closed for a long list', () => {
+    const rows = flatten([oracleWith(9)], false, 'run:3', (key, fallback) => fallback)
+    expect(rows.map(row => row.kind)).toEqual(['agent', 'group'])
+    expect(rows[1]).toMatchObject({ kind: 'group', key: 'run:3/oracle/phases', label: 'phases not started', count: 9, open: false })
+  })
+
+  test('start open for a short list, and the group key closes them', () => {
+    const open = flatten([oracleWith(3)], false, 'run:3', (key, fallback) => fallback)
+    expect(open.map(row => row.kind)).toEqual(['agent', 'group', 'task', 'task', 'task'])
+    expect(flatten([oracleWith(3)], false, 'run:3', closed).map(row => row.kind)).toEqual(['agent', 'group'])
+  })
+})
+
+describe('the agent detail card', () => {
+  const NOW = Date.parse('2026-11-14T10:10:00Z')
+
+  test('lists what the agent is, what it does, and how to open its session', () => {
+    const facts = agentFacts(agent({ activity: 'tests_run', heartbeat_at: '2026-11-14T10:09:30Z', file: 'src/a.ts', unread: 2 }), NOW)
+    expect(facts).toEqual([
+      'coder · sonnet',
+      'ledger working · session busy (host-r3-coder-a)',
+      'doing: tests_run · last heartbeat 30s ago',
+      'works on src/a.ts',
+      '2 unread · 0 wake-up(s) owed',
+    ])
+  })
+
+  test('shows the latest steps with their age', () => {
+    expect(stepLines([{ at: '2026-11-14T10:05:00Z', kind: 'error', text: '1 failed' }], NOW)).toEqual(['✕ 1 failed  · 5m 0s ago'])
+    expect(stepLines(null, NOW)).toEqual(['Reading its transcript...'])
+    expect(stepLines([], NOW)).toEqual(['No steps recorded in its transcript yet.'])
   })
 })
 
@@ -832,37 +870,6 @@ describe('sessions waiting on a person', () => {
     ])
     expect(parseWaiting('not json')).toEqual([])
   })
-
-  const line = (entry: unknown) => JSON.stringify(entry)
-  const use = (id: string, name: string, input: unknown) => line({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } })
-  const result = (id: string) => line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] } })
-
-  test('the pending request is the last tool use with no result', () => {
-    const transcript = [use('t1', 'Read', { file_path: 'a.py' }), result('t1'), use('t2', 'Write', { file_path: '.claude/scratch/x.py', content: 'x' }), ''].join('\n')
-    expect(pendingRequest(transcript)).toEqual({ kind: 'tool', tool: 'Write', input: '.claude/scratch/x.py' })
-    expect(pendingRequest([use('t1', 'Read', {}), result('t1')].join('\n'))).toBeNull()
-  })
-
-  test('a pending question carries its options', () => {
-    const asked = use('q1', 'AskUserQuestion', {
-      questions: [
-        {
-          question: 'Which branch?',
-          header: 'Branch',
-          multiSelect: false,
-          options: [
-            { label: 'main', description: '' },
-            { label: 'new', description: '' },
-          ],
-        },
-      ],
-    })
-    expect(pendingRequest(asked)).toEqual({ kind: 'question', questions: [{ question: 'Which branch?', options: ['main', 'new'] }] })
-  })
-
-  test('a shell command shows its command line', () => {
-    expect(pendingRequest(use('b1', 'Bash', { command: 'rm -rf build' }))).toEqual({ kind: 'tool', tool: 'Bash', input: 'rm -rf build' })
-  })
 })
 
 describe('what waits on you', () => {
@@ -872,6 +879,13 @@ describe('what waits on you', () => {
     expect(item).toMatchObject({ agent: 'coder-a', title: 'waits on a permission prompt', lines: ['Write: .claude/scratch/x.py'], directiveId: null })
     expect(item?.where).toContain('agent view')
     expect(item?.where).toContain('host-r3-coder-a')
+  })
+
+  test('a waiting or blocked session with no pending request is not listed', () => {
+    const base = runView()
+    const oracle = base.agents[0] as PanelAgent
+    const view = { ...base, agents: [{ ...oracle, children: [agent({ request: null })] }] }
+    expect(attention(view, [SESSION_WAIT, { ...SESSION_WAIT, waitingFor: 'blocked' }])).toEqual([])
   })
 
   test('a session matches by its name when its id changed', () => {
@@ -946,10 +960,6 @@ describe('what waits on you', () => {
 
 describe('the panel draws what waits on you', () => {
   const PANE_PROPS = { title: 'Swarm', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } as const
-  const TRANSCRIPT = JSON.stringify({
-    type: 'assistant',
-    message: { content: [{ type: 'tool_use', id: 'w1', name: 'Write', input: { file_path: '.claude/scratch/x.py' } }] },
-  })
   const LISTING = JSON.stringify([{ sessionId: 'sess-coder', name: 'host-r3-coder-a', status: 'waiting', waitingFor: 'permission prompt' }])
 
   test('the top section and the red box show the request, and an answer goes back as a directive reply', async ($, on) => {
@@ -968,7 +978,6 @@ describe('the panel draws what waits on you', () => {
       return { value: undefined }
     })
     on('fs.read', (_$, e) => {
-      if (e.path.replace(/\\/g, '/') === 'C:/t/coder.jsonl') return { value: TRANSCRIPT }
       throw new Error(`ENOENT: ${e.path}`)
     })
     on('process.run', (_$, e) => {
@@ -1009,6 +1018,68 @@ describe('the panel draws what waits on you', () => {
       'use main',
     ])
     expect(toasts).toEqual(['Sent your answer to directive 7.'])
+    expect((await ui.find({ key: 'question:3:7' }))?.text).toContain('The Oracle reads it at its next step.')
+    const asked = launched.filter(argv => argv.includes('panel')).pop() ?? []
+    expect(asked).toContain('--waiting=sess-coder')
+    expect(asked).toContain('--waiting=host-r3-coder-a')
+    await ui.unmount()
+  })
+
+  test('a send that fails says so in the box and keeps the answer', async ($, on) => {
+    const view = runView({ waiting: { questions: [{ directive_id: 7, question: 'Which branch?', asked_at: 'T' }], findings: [], paused: null, permissions: [] } })
+    const snapshot: PanelSnapshot = { repo: CWD, generated_at: '', runs: [view] }
+    const clock = mock.clock(on, { now: 1_000 })
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('ui.panes', () => ({ value: [] }))
+    on('ui.toast', () => ({ value: undefined }))
+    on('process.run', (_$, e) => {
+      if (e.argv.includes('directive')) return { value: { ...RAN_OK, exitCode: 1, stdout: '', stderr: 'cannot submit the directive: no active run\n' } }
+      return { value: { ...RAN_OK, exitCode: 0, stdout: e.argv[0] === 'claude' ? '[]' : JSON.stringify(snapshot) } }
+    })
+    await $.tool.call({ tool: 'mcp__sentinel-swarm__open_panel', repo: CWD } as never)
+    await clock.settle()
+
+    const ui = await $.ui.mount({ plugin: 'sentinel-swarm', component: 'Pane', requestId: 'swarm-run', surface: 'terminal', props: PANE_PROPS } as never)
+    await (ui as unknown as { input: (target: { key: string; text: string }) => Promise<unknown> }).input({ key: 'answer:question:3:7', text: 'use main' })
+    await clock.settle()
+    const box = await ui.find({ key: 'question:3:7' })
+    expect(box?.text).toContain('Not sent')
+    expect(box?.text).toContain('no active run')
+    expect((await ui.find({ key: 'answer:question:3:7' }))?.props.value).toBe('use main')
+    await ui.unmount()
+  })
+
+  test('clicking an agent opens its detail card, which reads its recent steps', async ($, on) => {
+    const launched: string[][] = []
+    const steps = [{ at: null, kind: 'tool', text: 'Bash npx vitest run src/a.test.ts' }]
+    const plain = runView()
+    const oracle = plain.agents[0] as PanelAgent
+    const detailed = { ...plain, agents: [{ ...oracle, children: [agent({ recent: steps as PanelAgent['recent'] })] }] }
+    const clock = mock.clock(on, { now: 1_000 })
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('ui.panes', () => ({ value: [] }))
+    on('process.run', (_$, e) => {
+      launched.push([...e.argv])
+      const view = e.argv.includes('--detail=sess-coder') ? detailed : plain
+      const stdout = e.argv[0] === 'claude' ? '[]' : JSON.stringify({ repo: CWD, generated_at: '', runs: [view] })
+      return { value: { ...RAN_OK, exitCode: 0, stdout } }
+    })
+    await $.tool.call({ tool: 'mcp__sentinel-swarm__open_panel', repo: CWD } as never)
+    await clock.settle()
+
+    const ui = await $.ui.mount({ plugin: 'sentinel-swarm', component: 'Pane', requestId: 'swarm-run', surface: 'terminal', props: PANE_PROPS } as never)
+    expect(await ui.find({ key: 'run:3/oracle/coder-a:card' })).toBeUndefined()
+    await ui.press({ key: 'run:3/oracle/coder-a' })
+    await clock.settle()
+    const card = await ui.find({ key: 'run:3/oracle/coder-a:card' })
+    expect(card?.text).toContain('ledger working · session busy (host-r3-coder-a)')
+    expect(card?.text).toContain('Bash npx vitest run src/a.test.ts')
+    expect(card?.text).toContain('run claude agents and open host-r3-coder-a')
+    expect(launched.some(argv => argv.includes('--detail=sess-coder'))).toBe(true)
+
+    await ui.press({ key: 'run:3/oracle/coder-a:card-close' })
+    await clock.settle()
+    expect(await ui.find({ key: 'run:3/oracle/coder-a:card' })).toBeUndefined()
     await ui.unmount()
   })
 

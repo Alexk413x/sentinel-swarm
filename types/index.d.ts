@@ -31,8 +31,12 @@ export type PanelAgent = {
   unread: number
   task: PanelTask | null
   tasks: PanelTask[]
+  request: PanelRequest | null
+  recent: PanelStep[] | null
   children: PanelAgent[]
 }
+
+export type PanelStep = { at: string | null; kind: 'say' | 'tool' | 'error'; text: string }
 
 export type PanelReview = { kind: string; outcome: string; notes: string | null }
 
@@ -82,7 +86,9 @@ export type PanelRequest =
   | { kind: 'tool'; tool: string; input: string }
   | { kind: 'question'; questions: { question: string; options: string[] }[] }
 
-export type PanelSessionWait = { sessionId: string; name: string; waitingFor: string; request: PanelRequest | null }
+export type PanelSessionWait = { sessionId: string; name: string; waitingFor: string }
+
+export type PanelAnswer = { draft: string; note: string | null; sent: boolean }
 
 export type PanelSnapshot = {
   repo: string
@@ -108,6 +114,8 @@ declare module 'claude-code' {
       panelRepo: Shaped<string>
       panelOpen: Shaped<Record<string, boolean>>
       panelOpenTask: Shaped<string>
+      panelOpenAgent: Shaped<string>
+      panelAnswers: Shaped<Record<string, PanelAnswer>>
     }
   }
 }

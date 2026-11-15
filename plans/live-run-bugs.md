@@ -12,7 +12,7 @@ its run is live.
 | 2 | Setup accepts command templates the shell gate denies | Fixed on `fix/live-run-bugs`, not committed |
 | 3 | Resume after a reboot is refused | Fixed on `fix/live-run-bugs`, not committed |
 | 4 | A replaced Coder keeps raising alerts | Fixed on `fix/live-run-bugs`, not committed |
-| 5 | Run panel actions do nothing | Open |
+| 5 | Run panel actions do nothing | Improved on `fix/live-run-bugs`; root cause not confirmed |
 | 6 | Stray-process findings name exited PIDs | Open; overlaps 14 |
 | 7 | Pausing needs the Oracle | Open |
 | 8 | Every Coder lints the whole app | Open |
@@ -24,7 +24,10 @@ its run is live.
 | 14 | Stray-process attribution is wrong | Open; overlaps 6 |
 | 15 | Directives sit open with no acknowledgement | Open |
 | 16 | Planned phases show no brief in the panel | Open; panel |
-| 17 | The panel's phase list cannot collapse | Open; panel |
+| 17 | The panel's phase list cannot collapse | Fixed on `fix/live-run-bugs` |
+| 18 | The phase gate never runs the build | Open |
+| 19 | Per-phase commits are impossible while later phases write | Open; needs a design decision |
+| 20 | A dead parked session cannot be resumed, released, or replaced | Open; related to 3 |
 
 Suggested grouping for later sessions: panel work (5, 16, 17); file moves and
 deletions (11, 13, 12); process and memory hygiene (6, 14, 9); run control (7, 15);
@@ -117,6 +120,28 @@ lint scope (8).
     its unstarted phases list under it (`hooks/panel.ts`, `flatten`), so a long phase
     list fills the panel. Add a collapsible phases group in `panel.ts` and
     `register.tsx`.
+
+18. **The phase gate never runs the build.** p1 was approved with tests, typecheck, and
+    lint passing, but `npm run build` failed: a client component imported a feature
+    barrel that re-exported a server component using `next/headers`. `build_command`
+    is set in the run profile, but no gate runs it. Fix: run `build_command` at phase
+    review and fail the gate on a build error.
+19. **Per-phase commits are impossible while later phases write in the same tree.**
+    Once p1 was approved, p3 to p5 Coders edited files p1 had changed (`types.ts`) and
+    added migration 0006, so the repo owner could not commit p1 cleanly, and running
+    the migrations would apply a half-written later one. Options: checkpoint at each
+    phase approval (pause new claims briefly, or snapshot to a branch or worktree), or
+    have the run commit approved phases on a run branch itself.
+20. **A dead parked session cannot be resumed, released, or replaced.** A parked
+    Lead's process died. `agent_resume` said "still running", trusting a stale message
+    pipe; `agent_release` could not find the agent; `brief_create` refused a
+    replacement because "a live agent already holds the name". A Coder died the same
+    way. Workaround: the repo owner released both records in the ledger by hand. Fix:
+    judge liveness by process (pid and creation time) in `agent_resume`,
+    `agent_release`, and the name check; let `agent_release` handle parked agents; and
+    have the watchdog release agents whose process is gone and whose heartbeat is
+    stale. Check first how much the bug 3 liveness rule already covers: the "stale
+    message pipe" may be a separate check.
 
 ## Belongs to codebase-kg
 

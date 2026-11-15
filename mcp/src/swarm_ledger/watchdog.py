@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import notify, pauses, permission, procs, rekey, sessions, testrun, wake
+from . import notify, pauses, permission, procs, rekey, sessions, testrun, transcript, wake
 from .clock import parse_stamp, stamp, utcnow
 from .db import NOW, write_tx
 from .identity import ROLES, LedgerError
@@ -277,35 +277,8 @@ def _held_finding(agent: dict, session: str, asked: dict) -> Finding:
 
 
 def pending_request(raw: object) -> str | None:
-    """The tool call a session waits on, from the end of its transcript, as one line."""
-    if not isinstance(raw, str) or not raw:
-        return None
-    try:
-        with Path(raw).open("rb") as handle:
-            handle.seek(0, 2)
-            start = max(0, handle.tell() - _TAIL_BLOCK)
-            handle.seek(start)
-            lines = handle.read().split(b"\n")
-    except OSError:
-        return None
-    for line in reversed(lines[1:] if start > 0 else lines):
-        try:
-            record = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(record, dict) or record.get("isSidechain"):
-            continue
-        message = record.get("message")
-        content = message.get("content") if isinstance(message, dict) else None
-        if not isinstance(content, list):
-            continue
-        blocks = [b for b in content if isinstance(b, dict)]
-        if any(b.get("type") == "tool_result" for b in blocks):
-            return None
-        uses = [b for b in blocks if b.get("type") == "tool_use"]
-        if uses:
-            return _describe_request(uses[-1])
-    return None
+    use = transcript.pending_use(raw)
+    return None if use is None else _describe_request(use)
 
 
 def _describe_request(use: dict) -> str:

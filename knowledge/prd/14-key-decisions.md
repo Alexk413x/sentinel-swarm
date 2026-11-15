@@ -4,3 +4,5 @@
 - 2026-11-14: A listing entry is a running session only with a `busy`, `idle`, or `waiting` status, or a pid whose process started with the session. A reboot left a stale Oracle entry that made `run_start` refuse the resume.
 - 2026-11-14: A live Coder whose file a later claim superseded raises only a `superseded` finding asking its Lead to release it.
 - 2026-11-14: Setup warns about a shell operator in `test_command`, `test_command_by_scope`, `build_command`, or `lint_command`, since the Coder shell gate denies every such command.
+- 2026-11-14: The run panel answers in one place: every item that waits on the user is a full box under Waiting on you, with the agent's actual request, and the agent's row carries one line. A session wait shows only with a pending request, which the ledger reads from the transcript's tail.
+- 2026-11-14: Clicking an agent in the run panel opens a detail card with its state and its last 8 transcript steps. A mod cannot open another background session, so the card names the session to open in `claude agents`.

@@ -506,3 +506,44 @@ def test_a_paused_run_carries_its_reason(ledger: Ledger) -> None:
 
     ledger.run_pause("oracle", ctx["oracle_id"], "the build needs a licence key")
     assert _run_snapshot(ledger)["waiting"]["paused"] == "the build needs a licence key"
+
+
+def _transcript(path: Path, *blocks: dict) -> str:
+    record = {
+        "type": "assistant",
+        "timestamp": "2026-11-14T10:00:00Z",
+        "message": {"content": list(blocks)},
+    }
+    path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    return str(path)
+
+
+def _set_transcript(ledger: Ledger, agent_id: str, path: str) -> None:
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE agents SET transcript_path = ? WHERE agent_id = ?", (path, agent_id))
+
+
+def test_a_waiting_agent_carries_its_pending_request(ledger: Ledger, tmp_path: Path) -> None:
+    ctx = _build(ledger)
+    use = {"type": "tool_use", "id": "u1", "name": "Bash", "input": {"command": "npm ci"}}
+    _set_transcript(ledger, ctx["coder_id"], _transcript(tmp_path / "c.jsonl", use))
+
+    asked = panel.snapshot(ledger.conn, {}, waiting=frozenset({ctx["coder_id"]}))["runs"][0]
+    plain = _run_snapshot(ledger)
+
+    assert _node(asked, "coder")["request"] == {"kind": "tool", "tool": "Bash", "input": "npm ci"}
+    assert _node(plain, "coder")["request"] is None
+    assert _node(asked, "lead")["request"] is None
+
+
+def test_the_detail_agent_carries_its_recent_activity(ledger: Ledger, tmp_path: Path) -> None:
+    ctx = _build(ledger)
+    said = {"type": "text", "text": "Waiting for the lint gate."}
+    _set_transcript(ledger, ctx["coder_id"], _transcript(tmp_path / "c.jsonl", said))
+
+    run = panel.snapshot(ledger.conn, {}, detail=ctx["coder_id"])["runs"][0]
+
+    assert _node(run, "coder")["recent"] == [
+        {"at": "2026-11-14T10:00:00Z", "kind": "say", "text": "Waiting for the lint gate."}
+    ]
+    assert _node(run, "lead")["recent"] is None

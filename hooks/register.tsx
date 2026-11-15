@@ -11,6 +11,7 @@ import {
   TASK_MARK,
   WAIT_COLOR,
   WAIT_GLYPH,
+  agentFacts,
   attention,
   closeSpan,
   continuation,
@@ -22,18 +23,18 @@ import {
   liveAgents,
   mark,
   markdown,
+  openHint,
   parseWaiting,
-  pendingRequest,
   samePath,
   sectionKeys,
   startHint,
+  stepLines,
   taskDetail,
   visible,
-  waitOf,
   wrap,
 } from './panel'
-import type { AgentRow, Attention, HoldLedger, IsOpen, Row, Segment, Span, TaskRow } from './panel'
-import type { PanelFetch, PanelSessionWait, PanelSnapshot, PanelTask, PanelRunView, SentinelSwarmSession } from '../types'
+import type { AgentRow, Attention, GroupRow, HoldLedger, IsOpen, Row, Segment, Span, TaskRow } from './panel'
+import type { PanelAgent, PanelAnswer, PanelFetch, PanelSessionWait, PanelSnapshot, PanelTask, PanelRunView, SentinelSwarmSession } from '../types'
 
 type Answer = Record<string, unknown> | null
 type Owed = {
@@ -119,12 +120,16 @@ const REPO_INPUT = {
 const fetched = atom(
   { plugin: 'sentinel-swarm', key: 'panelFetch' } as const,
   { snapshot: null, sessions: [], running: false, problem: null, at: null } as PanelFetch,
-  { shape: 'fetch-3' },
+  { shape: 'fetch-4' },
 )
 const showEnded = atom({ plugin: 'sentinel-swarm', key: 'panelShowEnded' } as const, false, { shape: 'show-ended-1' })
 const chosenRepo = atom({ plugin: 'sentinel-swarm', key: 'panelRepo' } as const, '', { shape: 'repo-1' })
 const opened = atom({ plugin: 'sentinel-swarm', key: 'panelOpen' } as const, {} as Record<string, boolean>, { shape: 'open-1' })
 const openTask = atom({ plugin: 'sentinel-swarm', key: 'panelOpenTask' } as const, '', { shape: 'open-task-1' })
+const openAgent = atom({ plugin: 'sentinel-swarm', key: 'panelOpenAgent' } as const, '', { shape: 'open-agent-1' })
+const answers = atom({ plugin: 'sentinel-swarm', key: 'panelAnswers' } as const, {} as Record<string, PanelAnswer>, { shape: 'answers-1' })
+const QUEUED_KEY = 'queued:'
+const NOT_SENT = 'Not sent'
 
 let refreshing = false
 
@@ -281,6 +286,15 @@ export const register: Register = on => {
     const asks = runs.map(view => attention(view, sessions ?? []))
     const asksOf = (name: string, index: number) => (asks[index] ?? []).filter(item => item.agent === name)
     const shownTask = await read($, openTask)
+    const shownAgent = await read($, openAgent)
+    const drafts = await read($, answers)
+    const now = at === null ? Date.now() : Date.parse(at)
+    const agentKey = (agent: PanelAgent) => agent.agent_id ?? `${QUEUED_KEY}${agent.name}`
+    const toggleAgent = (agent: PanelAgent) => {
+      closeTask()
+      const key = agentKey(agent)
+      void update($, openAgent, current => (current === key ? '' : key)).then(() => refresh($))
+    }
     const isOpen: IsOpen = (key, fallback) => (key.includes('#') ? key === shownTask : (open[key] ?? fallback))
     const closeTask = () => void update($, openTask, () => '')
     const toggleTask = (key: string) => void update($, openTask, current => (current === key ? '' : key))
@@ -414,6 +428,8 @@ export const register: Register = on => {
     )
 
     const askBox = (item: Attention, indent: number) => {
+      const answer = drafts[item.key]
+      const failed = answer?.note?.startsWith(NOT_SENT) ?? false
       const where =
         item.directiveId === null || Input !== undefined
           ? item.where
@@ -450,12 +466,73 @@ export const register: Register = on => {
               label="answer: "
               placeholder="type the answer"
               submitLabel="send"
-              onSubmit={value => void replyTo($, item.directiveId ?? 0, value)}
+              value={answer?.draft ?? ''}
+              onInput={value => void keepDraft($, item.key, value)}
+              onSubmit={value => void replyTo($, item.key, item.directiveId ?? 0, value)}
             />
+          )}
+          {answer?.note && (
+            <Text key={`note:${item.key}`} color={answer.sent ? 'success' : failed ? 'error' : undefined} dimColor={!answer.sent && !failed}>
+              {answer.note}
+            </Text>
           )}
         </Box>
       )
     }
+
+    const agentCard = (agent: PanelAgent, key: string, indent: number, asked: readonly Attention[]) => {
+      const color = ROLE_COLOR[agent.role]
+      const steps = agent.queued ? ['It has no session yet.'] : stepLines(agent.recent, now)
+      return (
+        <Box key={`${key}:card`} flexDirection="column" marginLeft={indent} borderStyle="round" borderColor={color} paddingX={1}>
+          <Box flexDirection="row">
+            <Text bold color={color}>
+              {agent.name}
+            </Text>
+            <Box flexGrow={1} />
+            <Button key={`${key}:card-close`} plain onPress={() => void update($, openAgent, () => '')}>
+              <Text dimColor>close</Text>
+            </Button>
+          </Box>
+          {agentFacts(agent, now).map((text, i) => (
+            <Text key={`fact:${i}`} dimColor>
+              {text}
+            </Text>
+          ))}
+          {asked.map(item => (
+            <Text key={`asks:${item.key}`} color={WAIT_COLOR}>
+              {WAIT_GLYPH} {item.title}: {item.lines[0] ?? ''}
+            </Text>
+          ))}
+          {agent.task !== null && (
+            <Text key="task" dimColor>
+              task: {agent.task.name} ({agent.task.state})
+            </Text>
+          )}
+          <Text bold>Recent steps</Text>
+          {steps.map((text, i) => (
+            <Text key={`step:${i}`} wrap="truncate-end">
+              {text}
+            </Text>
+          ))}
+          <Text dimColor>{openHint(agent)}</Text>
+        </Box>
+      )
+    }
+
+    const groupLine = (row: GroupRow) => (
+      <Box key={row.key} flexDirection="row">
+        <Box flexShrink={0}>
+          <Text>{segments(row.prefix)}</Text>
+        </Box>
+        <Button key={row.key} plain onPress={() => toggle(row.key, row.open)}>
+          <Text dimColor>
+            {row.open ? '▾ ' : '▸ '}
+            {row.label} ({row.count})
+          </Text>
+        </Button>
+      </Box>
+    )
 
     const line = (row: AgentRow, index: number) => {
       const agent = row.agent
@@ -470,19 +547,23 @@ export const register: Register = on => {
       const taskKey = `${row.key}#task`
       const dim = asked.length === 0 && dimmed(agent)
       const bold = agent.role === 'oracle' || agent.role === 'manager'
-      const title =
-        row.toggle === null ? (
-          <Text color={role} bold={bold} dimColor={dim}>
-            {agent.name}
-          </Text>
-        ) : (
-          <Button key={row.key} plain onPress={() => toggle(row.key, true)}>
-            <Text color={role} bold={bold} dimColor={dim}>
-              {agent.name} ({row.hidden})
+      const fold =
+        row.toggle === null ? null : (
+          <Button key={`${row.key}:fold`} plain onPress={() => toggle(row.key, true)}>
+            <Text color={role} dimColor={dim}>
+              {row.toggle.open ? '▾ ' : '▸ '}
             </Text>
           </Button>
         )
+      const title = (
+        <Button key={row.key} plain onPress={() => toggleAgent(agent)}>
+          <Text color={role} bold={bold} dimColor={dim}>
+            {row.toggle === null ? agent.name : `${agent.name} (${row.hidden})`}
+          </Text>
+        </Button>
+      )
       const lead = [...continuation(row.prefix), { text: row.followed ? '│ ' : '  ', color: role }]
+      const indent = lead.reduce((n, part) => n + part.text.length, 0)
       return (
         <Box key={row.key} flexDirection="column">
           <Box flexDirection="row">
@@ -492,6 +573,7 @@ export const register: Register = on => {
                 <Text color={alert ?? role}>{glyph} </Text>
               </Text>
             </Box>
+            {fold}
             <Box key={`${row.key}:name`} flexShrink={0}>
               {title}
               <Box position="absolute" top={-1} left={0} display="none" hover={{ display: 'flex' }}>
@@ -506,7 +588,16 @@ export const register: Register = on => {
             {agent.task !== null && taskButton(taskKey, agent.task)}
           </Box>
           {agent.task !== null && row.taskOpen && detailLines(taskKey, agent.task, lead)}
-          {asked.map(item => askBox(item, lead.reduce((n, part) => n + part.text.length, 0)))}
+          {shownAgent === agentKey(agent) && agentCard(agent, row.key, indent, asked)}
+          {asked.map(item => (
+            <Text key={`under:${item.key}`} wrap="truncate-end">
+              {segments(lead)}
+              <Text color={WAIT_COLOR}>
+                {WAIT_GLYPH} {item.title}
+              </Text>
+              <Text dimColor> · answer it under Waiting on you</Text>
+            </Text>
+          ))}
         </Box>
       )
     }
@@ -514,6 +605,7 @@ export const register: Register = on => {
     const rowElements = (rows: readonly Row[], index: number) =>
       rows.flatMap(row => {
         if (row.kind === 'task') return [taskLine(row)]
+        if (row.kind === 'group') return [groupLine(row)]
         const gap =
           row.gap === null
             ? []
@@ -566,26 +658,7 @@ export const register: Register = on => {
         <Text bold color={WAIT_COLOR}>
           {WAIT_GLYPH} Waiting on you ({waitingItems.length})
         </Text>
-        {waitingItems.map(({ item, run }) => (
-          <Box key={`top:${item.key}`} flexDirection="column">
-            <Text wrap="truncate-end">
-              <Text bold>{item.agent ?? `Run ${run}`}</Text> {item.title}
-            </Text>
-            {item.agent === null ? (
-              [...item.lines, item.where].map((text, i) => (
-                <Text key={String(i)} dimColor>
-                  {'  '}
-                  {text}
-                </Text>
-              ))
-            ) : (
-              <Text dimColor wrap="truncate-end">
-                {'  '}
-                {item.lines[0] ?? ''} · details under its row
-              </Text>
-            )}
-          </Box>
-        ))}
+        {waitingItems.map(({ item, run }) => askBox({ ...item, title: `${item.agent ?? `Run ${run}`} ${item.title}` }, 0))}
       </Box>
     )
 
@@ -951,11 +1024,18 @@ async function refresh($: EngineInterface): Promise<void> {
   refreshing = true
   try {
     const repo = await repoOf($)
+    const held = await read($, fetched)
+    const live = held.snapshot === null || liveAgents(held.snapshot.runs).length > 0
+    const sessions = live ? await waitingSessions($).catch(() => []) : []
+    const detail = await read($, openAgent)
+    const args = [
+      ...sessions.flatMap(wait => [`--waiting=${wait.sessionId}`, ...(wait.name ? [`--waiting=${wait.name}`] : [])]),
+      ...(detail !== '' && !detail.startsWith(QUEUED_KEY) ? [`--detail=${detail}`] : []),
+    ]
     const [snapshot, running] = await Promise.all([
-      fetchSnapshot($, `${$.plugin.root}/mcp/launch/ledger.py`, repo).catch((err: unknown) => (err instanceof Error ? err : new Error(String(err)))),
+      fetchSnapshot($, `${$.plugin.root}/mcp/launch/ledger.py`, repo, args).catch((err: unknown) => (err instanceof Error ? err : new Error(String(err)))),
       isRunning($, repo),
     ])
-    const sessions = snapshot instanceof Error ? [] : await waitingSessions($, snapshot).catch(() => [])
     const at = new Date().toISOString()
     await update($, fetched, held =>
       snapshot instanceof Error ? { ...held, running, problem: snapshot.message, at } : { snapshot, sessions, running, problem: null, at },
@@ -965,8 +1045,8 @@ async function refresh($: EngineInterface): Promise<void> {
   }
 }
 
-async function fetchSnapshot($: EngineInterface, launcher: string, repo: string): Promise<PanelSnapshot> {
-  return JSON.parse(await launch($, launcher, ['panel', '--repo', repo])) as PanelSnapshot
+async function fetchSnapshot($: EngineInterface, launcher: string, repo: string, args: readonly string[]): Promise<PanelSnapshot> {
+  return JSON.parse(await launch($, launcher, ['panel', '--repo', repo, ...args])) as PanelSnapshot
 }
 
 async function launch($: EngineInterface, launcher: string, args: readonly string[]): Promise<string> {
@@ -986,31 +1066,27 @@ async function launch($: EngineInterface, launcher: string, args: readonly strin
   throw new Error(reason)
 }
 
-async function waitingSessions($: EngineInterface, snapshot: PanelSnapshot): Promise<PanelSessionWait[]> {
-  const agents = liveAgents(snapshot.runs)
-  if (agents.length === 0) return []
+async function waitingSessions($: EngineInterface): Promise<PanelSessionWait[]> {
   const ran = await $.process.run(['claude', 'agents', '--json'], { timeoutMs: RUN_MS }).catch(() => undefined)
-  if (ran === undefined || ran.exitCode !== 0) return []
-  const waits = parseWaiting(ran.stdout)
-  return Promise.all(
-    agents.flatMap(agent => {
-      const wait = waitOf(agent, waits)
-      if (wait === undefined) return []
-      const path = agent.transcript_path
-      const text = path === null ? Promise.resolve(null) : $.fs.read(path).catch(() => null)
-      return [text.then(body => ({ ...wait, request: body === null ? null : pendingRequest(body) }))]
-    }),
-  )
+  return ran === undefined || ran.exitCode !== 0 ? [] : parseWaiting(ran.stdout)
 }
 
-async function replyTo($: EngineInterface, directiveId: number, text: string): Promise<void> {
+async function keepDraft($: EngineInterface, key: string, draft: string): Promise<void> {
+  await update($, answers, held => ({ ...held, [key]: { draft, note: held[key]?.note ?? null, sent: false } }))
+}
+
+async function replyTo($: EngineInterface, key: string, directiveId: number, text: string): Promise<void> {
   if (text.trim() === '') return
+  const note = (draft: string, line: string, sent: boolean) => update($, answers, held => ({ ...held, [key]: { draft, note: line, sent } }))
+  await note(text, 'Sending...', false)
   const repo = await repoOf($)
   const args = ['directive', '--repo', repo, '--source', 'user_chat', '--sender', 'run panel', '--reply-to', String(directiveId), '--', text]
   try {
     await launch($, `${$.plugin.root}/mcp/launch/ledger.py`, args)
+    await note('', `Sent at ${new Date().toLocaleTimeString()}. The Oracle reads it at its next step.`, true)
     $.ui.toast(`Sent your answer to directive ${directiveId}.`)
   } catch (err) {
+    await note(text, `${NOT_SENT}: ${errorText(err)}`, false)
     $.ui.toast(`Your answer to directive ${directiveId} was not sent: ${errorText(err)}`)
   }
   await refresh($)
