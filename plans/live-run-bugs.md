@@ -8,26 +8,26 @@ its run is live.
 
 | # | Bug | Status |
 |---|---|---|
-| 1 | False `needs_user` popups | Fixed on `fix/live-run-bugs`, not committed |
-| 2 | Setup accepts command templates the shell gate denies | Fixed on `fix/live-run-bugs`, not committed |
-| 3 | Resume after a reboot is refused | Fixed on `fix/live-run-bugs`, not committed |
-| 4 | A replaced Coder keeps raising alerts | Fixed on `fix/live-run-bugs`, not committed |
+| 1 | False `needs_user` popups | Fixed on `fix/live-run-bugs` |
+| 2 | Setup accepts command templates the shell gate denies | Fixed on `fix/live-run-bugs` |
+| 3 | Resume after a reboot is refused | Fixed on `fix/live-run-bugs` |
+| 4 | A replaced Coder keeps raising alerts | Fixed on `fix/live-run-bugs` |
 | 5 | Run panel actions do nothing | Improved on `fix/live-run-bugs`; root cause not confirmed |
-| 6 | Stray-process findings name exited PIDs | Open; overlaps 14 |
-| 7 | Pausing needs the Oracle | Open |
-| 8 | Every Coder lints the whole app | Open |
+| 6 | Stray-process findings name exited PIDs | Fixed on `fix/live-run-bugs` |
+| 7 | Pausing needs the Oracle | Fixed on `fix/live-run-bugs` |
+| 8 | Every Coder lints the whole app | Fixed on `fix/live-run-bugs` |
 | 9 | Idle blocked Coders hold the memory queue | Open |
 | 10 | Re-claim churn | Watch only |
 | 11 | Moving a file breaks the claim, the tests, and the graph | Open; overlaps 13 |
-| 12 | A change request stays tied to a superseded file | Open; next after 4 |
+| 12 | A change request stays tied to a superseded file | Fixed on `fix/live-run-bugs` |
 | 13 | Deletion Coders block on the shell gate | Open; overlaps 11 |
-| 14 | Stray-process attribution is wrong | Open; overlaps 6 |
+| 14 | Stray-process attribution is wrong | Fixed on `fix/live-run-bugs` |
 | 15 | Directives sit open with no acknowledgement | Open |
 | 16 | Planned phases show no brief in the panel | Fixed on `fix/live-run-bugs` |
 | 17 | The panel's phase list cannot collapse | Fixed on `fix/live-run-bugs` |
-| 18 | The phase gate never runs the build | Open |
+| 18 | The phase gate never runs the build | Fixed on `fix/live-run-bugs` |
 | 19 | Per-phase commits are impossible while later phases write | Open; needs a design decision |
-| 20 | A dead parked session cannot be resumed, released, or replaced | Open; related to 3 |
+| 20 | A dead parked session cannot be resumed, released, or replaced | Fixed on `fix/live-run-bugs` |
 
 Suggested grouping for later sessions: panel work (5, 16, 17); file moves and
 deletions (11, 13, 12); process and memory hygiene (6, 14, 9); run control (7, 15);

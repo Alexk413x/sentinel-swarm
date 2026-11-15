@@ -53,6 +53,9 @@ _DEAD = frozenset({"stopped", "exited", "crashed", "failed", "killed", "dead", "
 _LIVE_STATUSES = frozenset({"busy", "idle", "waiting"})
 # A process created this long after the session started holds a reused pid.
 _PID_REUSE_GRACE_MS = 60_000
+# On macOS and Linux each start-time read runs ps, and a watchdog pass checks every entry.
+_CREATED_TTL_S = 5.0
+_CREATED_CACHE: dict[int, tuple[float, int | None]] = {}
 _TIMEOUT_S = 60.0
 # Many sessions starting and stopping at once can leave ~/.claude.json truncated for a while;
 # every claude command fails to read it until a later write completes it.
@@ -335,10 +338,20 @@ def _has_pid(pid: object) -> bool:
     return isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
 
 
+def _created(pid: int) -> int | None:
+    now = time.monotonic()
+    held = _CREATED_CACHE.get(pid)
+    if held is not None and now - held[0] < _CREATED_TTL_S:
+        return held[1]
+    created = procs.created_of(pid)
+    _CREATED_CACHE[pid] = (now, created)
+    return created
+
+
 def _process_alive(pid: object, started_ms: object) -> bool:
     if not isinstance(pid, int) or not _has_pid(pid):
         return False
-    created = procs.created_of(pid)
+    created = _created(pid)
     if created is None:
         return False
     if not isinstance(started_ms, (int, float)):

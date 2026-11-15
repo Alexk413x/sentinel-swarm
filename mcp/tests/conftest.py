@@ -89,6 +89,9 @@ def _no_real_processes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(procs, "snapshot", dict)
     monkeypatch.setattr(procs, "created_of", lambda pid: 1)
     monkeypatch.setattr(procs, "terminate", lambda proc: False)
+    from swarm_ledger import sessions
+
+    monkeypatch.setattr(sessions, "_CREATED_TTL_S", 0.0)
 
 
 @pytest.fixture(autouse=True)

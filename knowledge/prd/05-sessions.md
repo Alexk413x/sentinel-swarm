@@ -412,7 +412,10 @@ fails as ambiguous, or goes to the offline entry and waits there for good. See
   keep its last `status`. An entry with no pid is running when its `status` is `busy`,
   `idle`, or `waiting`. State `done` counts as running. An entry with neither, such as
   one a reboot left with only `state: "blocked"`, is not running, so `run_start` and
-  `agent_resume` do not refuse on it.
+  `agent_resume` do not refuse on it. The ledger reads a pid's start time at most once
+  every 5 seconds, since on macOS and Linux each read runs `ps`. On Windows on
+  2026-11-14, every live session's process started 2 to 35 seconds before its
+  `startedAt`.
 - For an agent the ledger also judges by the process it recorded: when the entry has no
   pid and the agent row holds a `session_pid`, the session runs only while that process
   exists and its creation time matches `session_pid_created`. `agent_resume`, the

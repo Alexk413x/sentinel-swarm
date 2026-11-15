@@ -1023,3 +1023,16 @@ def test_brief_create_keeps_a_holder_whose_resume_is_in_flight(
         ledger.brief_create(
             *ctx.manager, "lead-p1-module-1", "lead", "sonnet", "x", module_id=ctx.module_id
         )
+
+
+def test_a_process_start_time_is_read_once_per_few_seconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reads: list[int] = []
+    monkeypatch.setattr(sessions, "_CREATED_TTL_S", 5.0)
+    monkeypatch.setattr(sessions, "_CREATED_CACHE", {})
+    monkeypatch.setattr(sessions.procs, "created_of", lambda pid: reads.append(pid) or 1)
+    entry = {"pid": 4243, "sessionId": "s-1", "status": "idle"}
+    assert sessions.is_running(entry)
+    assert sessions.is_running(entry)
+    assert reads == [4243]
