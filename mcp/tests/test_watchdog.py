@@ -1831,3 +1831,83 @@ def test_a_resume_that_stayed_up_resets_the_failed_resume_count(
     (finding,) = _scan(ledger, claude, now)
 
     assert "resumes failed" not in finding.detail
+
+
+def _parent_and_child(ledger: Ledger, now: datetime, child_state: str) -> datetime:
+    _run_id(ledger)
+    old = now - timedelta(minutes=30)
+    _agent(ledger, "sess-lead-1", "lead", "working", started=old, heartbeat=old)
+    _agent(
+        ledger,
+        "sess-coder-1",
+        "coder",
+        child_state,
+        started=old,
+        heartbeat=now,
+        parent="sess-lead-1",
+    )
+    return old
+
+
+@pytest.mark.parametrize("session", [{"status": "idle"}, {"status": "idle", "state": "blocked"}])
+def test_a_parent_waiting_on_a_working_child_is_neither_stuck_nor_blocked(
+    ledger: Ledger, claude: FakeClaude, now: datetime, session: dict
+) -> None:
+    _parent_and_child(ledger, now, "working")
+    _oracle_running(claude)
+    claude.run("sess-lead-1", **session)
+    claude.run("sess-coder-1")
+
+    kinds = _kinds(_scan(ledger, claude, now))
+
+    assert ("lead-1", "stuck") not in kinds and ("lead-1", "blocked") not in kinds
+
+
+def test_a_parent_holding_an_open_wait_for_is_not_stuck(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    run_id = _run_id(ledger)
+    _oracle_running(claude)
+    old = now - timedelta(minutes=30)
+    _agent(ledger, "sess-lead-1", "lead", "working", started=old, heartbeat=old)
+    claude.run("sess-lead-1", status="idle")
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "INSERT INTO file_waits (run_id, agent_id, path, reason) VALUES (?, ?, ?, ?)",
+            (run_id, "sess-lead-1", "src/a.ts", "its contract"),
+        )
+
+    assert ("lead-1", "stuck") not in _kinds(_scan(ledger, claude, now))
+
+
+def test_a_parent_whose_child_handed_up_is_still_stuck(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _parent_and_child(ledger, now, "handed_up")
+    _oracle_running(claude)
+    claude.run("sess-lead-1", status="idle")
+    claude.run("sess-coder-1", status="idle")
+
+    assert ("lead-1", "stuck") in _kinds(_scan(ledger, claude, now))
+
+
+def test_stuck_then_blocked_is_one_finding_and_one_directive(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    run_id = _run_id(ledger)
+    _oracle_running(claude)
+    old = now - timedelta(minutes=30)
+    _agent(ledger, "sess-lead-1", "lead", "working", started=old, heartbeat=old)
+    entry = claude.run("sess-lead-1", status="idle")
+
+    watchdog.record(ledger.conn, run_id, _scan(ledger, claude, now), now)
+    entry["state"] = "blocked"
+    later = now + timedelta(minutes=1)
+    watchdog.record(ledger.conn, run_id, _scan(ledger, claude, later), later)
+
+    rows = ledger.conn.execute(
+        "SELECT kind, cleared_at FROM watchdog_findings WHERE agent_id = 'sess-lead-1'"
+    ).fetchall()
+    assert [(r["kind"], r["cleared_at"]) for r in rows] == [("blocked", None)]
+    directives = [d for d in _directives(ledger) if "lead-1" in d["body"]]
+    assert len(directives) == 1

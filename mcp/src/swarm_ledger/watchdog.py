@@ -40,6 +40,9 @@ RESUME_FAILURE_LIMIT = 3
 # Findings identified by the agent's name, so one agent that dies again under a new session id
 # after a resume keeps one finding; one that cleared less than this long ago is reopened.
 NAMED_KINDS = frozenset({"crashed"})
+# One idle episode of an agent: its session shows idle (stuck) or blocked by turns, and each
+# change would otherwise file a second directive.
+IDLE_KINDS = frozenset({"stuck", "blocked"})
 CRASH_REOPEN = timedelta(minutes=30)
 # A released session can take a moment to exit after claude stop returns.
 STRAY_GRACE = timedelta(minutes=1)
@@ -116,10 +119,13 @@ def scan(
             findings.append(_superseded_finding(agent, superseded[agent_id], by_id))
             continue
         if agent["role"] in _MEMBER_ROLES:
+            waiting = _waits_on_work(conn, run["run_id"], agent_id)
             if agent_id in blocked:
-                findings += _blocked_findings(agent, now, settings, by_id)
+                if not waiting:
+                    findings += _blocked_findings(agent, now, settings, by_id)
             elif agent_id not in user_waits:
-                findings += _session_findings(conn, agent, entry, now, settings)
+                found = _session_findings(conn, agent, entry, now, settings)
+                findings += [f for f in found if not (waiting and f.kind == "stuck")]
             spin = _spinning(conn, agent, settings)
             if spin is not None:
                 parent = names.get(agent["parent_agent_id"]) or "its parent"
@@ -209,6 +215,23 @@ def _classify_waits(
             )
         )
     return findings, user_waits, blocked
+
+
+def _waits_on_work(conn: sqlite3.Connection, run_id: int, agent_id: str) -> bool:
+    # A parent that ended its turn while its children work is waiting, not stuck. A child in
+    # handed_up does not count: it waits on the parent's review.
+    return (
+        conn.execute(
+            "SELECT 1 FROM agents WHERE parent_agent_id = ? AND ended_at IS NULL "
+            "AND state IN ('registered', 'working') "
+            "UNION ALL SELECT 1 FROM spawn_queue WHERE run_id = ? AND parent_agent_id = ? "
+            "AND state = 'queued' "
+            "UNION ALL SELECT 1 FROM file_waits WHERE agent_id = ? AND closed_at IS NULL "
+            "LIMIT 1",
+            (agent_id, run_id, agent_id, agent_id),
+        ).fetchone()
+        is not None
+    )
 
 
 def _blocked_findings(
@@ -1075,7 +1098,8 @@ def _needs_confirmation(kind: str) -> bool:
 
 
 def _identity(kind: str, agent_id: str, name: str | None) -> tuple[str, str]:
-    return (name if kind in NAMED_KINDS and name else agent_id, kind)
+    episode = "idle" if kind in IDLE_KINDS else kind
+    return (name if kind in NAMED_KINDS and name else agent_id, episode)
 
 
 def _reopen(conn: sqlite3.Connection, run_id: int, finding: Finding, now: datetime) -> dict | None:
@@ -1146,9 +1170,9 @@ def record(
                 finding_id = row["finding_id"]
                 if not reopened:
                     conn.execute(
-                        "UPDATE watchdog_findings SET detail = ?, last_seen_at = ?, "
+                        "UPDATE watchdog_findings SET kind = ?, detail = ?, last_seen_at = ?, "
                         "agent_id = ? WHERE finding_id = ?",
-                        (finding.detail, at, finding.agent_id, finding_id),
+                        (finding.kind, finding.detail, at, finding.agent_id, finding_id),
                     )
                 if row["reported_at"] is not None and (
                     not reopened or _directive_open(conn, row["directive_id"])
