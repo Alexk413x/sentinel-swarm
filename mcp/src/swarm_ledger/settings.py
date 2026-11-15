@@ -240,6 +240,7 @@ class Settings:
     time_budget_minutes: int | None = None
     # Empty means repo_check tries main, then master, then reports no base branch.
     base_branch: str | None = None
+    commit_phases: bool = True
     # Per-role --effort for agent_spawn; a role with no entry runs at its model's default.
     effort: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_EFFORT))
     # Per-role promptCacheTtl ("5m" or "1h") for agent_spawn; a role with no entry keeps the
@@ -363,6 +364,7 @@ def load_settings(repo_root: Path) -> Settings:
         parallelism_cap=normalize_parallelism_cap(data.get("parallelism_cap")),
         time_budget_minutes=normalize_budget(data.get("time_budget_minutes")),
         base_branch=data.get("base_branch") or defaults.base_branch,
+        commit_phases=str(data.get("commit_phases", True)).strip().lower() not in _FALSE_WORDS,
         effort=effort,
         prompt_cache_ttl=prompt_cache_ttl,
         permission_mode=permission_mode,

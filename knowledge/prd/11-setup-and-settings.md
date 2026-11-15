@@ -335,6 +335,7 @@ descriptions stay out of every session's context.
 | `parallelism_cap` | empty | The most sessions at once: the run's live agents plus other swarms' running sessions on the machine. Empty sets it from total memory, half of it at 600 MB a session and at least 4; `0` turns it off. See "Parallelism" in [05-sessions.md](05-sessions.md) |
 | `time_budget_minutes` | empty | Advisory minutes for the run. Each wake-up and watchdog line for the Oracle or a Manager ends with `elapsed <n>s / <budget>s`, or `elapsed <n>s` when empty. A value that is not a positive whole number reads as empty. See "Time signal" in [05-sessions.md](05-sessions.md) |
 | `base_branch` | empty | `repo_check` tries `main`, then `master` |
+| `commit_phases` | `true` | At phase approval, commit the phase's own claimed files on the run branch; never on the base branch. `false` leaves every commit to the user. See "Phase review" in [02-run-lifecycle.md](02-run-lifecycle.md) |
 | `effort.<role>` | `medium` for every role | `--effort <level>` for that role's sessions. A settings file with no `effort` key gets `medium` for every role; a role left empty runs at its model's default. A brief's own `effort` overrides it |
 | `prompt_cache_ttl.<role>` | `5m` for the Coder, empty for the others | `promptCacheTtl` (`"5m"` or `"1h"`) for that role's sessions |
 | `pricing.<family>` | unset | `input`, `output`, `cache_read`, `cache_write_5m`, `cache_write_1h` in USD per million tokens, over the built-in price table. See "Token counting and cost" in [10-report-and-costs.md](10-report-and-costs.md) |

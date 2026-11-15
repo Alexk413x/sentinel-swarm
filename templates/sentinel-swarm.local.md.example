@@ -143,6 +143,10 @@ time_budget_minutes:
 # Left empty; repo_check then tries main, then master, then reports no base branch.
 base_branch:
 
+# At phase approval, commit the phase's own claimed files on the run branch, so each
+# approved phase is a clean checkpoint. false leaves every commit to you.
+commit_phases: true
+
 # How the user hears that the Driver finished or hit an error. os: the ledger server shows a
 # desktop notification itself (a Windows toast, macOS Notification Center, or notify-send on
 # Linux). push: the Oracle owes a PushNotification call, and its Stop hook blocks until it

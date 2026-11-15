@@ -8,7 +8,19 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import __version__, agentfiles, lock, memory, notify, pauses, procs, rekey, sessions, wake
+from . import (
+    __version__,
+    agentfiles,
+    lock,
+    memory,
+    notify,
+    pauses,
+    procs,
+    rekey,
+    repo,
+    sessions,
+    wake,
+)
 from .agreements import AgreementsMixin
 from .capacity import CapacityMixin
 from .clock import utcnow
@@ -884,7 +896,58 @@ class Ledger(
         phase = row_dict(self.conn, "phases", "phase_id", phase_id)
         if state == "handed_up":
             phase["next"] = self.next_step(wakeup)
+        if state == "approved":
+            phase["commit"] = self._commit_phase(c.agent_id, phase)
         return phase
+
+    def _commit_phase(self, agent_id: str, phase: dict) -> dict:
+        if not self.settings.commit_phases:
+            return {"committed": False, "reason": "commit_phases is off"}
+        phase_id = phase["phase_id"]
+        paths = {
+            path
+            for row in self.conn.execute(
+                "SELECT f.path, f.test_path FROM files f "
+                "JOIN modules m ON m.module_id = f.module_id WHERE m.phase_id = ?",
+                (phase_id,),
+            )
+            for path in (row["path"], row["test_path"])
+            if path
+        }
+        paths |= {
+            row["path"]
+            for row in self.conn.execute(
+                "SELECT v.path FROM file_moves v JOIN files f ON f.file_id = v.file_id "
+                "JOIN modules m ON m.module_id = f.module_id WHERE m.phase_id = ?",
+                (phase_id,),
+            )
+        }
+        goal = self.conn.execute(
+            "SELECT goal FROM phase_goals WHERE phase_id = ?", (phase_id,)
+        ).fetchone()
+        summary = goal["goal"].splitlines()[0] if goal is not None else "approved phase"
+        message = (
+            f"{phase['name']}: {summary}\n\n"
+            "Committed by sentinel-swarm when the phase was approved."
+        )
+        try:
+            result = repo.commit_paths(
+                self.repo_root, self.settings.base_branch, sorted(paths), message
+            )
+        except LedgerError as exc:
+            result = {"committed": False, "reason": str(exc)}
+        note = (
+            f"committed phase {phase_id} as {result['sha']}"
+            if result["committed"]
+            else f"did not commit phase {phase_id}: {result['reason']}"
+        )
+        with write_tx(self.conn) as conn:
+            row = conn.execute(
+                "SELECT state FROM agents WHERE agent_id = ?", (agent_id,)
+            ).fetchone()
+            state = row["state"] if row is not None else "working"
+            self._log_event(conn, agent_id, state, state, note)
+        return result
 
     @staticmethod
     def _require_phase_unstarted(conn: sqlite3.Connection, phase_id: int) -> None:

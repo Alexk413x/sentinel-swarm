@@ -26,7 +26,7 @@ its run is live.
 | 16 | Planned phases show no brief in the panel | Fixed on `fix/live-run-bugs` |
 | 17 | The panel's phase list cannot collapse | Fixed on `fix/live-run-bugs` |
 | 18 | The phase gate never runs the build | Fixed on `fix/live-run-bugs` |
-| 19 | Per-phase commits are impossible while later phases write | Open; needs a design decision |
+| 19 | Per-phase commits are impossible while later phases write | Fixed on `fix/live-run-bugs`: approval commits the phase |
 | 20 | A dead parked session cannot be resumed, released, or replaced | Fixed on `fix/live-run-bugs` |
 | 21 | File-scope test runs are never reused while other Coders edit | Fixed on `fix/live-run-bugs` |
 | 22 | A usage-limit stop reads as user waits, and the run does not recover | Fixed on `fix/live-run-bugs` |

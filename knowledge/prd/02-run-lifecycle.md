@@ -347,6 +347,19 @@ without an accepted `phase_review` since the hand-up. It approves the
 phase, then releases the Manager and every live agent under it and stops their
 sessions.
 
+Approval then commits the phase, so each approved phase is a clean checkpoint while
+later phases keep editing the tree. With `commit_phases` on (the default), the ledger
+runs `git add -A` and `git commit -- <paths>` on the phase's own paths only: every file
+and test file claimed in its modules, superseded and deleted ones included, and every
+old path a move left (`file_moves`). Each path has one owner, so no other phase's work
+goes in. The message is `<phase name>: <first line of its goal>` (or "approved
+phase") with a line saying sentinel-swarm made it, and the host's commit hooks run.
+It does not commit, and says why, when the repo is not a git repository, HEAD is
+detached, the run works on the base branch, the phase has no files, or nothing
+changed. A failed `git add` or commit, such as a hook refusing, leaves the approval
+standing. `phase_update` returns the outcome as `commit` (`committed`, and `sha`,
+`branch`, `paths`, or `reason`), and an agent event records it.
+
 ## Settling a file and closing a run by the Oracle
 
 - `file_accept_incomplete(file_id, reason, evidence)` is the Oracle's. It settles a file

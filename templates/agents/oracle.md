@@ -233,7 +233,9 @@ messages, or an agent none of whose children is working.
    releases the phase's Manager and every agent still live under it, and stops their
    sessions, so it refuses while a deferral in the phase is open, while a change
    request on a file of the phase is open, accepted, or completed but not yet
-   verified, or without the accepted `phase_review` from step 6.
+   verified, or without the accepted `phase_review` from step 6. Approval then commits
+   the phase's own files on the run branch; its result's `commit` says whether it did,
+   and why not. When it did not, tell the user in the report.
 8. When `phase_review` returned, send the wake-up its `next` field names; the reason
    already reached the Manager through the review record. When `next` is missing, the
    Manager has ended, and you brief and spawn a new one for the phase.
