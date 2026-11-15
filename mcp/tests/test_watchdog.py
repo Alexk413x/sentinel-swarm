@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from helpers import ledger_for, make_host
 
-from swarm_ledger import notify, serve, sessions, wake, watch, watchdog
+from swarm_ledger import notify, pauses, serve, sessions, wake, watch, watchdog
 from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import HANDLERS as _HANDLERS
 from swarm_ledger.hooks import events
@@ -159,6 +159,67 @@ def test_a_registered_agent_crashed_only_after_the_grace(
     assert _kinds(_scan(ledger, claude, now)) == [("old", "crashed")]
 
 
+def _parked_working(ledger: Ledger, agent_id: str, role: str, now: datetime, beat_age: int) -> None:
+    _agent(
+        ledger,
+        agent_id,
+        role,
+        "working",
+        started=now - timedelta(hours=3),
+        heartbeat=now - timedelta(minutes=beat_age),
+    )
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET state = 'parked', state_before_park = 'working', "
+            "parked_at = ?, park_reason = 'its session is not running' WHERE agent_id = ?",
+            (watchdog.stamp(now - timedelta(hours=1)), agent_id),
+        )
+
+
+def _failed_resumes(ledger: Ledger, agent_id: str, count: int) -> None:
+    with write_tx(ledger.conn) as conn:
+        for _ in range(count):
+            conn.execute(
+                "INSERT INTO agent_events (agent_id, from_state, to_state, reason) "
+                "VALUES (?, NULL, 'resume_failed', 'claude --resume failed')",
+                (agent_id,),
+            )
+
+
+def test_a_dead_agent_whose_resumes_keep_failing_is_reported_for_release(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _oracle_running(claude)
+    _parked_working(ledger, "sess-lead-1", "lead", now, beat_age=120)
+    _failed_resumes(ledger, "sess-lead-1", 3)
+
+    (finding,) = _scan(ledger, claude, now)
+
+    assert (finding.name, finding.kind) == ("lead-1", "crashed")
+    assert "3 resumes failed" in finding.detail
+    assert 'agent_release(target_agent_id="sess-lead-1")' in finding.next_step
+    assert "agent_resume" not in finding.next_step
+
+
+def test_a_dead_agent_is_resumed_until_its_resumes_have_failed_repeatedly(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _oracle_running(claude)
+    _parked_working(ledger, "sess-lead-1", "lead", now, beat_age=120)
+    _parked_working(ledger, "sess-coder-1", "coder", now, beat_age=1)
+    _failed_resumes(ledger, "sess-lead-1", 2)
+    _failed_resumes(ledger, "sess-coder-1", 5)
+
+    findings = _scan(ledger, claude, now)
+
+    assert [f.next_step for f in findings] == [
+        'Resume it with agent_resume(target_name="coder-1").',
+        'Resume it with agent_resume(target_name="lead-1").',
+    ]
+
+
 def test_an_idle_or_handed_up_agent_whose_session_exited_is_normal(
     ledger: Ledger, claude: FakeClaude, now: datetime
 ) -> None:
@@ -245,30 +306,127 @@ def test_a_session_waiting_on_a_permission_prompt_needs_the_user(
     assert "open the session host-r1-asking in agent view" in findings[0].next_step
 
 
-@pytest.mark.parametrize(
-    "extra",
-    [
-        {"status": "waiting", "waitingFor": "MCP server prompt"},
-        {"status": "waiting"},
-        {"status": None, "state": "waiting"},
-        {"status": "idle", "state": "blocked"},
-    ],
-)
-def test_any_waiting_status_needs_the_user(
-    ledger: Ledger, claude: FakeClaude, now: datetime, extra: dict
+_WAITS = [
+    {"status": "waiting", "waitingFor": "MCP server prompt"},
+    {"status": "waiting"},
+    {"status": "idle", "state": "waiting"},
+    {"status": "idle", "state": "blocked"},
+]
+
+
+@pytest.mark.parametrize("extra", _WAITS)
+def test_a_waiting_status_with_a_pending_request_needs_the_user(
+    ledger: Ledger, claude: FakeClaude, now: datetime, tmp_path: Path, extra: dict
 ) -> None:
     _run_id(ledger)
     _oracle_running(claude)
-    _agent(ledger, "sess-asking", "coder", "working", started=now, heartbeat=now)
+    transcript = _records(tmp_path / "coder.jsonl", _tool_use("Bash", {"command": "npm ci"}))
+    _agent(
+        ledger, "sess-asking", "coder", "working", started=now, heartbeat=now, transcript=transcript
+    )
     claude.run("sess-asking", **extra)
 
     findings = _scan(ledger, claude, now)
 
     assert _kinds(findings) == [("asking", "needs_user")]
     default = "the user (blocked)" if extra.get("state") == "blocked" else "input"
-    assert findings[0].detail.startswith(
-        f"its session host-r1-asking waits on {extra.get('waitingFor') or default}"
+    assert findings[0].detail == (
+        f"its session host-r1-asking waits on {extra.get('waitingFor') or default}: Bash npm ci"
     )
+
+
+@pytest.mark.parametrize("extra", _WAITS)
+def test_a_waiting_status_with_no_request_is_not_the_users(
+    ledger: Ledger, claude: FakeClaude, now: datetime, tmp_path: Path, extra: dict
+) -> None:
+    _run_id(ledger)
+    _oracle_running(claude)
+    transcript = _records(
+        tmp_path / "coder.jsonl", _tool_use("Bash", {"command": "npm run lint"}), _TOOL_RESULT
+    )
+    _agent(
+        ledger, "sess-ended", "coder", "working", started=now, heartbeat=now, transcript=transcript
+    )
+    claude.run("sess-ended", **extra)
+
+    assert _scan(ledger, claude, now) == []
+
+
+def test_a_blocked_session_with_no_request_goes_to_its_parent_once_quiet(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _oracle_running(claude)
+    old = now - timedelta(minutes=20)
+    _agent(ledger, "sess-lead-1", "lead", "working", started=old, heartbeat=now)
+    claude.run("sess-lead-1")
+    _agent(
+        ledger, "sess-coder-1", "coder", "working", started=old, heartbeat=old, parent="sess-lead-1"
+    )
+    claude.run("sess-coder-1", status="idle", state="blocked")
+
+    findings = _scan(ledger, claude, now)
+
+    assert _kinds(findings) == [("coder-1", "blocked")]
+    assert findings[0].detail == (
+        "its session host-r1-coder-1 ended its turn blocked on its work, with no permission "
+        "prompt or tool request pending, and has shown no activity for 20 minutes"
+    )
+    assert findings[0].next_step.startswith('Wake lead-1 (SendMessage(to="host-r1-lead-1")')
+    assert "blocked" not in watchdog.USER_KINDS
+    assert _scan(ledger, claude, now, stuck_minutes=30) == []
+
+
+def test_a_blocked_oracle_with_no_request_is_not_reported(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    claude.run(ORACLE, "host-oracle", status="idle", state="blocked")
+
+    assert _scan(ledger, claude, now) == []
+
+
+def test_a_coder_on_a_superseded_file_is_only_reported_for_release(
+    ledger: Ledger, claude: FakeClaude, now: datetime, tmp_path: Path
+) -> None:
+    run_id = _run_id(ledger)
+    _oracle_running(claude)
+    old = now - timedelta(minutes=30)
+    transcript = _records(tmp_path / "old.jsonl", _tool_use("Bash", {"command": "npm ci"}))
+    _agent(ledger, "sess-lead-1", "lead", "working", started=old, heartbeat=now)
+    claude.run("sess-lead-1")
+    _agent(
+        ledger,
+        "sess-old",
+        "coder",
+        "working",
+        started=old,
+        heartbeat=old,
+        parent="sess-lead-1",
+        transcript=transcript,
+    )
+    claude.run("sess-old", status="idle", state="blocked")
+    with write_tx(ledger.conn) as conn:
+        phase = conn.execute(
+            "INSERT INTO phases (run_id, name, ordinal, state) VALUES (?, 'p1-x', 1, 'working')",
+            (run_id,),
+        ).lastrowid
+        module = conn.execute(
+            "INSERT INTO modules (phase_id, name, state) VALUES (?, 'm', 'working')", (phase,)
+        ).lastrowid
+        file_id = conn.execute(
+            "INSERT INTO files (module_id, path, owner_agent_id, state, released_at) "
+            "VALUES (?, 'src/a.ts', 'old', 'superseded', ?)",
+            (module, watchdog.stamp(old)),
+        ).lastrowid
+        conn.execute("UPDATE agents SET file_id = ? WHERE agent_id = 'sess-old'", (file_id,))
+
+    findings = _scan(ledger, claude, now)
+
+    assert _kinds(findings) == [("old", "superseded")]
+    assert findings[0].detail == f"its file {file_id} (src/a.ts) was superseded by a later claim"
+    assert 'agent_release(target_agent_id="sess-old")' in findings[0].next_step
+    assert findings[0].next_step.startswith("Ask lead-1 to release it")
 
 
 def test_an_oracle_waiting_on_its_own_question_needs_the_user(
@@ -332,11 +490,17 @@ def test_a_run_where_nobody_works_and_nothing_is_owed_is_run_stalled(
 
 
 def test_a_waiting_session_does_not_count_as_working_for_run_stalled(
-    ledger: Ledger, claude: FakeClaude, now: datetime
+    ledger: Ledger, claude: FakeClaude, now: datetime, tmp_path: Path
 ) -> None:
-    _quiet_run(ledger, claude, now)
+    old = _quiet_run(ledger, claude, now)
+    question = {"questions": [{"question": "Which database?"}]}
+    transcript = _records(tmp_path / "oracle.jsonl", _tool_use("AskUserQuestion", question))
+    os.utime(transcript, (old.timestamp(), old.timestamp()))
     with write_tx(ledger.conn) as conn:
-        conn.execute("UPDATE agents SET state = 'working' WHERE agent_id = ?", (ORACLE,))
+        conn.execute(
+            "UPDATE agents SET state = 'working', transcript_path = ? WHERE agent_id = ?",
+            (str(transcript), ORACLE),
+        )
     claude.listing[0] |= {"status": "waiting", "waitingFor": "input needed"}
     asked = ledger.directive_submit("user_chat", "alex", "Which database?")
     ledger.directive_resolve("oracle", ORACLE, asked["directive_id"], "needs_user", "Ask Alex.")
@@ -600,6 +764,27 @@ def test_a_run_waiting_on_the_user_is_not_stalled(
 
 def _directives(ledger: Ledger) -> list[dict]:
     return [dict(r) for r in ledger.conn.execute("SELECT * FROM directives ORDER BY directive_id")]
+
+
+def test_the_watchdog_flags_a_user_directive_the_oracle_has_not_read(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _oracle_running(claude)
+    sent = ledger.directive_submit("user_chat", "alex", "Scope it to phase 1.")
+    ledger.directive_submit("watchdog", "watchdog", "A finding.")
+    after = now + timedelta(minutes=6)
+
+    early = _scan(ledger, claude, now + timedelta(minutes=4))
+    assert [f for f in early if f.kind == "directive_unread"] == []
+    [finding] = [f for f in _scan(ledger, claude, after) if f.kind == "directive_unread"]
+    assert finding.name == "oracle"
+    assert str(sent["directive_id"]) in finding.detail
+    assert "directive_inbox" in finding.next_step
+    assert "directive_unread" not in watchdog.USER_KINDS
+
+    ledger.directive_inbox("oracle", ORACLE)
+    assert [f for f in _scan(ledger, claude, after) if f.kind == "directive_unread"] == []
 
 
 def test_a_finding_is_reported_once_cleared_when_gone_and_reported_again(
@@ -1203,9 +1388,20 @@ def test_a_busy_oracle_is_left_to_its_listener(
 
 
 def test_needs_user_and_run_stalled_notify_the_user(
-    ledger: Ledger, claude: FakeClaude, now: datetime, os_notifications: list[list[str]]
+    ledger: Ledger,
+    claude: FakeClaude,
+    now: datetime,
+    os_notifications: list[list[str]],
+    tmp_path: Path,
 ) -> None:
-    _quiet_run(ledger, claude, now)
+    old = _quiet_run(ledger, claude, now)
+    transcript = _records(tmp_path / "lead.jsonl", _tool_use("Bash", {"command": "npm ci"}))
+    os.utime(transcript, (old.timestamp(), old.timestamp()))
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET transcript_path = ? WHERE agent_id = 'sess-lead-1'",
+            (str(transcript),),
+        )
     claude.listing[1] |= {"status": "waiting", "waitingFor": "permission prompt"}
 
     _dog(ledger, Exits()).tick(now)
@@ -1341,17 +1537,25 @@ def test_an_open_question_is_reminded_and_zero_turns_reminders_off(
 
 
 def test_a_session_blocked_on_the_user_is_reminded_until_it_clears(
-    ledger: Ledger, claude: FakeClaude, now: datetime, monkeypatch: pytest.MonkeyPatch
+    ledger: Ledger,
+    claude: FakeClaude,
+    now: datetime,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     shown: list[str] = []
     monkeypatch.setattr(notify, "show", lambda message, **_: shown.append(message))
     _run_id(ledger)
     _oracle_running(claude)
-    _agent(ledger, "sess-asking", "coder", "working", started=now, heartbeat=now)
+    transcript = _records(tmp_path / "coder.jsonl", _tool_use("Bash", {"command": "npm ci"}))
+    _agent(
+        ledger, "sess-asking", "coder", "working", started=now, heartbeat=now, transcript=transcript
+    )
     entry = claude.run("sess-asking", status="waiting", waitingFor="permission prompt")
     dog = _dog(ledger, Exits(), remind_minutes=30)
     reminder = (
-        "1 session(s) wait on you: asking, its session host-r1-asking waits on permission prompt"
+        "1 session(s) wait on you: asking, its session host-r1-asking waits on permission "
+        "prompt: Bash npm ci"
     )
 
     dog.tick(now)
@@ -1421,3 +1625,99 @@ def test_resolving_a_directive_needs_user_notifies_once(
         f"needs_user:{asked['directive_id']}"
     ]
     assert len(os_notifications) == 1
+
+
+def _limited(path: Path, text: str, at: str = "2026-11-15T06:19:25.545Z") -> Path:
+    record = {
+        "type": "assistant",
+        "timestamp": at,
+        "isApiErrorMessage": True,
+        "error": "rate_limit",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": text}]},
+    }
+    return _records(path, _tool_use("Bash", {"command": "npm test"}), _TOOL_RESULT, record)
+
+
+def test_a_usage_limit_stop_pauses_the_run_instead_of_needing_the_user(
+    ledger: Ledger, claude: FakeClaude, now: datetime, tmp_path: Path
+) -> None:
+    _run_id(ledger)
+    limit = "You've hit your session limit · resets 3pm (America/Los_Angeles)"
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET transcript_path = ? WHERE agent_id = ?",
+            (str(_limited(tmp_path / "oracle.jsonl", limit)), ORACLE),
+        )
+    claude.run(ORACLE, "host-oracle", status="idle", state="blocked")
+    old = now - timedelta(minutes=30)
+    coder_log = _limited(tmp_path / "coder.jsonl", limit)
+    _agent(
+        ledger, "sess-coder-1", "coder", "working", started=old, heartbeat=old, transcript=coder_log
+    )
+    claude.run("sess-coder-1", status="idle", state="blocked")
+
+    _dog(ledger, Exits()).tick(now)
+
+    run = ledger.conn.execute("SELECT * FROM runs").fetchone()
+    assert run["state"] == "paused"
+    assert run["pause_check"].startswith("usage_limit@")
+    reason = ledger.conn.execute(
+        "SELECT reason FROM agent_events WHERE to_state = 'paused'"
+    ).fetchone()[0]
+    assert "usage limit" in reason and "2 session(s)" in reason
+    kinds = [r[0] for r in ledger.conn.execute("SELECT kind FROM watchdog_findings")]
+    assert "needs_user" not in kinds
+
+
+def test_a_usage_limit_pause_resumes_after_the_reset_and_wakes_the_stopped(
+    ledger: Ledger, claude: FakeClaude, now: datetime, tmp_path: Path
+) -> None:
+    _run_id(ledger)
+    claude.run(ORACLE, "host-oracle", status="idle")
+    old = now - timedelta(minutes=30)
+    coder_log = _limited(tmp_path / "coder.jsonl", "You've hit your limit · resets 3pm")
+    _agent(
+        ledger, "sess-coder-1", "coder", "working", started=old, heartbeat=old, transcript=coder_log
+    )
+    claude.run("sess-coder-1", status="idle", state="blocked")
+    reset = now + timedelta(hours=1)
+    with write_tx(ledger.conn) as conn:
+        pauses.record_pause(
+            conn,
+            1,
+            ORACLE,
+            "the account hit its usage limit",
+            f"usage_limit@{watchdog.stamp(reset)}",
+            (),
+            now,
+        )
+    dog = _dog(ledger, Exits())
+
+    dog.tick(now + timedelta(minutes=30))
+    assert ledger.conn.execute("SELECT state FROM runs").fetchone()[0] == "paused"
+
+    dog.tick(reset + timedelta(minutes=3))
+
+    assert ledger.conn.execute("SELECT state FROM runs").fetchone()[0] == "active"
+    owed = ledger.conn.execute(
+        "SELECT from_agent_id, to_agent_id, reason FROM wakeups WHERE sent_at IS NULL"
+    ).fetchall()
+    assert [(r[0], r[1]) for r in owed] == [(ORACLE, "sess-coder-1")]
+    assert owed[0][2] == pauses.USAGE_WAKE_REASON
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("You've hit your weekly limit · resets Nov 18, 6am (America/Los_Angeles)", (11, 18, 6, 0)),
+        ("You've hit your session limit · resets 3pm (America/Los_Angeles)", (11, 15, 15, 0)),
+        ("You've hit your limit · resets 3:30am", (11, 16, 3, 30)),
+    ],
+)
+def test_the_reset_time_is_read_from_the_limit_message(text: str, expected: tuple) -> None:
+    now = datetime(2026, 11, 15, 10, 0).astimezone()
+    reset = pauses.usage_reset(text, now)
+    assert reset is not None
+    local = reset.astimezone()
+    assert (local.month, local.day, local.hour, local.minute) == expected
+    assert pauses.usage_reset("You've hit your limit", now) is None

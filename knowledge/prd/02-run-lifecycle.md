@@ -25,9 +25,12 @@ message. The Oracle then calls, in order:
    pass. The word list lives in one place, `ledger.py`.
 6. `guidelines_set(body)`: the architecture, stack, conventions, commands, and every
    assumption about the PRD. Lower layers read it with `guidelines_get`.
-7. `phase_add(name, depends_on)` once per phase, in dependency order. The stored name
-   is `p<ordinal>-<name>`; see "Names" in [01-roles.md](01-roles.md). `depends_on`
-   names phases of this run; `phase_add` refuses an id from another run.
+7. `phase_add(name, depends_on, goal)` once per phase, in dependency order. The stored
+   name is `p<ordinal>-<name>`; see "Names" in [01-roles.md](01-roles.md). `depends_on`
+   names phases of this run; `phase_add` refuses an id from another run. `goal`, one or
+   two sentences on what the phase delivers, is optional; the ledger keeps it in
+   `phase_goals`, and the run panel shows it as the phase's brief until the Oracle
+   briefs the phase's Manager.
 8. `phase_update(phase_id, "unlocked")` for each phase with no dependency.
 9. Arm the watchdog listener. See "Watchdog" in [08-watchdog.md](08-watchdog.md).
 
@@ -130,6 +133,12 @@ message. The Oracle then calls, in order:
 
 - A Lead claims each file with `claim_file(path, test_path, for_name)` before it writes
   the Coder's brief. The claim is the file lock.
+- Every path a claim or a move names (`path`, `test_path`, `moved_from`, and
+  `file_move`'s new paths) is a file's path from the repo root, with `/` separators.
+  The ledger refuses an absolute path, a drive letter, a leading `:`, a `..` part, a path
+  that resolves outside the repo, and a path under `.git`, `.claude`, or
+  `.sentinel-swarm`, since a claim grants its Coder write and delete rights on it.
+  `file_delete` also refuses a target that resolves outside the repo.
 - A Manager may claim a path no module owns into one of its own modules with
   `claim_file(path, test_path, for_name, module_id=<the module>)`. `for_name` is a new
   Coder name of that module, and the module's Lead briefs the Coder. A Lead's claim
@@ -150,6 +159,20 @@ message. The Oracle then calls, in order:
   class.
 - A re-claim of a released path in the same run supersedes the old claim. The old row
   becomes `superseded`, and every gate treats it as settled.
+- **A move is one claim with both paths.** `file_move(path, new_path, test_path=None)`
+  points a live claim of the Lead's module at a new path, and at a new test path when
+  given; the claim keeps its Coder, its `file_id`, and its dependencies. It refuses a
+  handed-up file, a path with no live claim, and a new path any live claim holds. The old
+  file and old test file go in `file_moves`, one row per path. For a move planned before
+  the Coder starts, `claim_file(..., moved_from=[<old path>, <old test path>])` records
+  the same rows, and refuses an old path a live claim holds. A product has no
+  `moved_from`. The paths in `file_moves` change what the claim's Coder may do, and only
+  that: it deletes them with `file_delete` or `git rm` (neither writes them), and
+  `graph_upsert` accepts a node that re-anchors from them to the Coder's new paths (see
+  "The code graph" in [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md)).
+  `tests_run` and the write gate follow the claim's new paths. A test run's fingerprint
+  includes every path in `file_moves`, so deleting the old file invalidates a reused run.
+  The result's `next` tells the Lead to post the new paths to the Coder.
 - `release_file(path)` drops a claim that is no longer needed, with its products. It
   refuses while the owning Coder is live: release the Coder first with
   `agent_release`. When the owner is a queued spawn, it drops that spawn, so a Coder
@@ -182,10 +205,18 @@ refuses unless:
    and every skip named by `allowed_skips`. A run still going after the 20-second wait
    refuses the handoff with its `test_run_id`; the Coder ends its turn, and once the
    wake-up names the result, `handoff_submit` reuses that run on the unchanged tree.
+   A file run's tree is `HEAD` plus the content of the file, its test file, its
+   products, and the files it depends on (`file_deps`), not the rest of the tree, since
+   other Coders edit the run's other files the whole time; module, phase, and full runs
+   fingerprint `HEAD`, `git status` of every tracked change, and every file claimed in
+   the run. A file run recorded before this rule never matches again, so the first
+   handoff after an upgrade runs its tests once more.
    A deleted file whose test file is deleted too runs no tests.
 4. The code graph is current for the file, and neither the file nor its test file is stale against its recorded baseline. See "The code graph" in [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
    A binary file is read as bytes: its anchors need no symbol check. A deleted file
-   needs the opposite: no node may still anchor on it.
+   needs the opposite: no node may still anchor on it, and `handoff_submit` removes
+   those anchors itself (see "Deleting a file" below). A claim that replaces files
+   (`file_moves`) also needs each replaced file gone from disk and no node anchored on it.
 5. A self review exists and is newer than the Coder's last edit of either path.
 6. After a returned handoff of the file, the Coder has read its brief with `brief_get`
    since the latest return. This is principle 9 in [01-roles.md](01-roles.md).
@@ -202,10 +233,21 @@ the Lead a wake-up. It also sets every earlier `submitted` handoff of the file t
 `accept_incomplete` refuse a superseded handoff, and the watchdog and the Oracle's Stop
 hook do not count it as work awaiting review.
 
-A Coder deletes its own file, test file, or product with `file_delete(path)`, or with
-`git rm <path>` through its shell gate. Either marks the file stale. The Coder then
-scores and hands off as for an edit, and the Lead reviews the deletion. Restoring a
-deletion version with `version_restore` deletes the file again.
+**Deleting a file.** A Coder deletes its own file, test file, product, or a file its
+claim replaces with `file_delete(path)`, or with `git rm <path>` through its shell gate.
+Either marks the file stale. The shell gate denies every other delete command
+(`Remove-Item`, `rm`, `del`, `erase`, `rmdir`), and its denial names `file_delete(path)`
+and the paths the Coder owns. The Coder then scores and hands off as for an edit, and the
+Lead reviews the deletion. Restoring a deletion version with `version_restore` deletes
+the file again.
+
+Before `handoff_submit` checks the graph, it removes the anchors on each of the claim's
+own paths (file, test file, products) that no longer exist on disk. A node left with no
+anchor is deleted, with its outbound edges and the edges that point at it. A node that
+anchors other files keeps those anchors, and keeps its baselines, because the write does
+not re-baseline. The handoff result lists the node ids as `graph_pruned`
+(`deleted_nodes`, `reanchored_nodes`). The Coder needs no `graph_upsert` for a deletion,
+and no Coder has a node-delete tool.
 
 ## Lead review
 
@@ -286,7 +328,12 @@ for a phase in `handed_up`.
 
 - `accepted` refuses unless the Oracle recorded a clean `tests_run(scope="full")`
   after the hand-up. The refusal names the scope and the command it needs, and the
-  latest full run since the hand-up: still running, or not clean with its reason; no approved or incomplete file of the phase lacks a test file while
+  latest full run since the hand-up: still running, or not clean with its reason. When
+  the profile sets `build_command`, the clean full run must also have built with that
+  command (the full run runs it after its tests; see [06-ledger-server.md](06-ledger-server.md)),
+  and a failed build refuses with the build's command, exit code, and the last 2,000
+  characters of its output. A full run made before `build_command` was set does not
+  count; no approved or incomplete file of the phase lacks a test file while
   the code graph anchors a function or class in it; `low_score_notes` holds a
   non-empty note, keyed by `file_id`, for each file whose latest Lead review has a
   dimension below the target; and `scores` rates completeness, integration, and open
@@ -305,6 +352,19 @@ open, while a change request on a file of the phase is not verified or declined,
 without an accepted `phase_review` since the hand-up. It approves the
 phase, then releases the Manager and every live agent under it and stops their
 sessions.
+
+Approval then commits the phase, so each approved phase is a clean checkpoint while
+later phases keep editing the tree. With `commit_phases` on (the default), the ledger
+runs `git add -A` and `git commit -- <paths>` on the phase's own paths only: every file
+and test file claimed in its modules, superseded and deleted ones included, and every
+old path a move left (`file_moves`). Each path has one owner, so no other phase's work
+goes in. The message is `<phase name>: <first line of its goal>` (or "approved
+phase") with a line saying sentinel-swarm made it, and the host's commit hooks run.
+It does not commit, and says why, when the repo is not a git repository, HEAD is
+detached, the run works on the base branch, the phase has no files, or nothing
+changed. A failed `git add` or commit, such as a hook refusing, leaves the approval
+standing. `phase_update` returns the outcome as `commit` (`committed`, and `sha`,
+`branch`, `paths`, or `reason`), and an agent event records it.
 
 ## Settling a file and closing a run by the Oracle
 
@@ -598,11 +658,27 @@ tells the user" in [04-agreements.md](04-agreements.md).
   notifies the user ("resumed:<paused_at>", level done). `run_pause` refuses a check
   name it does not know. A paused run with a clear-check keeps the ledger server up past
   `idle_exit_minutes`. The checks live in `pauses.CHECKS`, one `ClearCheck` each (a
-  name, a label, and a function of the repo root), so a new check is one entry:
+  name, a label, and a function of the repo root, the check's argument, and the time),
+  so a new check is one entry. `runs.pause_check` holds the name, or `<name>@<argument>`:
 
   | Check | Passes when |
   |---|---|
   | `config_parses` | the config file `~/.claude.json` (under `CLAUDE_CONFIG_DIR` when set) parses as a JSON object |
+  | `usage_limit@<reset time>` | 2 minutes have passed since the reset time. Only the watchdog sets it; `run_pause` takes `config_parses` alone |
+- **A usage-limit stop.** When the account hits its usage limit, every session stops at
+  once, and its transcript ends in an assistant record with `isApiErrorMessage` and
+  `error: "rate_limit"`, such as "You've hit your weekly limit · resets Nov 18, 6am
+  (America/Los_Angeles)". Before each scan of an active run, the watchdog reads each live
+  agent's transcript tail; when any ends in such a stop that is newer than the run's last
+  resume, it pauses the whole run with the reason "the account hit its usage limit
+  (<message>); <n> session(s) stopped on it", instead of raising `needs_user`, `blocked`,
+  or wake-up findings for the stopped sessions. It reads the reset time from the message
+  (`resets 3pm`, `resets 3:30am`, or `resets Nov 18, 6am`), in the machine's local time,
+  and names `usage_limit@<that time>` as the clear-check; a message it cannot read
+  pauses with no clear-check, for the user's `ledger.py resume`. When the check passes,
+  the run resumes as above, and the watchdog also owes each stopped agent but the
+  Oracle a wake-up from the Oracle (`usage_limit_reset`), which the Oracle's mod
+  delivers at its next ledger call, so the stopped sessions continue.
 - When only some phases are blocked, the Oracle calls `run_pause(reason, phases=[...])`
   instead. The run stays `active`; only the named phases get a `paused_at` and
   `pause_reason`. `agent_spawn` refuses a brief whose `phase_id` names a paused phase.
@@ -611,6 +687,26 @@ tells the user" in [04-agreements.md](04-agreements.md).
   so they neither nag the Oracle nor report a stall over it. `phase_resume(phase_ids)`
   clears the pause on named phases once the blocker is gone. `phases=[]` names no phase,
   so `run_pause` refuses it; leave `phases` out to pause the whole run.
+- **A pause from the user.** The user pauses a live run without the Oracle, for example
+  to leave, with `mcp/launch/ledger.py pause --reason <text> [--sender <name>]
+  [--source outside_session|user_chat|skill] [--repo <root>]`. It pauses through
+  `pauses.record_pause`, as `run_pause` does: the run becomes `paused` with the agent
+  event on the Oracle, the `pause:<event_id>` notification, and the Oracle's owed push.
+  The pause reason ends "(paused by <sender>)", with sender "the user" by default. It also
+  files an open directive from `--source` (default `outside_session`) that tells the
+  Oracle who paused and why, so the Oracle learns of the pause at its next
+  `directive_inbox`, and the Oracle's watch listener ends as it does for an Oracle pause.
+  It exits 1 when no run is live, the run is already paused, or the reason is empty. It
+  pauses the whole run only, never a phase.
+- **A resume from the user.** `mcp/launch/ledger.py resume [--sender <name>] [--repo
+  <root>]` resumes a paused run without the Oracle's `run_start`. It sets the run back to
+  `active`, clears any clear-check, records the agent event "<sender> resumed the run"
+  from `paused` to `active`, and files a `watchdog` directive that tells the Oracle to arm
+  its Monitor again, continue, and resolve it and any open pause directive. The
+  watchdog's wake path delivers that directive as it does the clear-check one. Because the
+  server exits while a run stays paused, the command starts the ledger server (`ensure_server`)
+  so the watchdog runs. It exits 1 when no run is live or the run is not paused. When the
+  Oracle's session is gone, `/sentinel-swarm:resume` starts a new one instead.
 - The user's next message, or `/sentinel-swarm:resume`, leads the Oracle to call
   `run_start`, which sets the run back to `active` and clears any clear-check. A scoped pause does not touch the
   run's own state, so it never needs `run_start` to clear it; only `phase_resume` does.

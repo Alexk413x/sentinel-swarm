@@ -7,11 +7,12 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from . import permission
+from . import permission, transcript
 from .clock import parse_stamp, stamp, utcnow
 from .db import ledger_path, open_readonly
 from .lock import pid_alive
 from .paths import config_dir
+from .queries import recent_directives
 
 ROLE_ORDER = {"oracle": 0, "manager": 1, "lead": 2, "coder": 3, "driver": 4}
 SUMMARY_CHARS = 90
@@ -116,6 +117,18 @@ def _task_lists(
         "WHERE run_id = ? ORDER BY brief_id",
         run_id,
     )
+    goals: dict[int, str] = (
+        {
+            row["phase_id"]: row["goal"]
+            for row in conn.execute(
+                "SELECT g.phase_id, g.goal FROM phase_goals g "
+                "JOIN phases p ON p.phase_id = g.phase_id WHERE p.run_id = ?",
+                (run_id,),
+            )
+        }
+        if _has_table(conn, "phase_goals")
+        else {}
+    )
     reviews = _latest_by_subject(
         conn,
         "SELECT r.phase_id, r.module_id, r.file_id, r.kind, r.outcome, r.notes FROM reviews r "
@@ -149,6 +162,8 @@ def _task_lists(
         brief = briefs.get((column, key))
         review = reviews.get((column, key))
         body = brief["body"] if brief is not None else None
+        if body is None and column == "phase_id":
+            body = goals.get(key)
         return {
             "id": f"{column}:{key}",
             "name": name,
@@ -260,16 +275,26 @@ def _session_state(agent: dict, sessions: dict[str, dict], by_name: dict[str, di
 
 
 def snapshot(
-    conn: sqlite3.Connection, sessions: dict[str, dict], run_id: int | None = None
+    conn: sqlite3.Connection,
+    sessions: dict[str, dict],
+    run_id: int | None = None,
+    waiting: frozenset[str] = frozenset(),
+    detail: str | None = None,
 ) -> dict:
     rows = conn.execute(
         "SELECT * FROM runs WHERE ? IS NULL OR run_id = ? ORDER BY run_id DESC",
         (run_id, run_id),
     ).fetchall()
-    return {"runs": [_run_snapshot(conn, sessions, run) for run in rows]}
+    return {"runs": [_run_snapshot(conn, sessions, run, waiting, detail) for run in rows]}
 
 
-def _run_snapshot(conn: sqlite3.Connection, sessions: dict[str, dict], run: sqlite3.Row) -> dict:
+def _run_snapshot(
+    conn: sqlite3.Connection,
+    sessions: dict[str, dict],
+    run: sqlite3.Row,
+    waiting: frozenset[str],
+    detail: str | None,
+) -> dict:
     run_id = run["run_id"]
     started = parse_stamp(run["started_at"])
     ended = parse_stamp(run["ended_at"]) if run["ended_at"] else None
@@ -301,8 +326,11 @@ def _run_snapshot(conn: sqlite3.Connection, sessions: dict[str, dict], run: sqli
     queued = _queued_children(conn, run_id, {a["name"] for a in rows if a["ended_at"] is None})
     tasks = _task_lists(conn, run, rows + queued)
     for agent in rows + queued:
-        own_task, waiting = tasks(agent)
+        own_task, unowned = tasks(agent)
         is_queued = agent["state"] == "queued"
+        live = not is_queued and agent["ended_at"] is None
+        path = agent.get("transcript_path")
+        asks = live and bool({agent["agent_id"], agent.get("session_name")} & waiting)
         nodes[agent["agent_id"]] = {
             "agent_id": None if is_queued else agent["agent_id"],
             "name": agent["name"],
@@ -327,7 +355,9 @@ def _run_snapshot(conn: sqlite3.Connection, sessions: dict[str, dict], run: sqli
             "owed": owed.get(agent["agent_id"], 0),
             "unread": unread.get(agent["name"], 0),
             "task": own_task,
-            "tasks": waiting,
+            "tasks": unowned,
+            "request": transcript.pending_request(path) if asks else None,
+            "recent": transcript.recent_activity(path) if agent["agent_id"] == detail else None,
             "children": [],
         }
 
@@ -372,6 +402,7 @@ def _run_snapshot(conn: sqlite3.Connection, sessions: dict[str, dict], run: sqli
             "ended": len(started) - len(live),
         },
         "waiting": _waiting(conn, run),
+        "directives": recent_directives(conn, run_id),
     }
 
 
@@ -473,7 +504,13 @@ def _waiting(conn: sqlite3.Connection, run: sqlite3.Row) -> dict:
     }
 
 
-def document(repo_root: Path, run_id: int | None = None, sessions_dir: Path | None = None) -> dict:
+def document(
+    repo_root: Path,
+    run_id: int | None = None,
+    sessions_dir: Path | None = None,
+    waiting: frozenset[str] = frozenset(),
+    detail: str | None = None,
+) -> dict:
     path = ledger_path(repo_root)
     base = {"repo": str(repo_root), "generated_at": stamp(utcnow())}
     if not path.is_file():
@@ -487,7 +524,7 @@ def document(repo_root: Path, run_id: int | None = None, sessions_dir: Path | No
             error = str(exc)
             continue
         try:
-            return {**base, **snapshot(conn, sessions, run_id)}
+            return {**base, **snapshot(conn, sessions, run_id, waiting, detail)}
         except sqlite3.Error as exc:
             error = str(exc)
         finally:
@@ -518,8 +555,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ledger.py panel")
     parser.add_argument("--repo", type=Path, default=None, help="host repo root; default: cwd")
     parser.add_argument("--run", type=int, default=None, help="run id; default: every run")
+    parser.add_argument(
+        "--waiting",
+        action="append",
+        default=[],
+        help="a session id or name the listing shows waiting; its agent carries its request",
+    )
+    parser.add_argument("--detail", default=None, help="an agent id whose recent steps to read")
     args = parser.parse_args(argv)
-    doc = document((args.repo or Path.cwd()).resolve(), args.run)
+    doc = document(
+        (args.repo or Path.cwd()).resolve(),
+        args.run,
+        waiting=frozenset(args.waiting),
+        detail=args.detail,
+    )
     sys.stdout.write(json.dumps(doc))
     return 0
 

@@ -404,10 +404,24 @@ fails as ambiguous, or goes to the offline entry and waits there for good. See
 
 ## Liveness, resume, and release
 
-- A session is running when `claude agents --json` shows a `pid`, or lists it with
-  `kind: "background"` (Claude Code 2.1.284 prints no `pid` for one), and its status and
-  state are not `stopped`, `exited`, `crashed`, `failed`, `killed`, `dead`, or
-  `completed`. State `done` counts as running.
+- A session is running when its status and state in `claude agents --json` are not
+  `stopped`, `exited`, `crashed`, `failed`, `killed`, `dead`, or `completed`, and, when
+  the entry carries a `pid`, that pid names a process that exists and was created no
+  later than a minute after the entry's `startedAt` (a later process holds a reused
+  pid). An entry with a pid is judged by its process alone: a killed session's entry can
+  keep its last `status`. An entry with no pid is running when its `status` is `busy`,
+  `idle`, or `waiting`. State `done` counts as running. An entry with neither, such as
+  one a reboot left with only `state: "blocked"`, is not running, so `run_start` and
+  `agent_resume` do not refuse on it. The ledger reads a pid's start time at most once
+  every 5 seconds, since on macOS and Linux each read runs `ps`. On Windows on
+  2026-11-14, every live session's process started 2 to 35 seconds before its
+  `startedAt`.
+- For an agent the ledger also judges by the process it recorded: when the entry has no
+  pid and the agent row holds a `session_pid`, the session runs only while that process
+  exists and its creation time matches `session_pid_created`. `agent_resume`, the
+  watchdog's parking and `crashed` check, and the wake-up resume use this rule
+  (`sessions.agent_running`). A resume clears the recorded pid, and the next memory
+  sample records the new process's.
 - `agent_resume(target_name)` resumes a live agent of the run whose session is not
   running, with `claude --resume <session id> --bg "<pointer>" --name <session name>`
   and the role's launch options, because `--resume` restores the conversation but not
@@ -436,14 +450,21 @@ fails as ambiguous, or goes to the offline entry and waits there for good. See
 - The session's other children are its MCP servers. They exit with the session, and a
   plugin's relay among them can start the machine's one shared server that other
   sessions use, so a release leaves them alone.
-- A process counts as a child only when it started after its parent, because a parent
-  pid can name a dead process whose pid was reused. A process is terminated only while
-  its start time still matches the one recorded.
+- A process counts as a child only when both start times are known and it started after
+  its parent, because a parent pid can name a dead process whose pid was reused. A
+  process is terminated only while its start time is known and still matches the one
+  recorded, and never a system or service process (`svchost`, `services`, `lsass`,
+  `systemd`, `launchd`, and the like). Windows cannot read a service process's start
+  time, so an unknown start time never counts as a match.
 - The release records the session's process and every process it found in
   `released_processes`, and logs how many it stopped in the release's agent event. The
   watchdog reports any of them still running, and any process started under them, as
-  `stray_process`; see [08-watchdog.md](08-watchdog.md).
-- `agent_release(target_agent_id)` releases a child of the caller. The Oracle may also
+  `stray_process`, but only after it verifies each process by its pid and exact start
+  time and by its parent chain back to a recorded process; see
+  [08-watchdog.md](08-watchdog.md).
+- `agent_release(target_agent_id)` releases a child of the caller. It takes the agent's
+  id, or the name or session name of a live agent of the caller's run, so a parent can
+  release a parked or dead child it knows only by name. The Oracle may also
   release an agent whose parent has ended, such as a Lead left live under a released
   Manager. The other releases are automatic. Every release hands the released agent's
   `open` and `accepted` change
@@ -463,6 +484,13 @@ parent releases it. Its replacement takes over the children.
   the same name to the new agent, in the bind's write transaction. A Manager's and a
   Lead's names are fixed by their phase and module, so a replacement in the same scope
   carries the same name.
+- `brief_create` refuses a name that a live agent holds. Before it refuses, it releases a
+  holder of the caller's run whose session is not running (judged as in "Liveness,
+  resume, and release"), when the caller is the holder's parent, or the Oracle and the
+  holder's parent has ended. The release's agent event says "its session is not running,
+  and a replacement is briefed under the name". It leaves a holder whose resume is in
+  flight, and a holder whose session runs. When `claude agents --json` fails, it
+  releases nothing and refuses.
 - `brief_create(replaces=<agent_id>)` names an ended agent of the child's role whose
   children the child takes over under another name. It refuses an agent that is still
   live, one of another role, or one outside the run.
@@ -542,6 +570,10 @@ than keep an alias.
 - `crashed` still reports a `working` or late `registered` agent whose session is gone,
   and the Oracle resumes it with `agent_resume`. A failed resume is logged as a
   `resume_failed` agent event, and the agent stays parked.
+- A parked agent is judged not running by its process, not by a stale listing entry, so
+  a dead session is parked and resumed like a retired one. The watchdog never releases a
+  parked agent that holds unfinished work: after 3 failed resumes and a quiet heartbeat,
+  `crashed` tells its parent to release it and brief a replacement. See [08-watchdog.md](08-watchdog.md).
 
 ## What stops when
 
@@ -638,6 +670,22 @@ for the measured figures.
   has no unread messages, checked in the same transaction that sets `parked_at`, with
   the reason "the ledger stopped it under memory pressure while its children work". A
   failed stop clears the flag. The first wake-up owed to it resumes it.
+- **Park blocked Coders.** While a spawn waits in the queue, and free memory is below
+  the shortfall above, each watchdog pass stops Coders that sit idle on a blocker, before
+  it parks idle parents, and the parents then cover only what is left of the shortfall.
+  `memory.park_blocked_minutes` (10; `0` turns it off) sets how long a Coder is quiet.
+  The ledger stops one only when all of these hold: its session runs and has ended its
+  turn (a `working` Coder's session reports `waiting` or `blocked`; an `idle` Coder's
+  session is not `busy`); its last heartbeat, or its start, is older than the setting;
+  its session has no pending tool request in its transcript and no held permission
+  request; it owes and is owed no unsent wake-up, has no unread message, and has no
+  test run in state `running`, checked in the same transaction that sets `parked_at`.
+  It takes the most idle first and stops only as many as the shortfall needs, by the
+  role's estimate. The park sets `state_before_park` to `idle`, so `crashed` does not
+  report it, and its reason reads "the ledger stopped it: idle on a blocker with no
+  activity for over <n> minutes while a spawn waits for memory". A failed stop clears
+  the flag and restores the state. Its Lead's answer (`message_post`, `return_work`, or
+  a `SendMessage` to it) owes it a wake-up, and the resume path above brings it back.
 
 ## An unreadable ~/.claude.json
 

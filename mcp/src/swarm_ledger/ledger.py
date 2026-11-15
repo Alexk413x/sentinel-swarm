@@ -6,9 +6,21 @@ import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-from . import __version__, agentfiles, lock, memory, notify, pauses, procs, rekey, sessions, wake
+from . import (
+    __version__,
+    agentfiles,
+    lock,
+    memory,
+    notify,
+    pauses,
+    procs,
+    rekey,
+    repo,
+    sessions,
+    wake,
+)
 from .agreements import AgreementsMixin
 from .capacity import CapacityMixin
 from .clock import utcnow
@@ -71,6 +83,43 @@ _TOKEN_COLUMNS = (
     "cost_usd",
     "tool_uses",
 )
+
+
+def _slashed(path: str) -> str:
+    return path.strip().replace("\\", "/")
+
+
+_RECORD_DIRS = frozenset({".git", ".sentinel-swarm", ".claude"})
+
+
+def repo_path(repo_root: Path, raw: str) -> str:
+    path = _slashed(raw)
+    root = repo_root.resolve()
+    rel: PurePosixPath | None = None
+    if (
+        path
+        and not path.startswith((":", "/"))
+        and not re.match(r"^[A-Za-z]:", path)
+        and ".." not in PurePosixPath(path).parts
+    ):
+        try:
+            rel = PurePosixPath((root / path).resolve().relative_to(root).as_posix())
+        except ValueError:
+            rel = None
+    # Windows matches names case-insensitively and drops trailing dots and spaces, so
+    # ".GIT." names the same folder as ".git".
+    segments = [part.rstrip(". ").casefold() for part in rel.parts] if rel is not None else []
+    if (
+        not segments
+        or segments[0] in _RECORD_DIRS
+        or ".git" in segments
+        or any(not s for s in segments)
+    ):
+        raise LedgerError(
+            f"{raw!r} is not a repo path: name a file by its path from the repo root, inside "
+            "the repo and outside .git, .claude, and .sentinel-swarm"
+        )
+    return str(rel)
 
 
 def repo_slug(repo_root: Path) -> str:
@@ -781,8 +830,14 @@ class Ledger(
         return dict(row) if row is not None else {}
 
     def phase_add(
-        self, caller: str, agent_id: str, name: str, depends_on: list[int] | None = None
+        self,
+        caller: str,
+        agent_id: str,
+        name: str,
+        depends_on: list[int] | None = None,
+        goal: str | None = None,
     ) -> dict:
+        goal = (goal or "").strip() or None
         depends_on = depends_on or []
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
@@ -807,9 +862,14 @@ class Ledger(
                     "INSERT INTO phase_deps (phase_id, depends_on_phase_id) VALUES (?, ?)",
                     (phase_id, dep_id),
                 )
+            if goal is not None:
+                conn.execute(
+                    "INSERT INTO phase_goals (phase_id, goal) VALUES (?, ?)", (phase_id, goal)
+                )
 
         phase = row_dict(self.conn, "phases", "phase_id", phase_id)
         phase["depends_on"] = list(depends_on)
+        phase["goal"] = goal
         return phase
 
     def phase_update(self, caller: str, agent_id: str, phase_id: int, state: str) -> dict:
@@ -869,7 +929,58 @@ class Ledger(
         phase = row_dict(self.conn, "phases", "phase_id", phase_id)
         if state == "handed_up":
             phase["next"] = self.next_step(wakeup)
+        if state == "approved":
+            phase["commit"] = self._commit_phase(c.agent_id, phase)
         return phase
+
+    def _commit_phase(self, agent_id: str, phase: dict) -> dict:
+        if not self.settings.commit_phases:
+            return {"committed": False, "reason": "commit_phases is off"}
+        phase_id = phase["phase_id"]
+        paths = {
+            path
+            for row in self.conn.execute(
+                "SELECT f.path, f.test_path FROM files f "
+                "JOIN modules m ON m.module_id = f.module_id WHERE m.phase_id = ?",
+                (phase_id,),
+            )
+            for path in (row["path"], row["test_path"])
+            if path
+        }
+        paths |= {
+            row["path"]
+            for row in self.conn.execute(
+                "SELECT v.path FROM file_moves v JOIN files f ON f.file_id = v.file_id "
+                "JOIN modules m ON m.module_id = f.module_id WHERE m.phase_id = ?",
+                (phase_id,),
+            )
+        }
+        goal = self.conn.execute(
+            "SELECT goal FROM phase_goals WHERE phase_id = ?", (phase_id,)
+        ).fetchone()
+        summary = goal["goal"].splitlines()[0] if goal is not None else "approved phase"
+        message = (
+            f"{phase['name']}: {summary}\n\n"
+            "Committed by sentinel-swarm when the phase was approved."
+        )
+        try:
+            result = repo.commit_paths(
+                self.repo_root, self.settings.base_branch, sorted(paths), message
+            )
+        except LedgerError as exc:
+            result = {"committed": False, "reason": str(exc)}
+        note = (
+            f"committed phase {phase_id} as {result['sha']}"
+            if result["committed"]
+            else f"did not commit phase {phase_id}: {result['reason']}"
+        )
+        with write_tx(self.conn) as conn:
+            row = conn.execute(
+                "SELECT state FROM agents WHERE agent_id = ?", (agent_id,)
+            ).fetchone()
+            state = row["state"] if row is not None else "working"
+            self._log_event(conn, agent_id, state, state, note)
+        return result
 
     @staticmethod
     def _require_phase_unstarted(conn: sqlite3.Connection, phase_id: int) -> None:
@@ -1087,6 +1198,7 @@ class Ledger(
     ) -> dict:
         if effort is not None and effort not in EFFORT_LEVELS:
             raise LedgerError(f"unknown effort {effort!r}; use one of {list(EFFORT_LEVELS)}")
+        self._release_dead_holders(caller, agent_id, child_name)
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
             if child_role not in child_roles_of(c.role):
@@ -1452,9 +1564,7 @@ class Ledger(
     def agent_release(self, caller: str, agent_id: str, target_agent_id: str) -> dict:
         with self._release_tx() as conn:
             c = resolve(conn, caller, agent_id)
-            target = conn.execute(
-                "SELECT * FROM agents WHERE agent_id = ?", (target_agent_id,)
-            ).fetchone()
+            target = self._release_target(conn, c, target_agent_id)
             if target is None:
                 return self._cancel_queued(conn, c, target_agent_id)
             if target["parent_agent_id"] != c.agent_id and not (
@@ -1464,9 +1574,62 @@ class Ledger(
                     f"{caller!r} is not the parent of {target_agent_id!r}; the Oracle may also "
                     "release an agent whose parent has ended"
                 )
-            self._release_agent(conn, target_agent_id, "agent_release")
+            self._release_agent(conn, target["agent_id"], "agent_release")
 
-        return self._agent_dict(target_agent_id)
+        return self._agent_dict(target["agent_id"])
+
+    def _release_dead_holders(self, caller: str, agent_id: str, child_name: str) -> None:
+        c = resolve(self.conn, caller, agent_id)
+        holders = [
+            row
+            for row in self.conn.execute(
+                "SELECT * FROM agents WHERE name = ? AND ended_at IS NULL AND run_id IS ? "
+                "AND session_name IS NOT NULL AND role != 'oracle'",
+                (child_name, c.run_id),
+            )
+            if row["agent_id"] != c.agent_id
+            and (
+                row["parent_agent_id"] == c.agent_id
+                or (c.role == "oracle" and _parent_ended(self.conn, row))
+            )
+            and not self._resuming(dict(row))
+        ]
+        if not holders:
+            return
+        try:
+            listing = sessions.list_sessions(retry=True)
+        except sessions.ConfigParseError as exc:
+            raise self.pause_for_config(exc) from exc
+        except LedgerError:
+            return
+        gone = [
+            row
+            for row in holders
+            if not sessions.agent_running(
+                sessions.find_session(listing, row["agent_id"]), dict(row)
+            )
+        ]
+        if not gone:
+            return
+        with self._release_tx() as conn:
+            for row in gone:
+                self._release_agent(
+                    conn,
+                    row["agent_id"],
+                    f"brief_create by {caller}: its session is not running, and a replacement "
+                    f"is briefed under the name {child_name}",
+                )
+
+    @staticmethod
+    def _release_target(conn: sqlite3.Connection, c: Caller, ref: str) -> sqlite3.Row | None:
+        row = conn.execute("SELECT * FROM agents WHERE agent_id = ?", (ref,)).fetchone()
+        if row is not None or c.run_id is None:
+            return row
+        return conn.execute(
+            "SELECT * FROM agents WHERE run_id = ? AND ended_at IS NULL "
+            "AND (name = ? OR session_name = ?) ORDER BY started_at DESC LIMIT 1",
+            (c.run_id, ref, ref),
+        ).fetchone()
 
     @staticmethod
     def _cancel_queued(conn: sqlite3.Connection, c: Caller, child_name: str) -> dict:
@@ -1714,13 +1877,14 @@ class Ledger(
         except sessions.ConfigParseError as exc:
             raise self.pause_for_config(exc) from exc
         own = sessions.find_session(listing, target["agent_id"])
-        if own is not None and sessions.is_running(own):
+        if sessions.agent_running(own, dict(target)):
             label = target["session_name"] or target["agent_id"]
             raise LedgerError(
                 f"{target_name!r} is still running as {label!r}; wake it with "
                 f"SendMessage(to={json.dumps(label)}) instead"
             )
-        moved = sessions.resumed_entry(listing, None, target["session_name"])
+        others = [e for e in listing if e.get("sessionId") != target["agent_id"]]
+        moved = sessions.resumed_entry(others, None, target["session_name"])
         if moved is not None:
             current = self.adopt_resumed(target["agent_id"], str(moved["sessionId"]))
             return {
@@ -1984,10 +2148,17 @@ class Ledger(
         depends_on: list[int] | None = None,
         module_id: int | None = None,
         product_of: int | None = None,
+        moved_from: list[str] | None = None,
     ) -> dict:
         depends_on = depends_on or []
         if test_path is not None and test_path.strip().lower() in ("", "none", "null"):
             test_path = None
+        path = repo_path(self.repo_root, path)
+        if test_path is not None:
+            test_path = repo_path(self.repo_root, test_path)
+        replaced = [repo_path(self.repo_root, p) for p in moved_from or [] if p.strip()]
+        if replaced and product_of is not None:
+            raise LedgerError("a product replaces no file; leave moved_from out")
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
             require_role(c, "lead", "manager")
@@ -2037,6 +2208,7 @@ class Ledger(
                     "one Coder owns one file, so claim this path for a new Coder name, or "
                     "pass product_of when the path is generated from that file"
                 )
+            self._require_replaceable(conn, replaced, {path, test_path}, None)
 
             cur = conn.execute(
                 "INSERT INTO files (module_id, path, test_path, owner_agent_id, state, "
@@ -2057,14 +2229,108 @@ class Ledger(
                 "JOIN phases p ON p.phase_id = m.phase_id WHERE p.run_id = ?)",
                 (path, file_id, c.run_id),
             )
+            self._carry_crs_to_file(conn, c.run_id, path, file_id)
             conn.executemany(
                 "INSERT OR IGNORE INTO file_deps (file_id, depends_on_file_id) VALUES (?, ?)",
                 [(file_id, dep_id) for dep_id in depends_on],
             )
+            conn.executemany(
+                "INSERT OR IGNORE INTO file_moves (file_id, path) VALUES (?, ?)",
+                [(file_id, old) for old in replaced],
+            )
 
         claimed = row_dict(self.conn, "files", "file_id", file_id)
         claimed["depends_on"] = list(depends_on)
+        if replaced:
+            claimed["moved_from"] = replaced
         return claimed
+
+    @staticmethod
+    def _require_replaceable(
+        conn: sqlite3.Connection,
+        paths: list[str],
+        new_paths: set[str | None],
+        own_file_id: int | None,
+    ) -> None:
+        for old in paths:
+            if old in new_paths:
+                raise LedgerError(f"{old!r} is a path of the new claim, so it replaces nothing")
+            holder = conn.execute(
+                "SELECT file_id FROM files WHERE (path = ? OR test_path = ?) "
+                "AND released_at IS NULL AND file_id IS NOT ?",
+                (old, old, own_file_id),
+            ).fetchone()
+            if holder is not None:
+                raise LedgerError(
+                    f"{old!r} still has a live claim; a file a move replaces is one no claim "
+                    "holds. Release that claim first"
+                )
+
+    def file_move(
+        self,
+        caller: str,
+        agent_id: str,
+        path: str,
+        new_path: str,
+        test_path: str | None = None,
+    ) -> dict:
+        path, new_path = _slashed(path), repo_path(self.repo_root, new_path)
+        with write_tx(self.conn) as conn:
+            c = resolve(conn, caller, agent_id)
+            require_role(c, "lead")
+            row = conn.execute(
+                "SELECT * FROM files WHERE path = ? AND released_at IS NULL "
+                "AND source_file_id IS NULL",
+                (path,),
+            ).fetchone()
+            if row is None:
+                raise LedgerError(f"no live claim for {path!r}")
+            if c.module_id != row["module_id"]:
+                raise LedgerError(f"{caller!r} is not the Lead of the module that holds {path!r}")
+            if row["state"] == "handed_up":
+                raise LedgerError(
+                    f"{path!r} is handed up. Move it after return_work sends it back, or approve "
+                    "the handoff and claim the new path"
+                )
+            new_test = repo_path(self.repo_root, test_path) if test_path else row["test_path"]
+            if (new_path, new_test) == (row["path"], row["test_path"]):
+                raise LedgerError(
+                    f"{new_path!r} is already the claim's path and its test_path does not change; "
+                    "nothing to move"
+                )
+            for target in {new_path, new_test} - {row["path"], row["test_path"], None}:
+                taken = conn.execute(
+                    "SELECT 1 FROM files WHERE (path = ? OR test_path = ?) AND released_at IS NULL",
+                    (target, target),
+                ).fetchone()
+                if taken is not None:
+                    raise LedgerError(f"path {target!r} already has a live claim")
+            replaced = [
+                p for p in (row["path"], row["test_path"]) if p and p not in (new_path, new_test)
+            ]
+            conn.execute(
+                "UPDATE files SET path = ?, test_path = ? WHERE file_id = ?",
+                (new_path, new_test, row["file_id"]),
+            )
+            conn.execute(
+                "DELETE FROM file_moves WHERE file_id = ? AND path IN (?, ?)",
+                (row["file_id"], new_path, new_test),
+            )
+            conn.executemany(
+                "INSERT OR IGNORE INTO file_moves (file_id, path) VALUES (?, ?)",
+                [(row["file_id"], old) for old in replaced],
+            )
+
+        moved = row_dict(self.conn, "files", "file_id", row["file_id"])
+        moved["moved_from"] = replaced
+        moved["next"] = (
+            f"Tell {row['owner_agent_id']} with message_post(to_name=..., body=...) that its file "
+            f"is now {new_path} and its test file {new_test}: it writes them there, deletes "
+            f"{', '.join(replaced)} with file_delete, and re-anchors the graph nodes of the old "
+            "paths with graph_upsert. A Coder that has no brief yet reads the new paths from "
+            "its brief, so put them there."
+        )
+        return moved
 
     @staticmethod
     def _claim_module(conn: sqlite3.Connection, c: Caller, module_id: int | None) -> int | None:
@@ -2212,8 +2478,9 @@ class Ledger(
                 "AND file_id = (SELECT file_id FROM agents WHERE agent_id = ?) "
                 "AND (path = ? OR test_path = ? OR EXISTS (SELECT 1 FROM files p "
                 "WHERE p.source_file_id = files.file_id AND p.path = ? "
-                "AND p.released_at IS NULL))",
-                (agent_id, path, path, path),
+                "AND p.released_at IS NULL) OR EXISTS (SELECT 1 FROM file_moves m "
+                "WHERE m.file_id = files.file_id AND m.path = ?))",
+                (agent_id, path, path, path, path),
             )
         return {"path": path, "updated": cur.rowcount > 0}
 

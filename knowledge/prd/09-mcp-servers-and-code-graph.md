@@ -157,6 +157,23 @@ find what exists while many agents change the code at once. The graph file,
   Coder's file. Because a write re-baselines every file the node anchors, it also
   refuses while another anchored file is stale, and names that file; the Lead updates
   the node then.
+- **A Coder on a moved file.** When the claim replaces paths (`file_moves`, see "Claims"
+  in [02-run-lifecycle.md](02-run-lifecycle.md)), those paths count as the Coder's for
+  one purpose: a node whose anchors lie only on the Coder's paths and the replaced paths
+  is the Coder's to rewrite, so it re-anchors a single-file node from the old path to
+  the new one. On a node that also anchors other files, the Coder may leave out the
+  anchors on replaced paths, and nothing else it could not do before. The Lead's file set
+  includes the replaced paths, so a node that spans files and still names one is the
+  Lead's to update. `handoff_submit` refuses while a replaced file exists on disk or a
+  node still anchors one.
+- **Deleted files.** `graph_upsert` cannot write a node that anchors a file missing on
+  disk, because its re-baseline cannot read the file. A Coder never calls it for a
+  deletion: `handoff_submit` removes the anchors on the claim's own deleted paths. A node
+  that anchored only deleted paths is deleted (codebase-kg `delete_node`, with the edges
+  that point at it); any other node is rewritten with its remaining anchors and no
+  re-baseline. The ledger runs both under the graph lock, in the child process used
+  for `graph_upsert`. This is the only node deletion a role gets, and it covers only the
+  paths the Coder deleted from its own claim.
 - **Description cap:** codebase-kg refuses a description over 240 characters
   (`schema.MAX_DESCRIPTION`). `graph_upsert` refuses one up front with the cap in the
   message, and every role's guidance states the cap.

@@ -60,6 +60,7 @@ def adopt(conn: sqlite3.Connection, old_id: str, new_id: str) -> None:
         transcript = str(Path(transcript).with_name(f"{new_id}.jsonl"))
     conn.execute(
         f"UPDATE agents SET resume_started_at = NULL, {UNPARK_SET}, "
-        "bg_id = ?, transcript_path = ? WHERE agent_id = ?",
+        "session_pid = NULL, session_pid_created = NULL, bg_id = ?, transcript_path = ? "
+        "WHERE agent_id = ?",
         (new_id[:8], transcript, new_id),
     )

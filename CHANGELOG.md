@@ -2,6 +2,78 @@
 
 All notable changes to the `sentinel-swarm` plugin.
 
+## [0.8.0] — 2026-11-15 — fixes from a live run: real user waits, file moves, phase commits
+
+### Upgrading a live run
+
+- Pause the run (`ledger.py pause --reason <text>`), update the plugin, and run
+  `/sentinel-swarm:setup` in the host repo before you resume. Setup rewrites the role
+  files in `.claude/agents/`, which gain `directive_ack` (Oracle) and `file_move` (Lead);
+  `launch` reruns setup only when a role file is missing. The hook shim is unchanged.
+- The ledger migrates a 0.7.1 ledger on its first open: it adds the tables `phase_goals`
+  and `file_moves` and new columns on `test_runs` and `directives`. A run started on
+  0.7.1 resumes.
+- A file-scope test run fingerprints only its own files now, so the first handoff of
+  each file after the upgrade runs its tests once more. A phase review needs a full run
+  that also ran `build_command`, so a full run made before the upgrade does not count.
+- Phase approval commits the phase's files on the run branch by default. Set
+  `commit_phases: false` to keep committing yourself.
+
+### Added
+
+- `ledger.py pause --reason <text>` and `ledger.py resume` pause and resume a live run
+  without waiting for the Oracle.
+- Phase approval commits the phase's own claimed files, deleted and moved paths
+  included, on the run branch, never on the base branch (`commit_phases`).
+- A full test run also runs `build_command`, and `phase_review(accepted)` needs that
+  build to pass.
+- `file_move` (Lead) and `claim_file(moved_from=...)` keep a moved file one claim: the
+  Coder deletes the old paths and re-anchors their nodes, and the claim's test path
+  follows the move.
+- `phase_add(goal=...)`: the run panel shows a planned phase's goal until its Manager is
+  briefed.
+- `directive_ack`: the Oracle marks a directive it cannot apply at once as queued with a
+  note. `ledger.py directive --status` and the run panel show each of your directives as
+  unread, seen, queued, or resolved, and the watchdog flags one left unread.
+- `{target}` in `lint_command`, so each Coder lints only its own files.
+- The run panel: click an agent for a detail card with its state and its last 8
+  transcript steps; your typed answer survives refreshes and the box says whether it was
+  sent; the phases not started collapse under one row.
+- The watchdog parks Coders idle on a blocker while a spawn waits for memory
+  (`memory.park_blocked_minutes`).
+- Setup warns about shell operators in the test, build, and lint commands, which the
+  Coder's shell gate denies, and shows the `npx --prefix <dir>` form.
+
+### Fixed
+
+- A session that ended its turn `waiting` or `blocked` with nothing pending raised a
+  false "needs you" popup; about 30 did in one run. A session waits on you only with a
+  pending tool request or a held permission request; otherwise its parent is told.
+- A usage-limit stop raised "needs you" for every session, and the run sat after the
+  reset. The watchdog pauses the run, resumes it after the reset time the message names,
+  and wakes the stopped sessions.
+- A stale `claude agents` entry left by a reboot counted as a running Oracle, so the
+  resume was refused. A session runs only with a live status or a live process.
+- A dead parked session could not be resumed, released, or replaced. `agent_release`
+  takes a name, and `brief_create` releases a dead holder of the name.
+- A file-scope test run was never reused while other Coders edited, so `handoff_submit`
+  looped on "still running".
+- A change request stayed on a superseded file and blocked the phase; it moves to the
+  replacement file, and a granted `cr_complete` override is honored.
+- A Coder deleting a file was denied `Remove-Item` with no pointer to `file_delete`, and
+  its handoff was refused while a node anchored the deleted file. The gate names
+  `file_delete`, and a deletion handoff drops the deleted file's anchors.
+- Stray-process findings named processes that had exited or belonged to the system.
+  Each process is verified by pid and start time; a release never stops a process whose
+  start time is unknown.
+- A replaced Coder on a superseded file kept raising findings; it raises one asking its
+  Lead to release it.
+- The run panel listed waiting sessions with no request and dropped what you typed on
+  each refresh.
+- A claim or move could name a path outside the repo or in its records, which a Coder
+  could then delete. Claimed paths are plain repo paths outside `.git`, `.claude`, and
+  `.sentinel-swarm`, and a phase commit passes them to git as literal paths.
+
 ## [0.7.1] — 2026-11-13 — a role starts no higher than your own default mode
 
 ### Changed

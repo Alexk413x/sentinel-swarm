@@ -326,13 +326,16 @@ descriptions stay out of every session's context.
 | `full_target` | empty | What a full run puts in `{target}`, such as `tests`. A full run never runs with an empty target: when the full command contains `{target}` and this is empty, `tests_run(scope="full")` refuses, unless the call passes a target |
 | `allowed_skips` | `[]` | Texts that mark a skip as an environment skip the host expects. A skip whose pytest `-rs` line (`SKIPPED [n] <path>:<line>: <reason>`), or `-v` line, contains one of them counts as clean. Every other skip fails the run |
 | `slow_tests` | `[]` | pytest node ids or path prefixes that run only when a brief asks: the ledger appends `--deselect <id>` for each to a pytest command, and `tests_run(include_slow=true)` leaves them in. Another stack runs them every time |
-| `build_command`, `lint_command` | empty | Optional; the Coder's shell gate allows them, and the Driver's allows `build_command` only |
+| `build_command` | empty | Optional; the Coder's shell gate allows a command that starts with it, and the Driver's allows `build_command` only. A full test run also runs `build_command` once its tests pass, and `phase_review(accepted)` needs that build to pass |
+| `lint_command` | empty | Optional. Put `{target}` where the linter takes a path, for example `npx eslint {target}`, so each Coder lints only its own file. With `{target}`, the Coder's shell gate allows exactly the command with `{target}` replaced by one of the Coder's own claimed paths (its file, its test file, or a product), and every other token as written; it denies any other path and the whole app. Without `{target}`, the gate allows a command that starts with `lint_command`, as for `build_command`. The Driver's gate never allows it. Setup writes the per-file form |
 | `commands` | empty | Named host commands outside test, build, and lint, such as the rebuild of a derived file. Each entry has `name`, `run`, `cwd` (default `.`), and `interpreter`; an entry with no `name` or `run` is dropped. The Coder's and the Manager's shell gates allow each exactly as `cd <cwd> && <interpreter> <run>`, or `<interpreter> <run>` when `cwd` is `.`. A failing `tests_run` whose output names a command's `name` or `run` lists that command in its result's `commands`. See "pre_shell" in [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md) |
 | `memory.headroom_mb` | 1500 | Megabytes of free memory the ledger keeps. `agent_spawn` queues a session whose role's estimate would take free memory below it, the watchdog starts it once memory frees, and a parked agent's resume follows the same rule. Empty admits every spawn. See "Memory" in [05-sessions.md](05-sessions.md) |
 | `memory.park_idle_parents` | `true` | Under memory pressure, the watchdog stops an idle Manager or Lead whose children still work and resumes it when a wake-up is owed to it. `false` leaves idle parents to the daemon |
+| `memory.park_blocked_minutes` | 10 | While a spawn waits for memory, the watchdog stops a Coder that has sat idle on a blocker, with no heartbeat for this many minutes, and resumes it when a wake-up is owed to it. `0` turns it off. A value that is not a whole number reads as 10. See "Park blocked Coders" in [05-sessions.md](05-sessions.md) |
 | `parallelism_cap` | empty | The most sessions at once: the run's live agents plus other swarms' running sessions on the machine. Empty sets it from total memory, half of it at 600 MB a session and at least 4; `0` turns it off. See "Parallelism" in [05-sessions.md](05-sessions.md) |
 | `time_budget_minutes` | empty | Advisory minutes for the run. Each wake-up and watchdog line for the Oracle or a Manager ends with `elapsed <n>s / <budget>s`, or `elapsed <n>s` when empty. A value that is not a positive whole number reads as empty. See "Time signal" in [05-sessions.md](05-sessions.md) |
 | `base_branch` | empty | `repo_check` tries `main`, then `master` |
+| `commit_phases` | `true` | At phase approval, commit the phase's own claimed files on the run branch; never on the base branch. `false` leaves every commit to the user. See "Phase review" in [02-run-lifecycle.md](02-run-lifecycle.md) |
 | `effort.<role>` | `medium` for every role | `--effort <level>` for that role's sessions. A settings file with no `effort` key gets `medium` for every role; a role left empty runs at its model's default. A brief's own `effort` overrides it |
 | `prompt_cache_ttl.<role>` | `5m` for the Coder, empty for the others | `promptCacheTtl` (`"5m"` or `"1h"`) for that role's sessions |
 | `pricing.<family>` | unset | `input`, `output`, `cache_read`, `cache_write_5m`, `cache_write_1h` in USD per million tokens, over the built-in price table. See "Token counting and cost" in [10-report-and-costs.md](10-report-and-costs.md) |
@@ -345,12 +348,20 @@ descriptions stay out of every session's context.
 
 `-p no:cacheprovider` keeps parallel pytest runs from contending on `.pytest_cache`.
 
-A Coder's shell gate allows only a command that starts with `test_command`,
-`build_command`, or `lint_command`, read-only git, and the host commands the settings
-name in `commands`; see `pre_shell` in
+A Coder's shell gate allows only a command that starts with `test_command` or
+`build_command`, a `lint_command` as the table above describes, read-only git, and the
+host commands the settings name in `commands`; see `pre_shell` in
 [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md). Any other step the work
 needs, such as an export, edit, and build loop over data files, goes in `commands`
 under its own name, not behind `build_command`.
+
+The gate denies any command that holds a shell operator (`;`, `&`, `|`, `<`, `>`, a
+backtick, a newline, or `$(`), so a `test_command`, `test_command_by_scope` entry,
+`build_command`, or `lint_command` written as `cd apps/web && npm run lint` is refused
+to every Coder, and `tests_run` resolves a repo-relative `{target}` from the repo root,
+not from `apps/web`. Setup warns about each such template and shows the subdirectory
+form, which names the directory in the command: `npx --prefix apps/web vitest run --root
+apps/web {target}`, or `npm --prefix apps/web run lint`.
 
 ## Plugin features
 

@@ -158,9 +158,22 @@ code or configuration.
 - Your shell is limited to the profile's test, build, and lint commands, the
   named host commands in the settings' `commands` list, `git rm` of your own
   paths, and read-only git. Anything else is denied.
-- When your brief says to delete your file, call `file_delete(path)`, or run
-  `git rm <path>`. Then score and hand off as for an edit: `handoff_submit`
-  records the deletion as the file's version.
+- When the profile's lint command holds `{target}`, lint only your own files: run the
+  command once with your file's path in place of `{target}`, and once with your test
+  file's path. The gate allows exactly that and denies any other path, including the
+  whole app. A lint command with no `{target}` runs as written.
+- To delete a file, call `file_delete(path)`, or run `git rm <path>`. The shell denies
+  `Remove-Item`, `rm`, and `del`. This covers your file, your test file, your products,
+  and the old files your claim replaces after a move. Then score and hand off as for an
+  edit: `handoff_submit` records the deletion as the file's version, and removes the
+  deleted file's anchors from the graph: a node that anchored only that file is
+  deleted, and a node that spans files keeps its other anchors. You need no
+  `graph_upsert` for it.
+- When your claim replaces other files, a move, your claim names them. Write your new
+  file and test file, delete the old ones, and re-anchor each node that anchored an old
+  path with `graph_upsert`: send `id` and `anchors` with the old path left out and your
+  new path in, plus every anchor the node has on other files. `handoff_submit` refuses
+  while an old file exists or a node still anchors it.
 
 ## When another file blocks you
 

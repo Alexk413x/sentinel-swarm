@@ -9,10 +9,11 @@ from . import graph, rubric, settle
 from .db import dict_rows, in_clause, row_dict, write_tx
 from .host import LedgerHost
 from .identity import Caller, LedgerError, ledger_errors, require_role, resolve
-from .review import latest_lead_review
+from .review import build_summary, latest_lead_review
 
 _CLEAN_TEST_RUN = (
-    "t.state = 'done' AND t.exit_code = 0 AND t.failed = 0 AND t.skipped = t.allowed_skipped"
+    "t.state = 'done' AND t.exit_code = 0 AND t.failed = 0 AND t.skipped = t.allowed_skipped "
+    "AND (t.build_command IS NULL OR t.build_exit_code = 0)"
 )
 
 
@@ -84,11 +85,12 @@ class OversightMixin(LedgerHost):
     def _passing_full_test_after(
         self, conn: sqlite3.Connection, run_id: int, after: str | None
     ) -> bool:
+        self.adopt_run_profile(run_id)
         row = conn.execute(
             "SELECT 1 FROM test_runs t JOIN agents a ON a.agent_id = t.agent_id "
             f"WHERE t.run_id = ? AND t.scope = 'full' AND a.role = 'oracle' AND {_CLEAN_TEST_RUN} "
-            "AND (? IS NULL OR t.created_at >= ?) LIMIT 1",
-            (run_id, after, after),
+            "AND t.build_command IS ? AND (? IS NULL OR t.created_at >= ?) LIMIT 1",
+            (run_id, self.settings.build_command or None, after, after),
         ).fetchone()
         return row is not None
 
@@ -171,6 +173,9 @@ class OversightMixin(LedgerHost):
             need += f", of {self.test_command_for('full', None)!r}"
         except LedgerError as exc:
             need += f"; {exc}"
+        build_command = self.settings.build_command or None
+        if build_command:
+            need += f". The run also builds with {build_command!r}, and the build must pass"
         latest = conn.execute(
             "SELECT t.* FROM test_runs t JOIN agents a ON a.agent_id = t.agent_id "
             "WHERE t.run_id = ? AND t.scope = 'full' AND a.role = 'oracle' "
@@ -183,6 +188,19 @@ class OversightMixin(LedgerHost):
             return (
                 f"{need}. Test run {latest['test_run_id']} is still running; end your turn, "
                 "and its wake-up names the result"
+            )
+        build = build_summary(latest)
+        if build is not None and build["state"] in ("failed", "timed out"):
+            return (
+                f"{need}. The latest, test run {latest['test_run_id']}, passed its tests but "
+                f"the build {build['state']} (exit code {build['exit_code']}). The end of the "
+                f"build output:\n{build['output']}\n"
+                "Fix the build, then call tests_run(scope='full')"
+            )
+        if (latest["build_command"] or None) != build_command and latest["state"] == "done":
+            return (
+                f"{need}. The latest, test run {latest['test_run_id']}, ran with a different "
+                "build_command. Call tests_run(scope='full')"
             )
         return (
             f"{need}. The latest, test run {latest['test_run_id']}, is {latest['state']}: "

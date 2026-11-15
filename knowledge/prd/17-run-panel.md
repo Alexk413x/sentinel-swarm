@@ -34,6 +34,10 @@ request.
   of its live agents that have not expired (`permissions`: the request id, the agent,
   the tool, the input summary, Claude Code's reason, and when it was asked and
   expires), and a paused run's reason (the reason of the run's latest move to `paused`).
+- Each run also carries `directives`: its open directives from `user_chat`,
+  `outside_session`, and `skill`, plus the 5 newest of them that resolved, each with its
+  state (`unread`, `seen`, `queued`, `needs_user`, or `resolved`), the time of that state,
+  the Oracle's note or resolution, and the outcome. See "Your directives" below.
 - Each agent carries its session id, session name, and transcript path. A child that
   `agent_spawn` queued in `spawn_queue` has a brief but no session yet; it sits in the
   tree under its parent as a queued row, with its brief's task and the queue's reason.
@@ -63,17 +67,29 @@ request.
 ## Waiting on you
 
 - A **Waiting on you** box with a red border sits under the controls whenever a live
-  run waits on the user. It lists, one line each:
-  - every role session that `claude agents --json` shows waiting, as "waits on a
-    permission prompt" or "waits for your answer";
+  run waits on the user. It lists:
+  - every role session that `claude agents --json` shows waiting or blocked **and**
+    whose transcript ends in a tool call with no result, as "waits on a permission
+    prompt" or "waits for your answer". Claude Code also shows `waiting` or `blocked`
+    for a session that ended its turn on a work blocker, and for an idle Oracle; with
+    no pending request the session is not listed, the same rule as the watchdog's
+    `needs_user` (see [08-watchdog.md](08-watchdog.md));
   - every held permission request, as "asks to run <tool> (permission request <id>)";
   - every open `needs_user` directive, as a question from the Oracle;
   - every open watchdog finding of kind `needs_user`, unless that agent's session wait
     or held request is already listed, and of kind `run_stalled`;
   - a paused run, with its reason.
-- An item that belongs to an agent names the agent and the first line of its request.
-  Its details sit under the agent's row, in a red-bordered box (`borderColor="error"`):
-  the tool and its input, or the question and its options, and where to answer.
+- Each item is a red-bordered box (`borderColor="error"`) in the Waiting on you box,
+  the one place to answer it. It names the agent, then the actual request: the tool and
+  its input, or each question and its options, and where to answer. The agent's row
+  carries one line, "⚠ <what it waits on> · answer it under Waiting on you".
+- The pending request comes from the ledger, not from the mod: each refresh first reads
+  `claude agents --json`, then runs `mcp/launch/ledger.py panel --repo <repo>
+  --waiting=<session id> --waiting=<session name> ...` for the sessions it shows
+  waiting or blocked. The ledger reads the last 256 KB of each matching live agent's
+  transcript and returns the pending call as the agent's `request` (`null` with none).
+  A mod reads only whole files of up to 4 MiB, which a long transcript passes. The
+  refresh skips the listing while the last snapshot had no live agent.
   - A waiting session is answered in agent view (`claude agents`), on the session the
     box names. The panel cannot answer a prompt Claude Code already shows; it answers
     only the requests a role's own mod holds for it (below).
@@ -83,15 +99,32 @@ request.
     went, and the panel refreshes. The box also says when the hold ends, after which
     the session shows Claude Code's own prompt in agent view. Every surface the mod API
     lists carries `Button`.
-  - A `needs_user` directive sits under the Oracle's row with an answer field. Enter
-    sends the text through `mcp/launch/ledger.py directive --source user_chat --sender
-    "run panel" --reply-to <id>`, which resolves the directive, and a toast says whether
-    it went. A surface with no `Input` element says to send the reply with the directive
-    command from `/sentinel-swarm:run` instead.
+  - A `needs_user` directive's box has an answer field. The panel keeps the typed text
+    as a draft in `$.state` (`panelAnswers`, keyed by the item), so a refresh redraws
+    the field with it. Enter sends the text through `mcp/launch/ledger.py directive
+    --source user_chat --sender "run panel" --reply-to <id>`, which resolves the
+    directive. The box shows "Sending..." at once, then "Sent at <time>. The Oracle
+    reads it at its next step." and clears the draft, or "Not sent: <reason>" and keeps
+    the draft. A toast says the same. A surface with no `Input` element says to send
+    the reply with the directive command from `/sentinel-swarm:run` instead.
 - A stall or a pause belongs to no agent row, so the top box shows its detail and what
   to do: check the run with `/sentinel-swarm:status` and message the Oracle, or fix the
   cause and message the Oracle or run `/sentinel-swarm:resume`.
 - The row of an agent with an item shows the warning glyph `⚠` and is never dimmed.
+
+## Your directives
+
+- A live run's section ends with a **Your directives** list, one line for each directive
+  the document's `directives` carries, in the order sent:
+  `#<id> <state> <time ago>[: <note>] · <first 40 characters of the text>`.
+- The state is `unread` (the Oracle has not read it; shown in the warning colour),
+  `seen` (the Oracle read it with `directive_inbox`), `queued` (the Oracle
+  acknowledged it with `directive_ack` and the note says when it applies), `waits on your
+  answer` (a `needs_user` outcome, with the question), or the outcome with the
+  resolution as its note (`applied`, `scheduled`, `declined`, or `answered` for a reply).
+  Resolved lines are dimmed.
+- The list is read-only. A directive from the watchdog, the Driver, or the Oracle's
+  `user_ask` is not listed.
 
 ### Answering a permission prompt in the panel
 
@@ -163,8 +196,26 @@ answers it. The hold is a mod hook, since the plugin has no command hooks.
 - Each agent row shows a status glyph, its name in its role colour, its unread and owed
   counts, and its own task at the right end of the line. Hovering the name shows the
   model and effort, or a queued row's queue reason.
-- An agent with children or tasks shows its count after its name, and clicking the name
-  collapses or expands it. The Oracle is not collapsible.
+- An agent with children or tasks shows its count after its name and a `▾`/`▸` before
+  it; clicking the arrow collapses or expands it. The Oracle is not collapsible.
+- The phases no Manager has started yet sit under one **phases not started (n)** row
+  below the Oracle. Clicking it collapses or expands the list. It starts expanded with
+  4 phases or fewer and collapsed with more; collapse all and expand all include it.
+- Clicking an agent's name opens its **detail card** below the row, in a box with the
+  role's colour; clicking the name again or **close** closes it. One card is open at a
+  time. The card shows:
+  - its role, model, and effort; its ledger state, session state, and session name;
+    what it is doing and how long ago its last heartbeat was; the phase, module, or
+    file it works on; unread messages and owed wake-ups; a park or end reason;
+  - what it waits on, when it waits on the user, and its own task and state;
+  - **Recent steps**: its last 8 main-thread steps, oldest first, each with its age:
+    `›` a line it said, `▸` a tool call and its input, `✕` a tool error. The panel
+    passes `--detail=<agent id>` to `ledger.py panel`, which reads them from the last
+    256 KB of that agent's transcript as the agent's `recent`, on each refresh while
+    the card is open, and right after the click;
+  - how to talk to it: run `claude agents` and open its session. A mod can switch the
+    main view only to the session's own agents (`$.ui.view`), not to another
+    background session, so the card cannot open the swarm session itself.
 - Tree lines take the colour of the parent they come from. Oracle and Manager lines
   reach the bottom of their expanded sections.
 - A row is dimmed when its agent has ended or has not started:
@@ -193,6 +244,9 @@ answers it. The hold is a mod hook, since the plugin has no command hooks.
   (`wrap="truncate-start"`), so the end of the file name stays visible.
 - Work that no agent owns yet appears under the agent it belongs to, in ledger order.
   Work a queued child will own sits on that child's row.
+- A phase with no Manager brief yet shows the goal `phase_add` recorded as its brief,
+  and its summary is the goal's first sentence. With neither, the detail says "No brief
+  recorded."
 - Clicking a task opens its brief below it, with simple Markdown (headings, lists,
   bold, italic, code), and its latest review. One task is open at a time. Clicking the
   open text, another task, or any control closes it.

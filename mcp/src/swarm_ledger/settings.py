@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, TypeVar
@@ -28,8 +29,10 @@ SETTINGS_PATH = Path(".claude") / "sentinel-swarm.local.md"
 NOTIFY_CHANNELS = ("os", "push")
 DEFAULT_MAX_WORKERS = 8
 DEFAULT_HEADROOM_MB = 1500
+DEFAULT_PARK_BLOCKED_MINUTES = 10
 _FALSE_WORDS = frozenset({"false", "no", "off", "0"})
 PROFILE_KEYS = ("test_command", "build_command", "lint_command")
+SHELL_OPERATORS = re.compile(r"[;&|<>`\n]|\$\(")
 TEST_SCOPES = ("file", "module", "phase", "full")
 DEFAULT_TEST_TIMEOUT_S = 600
 DEFAULT_PERMISSION_HOLD_S = 300
@@ -138,6 +141,7 @@ class WatchdogSettings:
 class MemorySettings:
     headroom_mb: int | None = DEFAULT_HEADROOM_MB
     park_idle_parents: bool = True
+    park_blocked_minutes: int = DEFAULT_PARK_BLOCKED_MINUTES
 
 
 def normalize_context_windows(raw: object) -> dict[str, int]:
@@ -165,7 +169,17 @@ def normalize_memory(raw: object) -> MemorySettings:
         except ValueError:
             headroom = None
     park = str(data.get("park_idle_parents", True)).strip().lower()
-    return MemorySettings(headroom_mb=headroom, park_idle_parents=park not in _FALSE_WORDS)
+    blocked = DEFAULT_PARK_BLOCKED_MINUTES
+    if "park_blocked_minutes" in data and not isinstance(data["park_blocked_minutes"], bool):
+        try:
+            blocked = max(0, int(str(data["park_blocked_minutes"]).strip()))
+        except ValueError:
+            pass
+    return MemorySettings(
+        headroom_mb=headroom,
+        park_idle_parents=park not in _FALSE_WORDS,
+        park_blocked_minutes=blocked,
+    )
 
 
 def normalize_commands(raw: object) -> list[dict[str, str]]:
@@ -226,6 +240,7 @@ class Settings:
     time_budget_minutes: int | None = None
     # Empty means repo_check tries main, then master, then reports no base branch.
     base_branch: str | None = None
+    commit_phases: bool = True
     # Per-role --effort for agent_spawn; a role with no entry runs at its model's default.
     effort: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_EFFORT))
     # Per-role promptCacheTtl ("5m" or "1h") for agent_spawn; a role with no entry keeps the
@@ -349,6 +364,7 @@ def load_settings(repo_root: Path) -> Settings:
         parallelism_cap=normalize_parallelism_cap(data.get("parallelism_cap")),
         time_budget_minutes=normalize_budget(data.get("time_budget_minutes")),
         base_branch=data.get("base_branch") or defaults.base_branch,
+        commit_phases=str(data.get("commit_phases", True)).strip().lower() not in _FALSE_WORDS,
         effort=effort,
         prompt_cache_ttl=prompt_cache_ttl,
         permission_mode=permission_mode,

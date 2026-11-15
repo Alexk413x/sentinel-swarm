@@ -87,6 +87,16 @@ _CLAIM_FILE_PRODUCT_OF = Field(
     description="For a generated file, such as a build output: the file_id of the live claim it "
     "is built from. for_name is that file's Coder, and the product rides its handoff.",
 )
+_CLAIM_FILE_MOVED_FROM = Field(
+    default=None,
+    description="For a file that replaces others, the old file and old test file it moves: "
+    "paths no live claim holds. The Coder deletes them with file_delete and re-anchors their "
+    "graph nodes with graph_upsert.",
+)
+_FILE_MOVE_TEST_PATH = Field(
+    default=None,
+    description="The test file's new path. Leave it unset when the test file does not move.",
+)
 _RUN_CLOSE_FILES = Field(
     default=None,
     description='Each unsettled file, as {"file_id": <id>, "reason": <why it stops short>}.',
@@ -293,10 +303,13 @@ def phase_add(
     caller: CallerName,
     name: str,
     depends_on: list[int] | None = None,
+    goal: str | None = None,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Adds a phase to the plan with optional phase dependencies; the Oracle calls this. The
-    stored name is p<ordinal>-<name>, and its Manager is named mgr-<that name>."""
+    stored name is p<ordinal>-<name>, and its Manager is named mgr-<that name>. goal is a
+    short statement of what the phase delivers, which the run panel shows until the phase's
+    Manager is briefed."""
     ...
 
 
@@ -374,8 +387,9 @@ def agent_release(
     caller: CallerName, target_agent_id: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Releases an agent it directly parented; any parent role calls this for its own child. The
-    Oracle may also release an agent whose parent has ended. Passed a queued child's name, it
-    cancels that queued spawn and keeps its brief and claim."""
+    Oracle may also release an agent whose parent has ended. Takes the agent's id, or the name
+    or session name of a live agent of the run. Passed a queued child's name, it cancels that
+    queued spawn and keeps its brief and claim."""
     ...
 
 
@@ -404,11 +418,27 @@ def claim_file(
     depends_on: list[int] | None = _CLAIM_FILE_DEPENDS_ON,
     module_id: int | None = _CLAIM_FILE_MODULE_ID,
     product_of: int | None = _CLAIM_FILE_PRODUCT_OF,
+    moved_from: list[str] | None = _CLAIM_FILE_MOVED_FROM,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Claims a file path for a coder under the caller's module; a Lead calls this, or a
     Manager for an unowned path, with the module_id of one of its modules. for_name is
     coder-p<phase ordinal>-<module>-<file slug>."""
+    ...
+
+
+@_tool()
+def file_move(
+    caller: CallerName,
+    path: str,
+    new_path: str,
+    test_path: str | None = _FILE_MOVE_TEST_PATH,
+    agent_id: str | None = _STAMPED_AGENT_ID,
+) -> dict[str, Any]:
+    """Moves a live claim of the caller's module to new_path, and its test file to test_path
+    when given; a Lead calls this. The Coder keeps the claim, deletes the old paths with
+    file_delete, and may re-anchor their graph nodes with graph_upsert. It refuses a handed-up
+    file and a new path another claim holds."""
     ...
 
 
@@ -469,7 +499,21 @@ def directive_submit(
 def directive_inbox(
     caller: CallerName, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> list[dict[str, Any]]:
-    """Returns the run's open directives; the Oracle calls this."""
+    """Returns the run's open directives and records when the Oracle first read each; the
+    Oracle calls this."""
+    ...
+
+
+@_tool()
+def directive_ack(
+    caller: CallerName,
+    directive_id: int,
+    note: str,
+    agent_id: str | None = _STAMPED_AGENT_ID,
+) -> dict[str, Any]:
+    """Marks an open directive queued, with a note that says when or how it applies, so its
+    sender sees the Oracle has it; the Oracle calls this. The directive stays open until
+    directive_resolve."""
     ...
 
 
@@ -510,8 +554,11 @@ def override_grant(
 ) -> dict[str, Any]:
     """Grants a one-time override of a rule for an agent; the Oracle calls this.
 
-    Refuses a target_agent_name that names the Oracle itself: the Oracle must never
-    grant itself a write or shell override.
+    rule is write, shell, or cr_complete. A cr_complete override with a target that starts
+    with "CR <id>" lets target_agent_name complete that change request once with no
+    evidence, when its work landed where cr_complete cannot see it. Refuses a
+    target_agent_name that names the Oracle itself: the Oracle must never grant itself a
+    write or shell override.
     """
     ...
 
@@ -873,8 +920,10 @@ def version_restore(
 def file_delete(
     caller: CallerName, path: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
-    """Deletes the Coder's own claimed file, test file, or product from disk; a Coder calls
-    this. handoff_submit records the deletion as the file's version for review."""
+    """Deletes the Coder's own claimed file, test file, product, or a file its claim replaces
+    from disk; a Coder calls this, and it is the way to delete a file: the shell gate denies
+    Remove-Item, rm, and del. handoff_submit records the deletion as the file's version for
+    review, and removes the deleted file's graph anchors."""
     ...
 
 

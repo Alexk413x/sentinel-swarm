@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timedelta
 
-from . import lock, memory, procs, sessions
+from . import lock, memory, permission, procs, sessions, transcript
 from .clock import parse_stamp, stamp
 from .db import NOW, dict_rows, in_clause, write_tx
 from .host import LedgerHost
@@ -258,7 +258,7 @@ class CapacityMixin(LedgerHost):
         parked: list[dict] = []
         for agent in agents:
             entry = by_session.get(agent["agent_id"])
-            running = entry is not None and sessions.is_running(entry)
+            running = sessions.agent_running(entry, agent)
             if running:
                 if agent["parked_at"] is not None:
                     with write_tx(self.conn) as conn:
@@ -320,13 +320,14 @@ class CapacityMixin(LedgerHost):
         handled: set[str] = set()
         for row in rows:
             entry = sessions.find_session(listing, row["agent_id"])
-            if entry is not None and sessions.is_running(entry):
+            if sessions.agent_running(entry, row):
                 if row["parked_at"] is not None:
                     # The park is claimed and `claude stop` is on its way: the session is dying,
                     # so the wake-up stays owed and `resume_parked` brings it back.
                     handled.add(row["agent_id"])
                 continue
-            moved = sessions.resumed_entry(listing, None, row["session_name"])
+            others = [e for e in listing if e.get("sessionId") != row["agent_id"]]
+            moved = sessions.resumed_entry(others, None, row["session_name"])
             if moved is not None:
                 self.adopt_resumed(row["agent_id"], str(moved["sessionId"]))
                 continue
@@ -404,17 +405,23 @@ class CapacityMixin(LedgerHost):
             resumed.append(result)
         return resumed
 
-    def park_idle_parents(self, listing: list[dict]) -> list[dict]:
+    def _shortfall(self, run_id: int) -> tuple[int, list[dict]] | None:
+        headroom = self._headroom()
+        free = memory.free_mb()
+        if headroom is None or free is None:
+            return None
+        queued = self._queued(self.conn, run_id)
+        queued_mb = sum(memory.estimate_mb(self.conn, q["role"]) for q in queued)
+        return headroom + queued_mb + lock.reserved_mb() - free, queued
+
+    def park_idle_parents(self, listing: list[dict], freed_mb: int = 0) -> list[dict]:
         if not self.settings.memory.park_idle_parents:
             return []
         run = self.conn.execute("SELECT run_id FROM runs WHERE state = 'active'").fetchone()
-        headroom = self._headroom()
-        free = memory.free_mb()
-        if run is None or headroom is None or free is None:
+        shortfall = None if run is None else self._shortfall(run["run_id"])
+        if run is None or shortfall is None:
             return []
-        queued = self._queued(self.conn, run["run_id"])
-        queued_mb = sum(memory.estimate_mb(self.conn, q["role"]) for q in queued)
-        need = headroom + queued_mb + lock.reserved_mb() - free
+        need = shortfall[0] - freed_mb
         if need <= 0:
             return []
         by_session = {str(e.get("sessionId")): e for e in listing if e.get("sessionId")}
@@ -469,6 +476,90 @@ class CapacityMixin(LedgerHost):
                 self._log_event(conn, parent["agent_id"], "idle", "parked", PARK_PRESSURE)
             return bool(cur.rowcount)
 
+    def park_blocked_coders(
+        self, listing: list[dict], now: datetime, freed_mb: int = 0
+    ) -> list[dict]:
+        minutes = self.settings.memory.park_blocked_minutes
+        if minutes <= 0:
+            return []
+        run = self.conn.execute("SELECT run_id FROM runs WHERE state = 'active'").fetchone()
+        shortfall = None if run is None else self._shortfall(run["run_id"])
+        if run is None or shortfall is None:
+            return []
+        need = shortfall[0] - freed_mb
+        if not shortfall[1] or need <= 0:
+            return []
+        cutoff = now - timedelta(minutes=minutes)
+        held = {r["agent_id"] for r in permission.open_requests(self.conn, run["run_id"], now)}
+        by_session = {str(e.get("sessionId")): e for e in listing if e.get("sessionId")}
+        coders = dict_rows(
+            self.conn.execute(
+                "SELECT * FROM agents WHERE run_id = ? AND ended_at IS NULL "
+                "AND parked_at IS NULL AND role = 'coder' AND state IN ('idle', 'working') "
+                "AND bg_id IS NOT NULL ORDER BY COALESCE(last_heartbeat_at, started_at)",
+                (run["run_id"],),
+            )
+        )
+        parked: list[dict] = []
+        for coder in coders:
+            if need <= 0:
+                break
+            last = parse_stamp(coder["last_heartbeat_at"]) or parse_stamp(coder["started_at"])
+            if last is None or last > cutoff or coder["agent_id"] in held:
+                continue
+            entry = by_session.get(coder["agent_id"])
+            if not sessions.agent_running(entry, coder) or not _ended_its_turn(entry, coder):
+                continue
+            if transcript.pending_use(coder["transcript_path"]) is not None:
+                continue
+            reason = (
+                f"the ledger stopped it: idle on a blocker with no activity for over {minutes} "
+                "minutes while a spawn waits for memory"
+            )
+            if not self._claim_blocked_coder(coder, reason):
+                continue
+            try:
+                sessions.stop(coder["bg_id"])
+            except LedgerError as exc:
+                with write_tx(self.conn) as conn:
+                    conn.execute(
+                        "UPDATE agents SET state = ?, state_before_park = NULL, parked_at = NULL, "
+                        "park_reason = NULL WHERE agent_id = ? AND state = 'parked'",
+                        (coder["state"], coder["agent_id"]),
+                    )
+                    self._log_event(conn, coder["agent_id"], None, "park_failed", str(exc))
+                continue
+            parked.append(coder | {"park_reason": reason})
+            need -= memory.estimate_mb(self.conn, "coder")
+        return parked
+
+    def _claim_blocked_coder(self, coder: dict, reason: str) -> bool:
+        with write_tx(self.conn) as conn:
+            owed = conn.execute(
+                "SELECT 1 FROM wakeups WHERE (to_agent_id = ? OR from_agent_id = ?) "
+                "AND sent_at IS NULL",
+                (coder["agent_id"], coder["agent_id"]),
+            ).fetchone()
+            testing = conn.execute(
+                "SELECT 1 FROM test_runs WHERE agent_id = ? AND state = 'running'",
+                (coder["agent_id"],),
+            ).fetchone()
+            if owed is not None or testing is not None:
+                return False
+            if unread_count(conn, coder["run_id"], coder["name"]):
+                return False
+            # A session that ended its turn on a blocker is idle whatever its last state was:
+            # `crashed` reports a parked agent whose state before the park is working.
+            cur = conn.execute(
+                f"UPDATE agents SET parked_at = {NOW}, park_reason = ?, "
+                "state_before_park = 'idle', state = 'parked' "
+                "WHERE agent_id = ? AND parked_at IS NULL AND state IN ('idle', 'working')",
+                (reason, coder["agent_id"]),
+            )
+            if cur.rowcount:
+                self._log_event(conn, coder["agent_id"], coder["state"], "parked", reason)
+            return bool(cur.rowcount)
+
     def release_finished_parked(self, now: datetime) -> list[dict]:
         run = self.conn.execute("SELECT run_id FROM runs WHERE state = 'active'").fetchone()
         if run is None:
@@ -504,6 +595,13 @@ class CapacityMixin(LedgerHost):
                 self._release_agent(conn, agent["agent_id"], reason)
             released.append(agent | {"release_reason": reason})
         return released
+
+
+def _ended_its_turn(entry: dict | None, agent: dict) -> bool:
+    states = {str(entry.get(key) or "").lower() for key in ("status", "state")} if entry else set()
+    if agent["state"] == "working":
+        return bool(states & {"waiting", "blocked"})
+    return "busy" not in states
 
 
 def _finished_scope(agent: dict) -> str | None:

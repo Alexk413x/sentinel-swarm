@@ -37,6 +37,7 @@ _DEFERRAL_LEVEL = {
     "prd": "oracle",
 }
 DEFERRAL_KINDS = tuple(_DEFERRAL_LEVEL)
+BUILD_OUTPUT_CHARS = 2000
 INLINE_WAIT_S = 20.0
 _WAIT_POLL_S = 0.2
 
@@ -151,6 +152,22 @@ def fix_briefs(conn: sqlite3.Connection, run_id: int) -> list[dict]:
     ]
 
 
+def build_summary(row: sqlite3.Row) -> dict | None:
+    if not row["build_command"]:
+        return None
+    exit_code = row["build_exit_code"]
+    if exit_code is None:
+        state = "running" if row["state"] == "running" else "not run"
+    elif exit_code == 0:
+        state = "passed"
+    else:
+        state = "timed out" if exit_code == -1 else "failed"
+    summary = {"command": row["build_command"], "state": state, "exit_code": exit_code}
+    if state in ("failed", "timed out"):
+        summary["output"] = (row["build_output"] or "")[-BUILD_OUTPUT_CHARS:]
+    return summary
+
+
 def test_run_result(row: sqlite3.Row) -> dict:
     ok = test_run_passed(row)
     output = row["output"] or ""
@@ -175,6 +192,9 @@ def test_run_result(row: sqlite3.Row) -> dict:
     }
     if row["reused_from"] is not None:
         result["reused_from"] = row["reused_from"]
+    build = build_summary(row)
+    if build is not None:
+        result["build"] = build
     if row["state"] == "running":
         result["reason"] = "still running"
         result["next"] = (
@@ -374,6 +394,7 @@ class ReviewMixin(LedgerHost):
         c = resolve(self.conn, caller, agent_id)
         require_role(c, _SCOPE_ROLE[scope])
 
+        file_row = None
         if scope == "file":
             if c.file_id is None:
                 raise LedgerError(f"{caller!r} has no claimed file")
@@ -387,18 +408,23 @@ class ReviewMixin(LedgerHost):
         if scope == "full" and target is None:
             target = self.settings.full_target
         command = self.test_command_for(scope, target, include_slow)
+        build = (self.settings.build_command or None) if scope == "full" else None
         testrun.sweep(self.conn)
-        claimed = self._claimed_paths(c.run_id)
-        fingerprint = tree_fingerprint(self.repo_root, claimed)
+        if file_row is not None:
+            claimed = self._file_scope_paths(file_row)
+            fingerprint = tree_fingerprint(self.repo_root, claimed, whole_tree=False)
+        else:
+            claimed = self._claimed_paths(c.run_id)
+            fingerprint = tree_fingerprint(self.repo_root, claimed)
         if not force:
-            earlier = self._reusable_run(c.run_id, command, fingerprint)
+            earlier = self._reusable_run(c.run_id, command, fingerprint, build)
             if earlier is not None:
                 return self._record_reuse(c, scope, target, earlier)
             running = self.conn.execute(
                 "SELECT test_run_id FROM test_runs WHERE run_id = ? AND agent_id = ? "
-                "AND command = ? AND fingerprint IS ? AND state = 'running' "
-                "ORDER BY test_run_id DESC LIMIT 1",
-                (c.run_id, c.agent_id, command, fingerprint),
+                "AND command = ? AND fingerprint IS ? AND build_command IS ? "
+                "AND state = 'running' ORDER BY test_run_id DESC LIMIT 1",
+                (c.run_id, c.agent_id, command, fingerprint, build),
             ).fetchone()
             if running is not None:
                 return self._await_run(running["test_run_id"])
@@ -406,8 +432,8 @@ class ReviewMixin(LedgerHost):
         with write_tx(self.conn) as conn:
             cur = conn.execute(
                 "INSERT INTO test_runs (run_id, agent_id, scope, target, command, fingerprint, "
-                "state, skip_patterns_json, claimed_json, timeout_s) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)",
+                "state, skip_patterns_json, claimed_json, timeout_s, build_command) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)",
                 (
                     c.run_id,
                     c.agent_id,
@@ -418,6 +444,7 @@ class ReviewMixin(LedgerHost):
                     json.dumps(self.settings.allowed_skips),
                     json.dumps(sorted(set(claimed))),
                     self.settings.test_timeout_s,
+                    build,
                 ),
             )
             test_run_id = int(cur.lastrowid or 0)
@@ -485,8 +512,9 @@ class ReviewMixin(LedgerHost):
             cur = conn.execute(
                 "INSERT INTO test_runs (run_id, agent_id, scope, target, command, exit_code, "
                 "passed, failed, skipped, errors, allowed_skipped, output, fingerprint, "
-                "reused_from, state, duration_ms, finished_at) "
-                f"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', 0, {NOW})",
+                "reused_from, build_command, build_exit_code, build_output, build_duration_ms, "
+                "state, duration_ms, finished_at) "
+                f"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', 0, {NOW})",
                 (
                     c.run_id,
                     c.agent_id,
@@ -502,6 +530,10 @@ class ReviewMixin(LedgerHost):
                     earlier["output"],
                     earlier["fingerprint"],
                     earlier["test_run_id"],
+                    earlier["build_command"],
+                    earlier["build_exit_code"],
+                    earlier["build_output"],
+                    earlier["build_duration_ms"],
                 ),
             )
         row = self.conn.execute(
@@ -524,8 +556,22 @@ class ReviewMixin(LedgerHost):
             if command["name"] in output or command["run"] in output
         ]
 
+    def _file_scope_paths(self, file_row: sqlite3.Row) -> list[str]:
+        # Other Coders edit the run's other files the whole time, so a file run that hashed
+        # them would never be reused and handoff_submit would wait on a fresh run every call.
+        rows = [
+            file_row,
+            *self._products(file_row["file_id"]),
+            *self.conn.execute(
+                "SELECT f.path, f.test_path FROM file_deps d "
+                "JOIN files f ON f.file_id = d.depends_on_file_id WHERE d.file_id = ?",
+                (file_row["file_id"],),
+            ),
+        ]
+        return [path for row in rows for path in (row["path"], row["test_path"]) if path]
+
     def _claimed_paths(self, run_id: int | None) -> list[str]:
-        return [
+        paths = [
             path
             for row in self.conn.execute(
                 "SELECT f.path, f.test_path FROM files f "
@@ -536,16 +582,35 @@ class ReviewMixin(LedgerHost):
             for path in (row["path"], row["test_path"])
             if path
         ]
+        paths += [
+            row["path"]
+            for row in self.conn.execute(
+                "SELECT mv.path FROM file_moves mv JOIN files f ON f.file_id = mv.file_id "
+                "JOIN modules m ON m.module_id = f.module_id "
+                "JOIN phases p ON p.phase_id = m.phase_id WHERE p.run_id = ?",
+                (run_id,),
+            )
+        ]
+        return paths
+
+    def _moved_paths(self, file_id: int | None) -> list[str]:
+        return [
+            row["path"]
+            for row in self.conn.execute(
+                "SELECT path FROM file_moves WHERE file_id = ? ORDER BY path", (file_id,)
+            )
+        ]
 
     def _reusable_run(
-        self, run_id: int | None, command: str, fingerprint: str | None
+        self, run_id: int | None, command: str, fingerprint: str | None, build: str | None
     ) -> sqlite3.Row | None:
         if fingerprint is None:
             return None
         for row in self.conn.execute(
             "SELECT * FROM test_runs WHERE run_id = ? AND command = ? AND fingerprint = ? "
-            "AND reused_from IS NULL AND state = 'done' ORDER BY test_run_id DESC",
-            (run_id, command, fingerprint),
+            "AND build_command IS ? AND reused_from IS NULL AND state = 'done' "
+            "ORDER BY test_run_id DESC",
+            (run_id, command, fingerprint, build),
         ):
             if test_run_passed(row):
                 return row
@@ -572,6 +637,7 @@ class ReviewMixin(LedgerHost):
         require_role(c, "coder", "lead", "oracle")
         claims = self._live_claims(c.run_id) if c.role != "coder" else set()
         own: set[str] = set()
+        moved: set[str] = set()
         file_of: dict[str, int] = {}
         if c.role == "lead":
             for row in self.conn.execute(
@@ -579,7 +645,7 @@ class ReviewMixin(LedgerHost):
                 "AND state NOT IN ('released', 'superseded')",
                 (c.module_id,),
             ):
-                for p in (row["path"], row["test_path"]):
+                for p in (row["path"], row["test_path"], *self._moved_paths(row["file_id"])):
                     if p:
                         file_of[p] = row["file_id"]
         elif c.role == "coder":
@@ -591,6 +657,7 @@ class ReviewMixin(LedgerHost):
             if file_row is None:
                 raise LedgerError(f"{caller!r} has no claimed file")
             own = {p for p in (file_row["path"], file_row["test_path"]) if p}
+            moved = set(self._moved_paths(file_row["file_id"]))
 
         for node in nodes:
             node_id = str(node.get("id"))
@@ -599,7 +666,7 @@ class ReviewMixin(LedgerHost):
             after = supplied if "anchors" in node else stored
             touched = {p for p, _ in (*supplied, *stored)}
             if c.role == "coder":
-                self._coder_may_upsert(node, own, supplied, stored, touched)
+                self._coder_may_upsert(node, own, moved, supplied, stored, touched)
             elif c.role == "lead":
                 _lead_may_upsert(file_of, claims, touched, {p for p, _ in after})
             else:
@@ -638,11 +705,12 @@ class ReviewMixin(LedgerHost):
         self,
         node: dict,
         own: set[str],
+        moved: set[str],
         supplied: list[tuple[str, str]],
         stored: list[tuple[str, str]],
         touched: set[str],
     ) -> None:
-        if touched <= own:
+        if touched <= own | moved:
             return
         refusal = (
             "a Coder updates only the nodes that anchor on its own file; ask your Lead to "
@@ -653,7 +721,7 @@ class ReviewMixin(LedgerHost):
         if set(node) - {"id", "anchors"}:
             raise LedgerError(refusal)
         if "anchors" in node:
-            if not set(stored) <= set(supplied):
+            if not {a for a in stored if a[0] not in moved} <= set(supplied):
                 raise LedgerError(refusal)
             if any(path not in own for path, _ in set(supplied) - set(stored)):
                 raise LedgerError(refusal)
@@ -866,6 +934,8 @@ class ReviewMixin(LedgerHost):
             raise LedgerError(f"{caller!r} does not own file {file_id!r}")
         self._block_handoff_for_open_cr(self.conn, file_id)
         self._require_brief_reread(c, file_id)
+        pruned = self._drop_deleted_anchors(file_row)
+        self._require_replaced_files_gone(file_row)
         test_run_id, self_review = self._require_handoff_evidence(caller, agent_id, file_row)
 
         records_dir = ledger_path(self.repo_root).parent
@@ -940,6 +1010,8 @@ class ReviewMixin(LedgerHost):
             handoff["product_version_ids"] = product_version_ids
         if path_version["deleted"]:
             handoff["deleted"] = True
+        if pruned is not None:
+            handoff["graph_pruned"] = pruned
         if superseded_ids:
             handoff["superseded_handoff_ids"] = superseded_ids
         if closed_departures:
@@ -950,6 +1022,36 @@ class ReviewMixin(LedgerHost):
             )
         handoff["next"] = self.next_step(wakeup)
         return handoff
+
+    def _drop_deleted_anchors(self, file_row: sqlite3.Row) -> dict[str, list[str]] | None:
+        owned = [
+            file_row["path"],
+            file_row["test_path"],
+            *(p["path"] for p in self._products(file_row["file_id"])),
+        ]
+        gone = [p for p in owned if p and not (self.repo_root / p).exists()]
+        anchored = graph.anchored_paths(self.repo_root, gone)
+        if not anchored:
+            return None
+        return graph.drop_anchors(self.repo_root, sorted(anchored))
+
+    def _require_replaced_files_gone(self, file_row: sqlite3.Row) -> None:
+        replaced = self._moved_paths(file_row["file_id"])
+        left = [p for p in replaced if (self.repo_root / p).exists()]
+        if left:
+            raise LedgerError(
+                "; ".join(f"{p} is the file this one replaces and still exists" for p in left)
+                + f". Delete {'it' if len(left) == 1 else 'each'} with file_delete(path), then "
+                "hand off again"
+            )
+        anchored = graph.nodes_on(self.repo_root, replaced)
+        if anchored:
+            detail = "; ".join(f"{p} (nodes {', '.join(ids)})" for p, ids in anchored.items())
+            raise LedgerError(
+                f"the code graph still anchors nodes on a file this one replaces: {detail}. "
+                "Call graph_upsert for each node with anchors that leave the old path out and "
+                f"name {file_row['path']}; a node that spans files keeps its other anchors"
+            )
 
     def _require_handoff_evidence(
         self, caller: str, agent_id: str, file_row: sqlite3.Row
@@ -969,14 +1071,7 @@ class ReviewMixin(LedgerHost):
                 raise LedgerError(f"tests are not passing: {test_result['reason']}")
             test_run_id = test_result["test_run_id"]
 
-        if deleted:
-            if graph.anchored_paths(self.repo_root, [file_row["path"]]):
-                raise LedgerError(
-                    f"{file_row['path']} is deleted, but the code graph still anchors nodes on "
-                    "it. Find them with kg_find_by_path, then call graph_upsert for each with "
-                    "anchors that leave the deleted path out"
-                )
-        else:
+        if not deleted:
             graph_ok, graph_reasons = graph.graph_current_for(self.repo_root, file_row["path"])
             if not graph_ok:
                 raise LedgerError(
@@ -1042,6 +1137,7 @@ class ReviewMixin(LedgerHost):
                 file_row["path"],
                 file_row["test_path"],
                 *(p["path"] for p in self._products(file_row["file_id"])),
+                *self._moved_paths(file_row["file_id"]),
             }
             if file_row is not None
             else set()
@@ -1052,6 +1148,8 @@ class ReviewMixin(LedgerHost):
                 f"not {path!r}"
             )
         target = self.repo_root / path
+        if not target.resolve().is_relative_to(self.repo_root.resolve()):
+            raise LedgerError(f"{path!r} is outside the repo, so file_delete leaves it")
         if not target.is_file():
             raise LedgerError(f"{path!r} is not a file on disk")
         target.unlink()

@@ -12,6 +12,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from pathlib import Path
 
+from . import procs
 from .identity import LedgerError
 from .paths import claude_json_path, config_dir
 
@@ -46,6 +47,15 @@ _LABELS = ("agents", "plugin", "stop", "--resume", "--bg")
 # Not "done": a background session reports state "done" once its turn ends, while its process
 # still runs and takes messages. Resuming it with --resume starts a second session.
 _DEAD = frozenset({"stopped", "exited", "crashed", "failed", "killed", "dead", "completed"})
+# A session the daemon no longer runs, such as one left from before a reboot, stays in the
+# listing with its last state and no pid or status, so only these statuses or a live process
+# count as running.
+_LIVE_STATUSES = frozenset({"busy", "idle", "waiting"})
+# A process created this long after the session started holds a reused pid.
+_PID_REUSE_GRACE_MS = 60_000
+# On macOS and Linux each start-time read runs ps, and a watchdog pass checks every entry.
+_CREATED_TTL_S = 5.0
+_CREATED_CACHE: dict[int, tuple[float, int | None]] = {}
 _TIMEOUT_S = 60.0
 # Many sessions starting and stopping at once can leave ~/.claude.json truncated for a while;
 # every claude command fails to read it until a later write completes it.
@@ -305,10 +315,48 @@ def list_sessions(*, retry: bool = False) -> list[dict]:
 
 def is_running(entry: dict) -> bool:
     states = {str(entry.get(key) or "").lower() for key in ("status", "state")}
-    # Claude Code 2.1.284 prints no pid for a background session; the plain listing holds only
-    # active ones, so a background entry without a dead state is running.
-    present = bool(entry.get("pid")) or entry.get("kind") == "background"
-    return present and not (states & _DEAD)
+    if states & _DEAD:
+        return False
+    # An entry a killed process left behind keeps its last status, so a pid decides over it.
+    if _has_pid(entry.get("pid")):
+        return _process_alive(entry.get("pid"), entry.get("startedAt"))
+    return str(entry.get("status") or "").lower() in _LIVE_STATUSES
+
+
+def agent_running(entry: dict | None, agent: Mapping[str, object]) -> bool:
+    if entry is None or not is_running(entry):
+        return False
+    pid = agent.get("session_pid")
+    if _has_pid(entry.get("pid")) or not isinstance(pid, int) or not _has_pid(pid):
+        return True
+    created = procs.created_of(pid)
+    recorded = agent.get("session_pid_created")
+    return created is not None and (recorded is None or created == recorded)
+
+
+def _has_pid(pid: object) -> bool:
+    return isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
+
+
+def _created(pid: int) -> int | None:
+    now = time.monotonic()
+    held = _CREATED_CACHE.get(pid)
+    if held is not None and now - held[0] < _CREATED_TTL_S:
+        return held[1]
+    created = procs.created_of(pid)
+    _CREATED_CACHE[pid] = (now, created)
+    return created
+
+
+def _process_alive(pid: object, started_ms: object) -> bool:
+    if not isinstance(pid, int) or not _has_pid(pid):
+        return False
+    created = _created(pid)
+    if created is None:
+        return False
+    if not isinstance(started_ms, (int, float)):
+        return True
+    return procs.created_epoch_ms(created) <= started_ms + _PID_REUSE_GRACE_MS
 
 
 def find_session(sessions: list[dict], session_id: str) -> dict | None:

@@ -478,6 +478,44 @@ def test_a_needs_user_directive_waits_on_the_user_until_answered(ledger: Ledger)
     assert _run_snapshot(ledger)["waiting"]["questions"] == []
 
 
+def test_the_panel_lists_each_user_directive_with_its_state(ledger: Ledger) -> None:
+    ctx = _build(ledger)
+    first = ledger.directive_submit("user_chat", "alex", "Scope it to phase 1.")
+    ledger.directive_inbox("oracle", ctx["oracle_id"])
+    queued = ledger.directive_submit("outside_session", "alex", "Drop the CLI.")
+    ledger.directive_ack("oracle", ctx["oracle_id"], queued["directive_id"], "after the review")
+    ledger.directive_submit("watchdog", "watchdog", "Not shown.")
+    unread = ledger.directive_submit("user_chat", "alex", "Rename the flag.")
+    done = ledger.directive_submit("user_chat", "alex", "Skip docs.")
+    ledger.directive_resolve("oracle", ctx["oracle_id"], done["directive_id"], "applied", "Done.")
+
+    rows = {d["directive_id"]: d for d in _run_snapshot(ledger)["directives"]}
+
+    assert set(rows) == {d["directive_id"] for d in (first, queued, unread, done)}
+    assert rows[first["directive_id"]]["status"] == "seen"
+    assert rows[queued["directive_id"]]["status"] == "queued"
+    assert rows[queued["directive_id"]]["note"] == "after the review"
+    assert rows[unread["directive_id"]]["status"] == "unread"
+    assert rows[unread["directive_id"]]["body"] == "Rename the flag."
+    assert rows[done["directive_id"]]["status"] == "resolved"
+    assert rows[done["directive_id"]]["outcome"] == "applied"
+
+
+def test_the_panel_reads_a_ledger_that_lacks_the_directive_acknowledgement_columns(
+    ledger: Ledger,
+) -> None:
+    ctx = _build(ledger)
+    sent = ledger.directive_submit("user_chat", "alex", "Scope it to phase 1.")
+    ledger.directive_inbox("oracle", ctx["oracle_id"])
+    with write_tx(ledger.conn) as conn:
+        for column in ("seen_at", "queued_at", "queue_note"):
+            conn.execute(f"ALTER TABLE directives DROP COLUMN {column}")
+
+    [row] = _run_snapshot(ledger)["directives"]
+
+    assert (row["directive_id"], row["status"]) == (sent["directive_id"], "unread")
+
+
 def test_open_needs_user_and_stall_findings_wait_on_the_user(ledger: Ledger) -> None:
     ctx = _build(ledger)
     with write_tx(ledger.conn) as conn:
@@ -506,3 +544,65 @@ def test_a_paused_run_carries_its_reason(ledger: Ledger) -> None:
 
     ledger.run_pause("oracle", ctx["oracle_id"], "the build needs a licence key")
     assert _run_snapshot(ledger)["waiting"]["paused"] == "the build needs a licence key"
+
+
+def _transcript(path: Path, *blocks: dict) -> str:
+    record = {
+        "type": "assistant",
+        "timestamp": "2026-11-14T10:00:00Z",
+        "message": {"content": list(blocks)},
+    }
+    path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    return str(path)
+
+
+def _set_transcript(ledger: Ledger, agent_id: str, path: str) -> None:
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE agents SET transcript_path = ? WHERE agent_id = ?", (path, agent_id))
+
+
+def test_a_waiting_agent_carries_its_pending_request(ledger: Ledger, tmp_path: Path) -> None:
+    ctx = _build(ledger)
+    use = {"type": "tool_use", "id": "u1", "name": "Bash", "input": {"command": "npm ci"}}
+    _set_transcript(ledger, ctx["coder_id"], _transcript(tmp_path / "c.jsonl", use))
+
+    asked = panel.snapshot(ledger.conn, {}, waiting=frozenset({ctx["coder_id"]}))["runs"][0]
+    plain = _run_snapshot(ledger)
+
+    assert _node(asked, "coder")["request"] == {"kind": "tool", "tool": "Bash", "input": "npm ci"}
+    assert _node(plain, "coder")["request"] is None
+    assert _node(asked, "lead")["request"] is None
+
+
+def test_the_detail_agent_carries_its_recent_activity(ledger: Ledger, tmp_path: Path) -> None:
+    ctx = _build(ledger)
+    said = {"type": "text", "text": "Waiting for the lint gate."}
+    _set_transcript(ledger, ctx["coder_id"], _transcript(tmp_path / "c.jsonl", said))
+
+    run = panel.snapshot(ledger.conn, {}, detail=ctx["coder_id"])["runs"][0]
+
+    assert _node(run, "coder")["recent"] == [
+        {"at": "2026-11-14T10:00:00Z", "kind": "say", "text": "Waiting for the lint gate."}
+    ]
+    assert _node(run, "lead")["recent"] is None
+
+
+def test_a_planned_phase_shows_its_goal_until_its_manager_is_briefed(ledger: Ledger) -> None:
+    ctx = _build(ledger)
+    later = ledger.phase_add(
+        "oracle", ctx["oracle_id"], "people", goal="Members and roles.\nAdmins approve."
+    )
+
+    run = _run_snapshot(ledger)
+    waiting = {t["id"]: t for t in run["agents"][0]["tasks"]}
+
+    assert later["goal"] == "Members and roles.\nAdmins approve."
+    assert (
+        waiting[f"phase_id:{later['phase_id']}"]["brief"] == "Members and roles.\nAdmins approve."
+    )
+    assert waiting[f"phase_id:{later['phase_id']}"]["summary"] == "Members and roles"
+
+
+def test_phase_add_without_a_goal_stores_none(ledger: Ledger) -> None:
+    ctx = _build(ledger)
+    assert ledger.phase_add("oracle", ctx["oracle_id"], "later")["goal"] is None

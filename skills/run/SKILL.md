@@ -72,6 +72,36 @@ recorded directive as JSON. A directive steers the plan, a future phase, or the
 guidelines. It does not interrupt the agents; the Oracle applies it at its next safe
 point.
 
+To see whether the Oracle has read a directive, run the same command with `--status` and
+no text. It prints each recent directive of the live run as JSON, with its `status`
+(`unread`, `seen`, `queued`, `needs_user`, or `resolved`), the time of that state, and
+the Oracle's note or outcome.
+
+## Pause and resume a live run
+
+To pause the run when you have to leave, without waiting for the Oracle's next safe
+point, run the pause command from the host repo root:
+
+```bash
+python="$(command -v py >/dev/null 2>&1 && echo 'py -3' || { command -v python3 >/dev/null 2>&1 && echo python3; } || echo python)"
+$python -I -S "${CLAUDE_PLUGIN_ROOT}/mcp/launch/ledger.py" pause --reason "<why>" --sender "<your name>"
+```
+
+It pauses the run as the Oracle's `run_pause` does: the run becomes `paused`, the user
+gets the pause notification, and the Oracle finds a directive that names who paused it.
+It exits 1 with the ledger's reason when no run is active or the run is already paused.
+
+To continue, run the resume command:
+
+```bash
+$python -I -S "${CLAUDE_PLUGIN_ROOT}/mcp/launch/ledger.py" resume --sender "<your name>"
+```
+
+It sets the run back to `active`, starts the ledger server when it is not running, and
+files a watchdog directive. The watchdog wakes the Oracle with it, and the Oracle arms its
+Monitor again and continues. When the Oracle's session is gone, use `/sentinel-swarm:resume`
+instead.
+
 ## What to expect
 
 1. The Oracle reads the PRD, sets the project guidelines, and plans the work as a

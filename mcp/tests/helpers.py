@@ -190,12 +190,20 @@ def untimed(text: str) -> str:
     return re.sub(r" elapsed \d+s(?: / \d+s)?", "", text)
 
 
-def insert_passing_test_run(ledger: Ledger, run_id: int, agent_id: str, scope: str) -> None:
+def insert_passing_test_run(
+    ledger: Ledger,
+    run_id: int,
+    agent_id: str,
+    scope: str,
+    build: tuple[str, int, str] | None = None,
+) -> None:
+    build_command, build_exit_code, build_output = build or (None, None, None)
     with write_tx(ledger.conn) as conn:
         conn.execute(
             "INSERT INTO test_runs (run_id, agent_id, scope, target, command, exit_code, "
-            "passed, failed, skipped, output) VALUES (?, ?, ?, 'x', 'x', 0, 1, 0, 0, '')",
-            (run_id, agent_id, scope),
+            "passed, failed, skipped, output, build_command, build_exit_code, build_output) "
+            "VALUES (?, ?, ?, 'x', 'x', 0, 1, 0, 0, '', ?, ?, ?)",
+            (run_id, agent_id, scope, build_command, build_exit_code, build_output),
         )
 
 

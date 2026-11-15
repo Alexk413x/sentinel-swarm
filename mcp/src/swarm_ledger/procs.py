@@ -14,6 +14,7 @@ SHELLS = frozenset({"bash", "sh", "zsh", "dash", "fish", "cmd", "powershell", "p
 _KERNEL32: Any = None
 _ENTRY: Any = None
 _INVALID_HANDLE = 2**64 - 1 if sys.maxsize > 2**32 else 2**32 - 1
+_FILETIME_EPOCH = 116_444_736_000_000_000
 
 
 @dataclass(frozen=True)
@@ -42,12 +43,54 @@ def is_shell(proc: Proc) -> bool:
     return short_name(proc.name).lstrip("-") in SHELLS
 
 
+SYSTEM_PROCESSES = frozenset(
+    {
+        "system",
+        "[system process]",
+        "secure system",
+        "registry",
+        "smss",
+        "csrss",
+        "wininit",
+        "winlogon",
+        "services",
+        "lsass",
+        "lsaiso",
+        "svchost",
+        "fontdrvhost",
+        "wudfhost",
+        "dwm",
+        "sihost",
+        "init",
+        "systemd",
+        "launchd",
+        "kernel_task",
+    }
+)
+
+
 def same_process(proc: Proc | None, created: int | None) -> bool:
     return proc is not None and (created is None or proc.created is None or proc.created == created)
 
 
-def _born_after(child: Proc, parent_created: int | None) -> bool:
+def identical(proc: Proc | None, created: int | None) -> bool:
+    # Windows cannot read the start time of service processes, and a recorded time can be
+    # missing, so same_process treats an unknown time as a match. This does not.
+    return proc is not None and created is not None and proc.created == created
+
+
+def is_system(proc: Proc) -> bool:
+    return short_name(proc.name) in SYSTEM_PROCESSES
+
+
+def _born_after(child: Proc, parent_created: int | None, strict: bool = False) -> bool:
     # A ppid can name a dead process whose pid was reused; a real child starts after its parent.
+    if strict:
+        return (
+            parent_created is not None
+            and child.created is not None
+            and child.created >= parent_created
+        )
     return parent_created is None or child.created is None or child.created >= parent_created
 
 
@@ -59,14 +102,16 @@ def children_map(table: dict[int, Proc]) -> dict[int, list[Proc]]:
     return children
 
 
-def descendants(children: dict[int, list[Proc]], pid: int, created: int | None) -> list[Proc]:
+def descendants(
+    children: dict[int, list[Proc]], pid: int, created: int | None, strict: bool = False
+) -> list[Proc]:
     found: list[Proc] = []
     seen: set[int] = {pid}
     stack: list[tuple[int, int | None]] = [(pid, created)]
     while stack:
         parent, parent_created = stack.pop()
         for child in children.get(parent, []):
-            if child.pid in seen or not _born_after(child, parent_created):
+            if child.pid in seen or not _born_after(child, parent_created, strict):
                 continue
             seen.add(child.pid)
             found.append(child)
@@ -74,7 +119,9 @@ def descendants(children: dict[int, list[Proc]], pid: int, created: int | None) 
     return found
 
 
-def tool_tree(table: dict[int, Proc], root_pid: int, root_created: int | None) -> list[Proc]:
+def tool_tree(
+    table: dict[int, Proc], root_pid: int, root_created: int | None, strict: bool = False
+) -> list[Proc]:
     """Every process the session's tool shells started, and the shells themselves.
 
     A session's other children are its MCP servers. They exit with the session, and a plugin's
@@ -83,10 +130,38 @@ def tool_tree(table: dict[int, Proc], root_pid: int, root_created: int | None) -
     children = children_map(table)
     found: list[Proc] = []
     for child in children.get(root_pid, []):
-        if is_shell(child) and _born_after(child, root_created):
+        if is_shell(child) and _born_after(child, root_created, strict):
             found.append(child)
-            found += descendants(children, child.pid, child.created)
+            found += descendants(children, child.pid, child.created, strict)
     return found
+
+
+def verified_strays(
+    table: dict[int, Proc],
+    recorded: Iterable[tuple[int, int | None, bool]],
+    protected: set[int],
+) -> list[Proc]:
+    """The recorded processes still running, and what runs under them, each verified.
+
+    A recorded process counts only while a process with its pid has exactly its start time. A
+    child counts only under a verified parent that still runs and started no later than the
+    child, because a pid cannot be reused while its process lives. A child of a dead parent
+    cannot be tied to the recorded process, so it does not count.
+    """
+    children = children_map(table)
+    found: dict[int, Proc] = {}
+    for pid, created, is_session in recorded:
+        root = table.get(pid)
+        if root is None or not identical(root, created) or is_system(root):
+            continue
+        found.setdefault(pid, root)
+        if is_session:
+            tree = tool_tree(table, pid, created, strict=True)
+        else:
+            tree = descendants(children, pid, created, strict=True)
+        for proc in tree:
+            found.setdefault(proc.pid, proc)
+    return [p for pid, p in sorted(found.items()) if pid not in protected and not is_system(p)]
 
 
 def survivors(
@@ -96,12 +171,12 @@ def survivors(
     found: dict[int, Proc] = {}
     for pid, created in recorded:
         current = table.get(pid)
-        if current is not None and same_process(current, created):
+        if current is not None and identical(current, created):
             found[pid] = current
-        if current is None or same_process(current, created):
-            for proc in descendants(children, pid, created):
+        if current is None or identical(current, created):
+            for proc in descendants(children, pid, created, strict=True):
                 found.setdefault(proc.pid, proc)
-    return [proc for pid, proc in found.items() if pid not in protected]
+    return [proc for pid, proc in found.items() if pid not in protected and not is_system(proc)]
 
 
 def ancestors(table: dict[int, Proc], pid: int) -> set[int]:
@@ -114,16 +189,24 @@ def ancestors(table: dict[int, Proc], pid: int) -> set[int]:
 
 
 def terminate(proc: Proc) -> bool:
+    if proc.created is None or is_system(proc):
+        return False
     try:
         if sys.platform == "win32":
             return _windows_terminate(proc)
         current = snapshot().get(proc.pid)
-        if not same_process(current, proc.created):
+        if not identical(current, proc.created):
             return False
         os.kill(proc.pid, 9)
         return True
     except OSError:
         return False
+
+
+def created_epoch_ms(created: int) -> int:
+    if sys.platform == "win32":
+        return (created - _FILETIME_EPOCH) // 10_000
+    return created * 1000
 
 
 def created_of(pid: int) -> int | None:
@@ -272,7 +355,7 @@ def _windows_terminate(proc: Proc) -> bool:
     if not handle:
         return False
     try:
-        if proc.created is not None and _windows_handle_created(k, handle) != proc.created:
+        if _windows_handle_created(k, handle) != proc.created:
             return False
         return bool(k.TerminateProcess(handle, 1))
     finally:

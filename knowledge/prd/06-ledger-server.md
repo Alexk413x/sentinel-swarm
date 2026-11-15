@@ -143,7 +143,13 @@
   steers a live run with `mcp/launch/ledger.py directive [--repo <root>] [--source
   skill|outside_session|user_chat] [--sender <name>] [--reply-to <id>] "<text>"`, which
   records the directive in the repo's ledger the way `directive_submit` does and prints
-  it as JSON. It exits 1 with the ledger's reason when no run is active.
+  it as JSON. With `--status` and no text it prints `{"directives": [...]}`: the live
+  run's open user directives and its 5 newest resolved ones, each with its state (see
+  "Directives" in [04-agreements.md](04-agreements.md)). It exits 1 with the ledger's
+  reason when no run is active. The same session
+  pauses and resumes the run without the Oracle with `mcp/launch/ledger.py pause
+  --reason <text>` and `resume`; see "Pause and resume" in
+  [02-run-lifecycle.md](02-run-lifecycle.md).
 
 ## Records folder
 
@@ -164,19 +170,20 @@ the project's code in the host repo itself. Tracking is `local` only.
   ledger an earlier release made holds 0), then stores the digest. An open that finds the
   digest and the version row reads only: it runs no script and takes no write lock, which
   matters because every hook opens a ledger. Every statement in it is `IF NOT EXISTS`, so a ledger from an
-  earlier release gains the tables and indexes added since. It gains no new column: a
-  release that adds a column to an existing table still needs a fresh ledger (delete
-  `.sentinel-swarm/ledger.db`). The run panel opens the ledger read-only, so it skips a
+  earlier release gains the tables and indexes added since. A column added to an existing
+  table also goes in `ADDED_COLUMNS` in `db.py`: `migrate` adds each listed column the
+  table lacks with `ALTER TABLE ... ADD COLUMN`. The run panel opens the ledger read-only, so it skips a
   table a ledger lacks until a server opens that ledger.
 - Tables, grouped: the plan (`runs`, `phases`, `phase_deps`, `modules`, `module_deps`,
-  `files`, `file_deps`, `guidelines`); agents (`agents`, `agent_events`, `briefs`,
+  `files`, `file_deps`, `file_moves`, `guidelines`); agents (`agents`, `agent_events`, `briefs`,
   `wakeups`); review (`handoffs`, `reviews`, `scores`, `test_runs`, `versions`,
   `attempts`, `issues`, `ideas`); agreements (`change_requests`, `departures`,
   `departure_decisions`, `deferrals`, `overrides`); communication (`messages`,
   `directives`, `watchdog_findings`, `notifications`, `permission_requests`); the Driver (`drive_requests`,
   `drive_findings`, `drive_stops`); the code graph (`graph_gaps`). Read `schema.sql`
   for the columns.
-- `module_deps` and `file_deps` hold the dependencies a dependent's brief waits on, and
+- `module_deps` and `file_deps` hold the dependencies a dependent's brief waits on,
+  `file_moves` the old paths a moved claim replaces, and
   `graph_gaps` the searches the code graph did not answer. Columns that hold a gate's
   state: `briefs.contract` and `briefs.last_read_by_child_at`; `deferrals.kind`,
   `parties_json`, `arbiter_agent_id`, `open_issues_json`, `issue_ids_json`, and
@@ -210,8 +217,8 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
 | Run and plan | `run_start`, `run_status`, `run_pause`, `phase_resume`, `run_finish`, `run_close`, `profile_set`, `guidelines_set`, `guidelines_get`, `phase_add`, `phase_update`, `plan_unlocked`, `module_add` |
 | Repo | `repo_check`, `repo_branch_create` |
 | Briefs and agents | `brief_create`, `brief_get`, `brief_ack`, `agent_spawn`, `agent_resume`, `agent_release` |
-| Ownership | `claim_file` (Lead, Manager), `release_file`, `who_owns`, `wait_for` (Coder, Lead), `file_delete` (Coder) |
-| Messages and directives | `message_post`, `message_inbox`, `directive_submit`, `directive_inbox`, `directive_resolve`, `user_ask` |
+| Ownership | `claim_file` (Lead, Manager), `file_move` (Lead), `release_file`, `who_owns`, `wait_for` (Coder, Lead), `file_delete` (Coder) |
+| Messages and directives | `message_post`, `message_inbox`, `directive_submit`, `directive_inbox`, `directive_ack`, `directive_resolve`, `user_ask` |
 | Tests and graph | `tests_run`, `test_run_get`, `graph_upsert` |
 | Review | `score_record`, `handoff_submit`, `review_compare`, `approve`, `return_work`, `attempt_record`, `accept_incomplete`, `file_accept_incomplete` (Oracle), `version_restore`, `module_review`, `phase_review` |
 | Issues | `issue_open`, `issue_list`, `issue_close`, `idea_record`, `issue_escalate` |
@@ -253,7 +260,7 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
   `who_owns`, `issue_list`, `cr_list`, `run_status`, `status_tree`, `guidelines_get`,
   `plan_unlocked`, `events`, `analytics_query`, and `test_run_get`. A tool that marks a row is not
   read-only: `message_inbox` marks its messages read, and `directive_inbox` sets
-  `notified_at`. Mark a new tool read-only only when it writes no row, file, or session.
+  `notified_at` and `seen_at`. Mark a new tool read-only only when it writes no row, file, or session.
 - `tests_run(scope, target, force, include_slow)` is role-bound: `file` to the Coder
   (its own path or test path only), `module` to the Lead, `phase` to the Manager, `full`
   to the Oracle. It builds the scope's command: `test_command_by_scope.<scope>`, else the
@@ -273,6 +280,20 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
   `test_timeout_s` (default 600), parses the result, records it on the row, and deletes
   the log. The run survives the tool call, the worker that took it, and a restart of the
   ledger server.
+- **A full run also builds.** When the profile's `build_command` is set, `tests_run(scope="full")`
+  stores it on the row (`build_command`). The same detached runner runs it once, in the
+  repo root, after the tests pass and the tree check shows no change, under the same
+  `test_timeout_s`. A build never runs for another scope, after failing tests, or on the
+  request thread: the runner records `build_exit_code` (`-1` when it timed out),
+  `build_output` (the last 20,000 characters), and `build_duration_ms` on the same row.
+  A build that fails or times out sets the row's `reason` (`build failed: exit code N` or
+  `build timed out`) and the run is not clean. `tests_run` returns a `build` object with
+  `command`, `state` (`passed`, `failed`, `timed out`, `running`, or `not run`),
+  `exit_code`, and, for a failed build, the last 2,000 characters of its output. A row
+  with a build may run for twice `test_timeout_s` plus 120 seconds before the sweep marks
+  it `abandoned`. A reused run copies the build columns, so a reused run never builds
+  again, and a run reuses only an earlier run with the same `build_command`. With no
+  `build_command`, a full run is unchanged.
 - `tests_run` waits up to 20 seconds for the run to end. A run that ends in time comes
   back as its result. A longer one returns `state: "running"` with its `test_run_id`
   and a `next` that says to end the turn. When the runner records the result, it owes
@@ -291,7 +312,8 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
   a run, so a server restart never leaves a row `running` with nothing behind it.
 - A run counts as clean when its state is `done`, its exit code is 0, nothing failed,
   at least one test passed, nothing errored, and every skip matched `allowed_skips`
-  (`allowed_skipped` = `skipped`). The counts come from the runner's last summary line
+  (`allowed_skipped` = `skipped`), and, when the row carries a `build_command`, its build
+  exited 0. The counts come from the runner's last summary line
   (pytest, vitest, jest), so a logged line such as "1 failed attempt" cannot fail a green
   run; output with no recognised summary line is scanned as a whole, and `go test` is
   counted by its `ok`, `FAIL`, and `--- SKIP` lines. The after-run checklist applies the

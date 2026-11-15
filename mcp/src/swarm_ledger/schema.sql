@@ -39,6 +39,11 @@ CREATE TABLE IF NOT EXISTS phases (
     pause_reason TEXT
 );
 
+CREATE TABLE IF NOT EXISTS phase_goals (
+    phase_id INTEGER PRIMARY KEY REFERENCES phases (phase_id) ON DELETE RESTRICT,
+    goal TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS phase_deps (
     phase_id INTEGER NOT NULL REFERENCES phases (phase_id) ON DELETE RESTRICT,
     depends_on_phase_id INTEGER NOT NULL REFERENCES phases (phase_id) ON DELETE RESTRICT,
@@ -75,6 +80,14 @@ CREATE TABLE IF NOT EXISTS files (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_files_path_live
     ON files (path) WHERE released_at IS NULL;
+
+-- The paths a claim replaces: a move's old file and old test file. The claim's Coder
+-- deletes them and re-anchors their graph nodes, but writes to neither.
+CREATE TABLE IF NOT EXISTS file_moves (
+    file_id INTEGER NOT NULL REFERENCES files (file_id) ON DELETE RESTRICT,
+    path TEXT NOT NULL,
+    PRIMARY KEY (file_id, path)
+) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS agents (
     agent_id TEXT PRIMARY KEY,
@@ -260,7 +273,13 @@ CREATE TABLE IF NOT EXISTS test_runs (
     runner_pid INTEGER,
     duration_ms INTEGER,
     finished_at TEXT,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    -- A full run also runs the profile's build_command once its tests pass. build_command is
+    -- set when the run starts; build_exit_code stays NULL until the build ends (-1: timed out).
+    build_command TEXT,
+    build_exit_code INTEGER,
+    build_output TEXT,
+    build_duration_ms INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_test_runs_running
@@ -406,6 +425,9 @@ CREATE TABLE IF NOT EXISTS directives (
     resolved_at TEXT,
     resolution TEXT,
     notified_at TEXT,
+    seen_at TEXT,
+    queued_at TEXT,
+    queue_note TEXT,
     -- Set when outcome is set to needs_user, and left in place after a later
     -- resolve overwrites outcome/resolution, so the report can still show what
     -- was asked. report_build's notifications section reads this column.

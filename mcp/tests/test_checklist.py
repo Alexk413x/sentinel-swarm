@@ -244,7 +244,7 @@ def test_claude_available_with_a_running_session_fails(
     monkeypatch.setattr(
         checklist,
         "list_sessions",
-        lambda: [{"name": "session-0", "status": "running", "pid": 123}],
+        lambda: [{"name": "session-0", "status": "busy", "pid": 123}],
     )
     monkeypatch.setattr(checklist, "read_server_info", lambda repo: None)
     checks = checklist.run_checklist(root)

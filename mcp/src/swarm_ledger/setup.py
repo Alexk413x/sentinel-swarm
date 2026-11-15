@@ -18,7 +18,7 @@ from .frontmatter import FrontmatterError
 from .frontmatter import split_document as _split_document
 from .paths import claude_json_path, python_command
 from .permissions import bypass_disabled, start_mode
-from .settings import SETTINGS_PATH, Settings, load_settings
+from .settings import SETTINGS_PATH, SHELL_OPERATORS, Settings, load_settings
 
 CORE_ROLES = ("oracle", "manager", "lead", "coder")
 ROLES = (*CORE_ROLES, "driver")
@@ -553,6 +553,27 @@ def check_tests(
         )
 
 
+def check_command_operators(repo: Path, report: SetupReport) -> None:
+    settings = load_settings(repo)
+    templates = [
+        ("test_command", settings.test_command),
+        *(
+            (f"test_command_by_scope.{scope}", command)
+            for scope, command in settings.test_command_by_scope.items()
+        ),
+        ("build_command", settings.build_command),
+        ("lint_command", settings.lint_command),
+    ]
+    for key, command in templates:
+        if command and SHELL_OPERATORS.search(command):
+            report.add(
+                f"warning: {key} {command!r} uses a shell operator: the Coder's shell gate denies "
+                "every command with one, and tests_run resolves {target} from the repo root. For "
+                "an app in a subdirectory, name the directory in the command instead, such as "
+                "`npx --prefix apps/web vitest run --root apps/web {target}`"
+            )
+
+
 def run_setup(repo: Path, time_full_run: bool = False) -> SetupReport:
     repo = repo.resolve()
     report = SetupReport()
@@ -562,6 +583,7 @@ def run_setup(repo: Path, time_full_run: bool = False) -> SetupReport:
     quiet_codebase_kg_nudge(repo, report)
     ensure_excludes(repo, report)
     report_permission_modes(repo, report)
+    check_command_operators(repo, report)
     check_tests(repo, report, time_full_run)
     propose_commands(repo, report)
     report_parallelism(repo, report)

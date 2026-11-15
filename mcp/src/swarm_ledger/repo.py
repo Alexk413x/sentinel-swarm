@@ -9,10 +9,15 @@ from .host import LedgerHost
 from .identity import LedgerError, require_role, resolve
 
 _GIT_TIMEOUT_S = 10
+# A host's commit hooks run, so a commit may take far longer than a read.
+_COMMIT_TIMEOUT_S = 300
+# A claimed path is a file name, never a pattern: without this, git reads ":(glob)*" or a
+# directory as a pathspec and the phase commit takes files beyond the phase.
+_LITERAL = ["--literal-pathspecs"]
 _START_ADVICE = "create a run branch for this run with repo_branch_create"
 
 
-def _run_git(args: list[str], cwd: Path) -> tuple[int, str, str]:
+def _run_git(args: list[str], cwd: Path, timeout: float = _GIT_TIMEOUT_S) -> tuple[int, str, str]:
     try:
         result = subprocess.run(
             ["git", *args],
@@ -20,10 +25,10 @@ def _run_git(args: list[str], cwd: Path) -> tuple[int, str, str]:
             capture_output=True,
             encoding="utf-8",
             errors="replace",
-            timeout=_GIT_TIMEOUT_S,
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
-        raise LedgerError(f"git {' '.join(args)} timed out after {_GIT_TIMEOUT_S:.0f}s") from exc
+        raise LedgerError(f"git {' '.join(args)} timed out after {timeout:.0f}s") from exc
     except OSError as exc:
         raise LedgerError(f"cannot run git: {exc}") from exc
     return result.returncode, result.stdout, result.stderr
@@ -47,6 +52,50 @@ def _resolve_base_branch(repo_root: Path, configured: str | None) -> str | None:
     if _branch_exists(repo_root, "master"):
         return "master"
     return None
+
+
+def _plain_file_path(repo_root: Path, path: str) -> bool:
+    candidate = Path(path)
+    if not path or candidate.is_absolute() or path.startswith(":") or ".." in candidate.parts:
+        return False
+    target = repo_root / candidate
+    return not target.exists() or target.is_file()
+
+
+def commit_paths(repo_root: Path, base_branch: str | None, paths: list[str], message: str) -> dict:
+    if not _is_git_repo(repo_root):
+        return {"committed": False, "reason": "the repo is not a git repository"}
+    code, out, _ = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], repo_root)
+    branch = out.strip() if code == 0 else ""
+    base = _resolve_base_branch(repo_root, base_branch)
+    if not branch or branch == "HEAD":
+        return {"committed": False, "reason": "HEAD is detached; commit the phase yourself"}
+    if branch == base:
+        return {
+            "committed": False,
+            "reason": f"the run works on the base branch {base}; commit the phase yourself",
+        }
+    plain = sorted({p for p in paths if _plain_file_path(repo_root, p)})
+    if not plain:
+        return {"committed": False, "reason": "the phase has no files on disk or in git"}
+    _, tracked, _ = _run_git([*_LITERAL, "ls-files", "--", *plain], repo_root)
+    known = set(tracked.splitlines())
+    wanted = [p for p in plain if p in known or (repo_root / p).is_file()]
+    if not wanted:
+        return {"committed": False, "reason": "the phase has no files on disk or in git"}
+    code, _, err = _run_git([*_LITERAL, "add", "-A", "--", *wanted], repo_root)
+    if code != 0:
+        return {"committed": False, "reason": f"git add failed: {err.strip()}"}
+    code, _, _ = _run_git([*_LITERAL, "diff", "--cached", "--quiet", "--", *wanted], repo_root)
+    if code == 0:
+        return {"committed": False, "reason": "nothing to commit: the phase's files match HEAD"}
+    code, _, err = _run_git(
+        [*_LITERAL, "commit", "-q", "-m", message, "--", *wanted], repo_root, _COMMIT_TIMEOUT_S
+    )
+    if code != 0:
+        return {"committed": False, "reason": f"git commit failed: {err.strip()[-500:]}"}
+    _, sha, _ = _run_git(["rev-parse", "--short", "HEAD"], repo_root)
+    return {"committed": True, "sha": sha.strip(), "branch": branch, "paths": wanted}
 
 
 def _rev_list_counts(repo_root: Path, left: str, right: str) -> tuple[int, int] | None:

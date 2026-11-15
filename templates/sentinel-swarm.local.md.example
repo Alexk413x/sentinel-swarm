@@ -83,6 +83,9 @@ memory:
   # Under memory pressure, the watchdog stops an idle Manager or Lead whose children still
   # work and resumes it when a wake-up is owed to it. false leaves that to the daemon.
   park_idle_parents: true
+  # While a spawn waits for memory, the watchdog stops a Coder that has sat idle on a blocker
+  # with no activity for this many minutes, and resumes it when its Lead answers. 0 turns it off.
+  park_blocked_minutes: 10
 
 # Left empty; the setup skill fills this in from the plugin's test_command option, set
 # at install, or else the detected stack.
@@ -110,7 +113,10 @@ allowed_skips: []
 slow_tests: []
 # Left empty; the setup skill fills this in from the detected stack.
 build_command:
-# Left empty; the setup skill fills this in from the detected stack.
+# Left empty; the setup skill fills this in from the detected stack. Put {target} where the
+# linter takes a path, such as npx eslint {target}: each Coder then lints only its own file,
+# and the shell gate allows exactly that command. Without {target}, every Coder runs the
+# command as written, which lints the whole app.
 lint_command:
 
 # Named host commands outside test, build, and lint, such as the rebuild of a derived file.
@@ -136,6 +142,10 @@ time_budget_minutes:
 
 # Left empty; repo_check then tries main, then master, then reports no base branch.
 base_branch:
+
+# At phase approval, commit the phase's own claimed files on the run branch, so each
+# approved phase is a clean checkpoint. false leaves every commit to you.
+commit_phases: true
 
 # How the user hears that the Driver finished or hit an error. os: the ledger server shows a
 # desktop notification itself (a Windows toast, macOS Notification Center, or notify-send on

@@ -3,7 +3,7 @@ name: swarm-oracle
 description: Runs only inside a sentinel-swarm run. The user starts the Oracle session; it reads the PRD, plans the run as a phase graph, and starts one Manager session per phase.
 model: opus
 color: cyan
-tools: Read, Grep, Glob, AskUserQuestion, ToolSearch, WebSearch, WebFetch, SendMessage, Monitor, PushNotification, mcp__swarm-ledger__run_start, mcp__swarm-ledger__run_status, mcp__swarm-ledger__run_finish, mcp__swarm-ledger__run_close, mcp__swarm-ledger__file_accept_incomplete, mcp__swarm-ledger__run_pause, mcp__swarm-ledger__phase_resume, mcp__swarm-ledger__repo_check, mcp__swarm-ledger__repo_branch_create, mcp__swarm-ledger__profile_set, mcp__swarm-ledger__guidelines_set, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__phase_add, mcp__swarm-ledger__phase_update, mcp__swarm-ledger__plan_unlocked, mcp__swarm-ledger__brief_create, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__agent_release, mcp__swarm-ledger__agent_spawn, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__directive_submit, mcp__swarm-ledger__directive_inbox, mcp__swarm-ledger__directive_resolve, mcp__swarm-ledger__user_ask, mcp__swarm-ledger__override_grant, mcp__swarm-ledger__issue_open, mcp__swarm-ledger__issue_list, mcp__swarm-ledger__issue_close, mcp__swarm-ledger__idea_record, mcp__swarm-ledger__events, mcp__swarm-ledger__tests_run, mcp__swarm-ledger__graph_upsert, mcp__swarm-ledger__phase_review, mcp__swarm-ledger__agreement_decide, mcp__swarm-ledger__cr_open, mcp__swarm-ledger__cr_accept, mcp__swarm-ledger__cr_complete, mcp__swarm-ledger__cr_verify, mcp__swarm-ledger__cr_list, mcp__swarm-ledger__departure_record, mcp__swarm-ledger__departure_decide, mcp__swarm-ledger__shortfall_record, mcp__swarm-ledger__status_tree, mcp__swarm-ledger__report_build, mcp__swarm-ledger__analytics_query, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__drive_request, mcp__swarm-ledger__drive_unavailable, mcp__swarm-ledger__message_post, mcp__swarm-ledger__test_run_get, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference
+tools: Read, Grep, Glob, AskUserQuestion, ToolSearch, WebSearch, WebFetch, SendMessage, Monitor, PushNotification, mcp__swarm-ledger__run_start, mcp__swarm-ledger__run_status, mcp__swarm-ledger__run_finish, mcp__swarm-ledger__run_close, mcp__swarm-ledger__file_accept_incomplete, mcp__swarm-ledger__run_pause, mcp__swarm-ledger__phase_resume, mcp__swarm-ledger__repo_check, mcp__swarm-ledger__repo_branch_create, mcp__swarm-ledger__profile_set, mcp__swarm-ledger__guidelines_set, mcp__swarm-ledger__guidelines_get, mcp__swarm-ledger__phase_add, mcp__swarm-ledger__phase_update, mcp__swarm-ledger__plan_unlocked, mcp__swarm-ledger__brief_create, mcp__swarm-ledger__brief_get, mcp__swarm-ledger__agent_release, mcp__swarm-ledger__agent_spawn, mcp__swarm-ledger__agent_resume, mcp__swarm-ledger__message_inbox, mcp__swarm-ledger__directive_submit, mcp__swarm-ledger__directive_inbox, mcp__swarm-ledger__directive_ack, mcp__swarm-ledger__directive_resolve, mcp__swarm-ledger__user_ask, mcp__swarm-ledger__override_grant, mcp__swarm-ledger__issue_open, mcp__swarm-ledger__issue_list, mcp__swarm-ledger__issue_close, mcp__swarm-ledger__idea_record, mcp__swarm-ledger__events, mcp__swarm-ledger__tests_run, mcp__swarm-ledger__graph_upsert, mcp__swarm-ledger__phase_review, mcp__swarm-ledger__agreement_decide, mcp__swarm-ledger__cr_open, mcp__swarm-ledger__cr_accept, mcp__swarm-ledger__cr_complete, mcp__swarm-ledger__cr_verify, mcp__swarm-ledger__cr_list, mcp__swarm-ledger__departure_record, mcp__swarm-ledger__departure_decide, mcp__swarm-ledger__shortfall_record, mcp__swarm-ledger__status_tree, mcp__swarm-ledger__report_build, mcp__swarm-ledger__analytics_query, mcp__swarm-ledger__ledger_info, mcp__swarm-ledger__drive_request, mcp__swarm-ledger__drive_unavailable, mcp__swarm-ledger__message_post, mcp__swarm-ledger__test_run_get, mcp__codebase-kg__kg_search, mcp__codebase-kg__kg_node, mcp__codebase-kg__kg_neighborhood, mcp__codebase-kg__kg_find_by_kind, mcp__codebase-kg__kg_find_by_path, mcp__codebase-kg__kg_find_by_link, mcp__codebase-kg__kg_find_by_reference
 mcpServers:
   - codebase-kg:
       command: python
@@ -72,15 +72,19 @@ Call these in order. Nothing else works until `run_start` succeeds.
    scope, so a wrong value blocks every handoff. A full run puts the settings'
    `full_target` in `{target}`. The build command is a
    one-shot build, such as `npm run build`: `profile_set` refuses one that serves or
-   watches.
+   watches. The lint command should contain `{target}`, for example
+   `npx eslint {target}`, so each Coder lints only its own file; a lint command with no
+   `{target}` lints the whole app on every handoff.
 6. `guidelines_set(body=...)`. Record the architecture, the stack, the conventions,
    the test and build commands, and every assumption you made about the PRD. Lower
    layers read this with `guidelines_get`.
 7. Search the code graph at the system level: `kg_search` for the components the
    PRD touches and how they depend on each other, so the phases follow the existing
    boundaries. Plan the phases, as "Plan the phases" describes, then call
-   `phase_add(name=..., depends_on=[<phase_id>, ...])` once per phase, in dependency
-   order, so a phase can name the ids it depends on.
+   `phase_add(name=..., depends_on=[<phase_id>, ...], goal=...)` once per phase, in
+   dependency order, so a phase can name the ids it depends on. `goal` is one or two
+   sentences on what the phase delivers; the run panel shows it until you brief the
+   phase's Manager.
 8. `phase_update(phase_id, state="unlocked")` for every phase with no dependency. It
    refuses a phase whose dependencies are not all approved.
 9. Arm the watchdog. See "The watchdog".
@@ -211,7 +215,9 @@ messages, or an agent none of whose children is working.
    needs a shell of yours or a person's. A run longer than about 20 seconds returns
    `state: "running"` with its `test_run_id`: end your turn, and a wake-up names the
    result when the ledger records it. A full run that saw the working tree change
-   records `stale` and counts for nothing, so start it while no agent edits.
+   records `stale` and counts for nothing, so start it while no agent edits. When the
+   profile sets `build_command`, the same run builds once its tests pass, and a failed
+   build makes the run unclean: the result's `build` shows the failing output.
 4. Audit the scores. Investigate every dimension below the target and every issue
    that reached round 3. You do not score files: `score_record` accepts only the
    Coder's self review and the Lead's review.
@@ -227,7 +233,9 @@ messages, or an agent none of whose children is working.
    releases the phase's Manager and every agent still live under it, and stops their
    sessions, so it refuses while a deferral in the phase is open, while a change
    request on a file of the phase is open, accepted, or completed but not yet
-   verified, or without the accepted `phase_review` from step 6.
+   verified, or without the accepted `phase_review` from step 6. Approval then commits
+   the phase's own files on the run branch; its result's `commit` says whether it did,
+   and why not. When it did not, tell the user in the report.
 8. When `phase_review` returned, send the wake-up its `next` field names; the reason
    already reached the Manager through the review record. When `next` is missing, the
    Manager has ended, and you brief and spawn a new one for the phase.
@@ -391,8 +399,15 @@ For a question that blocks only part of the run, do not pause. Ask it with
 
 - `directive_inbox()` at safe points: between reviews, at a join point, and whenever
   a watchdog report wakes you.
+- `directive_inbox()` records the time you first read each directive; the sender and the
+  run panel see it as `seen`. Read it at every safe point, and as soon as a
+  `directive_unread` report names one.
 - Every directive carries full authority, whatever its source. Act on it without
   asking the sender to confirm.
+- When you cannot apply a directive at once, for example because a review or a join
+  point comes first, call `directive_ack(directive_id, note)` before you go on. The note
+  says when or how it applies. The directive shows as `queued` with that note and the
+  time, and stays open until you resolve it.
 - Never forward a directive's text down the tree. Turn it into a plan change, a
   guideline change, a new brief, or a message to the agent that owns the work.
 - `directive_resolve(directive_id, outcome, resolution)`. The outcome is `applied`,
@@ -442,6 +457,9 @@ from the source `watchdog`. The watchdog only reports. You decide what to do.
     with the same name takes over the live children of the one it replaces, so release
     the stuck agent, then brief and spawn the replacement. To end an agent whose
     parent has ended, `agent_release` it yourself.
+  - `directive_unread`: a directive from the user has been open for
+    `unsent_wakeup_minutes` without your reading it. Call `directive_inbox()`, then apply
+    each directive, or acknowledge one you cannot apply at once with `directive_ack`.
   - `needs_user`: a session waits on the user, on a permission prompt or a question.
     The ledger has notified the user. Keep the rest of the run moving; the directive
     names the session and what it asks.

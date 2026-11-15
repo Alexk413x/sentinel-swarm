@@ -31,7 +31,7 @@ from ..queries import (
     submitted_handoffs,
     unread_count,
 )
-from ..settings import command_line
+from ..settings import SHELL_OPERATORS, command_line
 from ..watchdog import MONITOR_CALL, REGISTER_GRACE, WATCH_COMMAND
 
 _RECORDS_DIR = ".sentinel-swarm"
@@ -43,6 +43,9 @@ FIRED_AT_KEY = "sentinel_swarm_fired_at"
 TRANSPORT_KEY = "sentinel_swarm_transport"
 _READONLY_GIT = frozenset({"status", "diff", "log", "show", "ls-files", "branch"})
 _GIT_RM_FLAGS = frozenset({"-q", "--quiet", "--"})
+_DELETE_COMMAND = re.compile(
+    r"\s*(?:git\s+rm|rm|rmdir|rd|del|erase|remove-item|ri|unlink)(?![\w-])", re.IGNORECASE
+)
 _HOST_COMMAND_ROLES = frozenset({"coder", "manager"})
 _POSIX = os.name != "nt"
 _RUN_STATUS_ROLES = frozenset({"manager", "lead"})
@@ -52,7 +55,6 @@ _START_CONTEXT_CAP = 9_500
 _DRIVER_SUBAGENTS = frozenset(
     {"map-driver", "map-reviewer", "cartographer:map-driver", "cartographer:map-reviewer"}
 )
-_SHELL_OPERATORS = re.compile(r"[;&|<>`\n]|\$\(")
 _SEARCH_TOOLS = frozenset({"Grep", "Glob"})
 _GAP_PATHS = 20
 _CONTENT_LINE = re.compile(r"^((?:[A-Za-z]:)?[^:]+):\d+[:-]")
@@ -163,6 +165,16 @@ def _owned_paths(ledger: Ledger, caller: dict) -> list[str]:
         (caller["file_id"], caller["file_id"]),
     ):
         paths += [p for p in (row["path"], row["test_path"]) if p and p not in paths]
+    return paths
+
+
+def _deletable_paths(ledger: Ledger, caller: dict) -> list[str]:
+    paths = _owned_paths(ledger, caller)
+    for row in ledger.conn.execute(
+        "SELECT path FROM file_moves WHERE file_id = ? ORDER BY path", (caller["file_id"],)
+    ):
+        if row["path"] not in paths:
+            paths.append(row["path"])
     return paths
 
 
@@ -376,6 +388,33 @@ def _allowed_templates(ledger: Ledger, role: str) -> list[str]:
     return [t for t in templates if t]
 
 
+def _targeted_lint(ledger: Ledger, role: str) -> str | None:
+    template = ledger.settings.lint_command
+    return template if role != "driver" and template and "{target}" in template else None
+
+
+def _lint_own_file(ledger: Ledger, caller: dict, template: str, argv: list[str]) -> bool:
+    try:
+        wanted = shlex.split(template, posix=_POSIX)
+    except ValueError:
+        return False
+    if len(wanted) != len(argv):
+        return False
+    owned = _owned_paths(ledger, caller)
+    for want, got in zip(wanted, argv):
+        head, mark, tail = want.partition("{target}")
+        if not mark:
+            if got != want:
+                return False
+            continue
+        if not (got.startswith(head) and got.endswith(tail) and len(got) >= len(head + tail)):
+            return False
+        path = got[len(head) : len(got) - len(tail)].strip("\"'")
+        if "{target}" in tail or _repo_relative(ledger, path) not in owned:
+            return False
+    return True
+
+
 def _host_command(ledger: Ledger, command: str, role: str) -> bool:
     if role not in _HOST_COMMAND_ROLES:
         return False
@@ -396,7 +435,7 @@ def _command_allowed(ledger: Ledger, command: str, caller: dict) -> bool:
     role = caller["role"]
     if _host_command(ledger, command, role):
         return True
-    if _SHELL_OPERATORS.search(command):
+    if SHELL_OPERATORS.search(command):
         return False
     try:
         argv = shlex.split(command, posix=_POSIX)
@@ -404,15 +443,20 @@ def _command_allowed(ledger: Ledger, command: str, caller: dict) -> bool:
         return False
     if not argv or role == "manager":
         return False
+    lint = _targeted_lint(ledger, role)
     for template in _allowed_templates(ledger, role):
+        if template == lint:
+            continue
         prefix = shlex.split(template.replace("{target}", ""), posix=_POSIX)
         if prefix and argv[: len(prefix)] == prefix:
             return True
+    if lint is not None and _lint_own_file(ledger, caller, lint, argv):
+        return True
     if role != "coder":
         return False
     removed = _git_rm_paths(argv)
     if removed is not None:
-        owned = _owned_paths(ledger, caller)
+        owned = _deletable_paths(ledger, caller)
         relative = [_repo_relative(ledger, p) for p in removed]
         if all(p is not None and p in owned for p in relative):
             for p in relative:
@@ -455,7 +499,14 @@ def handle_pre_shell(ledger: Ledger, data: dict) -> dict | None:
             "this role's shell runs only the named host commands in the settings' commands "
             "list, and none is set"
         )
-    return _deny_or_override(f"command not allowed; allowed: {'; '.join(allowed)}")
+    reason = f"command not allowed; allowed: {'; '.join(allowed)}"
+    if caller["role"] == "coder" and _DELETE_COMMAND.match(command):
+        mine = ", ".join(_deletable_paths(ledger, caller)) or "none"
+        reason += (
+            ". To delete a file, call the ledger tool file_delete(path) on a path you own "
+            f"({mine}); the shell deletes only through git rm of those paths"
+        )
+    return _deny_or_override(reason)
 
 
 def handle_pre_ask(ledger: Ledger, data: dict) -> dict | None:

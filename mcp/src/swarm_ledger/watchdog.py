@@ -5,17 +5,18 @@ import os
 import sqlite3
 import sys
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import notify, pauses, permission, procs, rekey, sessions, testrun, wake
+from . import memory, notify, pauses, permission, procs, rekey, sessions, testrun, transcript, wake
 from .clock import parse_stamp, stamp, utcnow
 from .db import NOW, write_tx
 from .identity import ROLES, LedgerError
 from .queries import (
+    USER_DIRECTIVE_SOURCES,
     latest_live_oracle,
     live_run,
     logical_state,
@@ -37,6 +38,7 @@ MONITOR_CALL = (
     f'description="sentinel-swarm watchdog", timeout_ms={MONITOR_TIMEOUT_MS})'
 )
 REGISTER_GRACE = timedelta(minutes=2)
+RESUME_FAILURE_LIMIT = 3
 # A released session can take a moment to exit after claude stop returns.
 STRAY_GRACE = timedelta(minutes=1)
 WAKE_EVERY = timedelta(minutes=5)
@@ -100,12 +102,22 @@ def scan(
             "waitingFor": HELD_WAIT,
         }
     names = {a["agent_id"]: a["name"] for a in agents}
+    by_id = {a["agent_id"]: a for a in agents}
+    superseded = _superseded_coders(conn, run["run_id"])
+    user_findings, user_waits, blocked = _classify_waits(agents, by_session, held, superseded)
 
     findings: list[Finding] = []
     for agent in agents:
-        entry = by_session.get(agent["agent_id"])
+        agent_id = agent["agent_id"]
+        entry = by_session.get(agent_id)
+        if agent_id in superseded:
+            findings.append(_superseded_finding(agent, superseded[agent_id], by_id))
+            continue
         if agent["role"] in _MEMBER_ROLES:
-            findings += _session_findings(agent, entry, now, settings)
+            if agent_id in blocked:
+                findings += _blocked_findings(agent, now, settings, by_id)
+            elif agent_id not in user_waits:
+                findings += _session_findings(conn, agent, entry, now, settings)
             spin = _spinning(conn, agent, settings)
             if spin is not None:
                 parent = names.get(agent["parent_agent_id"]) or "its parent"
@@ -118,29 +130,31 @@ def scan(
                         "or issue_escalate.",
                     )
                 )
-        elif agent["role"] == "driver" and not waiting_on_user(entry):
+        elif agent["role"] == "driver" and agent_id not in user_waits:
             findings += _driver_findings(conn, agent, entry, now)
         context = _context_high(agent, settings)
         if context is not None:
             findings.append(_finding(agent, "context_high", context, _context_step(agent, names)))
 
-    findings += _needs_user_findings(agents, by_session, held)
+    waits = user_waits | blocked
+    findings += user_findings
     findings += _landed_wait_findings(conn, run["run_id"], agents, by_session)
     findings += _unsent_findings(conn, run["run_id"], agents, by_session, now, settings)
     findings += _queued_findings(conn, run["run_id"], agents, now, settings)
     findings += _unmanaged_phase_findings(conn, run["run_id"], agents)
+    findings += _unread_directive_findings(conn, run["run_id"], agents, now, settings)
     findings += _stray_process_findings(conn, run["run_id"], now)
 
     stalled = _stalled(conn, run, agents, by_session, now)
     if stalled is not None:
         findings.append(stalled)
-    run_stalled = _run_stalled(conn, run, agents, by_session, now, settings)
+    run_stalled = _run_stalled(conn, run, agents, by_session, now, settings, waits, user_waits)
     if run_stalled is not None:
         findings.append(run_stalled)
     return findings
 
 
-def waiting_on_user(entry: dict | None) -> str | None:
+def session_wait(entry: dict | None) -> str | None:
     if entry is None:
         return None
     waiting = " ".join(str(entry.get("waitingFor") or "").split())
@@ -154,33 +168,102 @@ def waiting_on_user(entry: dict | None) -> str | None:
     return None
 
 
-def _needs_user_findings(
-    agents: list[dict], by_session: dict[str, dict], held: dict[str, dict]
-) -> list[Finding]:
+def _classify_waits(
+    agents: list[dict],
+    by_session: dict[str, dict],
+    held: dict[str, dict],
+    skip: Mapping[str, object],
+) -> tuple[list[Finding], set[str], set[str]]:
+    # Claude Code also reports "waiting" or "blocked" for a session that ended its turn on a
+    # work blocker, and for an idle Oracle; only a held or pending request needs a person.
     findings: list[Finding] = []
+    user_waits: set[str] = set()
+    blocked: set[str] = set()
     for agent in agents:
-        waiting = waiting_on_user(by_session.get(agent["agent_id"]))
+        agent_id = agent["agent_id"]
+        if agent_id in skip:
+            continue
+        waiting = session_wait(by_session.get(agent_id))
         if waiting is None:
             continue
         session = agent["session_name"] or agent["name"]
-        asked = held.get(agent["agent_id"])
+        asked = held.get(agent_id)
         if asked is not None:
+            user_waits.add(agent_id)
             findings.append(_held_finding(agent, session, asked))
             continue
         request = pending_request(agent.get("transcript_path"))
-        detail = f"its session {session} waits on {waiting}"
-        if request:
-            detail = f"{detail}: {request}"
+        if request is None:
+            blocked.add(agent_id)
+            continue
+        user_waits.add(agent_id)
         findings.append(
             _finding(
                 agent,
                 "needs_user",
-                detail,
+                f"its session {session} waits on {waiting}: {request}",
                 f"The user has been notified. Tell the user to open the session {session} in "
                 "agent view and answer it, and keep the rest of the run moving.",
             )
         )
-    return findings
+    return findings, user_waits, blocked
+
+
+def _blocked_findings(
+    agent: dict, now: datetime, settings: WatchdogSettings, by_id: dict[str, dict]
+) -> list[Finding]:
+    if agent["state"] != "working":
+        return []
+    last = parse_stamp(agent["last_heartbeat_at"]) or parse_stamp(agent["started_at"])
+    if last is None or now - last < timedelta(minutes=settings.stuck_minutes):
+        return []
+    session = agent["session_name"] or agent["name"]
+    label = json.dumps(session)
+    parent = by_id.get(agent["parent_agent_id"] or "")
+    if parent is None or parent["role"] == "oracle":
+        step = (
+            f"Ask it what blocks it with SendMessage(to={label}), then unblock it, or have it "
+            "call issue_escalate, or release it."
+        )
+    else:
+        parent_label = json.dumps(parent["session_name"] or parent["name"])
+        step = (
+            f"Wake {parent['name']} (SendMessage(to={parent_label})) to unblock {agent['name']}: "
+            "answer its question, return_work with new direction, or release it."
+        )
+    return [
+        _finding(
+            agent,
+            "blocked",
+            f"its session {session} ended its turn blocked on its work, with no permission "
+            f"prompt or tool request pending, and has shown no activity for "
+            f"{_minutes(now - last)} minutes",
+            step,
+        )
+    ]
+
+
+def _superseded_coders(conn: sqlite3.Connection, run_id: int) -> dict[str, sqlite3.Row]:
+    rows = conn.execute(
+        "SELECT a.agent_id, f.file_id, f.path FROM agents a JOIN files f ON f.file_id = a.file_id "
+        "WHERE a.run_id = ? AND a.role = 'coder' AND a.ended_at IS NULL "
+        "AND f.state = 'superseded'",
+        (run_id,),
+    ).fetchall()
+    return {row["agent_id"]: row for row in rows}
+
+
+def _superseded_finding(agent: dict, file_row: sqlite3.Row, by_id: dict[str, dict]) -> Finding:
+    parent = by_id.get(agent["parent_agent_id"] or "")
+    who = parent["name"] if parent is not None else "its parent"
+    return _finding(
+        agent,
+        "superseded",
+        f"its file {file_row['file_id']} ({file_row['path']}) was superseded by a later claim",
+        f"Ask {who} to release it with "
+        f"agent_release(target_agent_id={json.dumps(agent['agent_id'])}); the later claim owns "
+        "the file, and the session holds memory.",
+    )
 
 
 def _held_finding(agent: dict, session: str, asked: dict) -> Finding:
@@ -197,35 +280,8 @@ def _held_finding(agent: dict, session: str, asked: dict) -> Finding:
 
 
 def pending_request(raw: object) -> str | None:
-    """The tool call a session waits on, from the end of its transcript, as one line."""
-    if not isinstance(raw, str) or not raw:
-        return None
-    try:
-        with Path(raw).open("rb") as handle:
-            handle.seek(0, 2)
-            start = max(0, handle.tell() - _TAIL_BLOCK)
-            handle.seek(start)
-            lines = handle.read().split(b"\n")
-    except OSError:
-        return None
-    for line in reversed(lines[1:] if start > 0 else lines):
-        try:
-            record = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(record, dict) or record.get("isSidechain"):
-            continue
-        message = record.get("message")
-        content = message.get("content") if isinstance(message, dict) else None
-        if not isinstance(content, list):
-            continue
-        blocks = [b for b in content if isinstance(b, dict)]
-        if any(b.get("type") == "tool_result" for b in blocks):
-            return None
-        uses = [b for b in blocks if b.get("type") == "tool_use"]
-        if uses:
-            return _describe_request(uses[-1])
-    return None
+    use = transcript.pending_use(raw)
+    return None if use is None else _describe_request(use)
 
 
 def _describe_request(use: dict) -> str:
@@ -257,6 +313,8 @@ def _run_stalled(
     by_session: dict[str, dict],
     now: datetime,
     settings: WatchdogSettings,
+    waits: set[str],
+    user_waits: set[str],
 ) -> Finding | None:
     oracle = next((a for a in agents if a["role"] == "oracle"), None)
     after = timedelta(minutes=settings.stuck_minutes)
@@ -270,7 +328,7 @@ def _run_stalled(
     for agent in agents:
         entry = by_session.get(agent["agent_id"])
         running = entry is not None and sessions.is_running(entry)
-        if agent["state"] == "working" and running and not waiting_on_user(entry):
+        if agent["state"] == "working" and running and agent["agent_id"] not in waits:
             return None
     if conn.execute(
         "SELECT 1 FROM wakeups w JOIN agents t ON t.agent_id = w.to_agent_id "
@@ -283,11 +341,7 @@ def _run_stalled(
     last = max((s for s in stamps if s is not None), default=None)
     if last is None or now - last < after:
         return None
-    waiting = [
-        a["session_name"] or a["name"]
-        for a in agents
-        if waiting_on_user(by_session.get(a["agent_id"]))
-    ]
+    waiting = [a["session_name"] or a["name"] for a in agents if a["agent_id"] in user_waits]
     detail = (
         f"no agent of the run has worked and no wake-up has been owed for {_minutes(now - last)} "
         "minutes"
@@ -407,6 +461,42 @@ def _queued_findings(
     return findings
 
 
+def _unread_directive_findings(
+    conn: sqlite3.Connection,
+    run_id: int,
+    agents: list[dict],
+    now: datetime,
+    settings: WatchdogSettings,
+) -> list[Finding]:
+    oracle = next((a for a in agents if a["role"] == "oracle"), None)
+    after = timedelta(minutes=settings.unsent_wakeup_minutes)
+    if oracle is None or after <= timedelta(0):
+        return []
+    marks = ", ".join("?" for _ in USER_DIRECTIVE_SOURCES)
+    waiting: list[tuple[int, timedelta]] = []
+    for row in conn.execute(
+        "SELECT directive_id, created_at FROM directives WHERE run_id = ? "
+        f"AND source IN ({marks}) AND state = 'open' AND seen_at IS NULL ORDER BY directive_id",
+        (run_id, *USER_DIRECTIVE_SOURCES),
+    ):
+        made = parse_stamp(row["created_at"])
+        if made is not None and now - made >= after:
+            waiting.append((row["directive_id"], now - made))
+    if not waiting:
+        return []
+    ids = ", ".join(str(directive_id) for directive_id, _ in waiting)
+    age = _minutes(max(waited for _, waited in waiting))
+    return [
+        _finding(
+            oracle,
+            "directive_unread",
+            f"directive(s) {ids} from the user have waited unread for up to {age} minutes",
+            "Call directive_inbox() now, then apply each directive or acknowledge one you "
+            "cannot apply at once with directive_ack(directive_id, note).",
+        )
+    ]
+
+
 def _unmanaged_phase_findings(
     conn: sqlite3.Connection, run_id: int, agents: list[dict]
 ) -> list[Finding]:
@@ -450,35 +540,29 @@ def _stray_process_findings(conn: sqlite3.Connection, run_id: int, now: datetime
     if not rows:
         return []
     table = procs.snapshot()
-    children = procs.children_map(table)
     protected = procs.ancestors(table, os.getpid())
     by_agent: dict[str, list[sqlite3.Row]] = {}
     for row in rows:
         by_agent.setdefault(row["agent_id"], []).append(row)
-    findings: list[Finding] = []
+    candidates: dict[str, list[procs.Proc]] = {}
     for agent_id, recorded in by_agent.items():
-        stray: dict[int, procs.Proc] = {}
-        for row in recorded:
-            current = table.get(row["pid"])
-            if current is not None and not procs.same_process(current, row["created"]):
-                continue
-            if current is not None:
-                stray.setdefault(current.pid, current)
-            if row["is_session"]:
-                found = procs.tool_tree(table, row["pid"], row["created"])
-            else:
-                found = procs.descendants(children, row["pid"], row["created"])
-            for proc in found:
-                stray.setdefault(proc.pid, proc)
-        left = [p for pid, p in sorted(stray.items()) if pid not in protected]
+        found = procs.verified_strays(
+            table, [(r["pid"], r["created"], bool(r["is_session"])) for r in recorded], protected
+        )
+        if found:
+            candidates[agent_id] = found
+    if not candidates:
+        return []
+    fresh = procs.snapshot()
+    findings: list[Finding] = []
+    for agent_id, found in candidates.items():
+        left = [p for p in found if procs.identical(fresh.get(p.pid), p.created)]
         if not left:
             continue
-        agent = {"agent_id": agent_id, "name": recorded[0]["name"]}
-        agent["session_name"] = recorded[0]["session_name"]
+        agent = {"agent_id": agent_id, "name": by_agent[agent_id][0]["name"]}
+        agent["session_name"] = by_agent[agent_id][0]["session_name"]
         listed = ", ".join(f"{p.name} (pid {p.pid})" for p in left)
-        pids = " ".join(str(p.pid) for p in left)
-        stop = " ".join(f"/PID {p.pid}" for p in left) if sys.platform == "win32" else pids
-        command = f"taskkill /F /T {stop}" if sys.platform == "win32" else f"kill {stop}"
+        command = stop_command([p.pid for p in left], sys.platform)
         findings.append(
             _finding(
                 agent,
@@ -489,6 +573,12 @@ def _stray_process_findings(conn: sqlite3.Connection, run_id: int, now: datetime
             )
         )
     return findings
+
+
+def stop_command(pids: list[int], platform: str) -> str:
+    if platform == "win32":
+        return "taskkill /F " + " ".join(f"/PID {pid}" for pid in pids)
+    return "kill " + " ".join(str(pid) for pid in pids)
 
 
 def _finding(agent: dict, kind: str, detail: str, next_step: str) -> Finding:
@@ -512,17 +602,50 @@ def _not_running(entry: dict | None) -> str:
     return f"is not running (status {entry.get('status')}, state {entry.get('state')})"
 
 
-def _crashed(agent: dict, entry: dict | None, now: datetime) -> list[Finding]:
+def _failed_resumes(conn: sqlite3.Connection, agent: dict) -> int:
+    if agent["parked_at"] is None:
+        return 0
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM agent_events WHERE agent_id = ? AND to_state = 'resume_failed' "
+        "AND at >= ?",
+        (agent["agent_id"], agent["parked_at"]),
+    ).fetchone()
+    return int(row["n"])
+
+
+def _unresumable(
+    conn: sqlite3.Connection, agent: dict, now: datetime, settings: WatchdogSettings
+) -> int:
+    failed = _failed_resumes(conn, agent)
+    last = parse_stamp(agent["last_heartbeat_at"]) or parse_stamp(agent["started_at"])
+    quiet = last is None or now - last >= timedelta(minutes=settings.stuck_minutes)
+    return failed if failed >= RESUME_FAILURE_LIMIT and quiet else 0
+
+
+def _crashed(agent: dict, entry: dict | None, now: datetime, unresumable: int = 0) -> list[Finding]:
     state = logical_state(agent)
     started = parse_stamp(agent["started_at"])
     overdue = started is not None and now - started > REGISTER_GRACE
     if state != "working" and not (state == "registered" and overdue):
         return []
+    detail = f"the ledger says {state}, but its session {_not_running(entry)}"
+    if unresumable:
+        return [
+            _finding(
+                agent,
+                "crashed",
+                f"{detail}; {unresumable} resumes failed and it has shown no activity since",
+                "Its conversation cannot be resumed. Read what it left in the ledger with "
+                "directive_inbox() and status_tree(), then have its parent release it with "
+                f"agent_release(target_agent_id={json.dumps(agent['agent_id'])}) and brief a "
+                "replacement under the same name.",
+            )
+        ]
     return [
         _finding(
             agent,
             "crashed",
-            f"the ledger says {state}, but its session {_not_running(entry)}",
+            detail,
             f"Resume it with agent_resume(target_name={json.dumps(agent['name'])}).",
         )
     ]
@@ -544,14 +667,14 @@ def _release_step(agent_id: str) -> str:
 
 
 def _session_findings(
-    agent: dict, entry: dict | None, now: datetime, settings: WatchdogSettings
+    conn: sqlite3.Connection,
+    agent: dict,
+    entry: dict | None,
+    now: datetime,
+    settings: WatchdogSettings,
 ) -> list[Finding]:
-    if waiting_on_user(entry):
-        return []
-
-    running = entry is not None and sessions.is_running(entry)
-    if not running:
-        return _crashed(agent, entry, now)
+    if not sessions.agent_running(entry, agent):
+        return _crashed(agent, entry, now, _unresumable(conn, agent, now, settings))
 
     if agent["state"] != "working":
         return []
@@ -1128,6 +1251,8 @@ class Watchdog:
         except LedgerError as exc:
             self._log(f"skipped a pass: {exc}")
             listing = None
+        if run is not None and run["state"] == "active":
+            run = self._pause_on_usage_limit(run, now)
         if run is not None and run["state"] == "active" and listing is not None:
             listing = self._memory_pass(listing, now)
             findings = scan(self.conn, listing, now, self.settings)
@@ -1148,12 +1273,83 @@ class Watchdog:
             self._remind(run, now)
         self._check_idle(run, listing, now)
 
+    def _limited_agents(self, run_id: int) -> list[tuple[sqlite3.Row, dict]]:
+        found: list[tuple[sqlite3.Row, dict]] = []
+        for agent in self.conn.execute(
+            "SELECT * FROM agents WHERE run_id = ? AND ended_at IS NULL "
+            "AND transcript_path IS NOT NULL ORDER BY started_at",
+            (run_id,),
+        ):
+            stop = transcript.usage_limit_stop(agent["transcript_path"])
+            if stop is not None:
+                found.append((agent, stop))
+        return found
+
+    def _pause_on_usage_limit(self, run: sqlite3.Row, now: datetime) -> sqlite3.Row:
+        resumed = self.conn.execute(
+            "SELECT MAX(e.at) FROM agent_events e JOIN agents a ON a.agent_id = e.agent_id "
+            "WHERE a.run_id = ? AND e.from_state = 'paused' AND e.to_state = 'active'",
+            (run["run_id"],),
+        ).fetchone()[0]
+        after = parse_stamp(resumed)
+        limited = [
+            (agent, stop)
+            for agent, stop in self._limited_agents(run["run_id"])
+            if after is None or (parse_stamp(stop["at"]) or now) > after
+        ]
+        if not limited:
+            return run
+        text = limited[0][1]["text"]
+        reset = pauses.usage_reset(text, now)
+        check = f"{pauses.USAGE_CHECK}@{stamp(reset)}" if reset is not None else None
+        reason = (
+            f"the account hit its usage limit ({text}); {len(limited)} session(s) stopped on "
+            "it, and they are woken when the run resumes"
+        )
+        oracle = latest_live_oracle(self.conn, run["run_id"])
+        with write_tx(self.conn) as conn:
+            notice = pauses.record_pause(
+                conn,
+                run["run_id"],
+                oracle["agent_id"] if oracle else "watchdog",
+                reason,
+                check,
+                self.notify_channels,
+                now,
+            )
+        notify.deliver(notice, self.notify_channels, log=self._log)
+        self._log(f"run {run['run_id']} paused: {reason}")
+        return self.conn.execute("SELECT * FROM runs WHERE run_id = ?", (run["run_id"],)).fetchone()
+
+    def _wake_limited(self, run_id: int) -> None:
+        oracle = latest_live_oracle(self.conn, run_id)
+        if oracle is None:
+            return
+        with write_tx(self.conn) as conn:
+            for agent, _ in self._limited_agents(run_id):
+                if agent["agent_id"] == oracle["agent_id"] or not agent["session_name"]:
+                    continue
+                conn.execute(
+                    "INSERT INTO wakeups (run_id, from_agent_id, to_agent_id, to_name, "
+                    "to_session_name, reason, pointer) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        run_id,
+                        oracle["agent_id"],
+                        agent["agent_id"],
+                        agent["name"],
+                        agent["session_name"],
+                        pauses.USAGE_WAKE_REASON,
+                        "The account's usage limit reset and the run resumed. Continue the step "
+                        "the limit stopped.",
+                    ),
+                )
+
     def _try_clear_check(self, run: sqlite3.Row, now: datetime) -> sqlite3.Row:
-        check = pauses.CHECKS.get(run["pause_check"] or "")
+        check, arg = pauses.split_check(run["pause_check"])
         if check is None:
             return run
         try:
-            passed = check.passes(self.repo_root)
+            passed = check.passes(self.repo_root, arg, now)
         except Exception as exc:
             self._log(f"the clear-check {check.name} failed: {type(exc).__name__}: {exc}")
             return run
@@ -1172,6 +1368,8 @@ class Watchdog:
             )
         notify.deliver(notice, self.notify_channels, log=self._log)
         self._log(f"run {run['run_id']}: {note}")
+        if check.name == pauses.USAGE_CHECK:
+            self._wake_limited(run["run_id"])
         return self.conn.execute("SELECT * FROM runs WHERE run_id = ?", (run["run_id"],)).fetchone()
 
     def _remind(self, run: sqlite3.Row, now: datetime) -> None:
@@ -1198,6 +1396,13 @@ class Watchdog:
         if ledger is None:
             return listing
         changed = False
+        freed_by_coders = [0]
+
+        def park_blocked_coders() -> list[dict]:
+            parked = ledger.park_blocked_coders(listing, now)
+            freed_by_coders[0] = len(parked) * memory.estimate_mb(ledger.conn, "coder")
+            return parked
+
         steps: list[tuple[str, Callable[[], object]]] = [
             ("sample memory", lambda: ledger.sample_memory(listing)),
             (
@@ -1206,7 +1411,11 @@ class Watchdog:
             ),
             ("resume parked agents", lambda: ledger.resume_parked(listing)),
             ("start queued spawns", lambda: ledger.start_queued_spawns(listing)),
-            ("park idle parents", lambda: ledger.park_idle_parents(listing)),
+            ("park blocked coders", park_blocked_coders),
+            (
+                "park idle parents",
+                lambda: ledger.park_idle_parents(listing, freed_by_coders[0]),
+            ),
             ("release finished parked parents", lambda: ledger.release_finished_parked(now)),
         ]
         for label, step in steps:
@@ -1318,7 +1527,7 @@ class Watchdog:
         self, run: sqlite3.Row, oracle: sqlite3.Row, entry: dict | None, count: int, first: int
     ) -> None:
         session = oracle["session_name"] or oracle["name"]
-        asks = waiting_on_user(entry)
+        asks = session_wait(entry) if pending_request(oracle["transcript_path"]) else None
         state = f"waits on {asks}" if asks else "sits idle with no watchdog listener"
         with write_tx(self.conn) as conn:
             notice = notify.record(

@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -22,6 +24,8 @@ from helpers import (
     write_module,
 )
 
+from swarm_ledger import repo
+from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import events
 from swarm_ledger.identity import LedgerError
 from swarm_ledger.ledger import Ledger
@@ -351,6 +355,54 @@ def test_phase_review_accepted_succeeds(ledger: Ledger) -> None:
     assert result["kind"] == "oracle"
 
 
+def test_phase_review_refuses_a_full_run_whose_build_failed_and_shows_the_output(
+    ledger: Ledger,
+) -> None:
+    ctx = bootstrap_module(ledger)
+    _accept_module_and_hand_up(ledger, ctx)
+    ledger.profile_set("oracle", ctx["oracle_id"], build_command="npm run build")
+    insert_passing_test_run(
+        ledger,
+        ctx["run_id"],
+        ctx["oracle_id"],
+        "full",
+        build=("npm run build", 1, "x" * 5000 + "Module not found: next/headers"),
+    )
+
+    with pytest.raises(LedgerError, match="build") as raised:
+        ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok")
+    message = str(raised.value)
+    assert "npm run build" in message
+    assert "Module not found: next/headers" in message
+    assert len(message) < 3500
+
+
+def test_phase_review_refuses_a_full_run_with_no_build_when_the_profile_has_one(
+    ledger: Ledger,
+) -> None:
+    ctx = bootstrap_module(ledger)
+    _accept_module_and_hand_up(ledger, ctx)
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+    ledger.profile_set("oracle", ctx["oracle_id"], build_command="npm run build")
+
+    with pytest.raises(LedgerError, match="npm run build"):
+        ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok")
+
+
+def test_phase_review_accepts_a_full_run_whose_build_passed(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    _accept_module_and_hand_up(ledger, ctx)
+    ledger.profile_set("oracle", ctx["oracle_id"], build_command="npm run build")
+    insert_passing_test_run(
+        ledger, ctx["run_id"], ctx["oracle_id"], "full", build=("npm run build", 0, "built")
+    )
+
+    result = ledger.phase_review(
+        "oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ship it", scores=_review_scores()
+    )
+    assert result["outcome"] == "accepted"
+
+
 def test_phase_review_refuses_code_the_graph_maps_without_a_test_file(ledger: Ledger) -> None:
     ctx = bootstrap_module(ledger)
     _approve_file(ledger, ctx, "good", "pkg/good.py", None)
@@ -633,6 +685,93 @@ def test_phase_update_approved_succeeds_after_an_accepted_phase_review(ledger: L
 
     phase = ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
     assert phase["state"] == "approved"
+
+
+def _git(root: Path, *args: str) -> str:
+    who = ["-c", "user.email=t@example.com", "-c", "user.name=t"]
+    done = subprocess.run(
+        ["git", *who, *args], cwd=root, check=True, capture_output=True, text=True
+    )
+    return done.stdout
+
+
+def _approve_phase_with_files(
+    ledger: Ledger, host: Path, branch: str | None, commit: bool = True
+) -> dict:
+    (host / "README.md").write_text("base\n", encoding="utf-8")
+    _git(host, "init", "-q", "-b", "main")
+    _git(host, "config", "user.email", "t@example.com")
+    _git(host, "config", "user.name", "t")
+    _git(host, "add", "-A")
+    _git(host, "commit", "-q", "-m", "init")
+    if branch is not None:
+        _git(host, "checkout", "-q", "-b", branch)
+    ctx = bootstrap_module(ledger)
+    lead = ("lead-p1-module-1", ctx["lead"]["agent_id"])
+    ledger.claim_file(*lead, "src/a.py", "tests/test_a.py", "coder-p1-module-1-a")
+    (host / "src").mkdir()
+    (host / "tests").mkdir(exist_ok=True)
+    (host / "src" / "a.py").write_text("A = 1\n", encoding="utf-8")
+    (host / "tests" / "test_a.py").write_text("def test_a():\n    pass\n", encoding="utf-8")
+    (host / "other.py").write_text("not the phase's\n", encoding="utf-8")
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE files SET state = 'approved' WHERE path = 'src/a.py'")
+    _accept_module_and_hand_up(ledger, ctx)
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+    ledger.phase_review(
+        "oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ship it", scores=_review_scores()
+    )
+    ledger.settings = replace(ledger.settings, commit_phases=commit)
+    return ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
+
+
+def test_an_approved_phase_commits_only_its_own_files(ledger: Ledger, host: Path) -> None:
+    phase = _approve_phase_with_files(ledger, host, "run-1")
+
+    assert phase["commit"]["committed"] is True
+    committed = _git(host, "show", "--name-only", "--format=%s", "HEAD").split()
+    assert committed[0] == "p1-phase-1:"
+    assert set(committed) >= {"src/a.py", "tests/test_a.py"}
+    assert "other.py" not in committed
+    assert "?? other.py" in _git(host, "status", "--porcelain")
+
+
+def test_an_approved_phase_on_the_base_branch_is_not_committed(ledger: Ledger, host: Path) -> None:
+    phase = _approve_phase_with_files(ledger, host, None)
+
+    assert phase["state"] == "approved"
+    assert phase["commit"]["committed"] is False
+    assert "base branch main" in phase["commit"]["reason"]
+    assert _git(host, "log", "--format=%s").split() == ["init"]
+
+
+def test_a_phase_commit_takes_only_plain_files_inside_the_repo(tmp_path: Path) -> None:
+    root = tmp_path / "r"
+    root.mkdir()
+    (root / "README.md").write_text("base\n", encoding="utf-8")
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "config", "user.email", "t@example.com")
+    _git(root, "config", "user.name", "t")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "init")
+    _git(root, "checkout", "-q", "-b", "run-1")
+    (root / "src").mkdir()
+    (root / "src" / "a.py").write_text("A = 1\n", encoding="utf-8")
+    (root / "src" / "b.py").write_text("B = 1\n", encoding="utf-8")
+    (root / "secret.txt").write_text("not the phase's\n", encoding="utf-8")
+
+    result = repo.commit_paths(
+        root, None, ["src/a.py", ":(glob)*", "src", "../outside.py", str(root / "x")], "p1: a"
+    )
+
+    assert result["committed"] is True and result["paths"] == ["src/a.py"]
+    assert _git(root, "show", "--name-only", "--format=", "HEAD").split() == ["src/a.py"]
+
+
+def test_commit_phases_off_leaves_the_tree_alone(ledger: Ledger, host: Path) -> None:
+    phase = _approve_phase_with_files(ledger, host, "run-1", commit=False)
+
+    assert phase["commit"] == {"committed": False, "reason": "commit_phases is off"}
 
 
 # -- write_report -----------------------------------------------------------------------------

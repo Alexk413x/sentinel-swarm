@@ -96,6 +96,8 @@ def _full_test_check(conn: sqlite3.Connection, run_id: int) -> Check:
         f"state={row['state']} exit_code={row['exit_code']} passed={row['passed']} "
         f"failed={row['failed']} errors={row['errors'] or 0}"
     )
+    if row["build_command"]:
+        detail += f" build_exit_code={row['build_exit_code']}"
     return Check("the last full test run passed", test_run_passed(row), detail)
 
 
