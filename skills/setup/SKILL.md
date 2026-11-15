@@ -55,8 +55,12 @@ Then fill in the test settings:
   brief asks for them (`tests_run(include_slow=true)`).
 
 Fill `build_command` and `lint_command` the same way, from what the repo actually
-uses, for example `npm run build` and `npx eslint .`, or `uv run ruff check`. Both
-are optional; the shell gate allows them for Coders when they are set.
+uses, for example `npm run build` and `npx eslint {target}`, or `uv run ruff check
+{target}`. Both are optional; the shell gate allows them for Coders when they are set.
+Write the lint command in its per-file form, with `{target}` where the linter takes a
+path: each Coder then lints only its own file, and the gate allows exactly that. A lint
+command without `{target}`, such as `npx eslint .`, lints the whole app on every Coder's
+handoff, and the gate allows any command that starts with it.
 
 `commands` lists named host commands outside test, build, and lint, such as the rebuild
 of a derived file: each entry has `name`, `run`, `cwd`, and `interpreter`. The Coder's

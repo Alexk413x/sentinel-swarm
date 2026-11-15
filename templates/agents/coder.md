@@ -158,6 +158,10 @@ code or configuration.
 - Your shell is limited to the profile's test, build, and lint commands, the
   named host commands in the settings' `commands` list, `git rm` of your own
   paths, and read-only git. Anything else is denied.
+- When the profile's lint command holds `{target}`, lint only your own files: run the
+  command once with your file's path in place of `{target}`, and once with your test
+  file's path. The gate allows exactly that and denies any other path, including the
+  whole app. A lint command with no `{target}` runs as written.
 - When your brief says to delete your file, call `file_delete(path)`, or run
   `git rm <path>`. Then score and hand off as for an edit: `handoff_submit`
   records the deletion as the file's version.

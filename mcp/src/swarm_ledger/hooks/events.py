@@ -376,6 +376,33 @@ def _allowed_templates(ledger: Ledger, role: str) -> list[str]:
     return [t for t in templates if t]
 
 
+def _targeted_lint(ledger: Ledger, role: str) -> str | None:
+    template = ledger.settings.lint_command
+    return template if role != "driver" and template and "{target}" in template else None
+
+
+def _lint_own_file(ledger: Ledger, caller: dict, template: str, argv: list[str]) -> bool:
+    try:
+        wanted = shlex.split(template, posix=_POSIX)
+    except ValueError:
+        return False
+    if len(wanted) != len(argv):
+        return False
+    owned = _owned_paths(ledger, caller)
+    for want, got in zip(wanted, argv):
+        head, mark, tail = want.partition("{target}")
+        if not mark:
+            if got != want:
+                return False
+            continue
+        if not (got.startswith(head) and got.endswith(tail) and len(got) >= len(head + tail)):
+            return False
+        path = got[len(head) : len(got) - len(tail)].strip("\"'")
+        if "{target}" in tail or _repo_relative(ledger, path) not in owned:
+            return False
+    return True
+
+
 def _host_command(ledger: Ledger, command: str, role: str) -> bool:
     if role not in _HOST_COMMAND_ROLES:
         return False
@@ -404,10 +431,15 @@ def _command_allowed(ledger: Ledger, command: str, caller: dict) -> bool:
         return False
     if not argv or role == "manager":
         return False
+    lint = _targeted_lint(ledger, role)
     for template in _allowed_templates(ledger, role):
+        if template == lint:
+            continue
         prefix = shlex.split(template.replace("{target}", ""), posix=_POSIX)
         if prefix and argv[: len(prefix)] == prefix:
             return True
+    if lint is not None and _lint_own_file(ledger, caller, lint, argv):
+        return True
     if role != "coder":
         return False
     removed = _git_rm_paths(argv)
