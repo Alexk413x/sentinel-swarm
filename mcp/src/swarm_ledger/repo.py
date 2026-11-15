@@ -11,6 +11,9 @@ from .identity import LedgerError, require_role, resolve
 _GIT_TIMEOUT_S = 10
 # A host's commit hooks run, so a commit may take far longer than a read.
 _COMMIT_TIMEOUT_S = 300
+# A claimed path is a file name, never a pattern: without this, git reads ":(glob)*" or a
+# directory as a pathspec and the phase commit takes files beyond the phase.
+_LITERAL = ["--literal-pathspecs"]
 _START_ADVICE = "create a run branch for this run with repo_branch_create"
 
 
@@ -51,6 +54,14 @@ def _resolve_base_branch(repo_root: Path, configured: str | None) -> str | None:
     return None
 
 
+def _plain_file_path(repo_root: Path, path: str) -> bool:
+    candidate = Path(path)
+    if not path or candidate.is_absolute() or path.startswith(":") or ".." in candidate.parts:
+        return False
+    target = repo_root / candidate
+    return not target.exists() or target.is_file()
+
+
 def commit_paths(repo_root: Path, base_branch: str | None, paths: list[str], message: str) -> dict:
     if not _is_git_repo(repo_root):
         return {"committed": False, "reason": "the repo is not a git repository"}
@@ -64,19 +75,22 @@ def commit_paths(repo_root: Path, base_branch: str | None, paths: list[str], mes
             "committed": False,
             "reason": f"the run works on the base branch {base}; commit the phase yourself",
         }
-    _, tracked, _ = _run_git(["ls-files", "--", *paths], repo_root)
+    plain = sorted({p for p in paths if _plain_file_path(repo_root, p)})
+    if not plain:
+        return {"committed": False, "reason": "the phase has no files on disk or in git"}
+    _, tracked, _ = _run_git([*_LITERAL, "ls-files", "--", *plain], repo_root)
     known = set(tracked.splitlines())
-    wanted = sorted(p for p in set(paths) if p in known or (repo_root / p).exists())
+    wanted = [p for p in plain if p in known or (repo_root / p).is_file()]
     if not wanted:
         return {"committed": False, "reason": "the phase has no files on disk or in git"}
-    code, _, err = _run_git(["add", "-A", "--", *wanted], repo_root)
+    code, _, err = _run_git([*_LITERAL, "add", "-A", "--", *wanted], repo_root)
     if code != 0:
         return {"committed": False, "reason": f"git add failed: {err.strip()}"}
-    code, _, _ = _run_git(["diff", "--cached", "--quiet", "--", *wanted], repo_root)
+    code, _, _ = _run_git([*_LITERAL, "diff", "--cached", "--quiet", "--", *wanted], repo_root)
     if code == 0:
         return {"committed": False, "reason": "nothing to commit: the phase's files match HEAD"}
     code, _, err = _run_git(
-        ["commit", "-q", "-m", message, "--", *wanted], repo_root, _COMMIT_TIMEOUT_S
+        [*_LITERAL, "commit", "-q", "-m", message, "--", *wanted], repo_root, _COMMIT_TIMEOUT_S
     )
     if code != 0:
         return {"committed": False, "reason": f"git commit failed: {err.strip()[-500:]}"}

@@ -24,6 +24,7 @@ from helpers import (
     write_module,
 )
 
+from swarm_ledger import repo
 from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import events
 from swarm_ledger.identity import LedgerError
@@ -740,6 +741,27 @@ def test_an_approved_phase_on_the_base_branch_is_not_committed(ledger: Ledger, h
     assert phase["commit"]["committed"] is False
     assert "base branch main" in phase["commit"]["reason"]
     assert _git(host, "log", "--format=%s").split() == ["init"]
+
+
+def test_a_phase_commit_takes_only_plain_files_inside_the_repo(tmp_path: Path) -> None:
+    root = tmp_path / "r"
+    root.mkdir()
+    (root / "README.md").write_text("base\n", encoding="utf-8")
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "init")
+    _git(root, "checkout", "-q", "-b", "run-1")
+    (root / "src").mkdir()
+    (root / "src" / "a.py").write_text("A = 1\n", encoding="utf-8")
+    (root / "src" / "b.py").write_text("B = 1\n", encoding="utf-8")
+    (root / "secret.txt").write_text("not the phase's\n", encoding="utf-8")
+
+    result = repo.commit_paths(
+        root, None, ["src/a.py", ":(glob)*", "src", "../outside.py", str(root / "x")], "p1: a"
+    )
+
+    assert result["committed"] is True and result["paths"] == ["src/a.py"]
+    assert _git(root, "show", "--name-only", "--format=", "HEAD").split() == ["src/a.py"]
 
 
 def test_commit_phases_off_leaves_the_tree_alone(ledger: Ledger, host: Path) -> None:
