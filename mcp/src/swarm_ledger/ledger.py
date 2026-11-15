@@ -1087,6 +1087,7 @@ class Ledger(
     ) -> dict:
         if effort is not None and effort not in EFFORT_LEVELS:
             raise LedgerError(f"unknown effort {effort!r}; use one of {list(EFFORT_LEVELS)}")
+        self._release_dead_holders(caller, agent_id, child_name)
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
             if child_role not in child_roles_of(c.role):
@@ -1452,9 +1453,7 @@ class Ledger(
     def agent_release(self, caller: str, agent_id: str, target_agent_id: str) -> dict:
         with self._release_tx() as conn:
             c = resolve(conn, caller, agent_id)
-            target = conn.execute(
-                "SELECT * FROM agents WHERE agent_id = ?", (target_agent_id,)
-            ).fetchone()
+            target = self._release_target(conn, c, target_agent_id)
             if target is None:
                 return self._cancel_queued(conn, c, target_agent_id)
             if target["parent_agent_id"] != c.agent_id and not (
@@ -1464,9 +1463,62 @@ class Ledger(
                     f"{caller!r} is not the parent of {target_agent_id!r}; the Oracle may also "
                     "release an agent whose parent has ended"
                 )
-            self._release_agent(conn, target_agent_id, "agent_release")
+            self._release_agent(conn, target["agent_id"], "agent_release")
 
-        return self._agent_dict(target_agent_id)
+        return self._agent_dict(target["agent_id"])
+
+    def _release_dead_holders(self, caller: str, agent_id: str, child_name: str) -> None:
+        c = resolve(self.conn, caller, agent_id)
+        holders = [
+            row
+            for row in self.conn.execute(
+                "SELECT * FROM agents WHERE name = ? AND ended_at IS NULL AND run_id IS ? "
+                "AND session_name IS NOT NULL AND role != 'oracle'",
+                (child_name, c.run_id),
+            )
+            if row["agent_id"] != c.agent_id
+            and (
+                row["parent_agent_id"] == c.agent_id
+                or (c.role == "oracle" and _parent_ended(self.conn, row))
+            )
+            and not self._resuming(dict(row))
+        ]
+        if not holders:
+            return
+        try:
+            listing = sessions.list_sessions(retry=True)
+        except sessions.ConfigParseError as exc:
+            raise self.pause_for_config(exc) from exc
+        except LedgerError:
+            return
+        gone = [
+            row
+            for row in holders
+            if not sessions.agent_running(
+                sessions.find_session(listing, row["agent_id"]), dict(row)
+            )
+        ]
+        if not gone:
+            return
+        with self._release_tx() as conn:
+            for row in gone:
+                self._release_agent(
+                    conn,
+                    row["agent_id"],
+                    f"brief_create by {caller}: its session is not running, and a replacement "
+                    f"is briefed under the name {child_name}",
+                )
+
+    @staticmethod
+    def _release_target(conn: sqlite3.Connection, c: Caller, ref: str) -> sqlite3.Row | None:
+        row = conn.execute("SELECT * FROM agents WHERE agent_id = ?", (ref,)).fetchone()
+        if row is not None or c.run_id is None:
+            return row
+        return conn.execute(
+            "SELECT * FROM agents WHERE run_id = ? AND ended_at IS NULL "
+            "AND (name = ? OR session_name = ?) ORDER BY started_at DESC LIMIT 1",
+            (c.run_id, ref, ref),
+        ).fetchone()
 
     @staticmethod
     def _cancel_queued(conn: sqlite3.Connection, c: Caller, child_name: str) -> dict:
@@ -1714,13 +1766,14 @@ class Ledger(
         except sessions.ConfigParseError as exc:
             raise self.pause_for_config(exc) from exc
         own = sessions.find_session(listing, target["agent_id"])
-        if own is not None and sessions.is_running(own):
+        if sessions.agent_running(own, dict(target)):
             label = target["session_name"] or target["agent_id"]
             raise LedgerError(
                 f"{target_name!r} is still running as {label!r}; wake it with "
                 f"SendMessage(to={json.dumps(label)}) instead"
             )
-        moved = sessions.resumed_entry(listing, None, target["session_name"])
+        others = [e for e in listing if e.get("sessionId") != target["agent_id"]]
+        moved = sessions.resumed_entry(others, None, target["session_name"])
         if moved is not None:
             current = self.adopt_resumed(target["agent_id"], str(moved["sessionId"]))
             return {

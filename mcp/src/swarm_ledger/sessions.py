@@ -314,13 +314,29 @@ def is_running(entry: dict) -> bool:
     states = {str(entry.get(key) or "").lower() for key in ("status", "state")}
     if states & _DEAD:
         return False
-    if str(entry.get("status") or "").lower() in _LIVE_STATUSES:
+    # An entry a killed process left behind keeps its last status, so a pid decides over it.
+    if _has_pid(entry.get("pid")):
+        return _process_alive(entry.get("pid"), entry.get("startedAt"))
+    return str(entry.get("status") or "").lower() in _LIVE_STATUSES
+
+
+def agent_running(entry: dict | None, agent: Mapping[str, object]) -> bool:
+    if entry is None or not is_running(entry):
+        return False
+    pid = agent.get("session_pid")
+    if _has_pid(entry.get("pid")) or not isinstance(pid, int) or not _has_pid(pid):
         return True
-    return _process_alive(entry.get("pid"), entry.get("startedAt"))
+    created = procs.created_of(pid)
+    recorded = agent.get("session_pid_created")
+    return created is not None and (recorded is None or created == recorded)
+
+
+def _has_pid(pid: object) -> bool:
+    return isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
 
 
 def _process_alive(pid: object, started_ms: object) -> bool:
-    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+    if not isinstance(pid, int) or not _has_pid(pid):
         return False
     created = procs.created_of(pid)
     if created is None:

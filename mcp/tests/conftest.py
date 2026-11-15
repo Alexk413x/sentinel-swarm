@@ -82,10 +82,12 @@ def _plenty_of_memory(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture(autouse=True)
 def _no_real_processes(monkeypatch: pytest.MonkeyPatch) -> None:
     # A release stops the processes under a session; no test may touch the machine's own.
+    # Every pid a fake listing carries names a process that exists; a test that needs a dead
+    # one patches created_of itself.
     from swarm_ledger import procs
 
     monkeypatch.setattr(procs, "snapshot", dict)
-    monkeypatch.setattr(procs, "created_of", lambda pid: None)
+    monkeypatch.setattr(procs, "created_of", lambda pid: 1)
     monkeypatch.setattr(procs, "terminate", lambda proc: False)
 
 

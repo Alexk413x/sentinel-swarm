@@ -374,8 +374,9 @@ def agent_release(
     caller: CallerName, target_agent_id: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
     """Releases an agent it directly parented; any parent role calls this for its own child. The
-    Oracle may also release an agent whose parent has ended. Passed a queued child's name, it
-    cancels that queued spawn and keeps its brief and claim."""
+    Oracle may also release an agent whose parent has ended. Takes the agent's id, or the name
+    or session name of a live agent of the run. Passed a queued child's name, it cancels that
+    queued spawn and keeps its brief and claim."""
     ...
 
 

@@ -833,7 +833,7 @@
   {
    "name": "agent_release",
    "title": "Agent Release",
-   "description": "Releases an agent it directly parented; any parent role calls this for its own child. The\nOracle may also release an agent whose parent has ended. Passed a queued child's name, it\ncancels that queued spawn and keeps its brief and claim.",
+   "description": "Releases an agent it directly parented; any parent role calls this for its own child. The\nOracle may also release an agent whose parent has ended. Takes the agent's id, or the name\nor session name of a live agent of the run. Passed a queued child's name, it cancels that\nqueued spawn and keeps its brief and claim.",
    "inputSchema": {
     "type": "object",
     "additionalProperties": false,

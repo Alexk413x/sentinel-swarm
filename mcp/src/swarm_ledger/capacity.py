@@ -258,7 +258,7 @@ class CapacityMixin(LedgerHost):
         parked: list[dict] = []
         for agent in agents:
             entry = by_session.get(agent["agent_id"])
-            running = entry is not None and sessions.is_running(entry)
+            running = sessions.agent_running(entry, agent)
             if running:
                 if agent["parked_at"] is not None:
                     with write_tx(self.conn) as conn:
@@ -320,13 +320,14 @@ class CapacityMixin(LedgerHost):
         handled: set[str] = set()
         for row in rows:
             entry = sessions.find_session(listing, row["agent_id"])
-            if entry is not None and sessions.is_running(entry):
+            if sessions.agent_running(entry, row):
                 if row["parked_at"] is not None:
                     # The park is claimed and `claude stop` is on its way: the session is dying,
                     # so the wake-up stays owed and `resume_parked` brings it back.
                     handled.add(row["agent_id"])
                 continue
-            moved = sessions.resumed_entry(listing, None, row["session_name"])
+            others = [e for e in listing if e.get("sessionId") != row["agent_id"]]
+            moved = sessions.resumed_entry(others, None, row["session_name"])
             if moved is not None:
                 self.adopt_resumed(row["agent_id"], str(moved["sessionId"]))
                 continue
