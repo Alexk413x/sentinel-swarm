@@ -18,6 +18,7 @@ from helpers import (
 )
 
 from swarm_ledger import graph
+from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import events
 from swarm_ledger.identity import LedgerError
 from swarm_ledger.ledger import Ledger
@@ -373,5 +374,43 @@ def test_a_coder_hands_off_a_file_with_no_tests_while_its_change_request_waits(
 
     handoff = _hand_off(ledger, coder, claimed["file_id"])
     completed = ledger.cr_complete(coder["name"], coder["agent_id"], cr["cr_id"], "added")
+
+    assert completed["evidence_handoff_id"] == handoff["handoff_id"]
+
+
+def test_a_handoff_of_a_later_file_on_the_path_is_evidence_for_a_cr_left_on_the_old_file(
+    ledger: Ledger,
+) -> None:
+    ctx = bootstrap_module(ledger)
+    lead_id = ctx["lead"]["agent_id"]
+    claimed = ledger.claim_file(_LEAD, lead_id, "docs/prd.md", None, "coder-p1-module-1-prd")
+    old = _spawn_prd_coder(ledger, ctx, claimed["file_id"])
+    cr = ledger.cr_open(
+        "mgr-p1-phase-1", ctx["manager"]["agent_id"], "docs/prd.md", "add the PROMO-12 row"
+    )
+    ledger.cr_accept(old["name"], old["agent_id"], cr["cr_id"], True, "will do")
+    ledger.agent_release(_LEAD, lead_id, old["agent_id"])
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE files SET state = 'released', released_at = '2020-01-01T00:00:00.000Z' "
+            "WHERE file_id = ?",
+            (claimed["file_id"],),
+        )
+
+    name = "coder-p1-module-1-prd2"
+    replacement = ledger.claim_file(_LEAD, lead_id, "docs/prd.md", None, name)
+    ledger.brief_create(
+        _LEAD, lead_id, name, "coder", "sonnet", "Write it.", file_id=replacement["file_id"]
+    )
+    register_agent(ledger, f"{name}-agent", "coder", parent_agent_id=lead_id)
+    coder = ledger.brief_ack(name, f"{name}-agent") | {"file_id": replacement["file_id"]}
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE change_requests SET file_id = ? WHERE cr_id = ?",
+            (claimed["file_id"], cr["cr_id"]),
+        )
+    handoff = _hand_off(ledger, coder, replacement["file_id"])
+
+    completed = ledger.cr_complete(_LEAD, lead_id, cr["cr_id"], "the replacement file has it")
 
     assert completed["evidence_handoff_id"] == handoff["handoff_id"]

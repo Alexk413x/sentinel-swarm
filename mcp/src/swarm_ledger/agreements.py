@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from typing import Literal
 
@@ -320,29 +321,48 @@ class AgreementsMixin(LedgerHost):
         result["next"] = self.next_step(wakeup)
         return result
 
-    def _cr_targets(self, conn: sqlite3.Connection, cr_row: sqlite3.Row) -> tuple[str, ...]:
+    def _carry_crs_to_file(
+        self, conn: sqlite3.Connection, run_id: int | None, path: str, file_id: int | None
+    ) -> None:
+        conn.execute(
+            "UPDATE change_requests SET file_id = ? WHERE run_id = ? "
+            f"AND state IN ({in_clause(_CR_BLOCKING_STATES)}) "
+            "AND file_id IN (SELECT file_id FROM files WHERE path = ? AND file_id != ? "
+            "AND state = 'superseded')",
+            (file_id, run_id, *_CR_BLOCKING_STATES, path, file_id),
+        )
+
+    def _cr_files(self, conn: sqlite3.Connection, cr_row: sqlite3.Row) -> list[sqlite3.Row]:
+        # The CR's file and every later file on its path in the run: a re-claim supersedes the
+        # file a request names, and the work lands on the file that replaced it.
+        return conn.execute(
+            "SELECT f.* FROM files f JOIN modules m ON m.module_id = f.module_id "
+            "JOIN phases p ON p.phase_id = m.phase_id "
+            "WHERE p.run_id = ? AND f.path = ? AND f.file_id >= ? ORDER BY f.file_id",
+            (cr_row["run_id"], cr_row["path"], cr_row["file_id"]),
+        ).fetchall()
+
+    def _cr_targets(self, files: list[sqlite3.Row], cr_row: sqlite3.Row) -> tuple[str, ...]:
         # A Coder's evidence is normally the run of its own test file, whose target is the
         # test_path, not the CR's source path; accept either.
         targets = {cr_row["path"]}
-        file_row = conn.execute(
-            "SELECT test_path FROM files WHERE file_id = ?", (cr_row["file_id"],)
-        ).fetchone()
-        if file_row is not None and file_row["test_path"]:
-            targets.add(file_row["test_path"])
+        targets.update(f["test_path"] for f in files if f["test_path"])
         return tuple(targets)
 
     def _cr_evidence(
         self, conn: sqlite3.Connection, cr_row: sqlite3.Row, recipient_role: str, c: Caller
     ) -> tuple[int | None, int | None]:
-        file_row = conn.execute(
-            "SELECT test_path FROM files WHERE file_id = ?", (cr_row["file_id"],)
-        ).fetchone()
-        if file_row is not None and not file_row["test_path"]:
+        files = self._cr_files(conn, cr_row)
+        if files and not files[-1]["test_path"]:
             handoff = conn.execute(
-                "SELECT handoff_id FROM handoffs WHERE file_id = ? AND created_at >= ? "
-                "AND handoff_id > ? AND state IN ('submitted', 'approved') "
+                f"SELECT handoff_id FROM handoffs WHERE file_id IN ({in_clause(files)}) "
+                "AND created_at >= ? AND handoff_id > ? AND state IN ('submitted', 'approved') "
                 "ORDER BY handoff_id DESC LIMIT 1",
-                (cr_row["file_id"], cr_row["accepted_at"], cr_row["evidence_handoff_id"] or 0),
+                (
+                    *(f["file_id"] for f in files),
+                    cr_row["accepted_at"],
+                    cr_row["evidence_handoff_id"] or 0,
+                ),
             ).fetchone()
             if handoff is None:
                 raise LedgerError(
@@ -351,12 +371,17 @@ class AgreementsMixin(LedgerHost):
                     "the change and calls handoff_submit first"
                 )
             return None, handoff["handoff_id"]
-        return self._cr_test_evidence(conn, cr_row, recipient_role, c), None
+        return self._cr_test_evidence(conn, cr_row, files, recipient_role, c), None
 
     def _cr_test_evidence(
-        self, conn: sqlite3.Connection, cr_row: sqlite3.Row, recipient_role: str, c: Caller
+        self,
+        conn: sqlite3.Connection,
+        cr_row: sqlite3.Row,
+        files: list[sqlite3.Row],
+        recipient_role: str,
+        c: Caller,
     ) -> int:
-        targets = self._cr_targets(conn, cr_row)
+        targets = self._cr_targets(files, cr_row)
         placeholders = in_clause(targets)
         # A failed verification returns the request to accepted with its old evidence still
         # recorded; the next completion needs evidence newer than that.
@@ -386,9 +411,9 @@ class AgreementsMixin(LedgerHost):
             if test_run_passed(candidate):
                 return candidate["test_run_id"]
         handoff = conn.execute(
-            "SELECT * FROM handoffs WHERE file_id = ? AND state = 'approved' AND decided_at > ? "
-            "ORDER BY handoff_id DESC LIMIT 1",
-            (cr_row["file_id"], cr_row["accepted_at"]),
+            f"SELECT * FROM handoffs WHERE file_id IN ({in_clause(files)}) "
+            "AND state = 'approved' AND decided_at > ? ORDER BY handoff_id DESC LIMIT 1",
+            (*(f["file_id"] for f in files), cr_row["accepted_at"]),
         ).fetchone()
         if handoff is not None and (handoff["test_run_id"] or 0) > floor:
             return handoff["test_run_id"]
@@ -407,6 +432,26 @@ class AgreementsMixin(LedgerHost):
         heir = self.nearest_live_agent(conn, recipient["agent_id"])
         return heir is not None and heir["agent_id"] == c.agent_id
 
+    @staticmethod
+    def _consume_cr_override(conn: sqlite3.Connection, c: Caller, cr_id: int) -> int | None:
+        # The Oracle words the rule and target freely: `cr_complete` with an optional
+        # ": <description>" suffix, and a target that starts with "CR <cr_id>".
+        target = re.compile(rf"\s*CR\s*{cr_id}(?!\d)", re.IGNORECASE)
+        rows = conn.execute(
+            "SELECT override_id, target FROM overrides WHERE run_id = ? AND target_agent_name = ? "
+            "AND (rule = 'cr_complete' OR rule LIKE 'cr_complete:%') AND used_at IS NULL "
+            "ORDER BY created_at, override_id",
+            (c.run_id, c.name),
+        ).fetchall()
+        for row in rows:
+            if target.match(row["target"]):
+                conn.execute(
+                    f"UPDATE overrides SET used_at = {NOW} WHERE override_id = ?",
+                    (row["override_id"],),
+                )
+                return row["override_id"]
+        return None
+
     def cr_complete(self, caller: str, agent_id: str, cr_id: int, notes: str) -> dict:
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
@@ -418,7 +463,14 @@ class AgreementsMixin(LedgerHost):
             if row["state"] != "accepted":
                 raise LedgerError(f"change request {cr_id} is {row['state']}, not accepted")
 
-            test_run_id, handoff_id = self._cr_evidence(conn, row, c.role, c)
+            try:
+                test_run_id, handoff_id = self._cr_evidence(conn, row, c.role, c)
+            except LedgerError:
+                override_id = self._consume_cr_override(conn, c, cr_id)
+                if override_id is None:
+                    raise
+                test_run_id = handoff_id = None
+                notes = f"{notes}\nCompleted under override {override_id}."
             conn.execute(
                 f"UPDATE change_requests SET state = 'completed', completed_at = {NOW}, "
                 "completion_notes = ?, evidence_test_run_id = ?, evidence_handoff_id = ? "

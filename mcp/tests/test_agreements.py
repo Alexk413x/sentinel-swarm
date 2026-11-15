@@ -682,8 +682,6 @@ def test_the_run_proceeds_after_the_manager_releases_the_lead_holding_an_accepte
     ctx = bootstrap_module(ledger)
     manager_id = ctx["manager"]["agent_id"]
     asker, cr = _accepted_cr_on_a_released_files_lead(ledger, ctx)
-    # A fresh Coder re-claims the path, so its approval does not see the request on the old row.
-    _approve_good(ledger, ctx, "coder-p1-module-1-fresh")
     with write_tx(ledger.conn) as conn:
         conn.execute("UPDATE files SET state = 'superseded' WHERE path = 'pkg/asker.py'")
     insert_passing_test_run(ledger, ctx["run_id"], manager_id, "phase")
@@ -700,7 +698,13 @@ def test_the_run_proceeds_after_the_manager_releases_the_lead_holding_an_accepte
 
     with pytest.raises(LedgerError, match="accepted and not completed"):
         ledger.phase_update("mgr-p1-phase-1", manager_id, ctx["phase_id"], "handed_up")
-    completed = ledger.cr_complete("mgr-p1-phase-1", manager_id, cr["cr_id"], "the fresh Coder did")
+    insert_passing_test_run(ledger, ctx["run_id"], "lead-agent", "file")
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE test_runs SET target = 'pkg/good.py', created_at = '2999-01-01T00:00:00.000Z' "
+            "WHERE scope = 'file'"
+        )
+    completed = ledger.cr_complete("mgr-p1-phase-1", manager_id, cr["cr_id"], "the file passes")
     assert completed["state"] == "completed"
     ledger.cr_verify("coder-p1-module-1-asker", asker["agent_id"], cr["cr_id"], True, "confirmed")
     ledger.phase_update("mgr-p1-phase-1", manager_id, ctx["phase_id"], "handed_up")
@@ -710,6 +714,114 @@ def test_the_run_proceeds_after_the_manager_releases_the_lead_holding_an_accepte
     )
     approved = ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
     assert approved["state"] == "approved"
+
+
+# -- change requests across a re-claim, and the cr_complete override --------------------
+
+
+def test_a_reclaim_carries_the_open_crs_to_the_replacement_file(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    _, cr = _accepted_cr_on_a_released_files_lead(ledger, ctx)
+    old_file_id = _cr_row(ledger, cr["cr_id"])["file_id"]
+
+    spawn_coder(ledger, ctx, "coder-p1-module-1-fresh", "pkg/good.py", "tests/test_good.py")
+
+    new_file_id = _latest_file_id(ledger, "pkg/good.py")
+    assert new_file_id != old_file_id
+    old = ledger.conn.execute("SELECT state FROM files WHERE file_id = ?", (old_file_id,))
+    assert old.fetchone()["state"] == "superseded"
+    row = _cr_row(ledger, cr["cr_id"])
+    assert row["file_id"] == new_file_id
+    assert row["state"] == "accepted"
+
+
+def test_a_reclaim_leaves_a_verified_cr_on_its_file(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    coder = spawn_coder(ledger, ctx, "coder-p1-module-1-good", "pkg/good.py", "tests/test_good.py")
+    asker = spawn_coder(
+        ledger, ctx, "coder-p1-module-1-asker", "pkg/asker.py", "tests/test_asker.py"
+    )
+    cr = ledger.cr_open(
+        "coder-p1-module-1-asker", asker["agent_id"], "pkg/good.py", "please fix it"
+    )
+    _accept_and_complete(ledger, coder, cr)
+    ledger.cr_verify("coder-p1-module-1-asker", asker["agent_id"], cr["cr_id"], True, "ok")
+    old_file_id = _cr_row(ledger, cr["cr_id"])["file_id"]
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE files SET released_at = '2020-01-01T00:00:00.000Z' WHERE file_id = ?",
+            (old_file_id,),
+        )
+
+    spawn_coder(ledger, ctx, "coder-p1-module-1-fresh", "pkg/good.py", "tests/test_good.py")
+
+    assert _cr_row(ledger, cr["cr_id"])["file_id"] == old_file_id
+
+
+def _grant_cr_override(ledger: Ledger, ctx: dict, rule: str, agent: str, target: str) -> dict:
+    return ledger.override_grant(
+        "oracle", ctx["oracle_id"], rule, agent, target, "evidence is on a later file"
+    )
+
+
+@pytest.mark.parametrize(
+    ("rule", "target"),
+    [
+        ("cr_complete", "CR {cr_id}"),
+        (
+            "cr_complete: evidence must be a handoff of the CR's file submitted since acceptance",
+            "CR {cr_id} (pkg/good.py, file 1)",
+        ),
+    ],
+)
+def test_cr_complete_honors_a_granted_override_once(ledger: Ledger, rule: str, target: str) -> None:
+    ctx = bootstrap_module(ledger)
+    asker, cr = _accepted_cr_on_a_released_files_lead(ledger, ctx)
+    lead_id = ctx["lead"]["agent_id"]
+    with pytest.raises(LedgerError, match="no passing test run or approved handoff"):
+        ledger.cr_complete("lead-p1-module-1", lead_id, cr["cr_id"], "done")
+
+    _grant_cr_override(ledger, ctx, rule, "mgr-p1-phase-1", target.format(cr_id=cr["cr_id"]))
+    _grant_cr_override(ledger, ctx, rule, "lead-p1-module-1", target.format(cr_id=cr["cr_id"] + 9))
+    with pytest.raises(LedgerError, match="no passing test run or approved handoff"):
+        ledger.cr_complete("lead-p1-module-1", lead_id, cr["cr_id"], "done")
+
+    grant = _grant_cr_override(
+        ledger, ctx, rule, "lead-p1-module-1", target.format(cr_id=cr["cr_id"])
+    )
+    completed = ledger.cr_complete("lead-p1-module-1", lead_id, cr["cr_id"], "done")
+    assert completed["state"] == "completed"
+    assert completed["evidence_test_run_id"] is None
+    assert completed["evidence_handoff_id"] is None
+    used = ledger.conn.execute(
+        "SELECT used_at FROM overrides WHERE override_id = ?", (grant["override_id"],)
+    ).fetchone()
+    assert used["used_at"] is not None
+
+    ledger.cr_verify("coder-p1-module-1-asker", asker["agent_id"], cr["cr_id"], False, "again")
+    with pytest.raises(LedgerError, match="no passing test run or approved handoff"):
+        ledger.cr_complete("lead-p1-module-1", lead_id, cr["cr_id"], "done")
+
+
+def test_cr_complete_does_not_spend_an_override_when_evidence_exists(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    coder = spawn_coder(ledger, ctx, "coder-p1-module-1-good", "pkg/good.py", "tests/test_good.py")
+    asker = spawn_coder(
+        ledger, ctx, "coder-p1-module-1-asker", "pkg/asker.py", "tests/test_asker.py"
+    )
+    cr = ledger.cr_open(
+        "coder-p1-module-1-asker", asker["agent_id"], "pkg/good.py", "please fix it"
+    )
+    grant = _grant_cr_override(
+        ledger, ctx, "cr_complete", "coder-p1-module-1-good", f"CR {cr['cr_id']}"
+    )
+    completed = _accept_and_complete(ledger, coder, cr)
+
+    assert completed["evidence_test_run_id"] is not None
+    used = ledger.conn.execute(
+        "SELECT used_at FROM overrides WHERE override_id = ?", (grant["override_id"],)
+    ).fetchone()
+    assert used["used_at"] is None
 
 
 # -- departures --------------------------------------------------------------------------
