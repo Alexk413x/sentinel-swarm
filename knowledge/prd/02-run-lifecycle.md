@@ -580,12 +580,27 @@ when" in [05-sessions.md](05-sessions.md).
 - The loop ends on a clean exploration (no finding) or on a stop rule, whichever comes
   first.
 
-### Driver notifications
+### Notifications
 
-The user is notified when the Driver finishes or hits an error. See "What the Oracle
-tells the user" in [04-agreements.md](04-agreements.md).
+The user is notified of the events below. Each event is one notification type with its
+own switch, `notify_events.<type>`; see "Setting" below. See "What the Oracle tells the
+user" in [04-agreements.md](04-agreements.md).
 
-- **Events.** `drive_done` records at most one notification per exploration, in this
+| Type | Recorded by | Event key | Level |
+|---|---|---|---|
+| `driver` | `drive_done`, `drive_unavailable`, and the watchdog's Driver reports | `drive_done:<request_id>`, `drive_unavailable:<directive_id>`, `directive:<directive_id>` | done, warning, or error |
+| `needs_user` | `directive_resolve(needs_user)`, `user_ask`, and the watchdog's `needs_user` report | `needs_user:<directive_id>`, `directive:<directive_id>` | warning |
+| `run_stalled` | the watchdog's `run_stalled` report | `directive:<directive_id>` | warning |
+| `run_paused` | `pauses.record_pause`: `run_pause`, `ledger.py pause`, the usage-limit pause, the config pause, and the watchdog's own pause | `pause:<event_id>` | warning |
+| `pause_reminder` | the watchdog's reminder (shows, records nothing) | none | warning |
+| `run_resumed` | the watchdog's clear-check resume | `resumed:<paused_at>` | done |
+| `oracle_unreachable` | the watchdog, for an Oracle that cannot take its findings | `oracle_unreachable:<directive_id>` | warning |
+| `rubric_floor` | `attempt_record`, for an issue that ends round 3 below the floor | `issue:<issue_id>` | error |
+| `phase_approved` | `phase_update(approved)` | `phase_approved:<phase_id>` | done, or warning when the phase commit was tried and failed |
+| `module_approved` | `module_review(accepted)` | `module_approved:<review_id>` | done |
+| `run_finished` | `run_finish` and `run_close` | `run_finished:<run_id>` | done, or warning when `run_close` leaves files incomplete |
+
+- **Driver events.** `drive_done` records at most one notification per exploration, in this
   order: `blocked` (error), a stop rule it filed a new directive for (warning), or a
   clean exploration (done). Among new stop rules, a stall comes first, and its message
   lists what is left. An exploration with findings and no new stop rule records none.
@@ -598,11 +613,17 @@ tells the user" in [04-agreements.md](04-agreements.md).
 - **Levels.** Each kind maps to a level: done is success, warning is warning, and error
   is error. The level picks the notification's logo: the plugin icon with a green,
   amber, or red eye, `assets/icon-<level>.png`.
-- **Dedupe.** The `notifications` table keeps one row per run and event key:
-  `drive_done:<request_id>`, `directive:<directive_id>`,
-  `drive_unavailable:<directive_id>`, or `issue:<issue_id>` for an issue that ends
-  round 3 below the floor. A repeat of the
-  same event records nothing and notifies no one.
+- **Phase, module, and run events.** `phase_update(approved)` records `Phase <id>
+  (<name>) approved` once the phase commit has run, followed by `, committed as <sha>`
+  or, when `commit_phases` is on and the commit did not happen, `, not committed:
+  <reason>`. `module_review(accepted)` records `Module <id> (<name>) accepted by
+  <Manager>`; its switch is off by default, because a run accepts many modules.
+  `run_finish` records `The swarm run finished: <outcome>`, and `run_close` records `The
+  swarm run closed by <oracle or launcher>: <outcome>`.
+- **Dedupe.** The `notifications` table keeps one row per run and event key, the keys
+  in the table above. A repeat of the same event records nothing and notifies no one. A
+  type with no channel records no row, so the run report lists only notifications that
+  went out.
 - **Message.** One line, at most 199 characters, with no markdown. It leads with what
   the user acts on, for example `Driver done: exploration 3 clean, 0 open bugs, 4 fixed
   this run`, `Driver stopped: 3 attempts in a row with no progress on <finding title>
@@ -610,7 +631,7 @@ tells the user" in [04-agreements.md](04-agreements.md).
   explorations in a row fixed nothing; 2 left: <title>; <title>`, `Driver blocked:
   exploration 2 cannot continue: the build failed`, or
   `Driver overdue: driver-e2, exploration 2 has had no check-in for 41 minutes`.
-- **OS path.** The ledger server shows the message as a desktop notification itself,
+- **OS path.** When the type's channels include `os`, the ledger server shows the message as a desktop notification itself,
   in a background thread that never blocks or fails a ledger call. Each platform shows
   the sender as "Sentinel Swarm" where it can:
   - Windows: a toast through Windows PowerShell's WinRT toast API, under the
@@ -625,16 +646,22 @@ tells the user" in [04-agreements.md](04-agreements.md).
 
   A failure goes to the server log, `.sentinel-swarm/server.log`, and nothing else
   happens.
-- **Push path.** When `notify` lists `push`, each notification also records a push the
-  run's Oracle owes. The Oracle's watchdog `Monitor` prints the call once, which wakes
+- **Push path.** When the type's channels include `push`, the notification also records
+  a push the run's Oracle owes. A type that is off, or whose list lacks `push`, owes no
+  push, so the Oracle's Stop hook never asks for one. The Oracle's watchdog `Monitor` prints the call once, which wakes
   the Oracle:
   `PushNotification(message="<message>", status="proactive")`. The Oracle's Stop hook
   blocks until `post_any` sees a `PushNotification` call from the Oracle. Any call
   counts as sent, whatever its result text, because Claude Code answers "Not sent —
   this terminal is active" when it judges the user is at the machine. A call pays the
   debt whose message it matches, or else the oldest one.
-- **Setting.** `notify: [os, push]` in the settings file picks the paths. An empty list
-  turns both off. See [11-setup-and-settings.md](11-setup-and-settings.md).
+- **Setting.** `notify: [os, push]` in the settings file is the default channel list.
+  `notify_events` switches each type: `true` uses the `notify` channels, `false` sends
+  nothing, and a list such as `[os]` uses only those channels. A missing key uses its
+  default, and every type defaults to on except `module_approved`. One resolver,
+  `settings.channels_for(type)`, gives each call site the channels, and a notice
+  carries them, so the OS path and the owed push agree. See
+  [11-setup-and-settings.md](11-setup-and-settings.md).
 
 ## Pause and resume
 
@@ -645,9 +672,10 @@ tells the user" in [04-agreements.md](04-agreements.md).
 - Every whole-run pause notifies the user with its reason, the Oracle's and the
   watchdog's own alike: `run_pause` records a `pause:<event_id>` notification at level
   warning, "Run paused: <reason>. Say continue or run /sentinel-swarm:resume to continue
-  it.", shows the OS notification when `notify` includes `os`, and owes the Oracle's
-  `PushNotification` when it includes `push`. While the run stays paused, the watchdog
-  shows the OS notification again every `watchdog.remind_minutes`. See "Reminders" in
+  it.", shows the OS notification when the `run_paused` channels include `os`, and owes
+  the Oracle's `PushNotification` when they include `push`. While the run stays paused,
+  the watchdog shows the OS notification again every `watchdog.remind_minutes`, unless
+  `pause_reminder` is off. See "Reminders" in
   [08-watchdog.md](08-watchdog.md).
 - **Clear-checks.** A pause can name the check that clears it:
   `run_pause(reason, clear_check=...)`. The run records the check in
@@ -655,7 +683,7 @@ tells the user" in [04-agreements.md](04-agreements.md).
   of the paused run, and when it passes, it sets the run back to `active`, records the
   agent event "the watchdog resumed the run: <check>" from `paused` to `active`, files a
   `watchdog` directive that tells the Oracle to arm its Monitor again and continue, and
-  notifies the user ("resumed:<paused_at>", level done). `run_pause` refuses a check
+  notifies the user ("resumed:<paused_at>", level done, type `run_resumed`). `run_pause` refuses a check
   name it does not know. A paused run with a clear-check keeps the ledger server up past
   `idle_exit_minutes`. The checks live in `pauses.CHECKS`, one `ClearCheck` each (a
   name, a label, and a function of the repo root, the check's argument, and the time),

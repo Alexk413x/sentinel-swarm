@@ -914,7 +914,7 @@ def test_a_closed_driver_that_dies_before_its_wake_up_is_reported_crashed_once(
     passes = [scan(ledger.conn, claude.listing, utcnow(), ledger.settings.watchdog) for _ in "ab"]
     for findings in passes:
         reported = record(ledger.conn, ctx["run_id"], findings, utcnow())
-        driver_notices(ledger.conn, ctx["run_id"], reported, ())
+        driver_notices(ledger.conn, ctx["run_id"], reported, ["os"])
 
     [finding] = [f for f in passes[-1] if f.agent_id == ctx["driver_id"]]
     assert finding.kind == "crashed"
@@ -1052,7 +1052,7 @@ def test_driver_unsent_records_no_user_notification(ledger: Ledger, claude: Fake
     reported = record(ledger.conn, ctx["run_id"], findings, utcnow())
     assert [r["kind"] for r in reported] == ["driver_unsent"]
 
-    notices = driver_notices(ledger.conn, ctx["run_id"], reported, ())
+    notices = driver_notices(ledger.conn, ctx["run_id"], reported, ["os"])
     assert notices == []
     after = ledger.conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0]
     assert after == before

@@ -871,7 +871,13 @@ class Exits:
         self.count += 1
 
 
-def _dog(ledger: Ledger, exits: Exits, **settings: Any) -> watchdog.Watchdog:
+def _dog(
+    ledger: Ledger,
+    exits: Exits,
+    *,
+    notify_events: dict[str, Any] | None = None,
+    **settings: Any,
+) -> watchdog.Watchdog:
     return watchdog.Watchdog(
         ledger.repo_root,
         ledger.conn,
@@ -879,6 +885,7 @@ def _dog(ledger: Ledger, exits: Exits, **settings: Any) -> watchdog.Watchdog:
         exit_server=exits,
         activity=lambda: exits.activity,
         log=lambda message: None,
+        notify_events=notify_events,
     )
 
 
@@ -1911,3 +1918,158 @@ def test_stuck_then_blocked_is_one_finding_and_one_directive(
     assert [(r["kind"], r["cleared_at"]) for r in rows] == [("blocked", None)]
     directives = [d for d in _directives(ledger) if "lead-1" in d["body"]]
     assert len(directives) == 1
+
+
+# -- per-type notification switches ---------------------------------------------------------
+
+
+def _stall_with_needs_user(
+    ledger: Ledger, claude: FakeClaude, now: datetime, tmp_path: Path
+) -> None:
+    old = _quiet_run(ledger, claude, now)
+    transcript = _records(tmp_path / "lead.jsonl", _tool_use("Bash", {"command": "npm ci"}))
+    os.utime(transcript, (old.timestamp(), old.timestamp()))
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET transcript_path = ? WHERE agent_id = 'sess-lead-1'",
+            (str(transcript),),
+        )
+    claude.listing[1] |= {"status": "waiting", "waitingFor": "permission prompt"}
+
+
+def test_a_switched_off_needs_user_sends_nothing_while_run_stalled_keeps_its_channel(
+    ledger: Ledger,
+    claude: FakeClaude,
+    now: datetime,
+    os_notifications: list[list[str]],
+    tmp_path: Path,
+) -> None:
+    _stall_with_needs_user(ledger, claude, now, tmp_path)
+
+    _dog(ledger, Exits(), notify_events={"needs_user": False, "run_stalled": ["os"]}).tick(now)
+
+    rows = {n["message"].split(":")[0]: n for n in _notifications(ledger)}
+    assert list(rows) == ["The swarm run stalled"]
+    assert rows["The swarm run stalled"]["push_owed"] == 0
+    assert len(os_notifications) == 1
+    assert notify.owed(ledger.conn, 1) == []
+
+
+def test_a_needs_user_that_follows_notify_still_shows_and_owes_push(
+    ledger: Ledger,
+    claude: FakeClaude,
+    now: datetime,
+    os_notifications: list[list[str]],
+    tmp_path: Path,
+) -> None:
+    _stall_with_needs_user(ledger, claude, now, tmp_path)
+
+    _dog(ledger, Exits(), notify_events={"run_stalled": False}).tick(now)
+
+    [row] = [n for n in _notifications(ledger) if n["message"].startswith("The swarm needs you")]
+    assert row["push_owed"] == 1
+    assert len(os_notifications) == 1
+
+
+def _pause_and_time(ledger: Ledger, claude: FakeClaude) -> datetime:
+    _run_id(ledger)
+    claude.run(ORACLE, "host-oracle", status="idle")
+    ledger.run_pause("oracle", ORACLE, "the API key is missing")
+    paused_at = watchdog.parse_stamp(
+        ledger.conn.execute("SELECT paused_at FROM runs").fetchone()[0]
+    )
+    assert paused_at is not None
+    return paused_at
+
+
+def test_a_switched_off_pause_reminder_never_shows(
+    ledger: Ledger, claude: FakeClaude, os_notifications: list[list[str]]
+) -> None:
+    paused_at = _pause_and_time(ledger, claude)
+    assert len(os_notifications) == 1
+    dog = _dog(ledger, Exits(), remind_minutes=30, notify_events={"pause_reminder": False})
+
+    dog.tick(paused_at + timedelta(minutes=31))
+    dog.tick(paused_at + timedelta(minutes=62))
+
+    assert len(os_notifications) == 1
+
+
+def test_a_pause_reminder_limited_to_push_shows_no_os_notification(
+    ledger: Ledger, claude: FakeClaude, os_notifications: list[list[str]]
+) -> None:
+    paused_at = _pause_and_time(ledger, claude)
+    dog = _dog(ledger, Exits(), remind_minutes=30, notify_events={"pause_reminder": ["push"]})
+
+    dog.tick(paused_at + timedelta(minutes=31))
+
+    assert len(os_notifications) == 1
+
+
+def test_a_switched_off_run_resumed_sends_nothing(
+    ledger: Ledger, claude: FakeClaude, now: datetime, os_notifications: list[list[str]]
+) -> None:
+    _run_id(ledger)
+    claude.run(ORACLE, "host-oracle", status="idle")
+    _claude_json('{"projects": ')
+    ledger.run_pause("oracle", ORACLE, "~/.claude.json is corrupt", clear_check="config_parses")
+    shown = len(os_notifications)
+    dog = _dog(ledger, Exits(), notify_events={"run_resumed": False})
+    dog.tick(now)
+
+    _claude_json('{"projects": {}}')
+    dog.tick(now + timedelta(seconds=30))
+
+    assert ledger.conn.execute("SELECT state FROM runs").fetchone()[0] == "active"
+    assert [n for n in _notifications(ledger) if n["event_key"].startswith("resumed:")] == []
+    assert len(os_notifications) == shown
+
+
+def test_a_switched_off_run_paused_covers_the_watchdogs_own_pause(
+    ledger: Ledger, claude: FakeClaude, now: datetime, os_notifications: list[list[str]]
+) -> None:
+    _run_id(ledger)
+    _agent(ledger, "sess-coder-1", "coder", "working", started=now)
+    claude.run(ORACLE, status="stopped")
+    dog = _dog(ledger, Exits(), notify_events={"run_paused": False})
+    for minutes in (0, 1, 6, 12, 18):
+        dog.tick(now + timedelta(minutes=minutes))
+
+    assert ledger.conn.execute("SELECT state FROM runs").fetchone()[0] == "paused"
+    assert _notifications(ledger) == []
+    assert os_notifications == []
+
+
+def test_a_switched_off_oracle_unreachable_sends_nothing(
+    ledger: Ledger, claude: FakeClaude, now: datetime, os_notifications: list[list[str]]
+) -> None:
+    _run_id(ledger)
+    _agent(ledger, "sess-coder-1", "coder", "working", started=now)
+    claude.run(ORACLE, status="idle")
+    dog = _dog(ledger, Exits(), notify_events={"oracle_unreachable": False})
+    dog.tick(now)
+    dog.tick(now + timedelta(minutes=1))
+
+    assert _notifications(ledger) == []
+    assert os_notifications == []
+
+
+def test_a_switched_off_driver_sends_nothing_from_the_watchdog(
+    ledger: Ledger, now: datetime, os_notifications: list[list[str]]
+) -> None:
+    run_id = _run_id(ledger)
+    _agent(ledger, "sess-driver", "driver", "working", started=now)
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "INSERT INTO directives (run_id, source, sender_name, body) "
+            "VALUES (?, 'watchdog', 'watchdog', 'x')",
+            (run_id,),
+        )
+    reported = [{"agent_id": "sess-driver", "kind": "crashed", "detail": "gone", "directive_id": 1}]
+
+    off = watchdog.driver_notices(ledger.conn, run_id, reported, ["os", "push"], {"driver": False})
+    assert off == []
+    assert os_notifications == []
+
+    [notice] = watchdog.driver_notices(ledger.conn, run_id, reported, ["os", "push"], {})
+    assert notice["channels"] == ["os", "push"]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, TypeVar
@@ -27,6 +28,19 @@ _DEFAULT_MODELS = {
 DEFAULT_EFFORT = dict.fromkeys(_DEFAULT_MODELS, "medium")
 SETTINGS_PATH = Path(".claude") / "sentinel-swarm.local.md"
 NOTIFY_CHANNELS = ("os", "push")
+NOTIFY_EVENT_DEFAULTS: dict[str, bool] = {
+    "needs_user": True,
+    "run_stalled": True,
+    "run_paused": True,
+    "pause_reminder": True,
+    "run_resumed": True,
+    "oracle_unreachable": True,
+    "rubric_floor": True,
+    "driver": True,
+    "phase_approved": True,
+    "module_approved": False,
+    "run_finished": True,
+}
 DEFAULT_MAX_WORKERS = 8
 DEFAULT_HEADROOM_MB = 1500
 DEFAULT_PARK_BLOCKED_MINUTES = 10
@@ -113,6 +127,36 @@ def normalize_notify(raw: object) -> list[str]:
         return list(NOTIFY_CHANNELS)
     wanted = {str(item).strip().lower() for item in raw}
     return [channel for channel in NOTIFY_CHANNELS if channel in wanted]
+
+
+def _event_switch(raw: object, default: bool) -> bool | list[str]:
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str) and raw.strip().lower() in NOTIFY_CHANNELS:
+        raw = [raw]
+    if not isinstance(raw, list):
+        return default
+    wanted = {str(item).strip().lower() for item in raw}
+    return [channel for channel in NOTIFY_CHANNELS if channel in wanted]
+
+
+def normalize_notify_events(raw: object) -> dict[str, bool | list[str]]:
+    given = raw if isinstance(raw, dict) else {}
+    return {
+        event: _event_switch(given[event], default) if event in given else default
+        for event, default in NOTIFY_EVENT_DEFAULTS.items()
+    }
+
+
+def channels_for(
+    event: str, default: Sequence[str], events: Mapping[str, bool | list[str]] | None
+) -> list[str]:
+    switch = (events or {}).get(event, NOTIFY_EVENT_DEFAULTS[event])
+    if switch is True:
+        return list(default)
+    if switch is False:
+        return []
+    return [channel for channel in NOTIFY_CHANNELS if channel in switch]
 
 
 @dataclass
@@ -252,6 +296,9 @@ class Settings:
     # Per-role cap on that role's own live sessions in the run, on top of parallelism_cap.
     role_parallelism_cap: dict[str, int] = field(default_factory=dict)
     notify: list[str] = field(default_factory=lambda: list(NOTIFY_CHANNELS))
+    notify_events: dict[str, bool | list[str]] = field(
+        default_factory=lambda: dict(NOTIFY_EVENT_DEFAULTS)
+    )
     max_workers: int = DEFAULT_MAX_WORKERS
     permission_hold_seconds: int = DEFAULT_PERMISSION_HOLD_S
     # USD per million tokens by model family, merged onto pricing.DEFAULT_PRICES:
@@ -273,6 +320,9 @@ class Settings:
                 "memory": MemorySettings(**(data.get("memory") or {})),
             }
         )
+
+    def channels_for(self, event: str) -> list[str]:
+        return channels_for(event, self.notify, self.notify_events)
 
     def test_template(self, scope: str) -> str | None:
         return self.test_command_by_scope.get(scope) or self.test_command
@@ -370,6 +420,7 @@ def load_settings(repo_root: Path) -> Settings:
         permission_mode=permission_mode,
         role_parallelism_cap=role_parallelism_cap,
         notify=normalize_notify(data.get("notify")),
+        notify_events=normalize_notify_events(data.get("notify_events")),
         max_workers=normalize_max_workers(data.get("max_workers")),
         permission_hold_seconds=normalize_hold_seconds(data.get("permission_hold_seconds")),
         pricing=price_overrides,

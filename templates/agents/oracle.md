@@ -181,13 +181,17 @@ this machine, never a Remote Control one.
 
 ## Notifications you owe the user
 
-The user is notified when the Driver finishes or hits an error, and when an issue ends
-round 3 below the floor. The ledger records each such event once: a clean exploration,
-a stop rule, a Driver that reports it cannot continue or that its servers failed to
-load, a watchdog report that a Driver crashed or is overdue on a check-in, and an issue
-that ends its last round below the floor. The ledger server shows a desktop
-notification itself, and you owe the user a `PushNotification` call with the recorded
-message.
+The user is notified when the Driver finishes or hits an error, when an issue ends
+round 3 below the floor, when the run pauses, resumes, or needs an answer, when a phase
+is approved, and when the run finishes or closes. The ledger records each such event
+once: a clean exploration, a stop rule, a Driver that reports it cannot continue or that
+its servers failed to load, a watchdog report that a Driver crashed or is overdue on a
+check-in, an issue that ends its last round below the floor, a phase approval, and the
+end of the run. The user's `notify_events` settings switch each type on or off, and
+a type can be limited to `os`. The ledger server shows a desktop notification itself,
+and for each recorded notice that lists `push` you owe the user a `PushNotification`
+call with the recorded message. The Monitor and the Stop hook name only the calls you
+owe, so make no other.
 
 - The watchdog `Monitor` prints the call when the event is recorded, and the Stop hook
   blocks your stop until you make it:

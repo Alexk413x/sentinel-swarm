@@ -150,11 +150,36 @@ base_branch:
 # approved phase is a clean checkpoint. false leaves every commit to you.
 commit_phases: true
 
-# How the user hears that the Driver finished or hit an error. os: the ledger server shows a
+# The default channels for every notification type below. os: the ledger server shows a
 # desktop notification itself (a Windows toast, macOS Notification Center, or notify-send on
 # Linux). push: the Oracle owes a PushNotification call, and its Stop hook blocks until it
 # makes one. An empty list, [], turns both off.
 notify: [os, push]
+# Which notifications fire. A value is true (use the notify channels), false (send nothing),
+# or a channel list such as [os] (only those channels). A missing key uses the value shown.
+notify_events:
+  # A session or the Oracle needs an answer from you.
+  needs_user: true
+  # No agent of the run made progress.
+  run_stalled: true
+  # The run paused, whether the Oracle, you, the usage limit, or the watchdog paused it.
+  run_paused: true
+  # The repeat of the pause or question notice every watchdog.remind_minutes (os only).
+  pause_reminder: true
+  # The watchdog resumed a paused run by itself.
+  run_resumed: true
+  # The Oracle's session runs but cannot receive the watchdog's findings.
+  oracle_unreachable: true
+  # An issue ended its last escalation round below the rubric floor.
+  rubric_floor: true
+  # The Driver finished an exploration, stopped, crashed, or is unavailable.
+  driver: true
+  # A phase was approved, with its commit when the ledger made one.
+  phase_approved: true
+  # A Manager accepted a module. Off by default: a run accepts many.
+  module_approved: false
+  # run_finish or run_close ended the run.
+  run_finished: true
 
 # agent_spawn and the launcher pass --effort <level> for a role listed here; a brief's own
 # effort overrides it. Values are Claude Code's own: low, medium, high, xhigh, max. medium

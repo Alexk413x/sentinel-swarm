@@ -93,16 +93,17 @@ listing again for the scan. See "Parked agents" and "Memory" in
 - A new `crashed` or `driver_overdue` report on a Driver session also
   records a user notification, keyed by its directive id: "Driver crashed" at level
   error, or "Driver overdue" at level warning. The server shows it as an OS
-  notification when `notify` includes `os`, and the Oracle owes a `PushNotification`
-  for it when `notify` includes `push`. See "Driver notifications" in
+  notification when the `driver` type's channels include `os`, and the Oracle owes a
+  `PushNotification` for it when they include `push`. See "Notifications" in
   [02-run-lifecycle.md](02-run-lifecycle.md). `driver_unsent` records no
   such notification: it is a delivery miss the Oracle can fix from the directive alone,
   not a Driver error.
 - A new `needs_user` or `run_stalled` report records a user notification at level
   warning, keyed by its directive id: "The swarm needs you: <agent>, <detail>" or "The
-  swarm run stalled: <detail>". It is shown and owed like a Driver notification, except
-  that a `needs_user` report on the Oracle's own session owes no `PushNotification`,
-  since that session is the one waiting.
+  swarm run stalled: <detail>". It is shown and owed like a Driver notification, with
+  the channels of its own type (`needs_user` or `run_stalled`), except that a
+  `needs_user` report on the Oracle's own session owes no `PushNotification`, since that
+  session is the one waiting.
 - A Driver stop rule is a separate mechanism, not the watchdog: it files a directive
   with source `driver`, computed by `compute_loop_status` in `drive.py` from every
   exploration and finding of the run, not from `claude agents --json`. See
@@ -137,7 +138,7 @@ listing again for the scan. See "Parked agents" and "Memory" in
   runs but is not `busy` (its armed Monitor keeps it `busy`), the listener is down or the
   Oracle waits on the user, and a resume would start a second copy. The watchdog then
   notifies the user once per oldest such directive (`oracle_unreachable:<directive_id>`,
-  level warning, OS notification only): "The swarm's Oracle session <name> waits on
+  level warning, OS notification only, type `oracle_unreachable`): "The swarm's Oracle session <name> waits on
   <what>, and N watchdog finding(s) wait for it. Open it in agent view." When it does
   not wait on the user, "waits on <what>" reads "sits idle with no watchdog listener".
 - When a watchdog directive stays unnotified for one interval and the Oracle's session
@@ -155,7 +156,9 @@ listing again for the scan. See "Parked agents" and "Memory" in
 ## Paused runs
 
 - A pause the watchdog makes itself ("the watchdog could not wake the Oracle") goes
-  through the same `pauses.record_pause` as `run_pause`, so it notifies the user too.
+  through the same `pauses.record_pause` as `run_pause`, so it notifies the user too,
+  under the `run_paused` type. The resume after a passed clear-check notifies under
+  `run_resumed`.
 - On each pass of a paused run whose pause names a clear-check, the watchdog runs the
   check and resumes the run when it passes. See "Pause and resume" in
   [02-run-lifecycle.md](02-run-lifecycle.md). A check that raises is logged and counts
@@ -178,8 +181,8 @@ The first reminder comes one interval after the pause or after the watchdog firs
 the question or the waiting session, since `run_pause`, `user_ask`,
 `directive_resolve(needs_user)`, and a new `needs_user` finding notify at once. `runs.reminded_at`
 records the last one, and clears when nothing waits. Reminders show only the OS
-notification and owe no `PushNotification`. With `notify` lacking `os`, or
-`remind_minutes: 0`, there are none.
+notification and owe no `PushNotification`. With the `pause_reminder` type off or
+lacking `os`, or `remind_minutes: 0`, there are none.
 
 ## Settings
 

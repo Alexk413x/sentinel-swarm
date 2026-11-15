@@ -160,7 +160,7 @@ issue stopped improving, and it explains to the next layer why the issue arrived
   `criterion_floor`, the ledger records an error notification with the event key
   `issue:<issue_id>`. For an issue with no dimension, any dimension or criterion of the
   file counts. The ledger server shows the OS notification, and the Oracle owes the
-  `PushNotification`. See "Driver notifications" in
+  `PushNotification`. See "Notifications" in
   [02-run-lifecycle.md](02-run-lifecycle.md) for both paths.
 
 ## Evidence
