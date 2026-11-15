@@ -335,6 +335,9 @@ class Settings:
                 "escalation": EscalationSettings(**data["escalation"]),
                 "watchdog": WatchdogSettings(**data["watchdog"]),
                 "memory": MemorySettings(**(data.get("memory") or {})),
+                "session_notifications": SessionNotifications(
+                    **(data.get("session_notifications") or {})
+                ),
             }
         )
 
