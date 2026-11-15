@@ -284,7 +284,7 @@ class MessagesMixin(LedgerHost):
                     f"resolved_at = {NOW} WHERE directive_id = ?",
                     (outcome, resolution, directive_id),
                 )
-        notify.deliver(notice, self.settings.notify)
+        notify.deliver(notice)
 
         return row_dict(self.conn, "directives", "directive_id", directive_id)
 
@@ -301,7 +301,7 @@ class MessagesMixin(LedgerHost):
             )
             directive_id = int(cur.lastrowid or 0)
             notice = self._needs_user_notice(conn, run_id, directive_id, question)
-        notify.deliver(notice, self.settings.notify)
+        notify.deliver(notice)
 
         return row_dict(self.conn, "directives", "directive_id", directive_id) | {
             "next": (
@@ -321,5 +321,5 @@ class MessagesMixin(LedgerHost):
             kind="warning",
             event_key=f"needs_user:{directive_id}",
             message=f"The swarm needs you (directive {directive_id}): {question}",
-            channels=self.settings.notify,
+            channels=self.settings.channels_for("needs_user"),
         )

@@ -344,12 +344,13 @@ def test_agent_spawn_starts_the_session_with_the_role_files_flags(
         "headers": {"Authorization": f"Bearer {auth.read_token(host)}"},
     }
     assert config["mcpServers"]["codebase-kg"]["command"] == "python"
-    assert options[11:] == [
-        "--allowedTools",
-        "Read,SendMessage,mcp__swarm-ledger",
-        "--settings",
-        '{"worktree":{"bgIsolation":"none"}}',
-    ]
+    assert options[11:14] == ["--allowedTools", "Read,SendMessage,mcp__swarm-ledger", "--settings"]
+    assert json.loads(options[14]) == {
+        "worktree": {"bgIsolation": "none"},
+        "preferredNotifChannel": "notifications_disabled",
+        "inputNeededNotifEnabled": False,
+        "agentPushNotifEnabled": False,
+    }
 
 
 def test_agent_spawn_registers_the_row_and_brief_ack_binds_it(

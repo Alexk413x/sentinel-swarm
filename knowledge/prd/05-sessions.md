@@ -379,10 +379,10 @@ fails as ambiguous, or goes to the offline entry and waits there for good. See
 
 ## The Oracle's Stop hook
 
-- It blocks while the Oracle owes the user a `PushNotification` call for a Driver
-  event, and names each call. This debt blocks even while the run is paused, while
+- It blocks while the Oracle owes the user a `PushNotification` call for a recorded
+  notification, and names each call. A type switched off, or limited to `os`, owes none. This debt blocks even while the run is paused, while
   children work, while a directive waits on the user, and after `run_finish`, because
-  the call ends at once. See "Driver notifications" in
+  the call ends at once. See "Notifications" in
   [02-run-lifecycle.md](02-run-lifecycle.md).
 - Otherwise it never blocks while the run is paused.
 - It does not block for pending work while any Manager, Lead, or Coder is working:

@@ -5,10 +5,10 @@ import sqlite3
 from collections.abc import Callable
 from typing import Literal
 
-from . import graph, rubric, settle
+from . import graph, notify, rubric, settle
 from .db import dict_rows, in_clause, row_dict, write_tx
 from .host import LedgerHost
-from .identity import Caller, LedgerError, ledger_errors, require_role, resolve
+from .identity import Caller, LedgerError, ledger_errors, require_role, require_run, resolve
 from .review import build_summary, latest_lead_review
 
 _CLEAN_TEST_RUN = (
@@ -386,6 +386,17 @@ class OversightMixin(LedgerHost):
                 ),
                 pointer=f"Module {module_id} was returned; read why with message_inbox.",
             )
+            notice = None
+            if outcome == "accepted":
+                notice = notify.record(
+                    conn,
+                    require_run(c, "manager"),
+                    kind="done",
+                    event_key=f"module_approved:{review_id}",
+                    message=f"Module {module_id} ({module_row['name']}) accepted by {c.name}",
+                    channels=self.settings.channels_for("module_approved"),
+                )
+        notify.deliver(notice)
 
         return self._review_result(review_id, outcome, "lead_ended", ended, wakeup)
 

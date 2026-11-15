@@ -42,13 +42,13 @@ def main(argv: list[str] | None = None) -> int:
                 args.reason,
                 args.sender,
                 args.source,
-                ledger.settings.notify,
+                ledger.settings.channels_for("run_paused"),
                 utcnow(),
             )
     except LedgerError as exc:
         sys.stderr.write(f"cannot pause the run: {exc}\n")
         return 1
-    notify.deliver(notice, ledger.settings.notify)
+    notify.deliver(notice)
     paused = row_dict(ledger.conn, "runs", "run_id", run["run_id"])
     print(json.dumps(paused | {"reason": args.reason.strip()}))
     return 0

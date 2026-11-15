@@ -2,6 +2,17 @@
 
 All notable changes to the `sentinel-swarm` plugin.
 
+## [0.8.2] — 2026-11-15 — choose where each notification goes
+
+### Added
+
+- Each place a notification can go is its own switch:
+  - `notify: [os, push]` holds the ledger's desktop toast (`os`) and the Oracle's push to the Claude app and claude.ai (`push`).
+  - `session_notifications` holds each swarm session's own Claude Code alerts (`alerts`) and pushes (`push`), and both are off by default. The plugin sets them in each session's `--settings`, so a run of many sessions no longer floods the desktop and the browser. The Oracle keeps its push while `notify` includes `push`. Claude Code offers no setting for claude.ai browser alerts from a session on Remote Control, so those may still appear.
+- `notify_events` turns each of 11 notification types on or off, or limits it to `os` or `push`: `needs_user`, `run_stalled`, `run_paused`, `pause_reminder`, `run_resumed`, `oracle_unreachable`, `rubric_floor`, `driver`, `phase_approved`, `module_approved` (off by default) and `run_finished`. A type that is off, or whose list leaves out `push`, owes no `PushNotification`.
+- New notices for an approved phase (with its commit), an approved module and a finished or closed run.
+- Setup lists the `notify_events` keys an existing settings file lacks, ready to paste; it never edits the file. Without a `session_notifications` key, both session switches are off.
+
 ## [0.8.1] — 2026-11-15 — the model you name wins, and parked agents resume
 
 ### Added

@@ -1232,6 +1232,7 @@ def test_stop_tells_the_oracle_to_resume_a_stopped_session(ledger: Ledger) -> No
 
 
 def test_stop_does_not_block_the_oracle_for_its_own_debts(ledger: Ledger) -> None:
+    ledger.settings.notify_events["phase_approved"] = False
     ctx = _bootstrap(ledger)
     as_session(ledger, "mgr-agent", "host-r1-manager-1")
     ledger.agent_release("mgr-p1-phase-1", "mgr-agent", ctx["lead"]["agent_id"])

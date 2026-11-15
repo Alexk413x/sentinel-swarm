@@ -550,7 +550,7 @@ class DriveMixin(LedgerHost):
             kind=kind,
             event_key=f"drive_done:{request['request_id']}",
             message=message,
-            channels=self.settings.notify,
+            channels=self.settings.channels_for("driver"),
         )
 
     def _unavailable_directive(self, conn: sqlite3.Connection, run_id: int) -> dict | None:
@@ -896,7 +896,7 @@ class DriveMixin(LedgerHost):
             # releasing it here would stop its session before it can send it.
             if wakeup is None:
                 self._release_agent(conn, c.agent_id, "drive_done")
-        notify.deliver(notice, self.settings.notify)
+        notify.deliver(notice)
 
         result = row_dict(self.conn, "drive_requests", "request_id", request_id)
         result["loop_status"] = status
@@ -959,9 +959,9 @@ class DriveMixin(LedgerHost):
                 event_key=f"drive_unavailable:{directive_id}",
                 message=f"Driver unavailable: {reason}. Explorations wait until it is fixed "
                 "or you decide to go without the Driver",
-                channels=self.settings.notify,
+                channels=self.settings.channels_for("driver"),
             )
-        notify.deliver(notice, self.settings.notify)
+        notify.deliver(notice)
 
         result = row_dict(self.conn, "directives", "directive_id", directive_id)
         result["abandoned"] = [r["request_id"] for r in open_rows]

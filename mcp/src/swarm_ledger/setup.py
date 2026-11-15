@@ -15,10 +15,17 @@ from .agentfiles import agent_file_path as role_file
 from .agentfiles import driver_available
 from .db import append_git_excludes, main_git_dir
 from .frontmatter import FrontmatterError
+from .frontmatter import parse as parse_frontmatter
 from .frontmatter import split_document as _split_document
 from .paths import claude_json_path, python_command
 from .permissions import bypass_disabled, start_mode
-from .settings import SETTINGS_PATH, SHELL_OPERATORS, Settings, load_settings
+from .settings import (
+    NOTIFY_EVENT_DEFAULTS,
+    SETTINGS_PATH,
+    SHELL_OPERATORS,
+    Settings,
+    load_settings,
+)
 
 CORE_ROLES = ("oracle", "manager", "lead", "coder")
 ROLES = (*CORE_ROLES, "driver")
@@ -369,6 +376,41 @@ def report_parallelism(repo: Path, report: SetupReport) -> None:
     )
 
 
+def _notify_events_block(events: list[str]) -> str:
+    return "\n".join(f"  {event}: {str(NOTIFY_EVENT_DEFAULTS[event]).lower()}" for event in events)
+
+
+def report_notify_events(repo: Path, report: SetupReport) -> None:
+    path = repo / SETTINGS_PATH
+    if not path.is_file():
+        return
+    try:
+        head, _ = split_document(path.read_text(encoding="utf-8"))
+        data = parse_frontmatter(head)
+    except (OSError, SetupError, FrontmatterError):
+        return
+    shown = SETTINGS_PATH.as_posix()
+    given = data.get("notify_events") if isinstance(data, dict) else None
+    hint = "true uses the notify channels, false sends nothing, a list such as [os] picks channels"
+    if not isinstance(given, dict):
+        report.add(
+            f"notify_events is not set in {shown}, so every notification type uses its default. "
+            f"To choose which ones fire ({hint}), paste this into the frontmatter:\n"
+            f"notify_events:\n{_notify_events_block(list(NOTIFY_EVENT_DEFAULTS))}"
+        )
+        return
+    missing = [event for event in NOTIFY_EVENT_DEFAULTS if event not in given]
+    unknown = [str(key) for key in given if key not in NOTIFY_EVENT_DEFAULTS]
+    if missing:
+        report.add(
+            f"notify_events in {shown} lacks {', '.join(missing)}, which use their defaults. "
+            f"To set them ({hint}), paste these lines under notify_events:\n"
+            f"{_notify_events_block(missing)}"
+        )
+    if unknown:
+        report.add(f"warning: notify_events in {shown} names unknown type(s): {', '.join(unknown)}")
+
+
 def _path_key(raw: str) -> str:
     return os.path.normcase(os.path.normpath(raw))
 
@@ -587,6 +629,7 @@ def run_setup(repo: Path, time_full_run: bool = False) -> SetupReport:
     check_tests(repo, report, time_full_run)
     propose_commands(repo, report)
     report_parallelism(repo, report)
+    report_notify_events(repo, report)
     report.add(RELOAD_NOTE)
     report.trusted = is_trusted(repo)
     report.trust_note = f"{repo} is trusted" if report.trusted else trust_instructions(repo)

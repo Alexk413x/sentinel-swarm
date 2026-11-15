@@ -172,6 +172,8 @@ def record(
     message: str,
     channels: Sequence[str],
 ) -> dict | None:
+    if not channels:
+        return None
     cur = conn.execute(
         "INSERT OR IGNORE INTO notifications (run_id, kind, event_key, message, push_owed) "
         "VALUES (?, ?, ?, ?, ?)",
@@ -179,21 +181,19 @@ def record(
     )
     if cur.rowcount == 0:
         return None
-    return dict(
-        conn.execute(
-            "SELECT * FROM notifications WHERE notification_id = ?", (cur.lastrowid,)
-        ).fetchone()
-    )
+    row = conn.execute(
+        "SELECT * FROM notifications WHERE notification_id = ?", (cur.lastrowid,)
+    ).fetchone()
+    return {**dict(row), "channels": list(channels)}
 
 
 def deliver(
     notice: dict | None,
-    channels: Sequence[str],
     *,
     run: Runner | None = None,
     log: Log = _log,
 ) -> None:
-    if notice is not None and "os" in channels:
+    if notice is not None and "os" in notice["channels"]:
         show(notice["message"], level=LEVELS.get(notice["kind"]), run=run, log=log)
 
 

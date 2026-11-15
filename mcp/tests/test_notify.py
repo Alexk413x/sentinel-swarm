@@ -167,7 +167,7 @@ def test_deliver_shows_the_level_for_the_notice_kind(
         return ["notifier", message]
 
     monkeypatch.setattr(notify, "os_command", fake_command)
-    notify.deliver({"kind": kind, "message": "m"}, ["os"], run=lambda argv: None)
+    notify.deliver({"kind": kind, "message": "m", "channels": ["os"]}, run=lambda argv: None)
     assert seen == [level]
 
 
@@ -327,8 +327,12 @@ def test_blocked_notifies_an_error(
 
 
 @pytest.mark.parametrize(
-    "line, shown, push_owed",
-    [("notify: []\n", 0, 0), ("notify: [push]\n", 0, 1), ("notify: [os]\n", 1, 0)],
+    "line, shown, push_owed, rows",
+    [
+        ("notify: []\n", 0, 0, []),
+        ("notify: [push]\n", 0, 1, [1]),
+        ("notify: [os]\n", 1, 0, [0]),
+    ],
 )
 def test_the_notify_setting_picks_the_paths(
     host: Path,
@@ -337,6 +341,7 @@ def test_the_notify_setting_picks_the_paths(
     line: str,
     shown: int,
     push_owed: int,
+    rows: list[int],
 ) -> None:
     _write_settings(host, line)
     ledger = ledger_for(host)
@@ -344,7 +349,7 @@ def test_the_notify_setting_picks_the_paths(
     ledger.drive_done(ctx["driver"], ctx["driver_id"], ctx["request_id"])
 
     assert len(os_notifications) == shown
-    assert [n["push_owed"] for n in _notifications(ledger)] == [push_owed]
+    assert [n["push_owed"] for n in _notifications(ledger)] == rows
     assert len(notify.owed(ledger.conn, ctx["run_id"])) == push_owed
 
 

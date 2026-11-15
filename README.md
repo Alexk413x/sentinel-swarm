@@ -82,7 +82,7 @@ files. A parent starts its child with the ledger tool `agent_spawn`; no role has
   registry, to find the installed plugins.
 - **Writes:** the role files in `.claude/agents/`, the run's records in `.sentinel-swarm/`
   (the ledger database, the server's port and token, and the report), and the project
-  files the Coders write. It shows desktop notifications unless `notify` turns them off.
+  files the Coders write. It shows desktop notifications unless `notify` or `notify_events` turns them off.
 
 ## Develop
 

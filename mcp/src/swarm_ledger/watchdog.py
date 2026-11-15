@@ -23,7 +23,7 @@ from .queries import (
     submitted_handoffs,
     unread_count,
 )
-from .settings import NOTIFY_CHANNELS, WatchdogSettings
+from .settings import NOTIFY_CHANNELS, WatchdogSettings, channels_for
 from .waits import landed_waits
 
 if TYPE_CHECKING:
@@ -1205,7 +1205,11 @@ def record(
 
 
 def driver_notices(
-    conn: sqlite3.Connection, run_id: int, reported: list[dict], channels: Sequence[str]
+    conn: sqlite3.Connection,
+    run_id: int,
+    reported: list[dict],
+    channels: Sequence[str],
+    events: Mapping[str, bool | list[str]] | None = None,
 ) -> list[dict]:
     notices: list[dict] = []
     with write_tx(conn):
@@ -1225,7 +1229,7 @@ def driver_notices(
                 kind=kind,
                 event_key=f"directive:{row['directive_id']}",
                 message=f"Driver {label}: {agent['name']}, {row['detail']}",
-                channels=channels,
+                channels=channels_for("driver", channels, events),
             )
             if notice is not None:
                 notices.append(notice)
@@ -1233,7 +1237,11 @@ def driver_notices(
 
 
 def user_notices(
-    conn: sqlite3.Connection, run_id: int, reported: list[dict], channels: Sequence[str]
+    conn: sqlite3.Connection,
+    run_id: int,
+    reported: list[dict],
+    channels: Sequence[str],
+    events: Mapping[str, bool | list[str]] | None = None,
 ) -> list[dict]:
     notices: list[dict] = []
     with write_tx(conn):
@@ -1249,15 +1257,16 @@ def user_notices(
                 message = f"The swarm needs you: {name}, {row['detail']}"
             else:
                 message = f"The swarm run stalled: {row['detail']}"
+            event_channels = channels_for(row["kind"], channels, events)
             notice = notify.record(
                 conn,
                 run_id,
                 kind="warning",
                 event_key=f"directive:{row['directive_id']}",
                 message=message,
-                channels=_os_only(channels)
+                channels=_os_only(event_channels)
                 if row["kind"] == "needs_user" and on_oracle
-                else channels,
+                else event_channels,
             )
             if notice is not None:
                 notices.append(notice)
@@ -1317,6 +1326,7 @@ class Watchdog:
         activity: Callable[[], object] = lambda: None,
         log: Callable[[str], None] = _log,
         notify_channels: Sequence[str] = NOTIFY_CHANNELS,
+        notify_events: Mapping[str, bool | list[str]] | None = None,
         ledger: Ledger | None = None,
     ) -> None:
         self.repo_root = repo_root
@@ -1324,11 +1334,15 @@ class Watchdog:
         self.conn = conn
         self.settings = settings
         self.notify_channels = tuple(notify_channels)
+        self.notify_events = dict(notify_events or {})
         self._exit_server = exit_server
         self._activity = activity
         self._log = log
         self._activity_seen = activity()
         self._idle_since: datetime | None = None
+
+    def _channels(self, event: str) -> list[str]:
+        return channels_for(event, self.notify_channels, self.notify_events)
 
     @property
     def interval(self) -> timedelta:
@@ -1354,10 +1368,14 @@ class Watchdog:
                     f"reported {row['kind']} for {row['agent_id']} "
                     f"as directive {row['directive_id']}"
                 )
-            for notice in driver_notices(self.conn, run["run_id"], reported, self.notify_channels):
-                notify.deliver(notice, self.notify_channels, log=self._log)
-            for notice in user_notices(self.conn, run["run_id"], reported, self.notify_channels):
-                notify.deliver(notice, self.notify_channels, log=self._log)
+            for notice in driver_notices(
+                self.conn, run["run_id"], reported, self.notify_channels, self.notify_events
+            ):
+                notify.deliver(notice, log=self._log)
+            for notice in user_notices(
+                self.conn, run["run_id"], reported, self.notify_channels, self.notify_events
+            ):
+                notify.deliver(notice, log=self._log)
             self._wake_oracle(run, listing, now)
         if run is not None and run["state"] == "paused":
             run = self._try_clear_check(run, now)
@@ -1406,10 +1424,10 @@ class Watchdog:
                 oracle["agent_id"] if oracle else "watchdog",
                 reason,
                 check,
-                self.notify_channels,
+                self._channels("run_paused"),
                 now,
             )
-        notify.deliver(notice, self.notify_channels, log=self._log)
+        notify.deliver(notice, log=self._log)
         self._log(f"run {run['run_id']} paused: {reason}")
         return self.conn.execute("SELECT * FROM runs WHERE run_id = ?", (run["run_id"],)).fetchone()
 
@@ -1456,9 +1474,9 @@ class Watchdog:
                 kind="done",
                 event_key=f"resumed:{run['paused_at']}",
                 message=f"The swarm run resumed by itself: {check.label}.",
-                channels=self.notify_channels,
+                channels=self._channels("run_resumed"),
             )
-        notify.deliver(notice, self.notify_channels, log=self._log)
+        notify.deliver(notice, log=self._log)
         self._log(f"run {run['run_id']}: {note}")
         if check.name == pauses.USAGE_CHECK:
             self._wake_limited(run["run_id"])
@@ -1466,7 +1484,7 @@ class Watchdog:
 
     def _remind(self, run: sqlite3.Row, now: datetime) -> None:
         every = timedelta(minutes=self.settings.remind_minutes)
-        if every <= timedelta(0) or "os" not in self.notify_channels:
+        if every <= timedelta(0) or "os" not in self._channels("pause_reminder"):
             return
         reason = _pause_reason(self.conn, run["run_id"]) if run["state"] == "paused" else None
         message = reminder(self.conn, run, reason)
@@ -1626,11 +1644,11 @@ class Watchdog:
                     f"The swarm's Oracle session {session} {state}, and {count} watchdog "
                     "finding(s) wait for it. Open it in agent view."
                 ),
-                channels=_os_only(self.notify_channels),
+                channels=_os_only(self._channels("oracle_unreachable")),
             )
         if notice is not None:
             self._log(f"the Oracle's session runs but {state}; notified the user")
-        notify.deliver(notice, self.notify_channels, log=self._log)
+        notify.deliver(notice, log=self._log)
 
     def _adopt_resumed(self, agent: sqlite3.Row, bg_id: str | None) -> str:
         with write_tx(self.conn) as conn:
@@ -1672,10 +1690,10 @@ class Watchdog:
                 oracle["agent_id"],
                 PAUSE_REASON,
                 None,
-                self.notify_channels,
+                self._channels("run_paused"),
                 now,
             )
-        notify.deliver(notice, self.notify_channels, log=self._log)
+        notify.deliver(notice, log=self._log)
         self._log(f"paused run {run['run_id']}: {PAUSE_REASON}")
 
     def _check_idle(
@@ -1719,6 +1737,7 @@ def start(
     exit_server: Callable[[], None],
     activity: Callable[[], object],
     notify_channels: Sequence[str] = NOTIFY_CHANNELS,
+    notify_events: Mapping[str, bool | list[str]] | None = None,
     ledger: Ledger | None = None,
 ) -> None:
     dog = Watchdog(
@@ -1728,6 +1747,7 @@ def start(
         exit_server=exit_server,
         activity=activity,
         notify_channels=notify_channels,
+        notify_events=notify_events,
         ledger=ledger,
     )
     stop = threading.Event()

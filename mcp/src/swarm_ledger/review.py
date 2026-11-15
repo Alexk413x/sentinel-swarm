@@ -1457,7 +1457,7 @@ class ReviewMixin(LedgerHost):
                 self._restore_handoff(conn, file_row, restore_from)
 
         for notice in notices:
-            notify.deliver(notice, self.settings.notify)
+            notify.deliver(notice)
         return {
             "outcome": outcome,
             "rounds": rounds,
@@ -1610,7 +1610,7 @@ class ReviewMixin(LedgerHost):
                 f"Issue {issue['issue_id']} on {path} ended round {issue['round']} below the "
                 f"floor: {issue['title']}; {', '.join(below)}"
             ),
-            channels=self.settings.notify,
+            channels=self.settings.channels_for("rubric_floor"),
         )
 
     def accept_incomplete(self, caller: str, agent_id: str, handoff_id: int, reason: str) -> dict:

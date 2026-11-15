@@ -105,7 +105,12 @@ def test_interactive_puts_the_prompt_first_and_builds_the_flags(env):
     assert "mcp__swarm-ledger" not in tools
     assert "ToolSearch" in tools
     assert "Agent" not in tools
-    assert json.loads(_option(command, "--settings")) == {"worktree": {"bgIsolation": "none"}}
+    assert json.loads(_option(command, "--settings")) == {
+        "worktree": {"bgIsolation": "none"},
+        "preferredNotifChannel": "notifications_disabled",
+        "inputNeededNotifEnabled": False,
+        "agentPushNotifEnabled": True,
+    }
     assert call["cwd"] == env["repo"].resolve()
     assert env["servers"] == [env["repo"].resolve()]
 

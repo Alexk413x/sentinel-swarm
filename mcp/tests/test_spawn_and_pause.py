@@ -243,13 +243,17 @@ def test_session_options_passes_effort_and_prompt_cache_ttl(spawn_host: Path) ->
     assert json.loads(settings_json)["promptCacheTtl"] == "1h"
 
 
-def test_session_options_omits_effort_and_keeps_the_settings_literal_by_default(
+def test_session_options_omits_effort_and_quiets_the_session_by_default(
     spawn_host: Path,
 ) -> None:
     options = session_options(spawn_host, "lead", "sonnet", "http://127.0.0.1:4321/mcp")
     assert "--effort" not in options
-    settings_json = options[options.index("--settings") + 1]
-    assert settings_json == '{"worktree":{"bgIsolation":"none"}}'
+    assert json.loads(options[options.index("--settings") + 1]) == {
+        "worktree": {"bgIsolation": "none"},
+        "preferredNotifChannel": "notifications_disabled",
+        "inputNeededNotifEnabled": False,
+        "agentPushNotifEnabled": False,
+    }
 
 
 def test_agent_spawn_passes_the_role_s_effort_and_cache_ttl(
