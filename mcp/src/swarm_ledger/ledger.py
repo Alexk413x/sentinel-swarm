@@ -90,6 +90,22 @@ def _slashed(path: str) -> str:
 
 
 _RECORD_DIRS = frozenset({".git", ".sentinel-swarm", ".claude"})
+_USER_SOURCES = ("user_chat", "outside_session", "skill")
+
+
+def _user_named(conn: sqlite3.Connection, run_id: int | None, model: str) -> bool:
+    run = conn.execute("SELECT prd FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+    texts = [run["prd"] or ""] if run is not None else []
+    texts += [
+        row["body"]
+        for row in conn.execute(
+            f"SELECT body FROM directives WHERE run_id = ? AND source IN "
+            f"({', '.join('?' for _ in _USER_SOURCES)})",
+            (run_id, *_USER_SOURCES),
+        )
+    ]
+    word = re.compile(rf"(?<![A-Za-z0-9]){re.escape(model)}(?![A-Za-z0-9])", re.IGNORECASE)
+    return any(word.search(text) for text in texts)
 
 
 def repo_path(repo_root: Path, raw: str) -> str:
@@ -1158,6 +1174,7 @@ class Ledger(
         effort: str | None = None,
         contract: str | None = None,
         replaces: str | None = None,
+        user_named: bool = False,
     ) -> dict:
         if child_role == "driver":
             raise LedgerError(
@@ -1178,6 +1195,7 @@ class Ledger(
             effort,
             contract,
             replaces,
+            user_named,
         )
 
     def _write_brief(
@@ -1195,16 +1213,37 @@ class Ledger(
         effort: str | None = None,
         contract: str | None = None,
         replaces: str | None = None,
+        user_named: bool = False,
     ) -> dict:
         if effort is not None and effort not in EFFORT_LEVELS:
             raise LedgerError(f"unknown effort {effort!r}; use one of {list(EFFORT_LEVELS)}")
         self._release_dead_holders(caller, agent_id, child_name)
+        if not agentfiles.MODEL_NAME.fullmatch(model):
+            raise LedgerError(f"{model!r} is not a model name")
+        approved = self.settings.models.get(child_role, [])
+        warning = None
+        if model not in approved and not user_named:
+            raise LedgerError(
+                f"model {model!r} is not approved for {child_role!r}: pick one of "
+                f"{approved}, or, when the user named {model!r} for this role in the PRD "
+                "or a directive, pass user_named=true"
+            )
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
             if child_role not in child_roles_of(c.role):
                 raise LedgerError(f"a {c.role!r} may not brief a {child_role!r}")
-            if model not in self.settings.models.get(child_role, []):
-                raise LedgerError(f"model {model!r} is not approved for {child_role!r}")
+            if model not in approved:
+                if not _user_named(conn, c.run_id, model):
+                    raise LedgerError(
+                        f"the user did not name {model!r} in the run's PRD or a directive, so "
+                        f"it stays off the list for {child_role!r}: pick one of {approved}"
+                    )
+                warning = (
+                    f"{model} is not in models.{child_role} ({', '.join(approved) or 'empty'}). "
+                    "It runs because the user named it; tell the user to add it to "
+                    f"models.{child_role} in .claude/sentinel-swarm.local.md to approve it "
+                    "for future runs"
+                )
             self._check_child_scope(conn, c, child_role, child_name, phase_id, module_id, file_id)
             missing = self._missing_contracts(conn, child_role, module_id, file_id)
             if missing:
@@ -1243,8 +1282,9 @@ class Ledger(
             cur = conn.execute(
                 "INSERT INTO briefs "
                 "(run_id, parent_agent_id, child_name, child_role, model, effort, body, "
-                "phase_id, module_id, file_id, finding_ids_json, contract, replaces_agent_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "phase_id, module_id, file_id, finding_ids_json, contract, replaces_agent_id, "
+                "model_named_by_user) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     c.run_id,
                     c.agent_id,
@@ -1259,11 +1299,15 @@ class Ledger(
                     json.dumps(finding_ids) if finding_ids else None,
                     contract.strip() if contract and contract.strip() else None,
                     replaces,
+                    1 if user_named else 0,
                 ),
             )
             brief_id = cur.lastrowid
 
-        return row_dict(self.conn, "briefs", "brief_id", brief_id)
+        brief = row_dict(self.conn, "briefs", "brief_id", brief_id)
+        if warning is not None:
+            brief["warning"] = warning
+        return brief
 
     def _check_child_scope(
         self,

@@ -11,8 +11,11 @@ runtime:
   driver: session
 
 models:
-  # Approved models for the Oracle. It has no parent, so it runs on the first
-  # entry, opus.
+  # Approved models for the Oracle. It starts on its role file's model,
+  # .claude/agents/swarm-oracle.md (opus), or on the first entry here when the file
+  # names none. Name another for one launch with: ledger.py launch --model <name>.
+  # Every other role's model is picked by its parent from its list, by the task's
+  # difficulty, unless you name one in the PRD or a directive.
   oracle: [opus, fable]
   # Approved models for the Manager.
   manager: [opus]

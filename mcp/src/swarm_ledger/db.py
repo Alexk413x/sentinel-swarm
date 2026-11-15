@@ -18,6 +18,7 @@ ADDED_COLUMNS = (
     ("directives", "seen_at", "TEXT"),
     ("directives", "queued_at", "TEXT"),
     ("directives", "queue_note", "TEXT"),
+    ("briefs", "model_named_by_user", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 

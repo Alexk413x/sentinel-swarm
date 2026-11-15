@@ -91,11 +91,30 @@
 | Coder | sonnet | sonnet, haiku |
 | Driver | sonnet | sonnet, opus |
 
-- The settings file holds the approved models per role. `brief_create` refuses a model
-  outside the child role's list.
-- Each agent file's `model` key is the role's default. The launcher starts the Oracle on
-  its file's model, or on the first entry of the Oracle's approved list when the file
-  has no `model`. `agent_spawn` passes the brief's model with `--model`.
+- The settings file holds the approved models per role (`models.<role>`). Choosing a
+  model is automatic by default: each parent picks its child's model from the child
+  role's list by how hard the task is, and `brief_create` refuses a model outside the
+  list.
+- A model the user names wins over the automatic choice, on or off the list:
+  - **The Oracle:** `ledger.py launch --model <name>` (and `/sentinel-swarm:run`, which
+    passes it). The launcher writes the name to `.sentinel-swarm/oracle-model`, so
+    `run_start` records it and the watchdog resumes the Oracle on it, and the next
+    launch without `--model` clears it: it is a one-time override. Without it, the
+    Oracle starts on its role file's `model`, or on the first entry of `models.oracle`
+    when the file has none. The launcher prints the model the Oracle starts on and why.
+  - **Any other role:** the user names it in the PRD or a directive. The Oracle passes it
+    with `brief_create(..., user_named=true)` and writes it into the brief, so a Manager
+    and a Lead pass it on the same way. The brief records `model_named_by_user`. The flag
+    is the agent's claim, so the ledger checks it: an off-list model needs the name, as a
+    whole word in any case, in the run's PRD or in a `user_chat`, `outside_session`, or
+    `skill` directive of the run; otherwise `brief_create` refuses.
+  - Every model name, from `--model` or a brief, matches
+    `[A-Za-z0-9][A-Za-z0-9._:[]-]*` (80 characters at most), so it can never pass as a
+    flag to `claude`.
+  - A named model off the role's list runs, with a warning, launch's on stderr or
+    `brief_create`'s in its result, that says to add it to `models.<role>` to approve it
+    for future runs. The parent passes the warning up to the user.
+- `agent_spawn` passes the brief's model with `--model`.
 - The parent picks the child's model from the child role's list, by the complexity of
   the task, and the brief records the choice. Ideally, work reaches a Coder broken down
   far enough to run on the cheaper model.

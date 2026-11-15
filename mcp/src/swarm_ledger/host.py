@@ -78,6 +78,7 @@ class LedgerHost:
         effort: str | None = None,
         contract: str | None = None,
         replaces: str | None = None,
+        user_named: bool = False,
     ) -> dict: ...
 
     def agent_spawn(self, caller: str, agent_id: str, child_name: str) -> dict: ...

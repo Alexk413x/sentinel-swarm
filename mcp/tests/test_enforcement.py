@@ -811,3 +811,69 @@ def test_pre_send_message_denies_a_target_outside_the_run(ledger: Ledger) -> Non
 def test_pre_send_message_ignores_a_non_swarm_caller(ledger: Ledger) -> None:
     bootstrap_two_phases(ledger)
     assert events.handle_pre_send_message(ledger, {"session_id": "not-a-swarm-agent"}) is None
+
+
+def _manager_brief_args(ledger: Ledger, prd: str = "Build X. Use sonnet for the Managers."):
+    started = ledger.run_start(prd=prd, session_id="sess-1")
+    oracle = started["oracle"]["agent_id"]
+    phase = ledger.phase_add("oracle", oracle, "phase-1")
+    ledger.phase_update("oracle", oracle, phase["phase_id"], "unlocked")
+    return oracle, phase["phase_id"]
+
+
+def test_a_model_off_the_list_needs_the_user_to_have_named_it(ledger: Ledger) -> None:
+    oracle, phase_id = _manager_brief_args(ledger)
+    args = ("oracle", oracle, "mgr-p1-phase-1", "manager", "sonnet", "Own phase-1.")
+
+    with pytest.raises(LedgerError, match="user_named=true"):
+        ledger.brief_create(*args, phase_id=phase_id)
+
+    brief = ledger.brief_create(*args, phase_id=phase_id, user_named=True)
+    assert "sonnet is not in models.manager" in brief["warning"]
+    assert "add it to models.manager" in brief["warning"]
+    assert brief["model"] == "sonnet"
+    assert brief["model_named_by_user"] == 1
+
+
+def test_user_named_needs_the_model_in_the_prd_or_a_user_directive(ledger: Ledger) -> None:
+    oracle, phase_id = _manager_brief_args(ledger, prd="Build X.")
+    args = ("oracle", oracle, "mgr-p1-phase-1", "manager", "sonnet", "Own phase-1.")
+
+    with pytest.raises(LedgerError, match="did not name 'sonnet'"):
+        ledger.brief_create(*args, phase_id=phase_id, user_named=True)
+
+    ledger.directive_submit("user_chat", "alex", "Run the Managers on Sonnet.")
+    assert ledger.brief_create(*args, phase_id=phase_id, user_named=True)["model"] == "sonnet"
+
+
+@pytest.mark.parametrize("bad", ["-x", "--dangerously-skip-permissions", "a b", ""])
+def test_a_model_name_must_look_like_a_model(ledger: Ledger, bad: str) -> None:
+    oracle, phase_id = _manager_brief_args(ledger, prd=f"Build X with {bad}.")
+    with pytest.raises(LedgerError, match="not a model name"):
+        ledger.brief_create(
+            "oracle",
+            oracle,
+            "mgr-p1-phase-1",
+            "manager",
+            bad,
+            "Own it.",
+            phase_id=phase_id,
+            user_named=True,
+        )
+
+
+def test_a_user_named_model_on_the_list_brings_no_warning(ledger: Ledger) -> None:
+    oracle, phase_id = _manager_brief_args(ledger)
+
+    brief = ledger.brief_create(
+        "oracle",
+        oracle,
+        "mgr-p1-phase-1",
+        "manager",
+        "opus",
+        "Own it.",
+        phase_id=phase_id,
+        user_named=True,
+    )
+
+    assert "warning" not in brief

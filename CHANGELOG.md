@@ -2,6 +2,28 @@
 
 All notable changes to the `sentinel-swarm` plugin.
 
+## [0.8.1] — 2026-11-15 — the model you name wins
+
+### Added
+
+- `ledger.py launch --model <name>` (and `/sentinel-swarm:run`) starts the Oracle on a
+  model you name, for that launch only, over its role file's `model`. The launcher prints
+  the model the Oracle starts on and why.
+- A model you name for any other role, in the PRD or a directive, reaches its agents:
+  the Oracle, Managers, and Leads pass it with `brief_create(user_named=true)`.
+- A model you name that is not on the role's approved list still runs, with a warning
+  that suggests adding it to `models.<role>` for future runs.
+
+### Changed
+
+- Parents choose each child's model from the role's approved list by the task's
+  difficulty, and never off the list unless you named the model.
+
+### Fixed
+
+- `models.oracle: [fable, opus]` had no effect, since the Oracle's role file names
+  `model: opus`. Name the Oracle's model with `--model`, or set it in the role file.
+
 ## [0.8.0] — 2026-11-15 — fixes from a live run: real user waits, file moves, phase commits
 
 ### Upgrading a live run

@@ -78,7 +78,9 @@ Do these in order. The claim must exist before the brief.
    claim is also the file lock: a second claim on a live path is refused, and the
    write hook allows the Coder only these two paths.
 2. `brief_create(child_name=<the claimed name>, child_role="coder",
-   model=<a model from the approved list for coder>, body=<the brief>,
+   model=<a model from the approved list for coder, by the file's difficulty; or the
+   model your brief says the user named, with user_named=true> (a `warning` in the result goes to
+   your parent with `message_post`, so the user hears it), body=<the brief>,
    file_id=<the file id>, contract=<the file's public contract>)`. The brief states
    the file's goal, what its unit tests must prove, and the guidelines that apply.
    `brief_create` refuses a file your module did not claim for that name; a fresh
