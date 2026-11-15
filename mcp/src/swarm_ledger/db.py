@@ -19,6 +19,9 @@ ADDED_COLUMNS = (
     ("directives", "queued_at", "TEXT"),
     ("directives", "queue_note", "TEXT"),
     ("briefs", "model_named_by_user", "INTEGER NOT NULL DEFAULT 0"),
+    ("agents", "last_resume_at", "TEXT"),
+    ("agents", "last_resume_detail", "TEXT"),
+    ("agents", "resume_from_id", "TEXT"),
 )
 
 

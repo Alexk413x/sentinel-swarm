@@ -3,18 +3,20 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timedelta
 
-from . import lock, memory, permission, procs, sessions, transcript
+from . import lock, memory, permission, procs, rekey, sessions, transcript
 from .clock import parse_stamp, stamp
 from .db import NOW, dict_rows, in_clause, write_tx
 from .host import LedgerHost
-from .identity import LedgerError, SpawnDeferred
+from .identity import LedgerError, ResumeDeferred, SpawnDeferred
 from .queries import PARK_SET, UNPARK_SET, unread_count
 
 CHILD_ROLES = ("manager", "lead", "coder", "driver")
 _PARENT_ROLES = ("manager", "lead")
 _MEMBER_ROLES = ("manager", "lead", "coder")
 _LIVE_CHILD_STATES = ("registered", "working")
-_RESUME_WINDOW = "'-120 seconds'"
+WAITING_FOR_MEMORY = "waiting for memory to resume it for a wake-up"
+# A resumed session that is gone sooner than this failed; one that runs this long settled.
+RESUME_SETTLE = timedelta(minutes=3)
 QUEUED_POINTER = (
     "the ledger queued it: free memory, less what sessions starting on this machine will "
     "take, minus its estimate is below the headroom. The ledger "
@@ -27,13 +29,13 @@ class CapacityMixin(LedgerHost):
     def _headroom(self) -> int | None:
         return self.settings.memory.headroom_mb
 
-    def _reserve(self, role: str, *, force: bool = False) -> str | None:
+    def _reserve(self, role: str) -> str | None:
         need = memory.estimate_mb(self.conn, role)
         headroom = self._headroom()
         with lock.admission():
             free = memory.free_mb()
             pending = lock.reserved_mb()
-            if not force and free is not None and headroom is not None:
+            if free is not None and headroom is not None:
                 if free - pending - need < headroom:
                     return (
                         f"{free} MB free, less {pending} MB for sessions still starting on this "
@@ -259,6 +261,7 @@ class CapacityMixin(LedgerHost):
         for agent in agents:
             entry = by_session.get(agent["agent_id"])
             running = sessions.agent_running(entry, agent)
+            self._judge_resume(agent, running, now)
             if running:
                 if agent["parked_at"] is not None:
                     with write_tx(self.conn) as conn:
@@ -284,10 +287,36 @@ class CapacityMixin(LedgerHost):
             parked.append(agent | {"park_reason": reason})
         return parked
 
+    def _judge_resume(self, agent: dict, running: bool, now: datetime) -> None:
+        since = parse_stamp(agent["last_resume_at"])
+        if since is None or (not running and self._resuming(agent)):
+            return
+        elapsed = now - since
+        if running and elapsed < RESUME_SETTLE:
+            return
+        with write_tx(self.conn) as conn:
+            conn.execute(
+                "UPDATE agents SET last_resume_at = NULL, last_resume_detail = NULL "
+                "WHERE agent_id = ?",
+                (agent["agent_id"],),
+            )
+            if running:
+                self._log_event(conn, agent["agent_id"], None, "resume_stable", "stayed up")
+            elif elapsed < RESUME_SETTLE:
+                seconds = max(0, int(elapsed.total_seconds()))
+                self._log_event(
+                    conn,
+                    agent["agent_id"],
+                    None,
+                    "resume_vanished",
+                    f"its resumed session was gone {seconds}s after the resume at "
+                    f"{agent['last_resume_at']}: {agent['last_resume_detail'] or 'no detail'}",
+                )
+
     def _resuming(self, agent: dict) -> bool:
         row = self.conn.execute(
             "SELECT 1 FROM agents WHERE agent_id = ? AND resume_started_at >= "
-            f"strftime('%Y-%m-%dT%H:%M:%fZ', 'now', {_RESUME_WINDOW})",
+            f"strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-{rekey.RESUME_WINDOW_S} seconds')",
             (agent["agent_id"],),
         ).fetchone()
         return row is not None
@@ -334,36 +363,20 @@ class CapacityMixin(LedgerHost):
             handled.add(row["agent_id"])
             if row["role"] == "oracle" or not row["session_name"] or self._resuming(row):
                 continue
-            if not self._may_resume(row, listing):
-                self._park(row["agent_id"], "waiting for memory to resume it for a wake-up")
+            if sessions.resume_source(row) is None:
                 continue
             try:
                 self.resume_agent(self._row(row["agent_id"]), "the ledger resumed it for a wake-up")
-            except LedgerError as exc:
-                with write_tx(self.conn) as conn:
-                    self._log_event(conn, row["agent_id"], None, "resume_failed", str(exc))
+            except ResumeDeferred:
+                self._park(row["agent_id"], WAITING_FOR_MEMORY)
+            except LedgerError:
+                pass
         return handled
 
-    def _row(self, agent_id: str) -> sqlite3.Row:
+    def _row(self, agent_id: str) -> sqlite3.Row | None:
         return self.conn.execute("SELECT * FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
 
-    def _may_resume(self, agent: dict, listing: list[dict]) -> bool:
-        if self._reserve(agent["role"]) is None:
-            return True
-        run_ids = {
-            row["agent_id"]
-            for row in self.conn.execute(
-                "SELECT agent_id FROM agents WHERE run_id = ? AND ended_at IS NULL "
-                f"AND role IN ({in_clause(_MEMBER_ROLES)})",
-                (agent["run_id"], *_MEMBER_ROLES),
-            )
-        }
-        if any(e.get("sessionId") in run_ids and sessions.is_running(e) for e in listing):
-            return False
-        self._reserve(agent["role"], force=True)
-        return True
-
-    def resume_parked(self, listing: list[dict]) -> list[dict]:
+    def resume_parked(self) -> list[dict]:
         run = self.conn.execute("SELECT run_id FROM runs WHERE state = 'active'").fetchone()
         if run is None:
             return []
@@ -383,24 +396,16 @@ class CapacityMixin(LedgerHost):
         candidates.sort(key=lambda a: (a["busy"] > 0, a["ordinal"] or 0, a["owed_since"] or ""))
         resumed: list[dict] = []
         for agent in candidates:
-            if resumed:
-                # A resume started a session: judge the next candidate against a fresh listing,
-                # or "no member session runs" would stay true for all of them.
-                try:
-                    listing = sessions.list_sessions()
-                except LedgerError:
-                    break
-            if self._resuming(agent):
+            if self._resuming(agent) or sessions.resume_source(agent) is None:
                 continue
-            if not self._may_resume(agent, listing):
-                break
             try:
                 result = self.resume_agent(
                     self._row(agent["agent_id"]), "the ledger resumed it when memory freed"
                 )
-            except LedgerError as exc:
-                with write_tx(self.conn) as conn:
-                    self._log_event(conn, agent["agent_id"], None, "resume_failed", str(exc))
+            except ResumeDeferred:
+                self._park(agent["agent_id"], WAITING_FOR_MEMORY)
+                break
+            except LedgerError:
                 continue
             resumed.append(result)
         return resumed

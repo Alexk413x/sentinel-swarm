@@ -123,6 +123,15 @@ CREATE TABLE IF NOT EXISTS agents (
     -- resumed session's id. A hook from an unknown session whose id starts with bg_id
     -- re-keys the agent to that id.
     resume_started_at TEXT,
+    -- When the ledger last resumed the session, and what the CLI answered and how the session
+    -- registered. The watchdog turns a session that vanishes soon after into a resume_vanished
+    -- event, then clears both.
+    last_resume_at TEXT,
+    last_resume_detail TEXT,
+    -- The newest session id of this agent whose transcript file exists. A resumed session that
+    -- dies before it writes a transcript leaves an id that `claude --resume` cannot open, so a
+    -- resume starts from this id, never from the dead one.
+    resume_from_id TEXT,
     -- Set while the agent is live but its session is not running: the daemon retired it, or
     -- the ledger stopped an idle parent under memory pressure. Parking sets state to 'parked'
     -- and keeps the state it had in state_before_park; unparking puts that state back.

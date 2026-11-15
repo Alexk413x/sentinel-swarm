@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 from . import memory, notify, pauses, permission, procs, rekey, sessions, testrun, transcript, wake
 from .clock import parse_stamp, stamp, utcnow
-from .db import NOW, write_tx
+from .db import write_tx
 from .identity import ROLES, LedgerError
 from .queries import (
     USER_DIRECTIVE_SOURCES,
@@ -26,8 +26,6 @@ from .queries import (
 from .settings import NOTIFY_CHANNELS, WatchdogSettings
 from .waits import landed_waits
 
-RESUME_WINDOW_S = 120
-
 if TYPE_CHECKING:
     from .ledger import Ledger
 
@@ -39,6 +37,10 @@ MONITOR_CALL = (
 )
 REGISTER_GRACE = timedelta(minutes=2)
 RESUME_FAILURE_LIMIT = 3
+# Findings identified by the agent's name, so one agent that dies again under a new session id
+# after a resume keeps one finding; one that cleared less than this long ago is reopened.
+NAMED_KINDS = frozenset({"crashed"})
+CRASH_REOPEN = timedelta(minutes=30)
 # A released session can take a moment to exit after claude stop returns.
 STRAY_GRACE = timedelta(minutes=1)
 WAKE_EVERY = timedelta(minutes=5)
@@ -602,43 +604,67 @@ def _not_running(entry: dict | None) -> str:
     return f"is not running (status {entry.get('status')}, state {entry.get('state')})"
 
 
-def _failed_resumes(conn: sqlite3.Connection, agent: dict) -> int:
-    if agent["parked_at"] is None:
-        return 0
-    row = conn.execute(
-        "SELECT COUNT(*) AS n FROM agent_events WHERE agent_id = ? AND to_state = 'resume_failed' "
-        "AND at >= ?",
-        (agent["agent_id"], agent["parked_at"]),
-    ).fetchone()
-    return int(row["n"])
+@dataclass(frozen=True)
+class ResumeHistory:
+    failed: int = 0
+    last: str | None = None
+    hopeless: str | None = None
 
 
-def _unresumable(
+def _resume_history(
     conn: sqlite3.Connection, agent: dict, now: datetime, settings: WatchdogSettings
-) -> int:
-    failed = _failed_resumes(conn, agent)
-    last = parse_stamp(agent["last_heartbeat_at"]) or parse_stamp(agent["started_at"])
-    quiet = last is None or now - last >= timedelta(minutes=settings.stuck_minutes)
-    return failed if failed >= RESUME_FAILURE_LIMIT and quiet else 0
+) -> ResumeHistory:
+    """The failed resumes since the agent's last resume that stayed up, and whether any is left."""
+    rows = conn.execute(
+        "SELECT reason FROM agent_events WHERE agent_id = ? "
+        "AND to_state IN ('resume_failed', 'resume_vanished') AND event_id > "
+        "(SELECT COALESCE(MAX(event_id), 0) FROM agent_events "
+        "WHERE agent_id = ? AND to_state = 'resume_stable') ORDER BY event_id",
+        (agent["agent_id"], agent["agent_id"]),
+    ).fetchall()
+    failed = len(rows)
+    last = rows[-1]["reason"] if rows else None
+    if sessions.resume_source(agent) is None:
+        return ResumeHistory(failed, last, sessions.NO_CONVERSATION)
+    if last is not None and sessions.CLI_NO_CONVERSATION in last:
+        return ResumeHistory(
+            failed, last, "claude --resume found no conversation for its session id"
+        )
+    beat = parse_stamp(agent["last_heartbeat_at"]) or parse_stamp(agent["started_at"])
+    quiet = beat is None or now - beat >= timedelta(minutes=settings.stuck_minutes)
+    if failed >= RESUME_FAILURE_LIMIT and quiet:
+        return ResumeHistory(
+            failed, last, f"{failed} resumes failed and it has shown no activity since"
+        )
+    return ResumeHistory(failed, last)
 
 
-def _crashed(agent: dict, entry: dict | None, now: datetime, unresumable: int = 0) -> list[Finding]:
+def _crashed(
+    agent: dict, entry: dict | None, now: datetime, history: ResumeHistory | None = None
+) -> list[Finding]:
     state = logical_state(agent)
     started = parse_stamp(agent["started_at"])
     overdue = started is not None and now - started > REGISTER_GRACE
     if state != "working" and not (state == "registered" and overdue):
         return []
+    history = history or ResumeHistory()
     detail = f"the ledger says {state}, but its session {_not_running(entry)}"
-    if unresumable:
+    if history.hopeless:
+        detail += f"; {history.hopeless}"
+    elif history.failed:
+        detail += f"; {history.failed} resume{'' if history.failed == 1 else 's'} failed"
+    if history.last:
+        detail += f" (last: {history.last})"
+    if history.hopeless:
         return [
             _finding(
                 agent,
                 "crashed",
-                f"{detail}; {unresumable} resumes failed and it has shown no activity since",
+                detail,
                 "Its conversation cannot be resumed. Read what it left in the ledger with "
                 "directive_inbox() and status_tree(), then have its parent release it with "
                 f"agent_release(target_agent_id={json.dumps(agent['agent_id'])}) and brief a "
-                "replacement under the same name.",
+                "replacement under the same name, from its brief.",
             )
         ]
     return [
@@ -674,7 +700,7 @@ def _session_findings(
     settings: WatchdogSettings,
 ) -> list[Finding]:
     if not sessions.agent_running(entry, agent):
-        return _crashed(agent, entry, now, _unresumable(conn, agent, now, settings))
+        return _crashed(agent, entry, now, _resume_history(conn, agent, now, settings))
 
     if agent["state"] != "working":
         return []
@@ -1048,6 +1074,39 @@ def _needs_confirmation(kind: str) -> bool:
     return kind == "stalled"
 
 
+def _identity(kind: str, agent_id: str, name: str | None) -> tuple[str, str]:
+    return (name if kind in NAMED_KINDS and name else agent_id, kind)
+
+
+def _reopen(conn: sqlite3.Connection, run_id: int, finding: Finding, now: datetime) -> dict | None:
+    """The crashed finding of the same agent name that cleared a moment ago, made live again.
+
+    A session that dies, is resumed, and dies again clears the finding in between and comes
+    back under a new session id. The agent is one, so its finding is too.
+    """
+    row = conn.execute(
+        "SELECT f.* FROM watchdog_findings f JOIN agents a ON a.agent_id = f.agent_id "
+        "WHERE f.run_id = ? AND f.kind = ? AND a.name = ? AND f.cleared_at >= ? "
+        "ORDER BY f.finding_id DESC LIMIT 1",
+        (run_id, finding.kind, finding.name, stamp(now - CRASH_REOPEN)),
+    ).fetchone()
+    if row is None:
+        return None
+    conn.execute(
+        "UPDATE watchdog_findings SET cleared_at = NULL, agent_id = ?, detail = ?, "
+        "last_seen_at = ? WHERE finding_id = ?",
+        (finding.agent_id, finding.detail, stamp(now), row["finding_id"]),
+    )
+    return dict(row)
+
+
+def _directive_open(conn: sqlite3.Connection, directive_id: int | None) -> bool:
+    row = conn.execute(
+        "SELECT state FROM directives WHERE directive_id = ?", (directive_id,)
+    ).fetchone()
+    return row is not None and row["state"] == "open"
+
+
 def record(
     conn: sqlite3.Connection, run_id: int, findings: list[Finding], now: datetime
 ) -> list[dict]:
@@ -1055,19 +1114,25 @@ def record(
     reported: list[dict] = []
     with write_tx(conn):
         live = {
-            (row["agent_id"], row["kind"]): dict(row)
+            _identity(row["kind"], row["agent_id"], row["agent_name"]): dict(row)
             for row in conn.execute(
-                "SELECT * FROM watchdog_findings WHERE run_id = ? AND cleared_at IS NULL",
+                "SELECT f.*, a.name AS agent_name FROM watchdog_findings f "
+                "LEFT JOIN agents a ON a.agent_id = f.agent_id "
+                "WHERE f.run_id = ? AND f.cleared_at IS NULL",
                 (run_id,),
             )
         }
         seen: set[tuple[str, str]] = set()
         for finding in findings:
-            key = (finding.agent_id, finding.kind)
+            key = _identity(finding.kind, finding.agent_id, finding.name)
             if key in seen:
                 continue
             seen.add(key)
             row = live.get(key)
+            reopened = False
+            if row is None and finding.kind in NAMED_KINDS:
+                row = _reopen(conn, run_id, finding, now)
+                reopened = row is not None
             if row is None:
                 cur = conn.execute(
                     "INSERT INTO watchdog_findings (run_id, agent_id, kind, detail, "
@@ -1079,12 +1144,15 @@ def record(
                     continue
             else:
                 finding_id = row["finding_id"]
-                conn.execute(
-                    "UPDATE watchdog_findings SET detail = ?, last_seen_at = ? "
-                    "WHERE finding_id = ?",
-                    (finding.detail, at, finding_id),
-                )
-                if row["reported_at"] is not None:
+                if not reopened:
+                    conn.execute(
+                        "UPDATE watchdog_findings SET detail = ?, last_seen_at = ?, "
+                        "agent_id = ? WHERE finding_id = ?",
+                        (finding.detail, at, finding.agent_id, finding_id),
+                    )
+                if row["reported_at"] is not None and (
+                    not reopened or _directive_open(conn, row["directive_id"])
+                ):
                     continue
             cur = conn.execute(
                 "INSERT INTO directives (run_id, source, sender_name, body, created_at) "
@@ -1409,7 +1477,7 @@ class Watchdog:
                 "park agents",
                 lambda: ledger.mark_parked(listing, now, REGISTER_GRACE.total_seconds()),
             ),
-            ("resume parked agents", lambda: ledger.resume_parked(listing)),
+            ("resume parked agents", ledger.resume_parked),
             ("start queued spawns", lambda: ledger.start_queued_spawns(listing)),
             ("park blocked coders", park_blocked_coders),
             (
@@ -1487,20 +1555,15 @@ class Watchdog:
                 f"the watchdog cannot wake the Oracle: no session is recorded for "
                 f"{oracle['agent_id']!r}"
             )
+        elif (source := sessions.resume_source(dict(oracle))) is None:
+            reason = f"the watchdog cannot wake the Oracle: {sessions.NO_CONVERSATION}"
         else:
-            with write_tx(self.conn) as conn:
-                claimed = conn.execute(
-                    f"UPDATE agents SET resume_started_at = {NOW} WHERE agent_id = ? "
-                    "AND (resume_started_at IS NULL OR resume_started_at < "
-                    f"strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-{RESUME_WINDOW_S} seconds'))",
-                    (oracle["agent_id"],),
-                ).rowcount
-            if not claimed:
+            if not rekey.claim_resume(self.conn, oracle["agent_id"]):
                 reason = "the watchdog did not wake the Oracle: a resume of it is already running"
             else:
                 try:
                     bg_id = sessions.resume(
-                        oracle["agent_id"],
+                        source,
                         message,
                         cwd=self.repo_root,
                         name=oracle["session_name"],
@@ -1509,11 +1572,11 @@ class Watchdog:
                     reason = f"the watchdog woke the Oracle: {message}"
                     agent_id = self._adopt_resumed(oracle, bg_id)
                 except sessions.ConfigParseError as exc:
-                    self._release_resume(oracle["agent_id"])
+                    rekey.release_resume(self.conn, oracle["agent_id"])
                     failure = self.ledger.pause_for_config(exc) if self.ledger is not None else exc
                     reason = f"the watchdog could not resume the Oracle: {failure}"
                 except LedgerError as exc:
-                    self._release_resume(oracle["agent_id"])
+                    rekey.release_resume(self.conn, oracle["agent_id"])
                     reason = f"the watchdog could not resume the Oracle: {exc}"
         with write_tx(self.conn) as conn:
             conn.execute(
@@ -1544,12 +1607,6 @@ class Watchdog:
         if notice is not None:
             self._log(f"the Oracle's session runs but {state}; notified the user")
         notify.deliver(notice, self.notify_channels, log=self._log)
-
-    def _release_resume(self, agent_id: str) -> None:
-        with write_tx(self.conn) as conn:
-            conn.execute(
-                "UPDATE agents SET resume_started_at = NULL WHERE agent_id = ?", (agent_id,)
-            )
 
     def _adopt_resumed(self, agent: sqlite3.Row, bg_id: str | None) -> str:
         with write_tx(self.conn) as conn:

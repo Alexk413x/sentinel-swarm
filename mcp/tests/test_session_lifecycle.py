@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from datetime import timedelta
 from pathlib import Path
 
@@ -674,3 +675,96 @@ def test_a_queued_spawn_whose_start_fails_on_the_config_file_stays_queued(
     monkeypatch.setattr(sessions, "_run", broken)
     assert ledger.start_queued_spawns(claude.listing) == []
     assert ledger.conn.execute("SELECT state FROM spawn_queue").fetchone()["state"] == "queued"
+
+
+# -- issue 27: why a resumed session died --------------------------------------------------------
+
+
+def _events(ledger: Ledger, agent_id: str, to_state: str) -> list[str]:
+    return [
+        r["reason"]
+        for r in ledger.conn.execute(
+            "SELECT reason FROM agent_events WHERE agent_id = ? AND to_state = ? ORDER BY event_id",
+            (agent_id, to_state),
+        )
+    ]
+
+
+def test_run_reports_the_exit_code_and_stderr_of_the_last_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(sessions.CLAUDE_VAR, sys.executable)
+    sessions._run(["-c", "import sys; sys.stderr.write('warn')"])
+    assert sessions.last_run_report() == (0, "warn")
+    with pytest.raises(LedgerError):
+        sessions._run(["-c", "import sys; sys.stderr.write('boom'); sys.exit(3)"])
+    assert sessions.last_run_report() == (3, "boom")
+
+
+def test_a_failed_agent_resume_is_recorded_with_the_exit_code_and_stderr(
+    ledger: Ledger, claude: MovingClaude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    claude.stop_session(ctx.manager[1])
+
+    def failing(args: list[str], cwd: Path | None = None) -> str:
+        if args[0] == "--resume":
+            raise LedgerError("claude --resume failed with exit code 3: no such session")
+        return claude(args, cwd)
+
+    monkeypatch.setattr(sessions, "_run", failing)
+    with pytest.raises(LedgerError, match="exit code 3"):
+        ledger.agent_resume(*ctx.lead, "mgr-p1-phase-1")
+
+    (reason,) = _events(ledger, ctx.manager[1], "resume_failed")
+    assert "exit code 3: no such session" in reason
+    assert _row(ledger, ctx.manager[1])["resume_started_at"] is None
+
+
+def test_a_resume_event_carries_the_commands_exit_code_and_stderr(
+    ledger: Ledger, claude: MovingClaude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    claude.stop_session(ctx.manager[1])
+    monkeypatch.setattr(sessions, "last_run_report", lambda: (0, "warning: low memory"))
+
+    ledger.agent_resume(*ctx.lead, "mgr-p1-phase-1")
+
+    rows = ledger.conn.execute(
+        "SELECT reason FROM agent_events WHERE reason LIKE '%agent_resume by%'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert "exit code 0" in rows[0]["reason"] and "warning: low memory" in rows[0]["reason"]
+
+
+def test_a_resumed_session_that_registers_and_then_vanishes_is_recorded(
+    ledger: Ledger, claude: MovingClaude
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    claude.stop_session(ctx.manager[1])
+    ledger.agent_resume(*ctx.lead, "mgr-p1-phase-1")
+    new_id = claude.resumed[0]
+    _gone(claude, new_id)
+
+    ledger.mark_parked(claude.listing, utcnow() + timedelta(seconds=45), 120)
+
+    (reason,) = _events(ledger, new_id, "resume_vanished")
+    assert "registered" in reason and "exit code 0" in reason
+    assert "gone 4" in reason or "gone 5" in reason
+    assert _row(ledger, new_id)["last_resume_at"] is None
+
+
+def test_a_resumed_session_that_runs_on_is_not_counted_as_vanished(
+    ledger: Ledger, claude: MovingClaude
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    claude.stop_session(ctx.manager[1])
+    ledger.agent_resume(*ctx.lead, "mgr-p1-phase-1")
+    new_id = claude.resumed[0]
+
+    ledger.mark_parked(claude.listing, utcnow() + timedelta(minutes=30), 120)
+    _gone(claude, new_id)
+    ledger.mark_parked(claude.listing, utcnow() + timedelta(minutes=31), 120)
+
+    assert _events(ledger, new_id, "resume_vanished") == []
+    assert len(_events(ledger, new_id, "resume_stable")) == 1

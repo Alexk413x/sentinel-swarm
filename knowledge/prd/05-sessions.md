@@ -203,9 +203,10 @@ one. The ledger pushes nothing into a session.
   the owing call's transaction committed, with the pointers of every wake-up owed to it,
   and re-keys it; see "Re-keying a resumed session" below. A resume already in flight
   for the target, started in the last 2 minutes, starts no second one. When free memory
-  minus the role's estimate is below `memory.headroom_mb` and another member session of
-  the run still runs, the target is parked instead, "waiting for memory to resume it for
-  a wake-up", and the watchdog resumes it later. A running entry under the target's
+  minus the role's estimate is below `memory.headroom_mb`, the target stays parked,
+  "waiting for memory to resume it for a wake-up", and the watchdog resumes it later.
+  Whether other sessions of the run still run does not matter: waiting is the rule
+  for every resume, as for a queued spawn. A running entry under the target's
   session name with another id re-keys the agent, and the wake-up goes to the new id.
   When the listing fails, nothing is resumed and every target is answered as before.
 - The Oracle is never resumed this way: an interactive Oracle is the user's terminal,
@@ -436,6 +437,23 @@ fails as ambiguous, or goes to the offline entry and waits there for good. See
 - When a session runs under the target's session name with another session id, for
   example one resumed earlier, `agent_resume` starts nothing: it re-keys the agent to
   that session and returns `rekeyed_from`.
+- `agent_resume` follows the memory rule of every resume. When free memory minus the
+  role's estimate is below `memory.headroom_mb`, it starts nothing and returns
+  `deferred: true`, `reachable: false`, the reason, and a `next` that says the ledger
+  retries. It parks the target ("waiting for memory to resume it for a wake-up") and
+  records a wake-up the target owes itself, reason `resume_deferred`, whose pointer
+  is "Re-read your brief and your inbox in the ledger." The watchdog's resume of parked
+  agents then resumes it once memory frees, and the caller's Stop hook has nothing to
+  name for it.
+- A resume starts from the newest session id of the agent whose transcript file exists,
+  never from a session id that has none. A resumed session that dies before it writes
+  a transcript still gets the agent re-keyed to its id, because the hooks key by session
+  id, so `claude --resume <that id>` fails with "No conversation found". The agent
+  keeps `resume_from_id`, the last id with a transcript, and every resume uses it. An
+  agent with no recorded `transcript_path` resumes from its own id. When no id with a
+  transcript is left, the ledger starts nothing and says the agent has no conversation
+  to resume. The watchdog then reports `crashed` with the step "release it and brief a
+  replacement from its brief"; see [08-watchdog.md](08-watchdog.md).
 - Release sets the row `released` and stops the session with `claude stop <bg_id>`,
   which frees its memory. The Oracle's session is never stopped this way.
 - Release also stops the processes the session's tools started, which `claude stop`
@@ -506,10 +524,28 @@ it. A resumed background session can come back under a new session id (see
 [13-platform-facts.md](13-platform-facts.md)), so the ledger re-keys the agent rather
 than keep an alias.
 
+- One claim serializes every resumer of an agent: the watchdog's resume of parked agents,
+  the ledger's wake-up resume, another agent's `agent_resume`, and the watchdog's Oracle
+  resume. The claim is `agents.resume_started_at`, set by one conditional write
+  (`rekey.claim_resume`) that succeeds only when it is empty or older than 120 seconds.
+  A resumer that loses the claim starts nothing: "already being resumed". A resumer that
+  wins it reads the agent and `claude agents --json` again before it starts anything, because
+  the checks it made before the claim can be stale: when the session runs, or runs
+  under another session id, it starts nothing and re-keys or refuses. It releases the claim
+  when it starts nothing or the start fails. A resumer that finds the agent re-keyed or
+  ended between its candidate query and its claim skips it.
 - Before the resume, the ledger sets `agents.resume_started_at`. After it, it records
   the background id the CLI printed as `bg_id`, then polls `claude agents --json` for
   up to 15 seconds for the entry whose `id` is that background id, or else a running
   entry with the session name.
+- The resume's agent event records the exit code and the stderr of `claude --resume
+  --bg`. A failed command logs a `resume_failed` event with the CLI's own message, which
+  holds its exit code and stderr. `agents.last_resume_at` and `last_resume_detail`
+  record the time, the exit code and stderr, and whether and when the session
+  registered. The watchdog compares them with the listing on each pass: a session gone
+  less than 3 minutes after the resume logs a `resume_vanished` event, "its resumed
+  session was gone <n>s after the resume at <time>: <detail>", and a session that
+  stays up 3 minutes logs `resume_stable`.
 - When the entry's session id differs, one write transaction replaces the old id with
   the new one in every column that stores an agent id: `rekey.agent_id_columns` reads
   the schema for columns named `*agent_id`, columns that reference `agents`, and
@@ -558,22 +594,27 @@ than keep an alias.
 - When memory frees, the watchdog resumes parked agents that are owed a wake-up, each
   with that wake-up's pointers: first the parents none of whose children is still
   `registered` or `working`, then by phase ordinal, then by the oldest owed wake-up. It
-  stops at the first one that does not fit under the headroom. After each resume it reads
-  `claude agents --json` again, so the new session counts as a running member session for
-  the next candidate; a failed listing ends the pass.
+  stops at the first one that does not fit under the headroom, and says why in that agent's
+  park reason. A candidate whose resume another actor holds or already finished, or that
+  has no conversation left, is skipped.
 - A wake-up owed to an agent whose park is claimed (`parked_at` set) while its session still
   runs is not sent: the session is about to be stopped, so the wake-up stays owed and the
   resume of the parked agent carries it.
-- A resume fits when free memory minus the role's estimate stays at or above
-  `memory.headroom_mb`, or when no member session of the run runs, since then waiting
-  frees nothing. Unknown free memory fits.
+- A resume fits when free memory, less the memory reserved for sessions still starting,
+  minus the role's estimate stays at or above `memory.headroom_mb`. Unknown free memory
+  fits. No other condition lets a resume through, and a run whose every session is
+  parked waits for memory like any other: the `stalled` finding reports it. The check runs
+  in `resume_agent`, under the resume claim, so the watchdog's resume, the wake-up
+  resume, and `agent_resume` all follow it.
 - `crashed` still reports a `working` or late `registered` agent whose session is gone,
   and the Oracle resumes it with `agent_resume`. A failed resume is logged as a
   `resume_failed` agent event, and the agent stays parked.
 - A parked agent is judged not running by its process, not by a stale listing entry, so
   a dead session is parked and resumed like a retired one. The watchdog never releases a
-  parked agent that holds unfinished work: after 3 failed resumes and a quiet heartbeat,
-  `crashed` tells its parent to release it and brief a replacement. See [08-watchdog.md](08-watchdog.md).
+  parked agent that holds unfinished work: after 3 failed resumes (`resume_failed` or
+  `resume_vanished` events since its last `resume_stable`) and a quiet heartbeat, or at
+  once when no conversation is left to resume, `crashed` tells its parent to release it
+  and brief a replacement. See [08-watchdog.md](08-watchdog.md).
 
 ## What stops when
 
