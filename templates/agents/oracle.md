@@ -215,7 +215,9 @@ messages, or an agent none of whose children is working.
    needs a shell of yours or a person's. A run longer than about 20 seconds returns
    `state: "running"` with its `test_run_id`: end your turn, and a wake-up names the
    result when the ledger records it. A full run that saw the working tree change
-   records `stale` and counts for nothing, so start it while no agent edits.
+   records `stale` and counts for nothing, so start it while no agent edits. When the
+   profile sets `build_command`, the same run builds once its tests pass, and a failed
+   build makes the run unclean: the result's `build` shows the failing output.
 4. Audit the scores. Investigate every dimension below the target and every issue
    that reached round 3. You do not score files: `score_record` accepts only the
    Coder's self review and the Lead's review.

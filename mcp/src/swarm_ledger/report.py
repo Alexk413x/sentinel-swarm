@@ -10,7 +10,7 @@ from .db import dict_rows, ledger_path
 from .host import LedgerHost
 from .identity import ROLES, require_run, resolve
 from .metrics import agent_cost
-from .review import agent_name, agent_names, fix_briefs, latest_lead_review
+from .review import agent_name, agent_names, build_summary, fix_briefs, latest_lead_review
 
 _TOKEN_COLUMNS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
 
@@ -630,7 +630,14 @@ class ReportMixin(LedgerHost):
                 f"- {final_run['passed']} passed, {final_run['failed']} failed, "
                 f"{final_run['skipped']} skipped, exit {final_run['exit_code']}"
             )
-        return ["## Final test run", summary, ""]
+        lines = ["## Final test run", summary]
+        build = build_summary(final_run) if final_run is not None else None
+        if build is not None:
+            lines.append(
+                f"- Build `{build['command']}`: {build['state']}"
+                + (f", exit {build['exit_code']}" if build["exit_code"] is not None else "")
+            )
+        return [*lines, ""]
 
     def _report_stage_times(self, phases: list[sqlite3.Row], agents: list[dict]) -> list[str]:
         lines = ["## Measures", "### Time per stage"]

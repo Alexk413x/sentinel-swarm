@@ -37,6 +37,7 @@ _DEFERRAL_LEVEL = {
     "prd": "oracle",
 }
 DEFERRAL_KINDS = tuple(_DEFERRAL_LEVEL)
+BUILD_OUTPUT_CHARS = 2000
 INLINE_WAIT_S = 20.0
 _WAIT_POLL_S = 0.2
 
@@ -151,6 +152,22 @@ def fix_briefs(conn: sqlite3.Connection, run_id: int) -> list[dict]:
     ]
 
 
+def build_summary(row: sqlite3.Row) -> dict | None:
+    if not row["build_command"]:
+        return None
+    exit_code = row["build_exit_code"]
+    if exit_code is None:
+        state = "running" if row["state"] == "running" else "not run"
+    elif exit_code == 0:
+        state = "passed"
+    else:
+        state = "timed out" if exit_code == -1 else "failed"
+    summary = {"command": row["build_command"], "state": state, "exit_code": exit_code}
+    if state in ("failed", "timed out"):
+        summary["output"] = (row["build_output"] or "")[-BUILD_OUTPUT_CHARS:]
+    return summary
+
+
 def test_run_result(row: sqlite3.Row) -> dict:
     ok = test_run_passed(row)
     output = row["output"] or ""
@@ -175,6 +192,9 @@ def test_run_result(row: sqlite3.Row) -> dict:
     }
     if row["reused_from"] is not None:
         result["reused_from"] = row["reused_from"]
+    build = build_summary(row)
+    if build is not None:
+        result["build"] = build
     if row["state"] == "running":
         result["reason"] = "still running"
         result["next"] = (
@@ -387,18 +407,19 @@ class ReviewMixin(LedgerHost):
         if scope == "full" and target is None:
             target = self.settings.full_target
         command = self.test_command_for(scope, target, include_slow)
+        build = (self.settings.build_command or None) if scope == "full" else None
         testrun.sweep(self.conn)
         claimed = self._claimed_paths(c.run_id)
         fingerprint = tree_fingerprint(self.repo_root, claimed)
         if not force:
-            earlier = self._reusable_run(c.run_id, command, fingerprint)
+            earlier = self._reusable_run(c.run_id, command, fingerprint, build)
             if earlier is not None:
                 return self._record_reuse(c, scope, target, earlier)
             running = self.conn.execute(
                 "SELECT test_run_id FROM test_runs WHERE run_id = ? AND agent_id = ? "
-                "AND command = ? AND fingerprint IS ? AND state = 'running' "
-                "ORDER BY test_run_id DESC LIMIT 1",
-                (c.run_id, c.agent_id, command, fingerprint),
+                "AND command = ? AND fingerprint IS ? AND build_command IS ? "
+                "AND state = 'running' ORDER BY test_run_id DESC LIMIT 1",
+                (c.run_id, c.agent_id, command, fingerprint, build),
             ).fetchone()
             if running is not None:
                 return self._await_run(running["test_run_id"])
@@ -406,8 +427,8 @@ class ReviewMixin(LedgerHost):
         with write_tx(self.conn) as conn:
             cur = conn.execute(
                 "INSERT INTO test_runs (run_id, agent_id, scope, target, command, fingerprint, "
-                "state, skip_patterns_json, claimed_json, timeout_s) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)",
+                "state, skip_patterns_json, claimed_json, timeout_s, build_command) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)",
                 (
                     c.run_id,
                     c.agent_id,
@@ -418,6 +439,7 @@ class ReviewMixin(LedgerHost):
                     json.dumps(self.settings.allowed_skips),
                     json.dumps(sorted(set(claimed))),
                     self.settings.test_timeout_s,
+                    build,
                 ),
             )
             test_run_id = int(cur.lastrowid or 0)
@@ -485,8 +507,9 @@ class ReviewMixin(LedgerHost):
             cur = conn.execute(
                 "INSERT INTO test_runs (run_id, agent_id, scope, target, command, exit_code, "
                 "passed, failed, skipped, errors, allowed_skipped, output, fingerprint, "
-                "reused_from, state, duration_ms, finished_at) "
-                f"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', 0, {NOW})",
+                "reused_from, build_command, build_exit_code, build_output, build_duration_ms, "
+                "state, duration_ms, finished_at) "
+                f"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', 0, {NOW})",
                 (
                     c.run_id,
                     c.agent_id,
@@ -502,6 +525,10 @@ class ReviewMixin(LedgerHost):
                     earlier["output"],
                     earlier["fingerprint"],
                     earlier["test_run_id"],
+                    earlier["build_command"],
+                    earlier["build_exit_code"],
+                    earlier["build_output"],
+                    earlier["build_duration_ms"],
                 ),
             )
         row = self.conn.execute(
@@ -538,14 +565,15 @@ class ReviewMixin(LedgerHost):
         ]
 
     def _reusable_run(
-        self, run_id: int | None, command: str, fingerprint: str | None
+        self, run_id: int | None, command: str, fingerprint: str | None, build: str | None
     ) -> sqlite3.Row | None:
         if fingerprint is None:
             return None
         for row in self.conn.execute(
             "SELECT * FROM test_runs WHERE run_id = ? AND command = ? AND fingerprint = ? "
-            "AND reused_from IS NULL AND state = 'done' ORDER BY test_run_id DESC",
-            (run_id, command, fingerprint),
+            "AND build_command IS ? AND reused_from IS NULL AND state = 'done' "
+            "ORDER BY test_run_id DESC",
+            (run_id, command, fingerprint, build),
         ):
             if test_run_passed(row):
                 return row

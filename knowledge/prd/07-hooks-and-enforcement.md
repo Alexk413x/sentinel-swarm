@@ -381,6 +381,7 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
 | A handoff needs passing tests and a current graph | `handoff_submit` |
 | A test run outlives the tool call and no Claude Code shell runs it | `tests_run` starts the detached runner (`testrun.py`); the watchdog and server start sweep runs whose runner is gone to `abandoned` |
 | A full run never collects from the repo root, and only declared skips count as clean | `tests_run` refuses a full run with `{target}` and no `full_target`; `test_run_passed` and `_CLEAN_TEST_RUN` need `skipped = allowed_skipped` |
+| A phase is approved only when its build passes | the detached runner runs `build_command` after a full run's tests; `test_run_passed` and `_CLEAN_TEST_RUN` need `build_exit_code = 0` on a row with a `build_command`, and `phase_review(accepted)` reads only a full run with the profile's current `build_command` |
 | No approval without a handoff and two sets of scores | `approve` |
 | The Lead scores before it sees the Coder's scores | `score_record` refuses a Lead review after `review_compare` |
 | A rule gives way only to the Oracle | `override_grant`, consumed by `pre_write` and `pre_shell` |

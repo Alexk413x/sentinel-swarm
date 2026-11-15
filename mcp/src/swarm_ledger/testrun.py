@@ -124,14 +124,28 @@ def _finish(conn: sqlite3.Connection, test_run_id: int, columns: dict[str, objec
 
 
 def record(
-    conn: sqlite3.Connection, test_run_id: int, result: testing.TestResult, stale: str | None
+    conn: sqlite3.Connection,
+    test_run_id: int,
+    result: testing.TestResult,
+    stale: str | None,
+    build: testing.BuildResult | None = None,
 ) -> bool:
+    built = (
+        {
+            "build_exit_code": build.exit_code,
+            "build_output": build.output,
+            "build_duration_ms": build.duration_ms,
+        }
+        if build is not None
+        else {}
+    )
     return _finish(
         conn,
         test_run_id,
         {
+            **built,
             "state": "stale" if stale else "done",
-            "reason": stale or result.reason,
+            "reason": stale or (build.reason if build is not None else None) or result.reason,
             "exit_code": result.exit_code,
             "passed": result.passed,
             "failed": result.failed,
@@ -172,7 +186,13 @@ def run(repo_root: Path, db_path: Path, test_run_id: int) -> None:
         executed = testing.execute(row["command"], repo_root, row["timeout_s"], log)
         patterns = json.loads(row["skip_patterns_json"] or "[]")
         result = testing.result_of(row["command"], executed, patterns)
-        record(conn, test_run_id, result, _changed_tree(repo_root, row))
+        stale = _changed_tree(repo_root, row)
+        build = None
+        if result.ok and stale is None and row["build_command"]:
+            build = testing.build_result(
+                testing.execute(row["build_command"], repo_root, row["timeout_s"], log)
+            )
+        record(conn, test_run_id, result, stale, build)
         log.unlink(missing_ok=True)
     finally:
         conn.close()
@@ -181,7 +201,8 @@ def run(repo_root: Path, db_path: Path, test_run_id: int) -> None:
 def _runner_gone(row: sqlite3.Row, now: datetime) -> bool:
     created = parse_stamp(row["created_at"])
     age = (now - created).total_seconds() if created is not None else 0.0
-    if age > (row["timeout_s"] or DEFAULT_TEST_TIMEOUT_S) + OVERRUN_GRACE_S:
+    runs = 2 if row["build_command"] else 1
+    if age > runs * (row["timeout_s"] or DEFAULT_TEST_TIMEOUT_S) + OVERRUN_GRACE_S:
         return True
     if row["runner_pid"] is None:
         return age > LAUNCH_GRACE_S

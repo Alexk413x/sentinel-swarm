@@ -28,6 +28,7 @@ def test_run_passed(row: sqlite3.Row) -> bool:
         and (row["errors"] or 0) == 0
         and (row["skipped"] or 0) == (row["allowed_skipped"] or 0)
         and (row["passed"] or 0) >= 1
+        and (row["build_command"] is None or row["build_exit_code"] == 0)
     )
 
 

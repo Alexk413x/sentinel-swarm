@@ -10,6 +10,12 @@ NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 _GIT_EXCLUDE_LINE = ".sentinel-swarm/"
 _GITDIR_PREFIX = "gitdir:"
+ADDED_COLUMNS = (
+    ("test_runs", "build_command", "TEXT"),
+    ("test_runs", "build_exit_code", "INTEGER"),
+    ("test_runs", "build_output", "TEXT"),
+    ("test_runs", "build_duration_ms", "INTEGER"),
+)
 
 
 def main_git_dir(repo_root: Path) -> Path:
@@ -119,8 +125,17 @@ def migrate(conn: sqlite3.Connection) -> None:
     if row is not None and row != 1:
         raise RuntimeError(f"unsupported ledger schema version {row}")
     # Every statement in schema.sql is IF NOT EXISTS, so this adds new tables to an
-    # existing ledger; a new column in an existing table still needs a new ledger.
+    # existing ledger. A column added to an existing table also goes in ADDED_COLUMNS.
     conn.executescript(script)
+    for table, column, definition in ADDED_COLUMNS:
+        have = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in have:
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            except sqlite3.OperationalError as exc:
+                # Another process migrating the same ledger added it first.
+                if "duplicate column" not in str(exc):
+                    raise
     conn.execute("INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 1)")
     conn.execute(f"PRAGMA user_version = {stamp}")
 

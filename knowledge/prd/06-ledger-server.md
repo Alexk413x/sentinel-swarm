@@ -167,9 +167,9 @@ the project's code in the host repo itself. Tracking is `local` only.
   ledger an earlier release made holds 0), then stores the digest. An open that finds the
   digest and the version row reads only: it runs no script and takes no write lock, which
   matters because every hook opens a ledger. Every statement in it is `IF NOT EXISTS`, so a ledger from an
-  earlier release gains the tables and indexes added since. It gains no new column: a
-  release that adds a column to an existing table still needs a fresh ledger (delete
-  `.sentinel-swarm/ledger.db`). The run panel opens the ledger read-only, so it skips a
+  earlier release gains the tables and indexes added since. A column added to an existing
+  table also goes in `ADDED_COLUMNS` in `db.py`: `migrate` adds each listed column the
+  table lacks with `ALTER TABLE ... ADD COLUMN`. The run panel opens the ledger read-only, so it skips a
   table a ledger lacks until a server opens that ledger.
 - Tables, grouped: the plan (`runs`, `phases`, `phase_deps`, `modules`, `module_deps`,
   `files`, `file_deps`, `guidelines`); agents (`agents`, `agent_events`, `briefs`,
@@ -276,6 +276,20 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
   `test_timeout_s` (default 600), parses the result, records it on the row, and deletes
   the log. The run survives the tool call, the worker that took it, and a restart of the
   ledger server.
+- **A full run also builds.** When the profile's `build_command` is set, `tests_run(scope="full")`
+  stores it on the row (`build_command`). The same detached runner runs it once, in the
+  repo root, after the tests pass and the tree check shows no change, under the same
+  `test_timeout_s`. A build never runs for another scope, after failing tests, or on the
+  request thread: the runner records `build_exit_code` (`-1` when it timed out),
+  `build_output` (the last 20,000 characters), and `build_duration_ms` on the same row.
+  A build that fails or times out sets the row's `reason` (`build failed: exit code N` or
+  `build timed out`) and the run is not clean. `tests_run` returns a `build` object with
+  `command`, `state` (`passed`, `failed`, `timed out`, `running`, or `not run`),
+  `exit_code`, and, for a failed build, the last 2,000 characters of its output. A row
+  with a build may run for twice `test_timeout_s` plus 120 seconds before the sweep marks
+  it `abandoned`. A reused run copies the build columns, so a reused run never builds
+  again, and a run reuses only an earlier run with the same `build_command`. With no
+  `build_command`, a full run is unchanged.
 - `tests_run` waits up to 20 seconds for the run to end. A run that ends in time comes
   back as its result. A longer one returns `state: "running"` with its `test_run_id`
   and a `next` that says to end the turn. When the runner records the result, it owes
@@ -294,7 +308,8 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
   a run, so a server restart never leaves a row `running` with nothing behind it.
 - A run counts as clean when its state is `done`, its exit code is 0, nothing failed,
   at least one test passed, nothing errored, and every skip matched `allowed_skips`
-  (`allowed_skipped` = `skipped`). The counts come from the runner's last summary line
+  (`allowed_skipped` = `skipped`), and, when the row carries a `build_command`, its build
+  exited 0. The counts come from the runner's last summary line
   (pytest, vitest, jest), so a logged line such as "1 failed attempt" cannot fail a green
   run; output with no recognised summary line is scanned as a whole, and `go test` is
   counted by its `ok`, `FAIL`, and `--- SKIP` lines. The after-run checklist applies the

@@ -351,6 +351,54 @@ def test_phase_review_accepted_succeeds(ledger: Ledger) -> None:
     assert result["kind"] == "oracle"
 
 
+def test_phase_review_refuses_a_full_run_whose_build_failed_and_shows_the_output(
+    ledger: Ledger,
+) -> None:
+    ctx = bootstrap_module(ledger)
+    _accept_module_and_hand_up(ledger, ctx)
+    ledger.profile_set("oracle", ctx["oracle_id"], build_command="npm run build")
+    insert_passing_test_run(
+        ledger,
+        ctx["run_id"],
+        ctx["oracle_id"],
+        "full",
+        build=("npm run build", 1, "x" * 5000 + "Module not found: next/headers"),
+    )
+
+    with pytest.raises(LedgerError, match="build") as raised:
+        ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok")
+    message = str(raised.value)
+    assert "npm run build" in message
+    assert "Module not found: next/headers" in message
+    assert len(message) < 3500
+
+
+def test_phase_review_refuses_a_full_run_with_no_build_when_the_profile_has_one(
+    ledger: Ledger,
+) -> None:
+    ctx = bootstrap_module(ledger)
+    _accept_module_and_hand_up(ledger, ctx)
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+    ledger.profile_set("oracle", ctx["oracle_id"], build_command="npm run build")
+
+    with pytest.raises(LedgerError, match="npm run build"):
+        ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok")
+
+
+def test_phase_review_accepts_a_full_run_whose_build_passed(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    _accept_module_and_hand_up(ledger, ctx)
+    ledger.profile_set("oracle", ctx["oracle_id"], build_command="npm run build")
+    insert_passing_test_run(
+        ledger, ctx["run_id"], ctx["oracle_id"], "full", build=("npm run build", 0, "built")
+    )
+
+    result = ledger.phase_review(
+        "oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ship it", scores=_review_scores()
+    )
+    assert result["outcome"] == "accepted"
+
+
 def test_phase_review_refuses_code_the_graph_maps_without_a_test_file(ledger: Ledger) -> None:
     ctx = bootstrap_module(ledger)
     _approve_file(ledger, ctx, "good", "pkg/good.py", None)
