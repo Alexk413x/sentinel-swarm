@@ -455,6 +455,10 @@ def test_a_moved_files_handoff_needs_the_old_file_gone_and_its_nodes_re_anchored
         ".sentinel-swarm/ledger.db",
         ".claude/agents/swarm-coder.md",
         "src/../../x.py",
+        ".GIT/config",
+        ".Sentinel-Swarm/ledger.db",
+        "vendor/lib/.git/config",
+        ".git./config",
     ],
 )
 def test_a_claim_refuses_a_path_outside_the_repo_or_in_its_records(
@@ -468,3 +472,13 @@ def test_a_claim_refuses_a_path_outside_the_repo_or_in_its_records(
         ledger.claim_file(*lead, "src/new.py", bad, "coder-p1-module-1-y")
     with pytest.raises(LedgerError, match="repo path"):
         ledger.claim_file(*lead, "src/new2.py", None, "coder-p1-module-1-z", moved_from=[bad])
+
+
+def test_a_claim_stores_the_canonical_repo_path(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    lead = ("lead-p1-module-1", ctx["lead"]["agent_id"])
+    windows_style = "src" + chr(92) + "test_x.py"
+    claimed = ledger.claim_file(*lead, "./src//x.py", windows_style, "coder-p1-module-1-x")
+    assert (claimed["path"], claimed["test_path"]) == ("src/x.py", "src/test_x.py")
+    with pytest.raises(LedgerError):
+        ledger.claim_file(*lead, "src/./x.py", None, "coder-p1-module-1-y")

@@ -94,21 +94,32 @@ _RECORD_DIRS = frozenset({".git", ".sentinel-swarm", ".claude"})
 
 def repo_path(repo_root: Path, raw: str) -> str:
     path = _slashed(raw)
-    parts = PurePosixPath(path).parts
     root = repo_root.resolve()
+    rel: PurePosixPath | None = None
     if (
-        not path
-        or path.startswith((":", "/"))
-        or re.match(r"^[A-Za-z]:", path)
-        or ".." in parts
-        or (parts and parts[0] in _RECORD_DIRS)
-        or not (root / path).resolve().is_relative_to(root)
+        path
+        and not path.startswith((":", "/"))
+        and not re.match(r"^[A-Za-z]:", path)
+        and ".." not in PurePosixPath(path).parts
+    ):
+        try:
+            rel = PurePosixPath((root / path).resolve().relative_to(root).as_posix())
+        except ValueError:
+            rel = None
+    # Windows matches names case-insensitively and drops trailing dots and spaces, so
+    # ".GIT." names the same folder as ".git".
+    segments = [part.rstrip(". ").casefold() for part in rel.parts] if rel is not None else []
+    if (
+        not segments
+        or segments[0] in _RECORD_DIRS
+        or ".git" in segments
+        or any(not s for s in segments)
     ):
         raise LedgerError(
             f"{raw!r} is not a repo path: name a file by its path from the repo root, inside "
             "the repo and outside .git, .claude, and .sentinel-swarm"
         )
-    return path
+    return str(rel)
 
 
 def repo_slug(repo_root: Path) -> str:
