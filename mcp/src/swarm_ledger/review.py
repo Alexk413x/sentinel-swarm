@@ -1148,6 +1148,8 @@ class ReviewMixin(LedgerHost):
                 f"not {path!r}"
             )
         target = self.repo_root / path
+        if not target.resolve().is_relative_to(self.repo_root.resolve()):
+            raise LedgerError(f"{path!r} is outside the repo, so file_delete leaves it")
         if not target.is_file():
             raise LedgerError(f"{path!r} is not a file on disk")
         target.unlink()

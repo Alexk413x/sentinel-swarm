@@ -6,7 +6,7 @@ import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from . import (
     __version__,
@@ -87,6 +87,28 @@ _TOKEN_COLUMNS = (
 
 def _slashed(path: str) -> str:
     return path.strip().replace("\\", "/")
+
+
+_RECORD_DIRS = frozenset({".git", ".sentinel-swarm", ".claude"})
+
+
+def repo_path(repo_root: Path, raw: str) -> str:
+    path = _slashed(raw)
+    parts = PurePosixPath(path).parts
+    root = repo_root.resolve()
+    if (
+        not path
+        or path.startswith((":", "/"))
+        or re.match(r"^[A-Za-z]:", path)
+        or ".." in parts
+        or (parts and parts[0] in _RECORD_DIRS)
+        or not (root / path).resolve().is_relative_to(root)
+    ):
+        raise LedgerError(
+            f"{raw!r} is not a repo path: name a file by its path from the repo root, inside "
+            "the repo and outside .git, .claude, and .sentinel-swarm"
+        )
+    return path
 
 
 def repo_slug(repo_root: Path) -> str:
@@ -2120,7 +2142,10 @@ class Ledger(
         depends_on = depends_on or []
         if test_path is not None and test_path.strip().lower() in ("", "none", "null"):
             test_path = None
-        replaced = [_slashed(p) for p in moved_from or [] if p.strip()]
+        path = repo_path(self.repo_root, path)
+        if test_path is not None:
+            test_path = repo_path(self.repo_root, test_path)
+        replaced = [repo_path(self.repo_root, p) for p in moved_from or [] if p.strip()]
         if replaced and product_of is not None:
             raise LedgerError("a product replaces no file; leave moved_from out")
         with write_tx(self.conn) as conn:
@@ -2238,7 +2263,7 @@ class Ledger(
         new_path: str,
         test_path: str | None = None,
     ) -> dict:
-        path, new_path = _slashed(path), _slashed(new_path)
+        path, new_path = _slashed(path), repo_path(self.repo_root, new_path)
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
             require_role(c, "lead")
@@ -2256,7 +2281,7 @@ class Ledger(
                     f"{path!r} is handed up. Move it after return_work sends it back, or approve "
                     "the handoff and claim the new path"
                 )
-            new_test = _slashed(test_path) if test_path else row["test_path"]
+            new_test = repo_path(self.repo_root, test_path) if test_path else row["test_path"]
             if (new_path, new_test) == (row["path"], row["test_path"]):
                 raise LedgerError(
                     f"{new_path!r} is already the claim's path and its test_path does not change; "

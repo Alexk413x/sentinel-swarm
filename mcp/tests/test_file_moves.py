@@ -442,3 +442,29 @@ def test_a_moved_files_handoff_needs_the_old_file_gone_and_its_nodes_re_anchored
 
     assert handoff["state"] == "submitted"
     assert graph.node_anchors(host, "swarmtest_chrome") == [(_NEW, "add")]
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "../outside.py",
+        "/etc/passwd",
+        "C:/Windows/x.py",
+        ":(glob)*",
+        ".git/config",
+        ".sentinel-swarm/ledger.db",
+        ".claude/agents/swarm-coder.md",
+        "src/../../x.py",
+    ],
+)
+def test_a_claim_refuses_a_path_outside_the_repo_or_in_its_records(
+    ledger: Ledger, bad: str
+) -> None:
+    ctx = bootstrap_module(ledger)
+    lead = ("lead-p1-module-1", ctx["lead"]["agent_id"])
+    with pytest.raises(LedgerError, match="repo path"):
+        ledger.claim_file(*lead, bad, None, "coder-p1-module-1-x")
+    with pytest.raises(LedgerError, match="repo path"):
+        ledger.claim_file(*lead, "src/new.py", bad, "coder-p1-module-1-y")
+    with pytest.raises(LedgerError, match="repo path"):
+        ledger.claim_file(*lead, "src/new2.py", None, "coder-p1-module-1-z", moved_from=[bad])

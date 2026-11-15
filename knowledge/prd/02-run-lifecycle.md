@@ -133,6 +133,12 @@ message. The Oracle then calls, in order:
 
 - A Lead claims each file with `claim_file(path, test_path, for_name)` before it writes
   the Coder's brief. The claim is the file lock.
+- Every path a claim or a move names (`path`, `test_path`, `moved_from`, and
+  `file_move`'s new paths) is a file's path from the repo root, with `/` separators.
+  The ledger refuses an absolute path, a drive letter, a leading `:`, a `..` part, a path
+  that resolves outside the repo, and a path under `.git`, `.claude`, or
+  `.sentinel-swarm`, since a claim grants its Coder write and delete rights on it.
+  `file_delete` also refuses a target that resolves outside the repo.
 - A Manager may claim a path no module owns into one of its own modules with
   `claim_file(path, test_path, for_name, module_id=<the module>)`. `for_name` is a new
   Coder name of that module, and the module's Lead briefs the Coder. A Lead's claim
