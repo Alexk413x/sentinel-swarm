@@ -226,7 +226,9 @@ def test_file_delete_removes_only_the_coders_own_paths(ledger: Ledger) -> None:
     assert _file(ledger, coder["file_id"])["stale_since"] is not None
 
 
-def test_a_deletion_is_the_files_version_and_is_reviewed_like_an_edit(ledger: Ledger) -> None:
+def test_a_deletion_is_the_files_version_and_is_reviewed_like_an_edit(
+    ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
     ctx = bootstrap_module(ledger)
     coder = spawn_coder(ledger, ctx, "coder-p1-module-1-prd", "docs/prd.md", None)
     ledger.file_delete(coder["name"], coder["agent_id"], "docs/prd.md")
@@ -234,17 +236,19 @@ def test_a_deletion_is_the_files_version_and_is_reviewed_like_an_edit(ledger: Le
     ledger.score_record(
         coder["name"], coder["agent_id"], coder["file_id"], _ratings(), all_applicable(), "self"
     )
-    with pytest.raises(LedgerError, match="still anchors nodes"):
-        ledger.handoff_submit(coder["name"], coder["agent_id"], coder["file_id"], [], [])
+    dropped: list[list[str]] = []
 
-    conn = sqlite3.connect(str(ledger.repo_root / "knowledge" / "code_graph.db"))
-    try:
-        conn.execute("DELETE FROM anchor WHERE path = 'docs/prd.md'")
-        conn.commit()
-    finally:
-        conn.close()
+    def fake_drop(repo_root: Path, paths: list[str]) -> dict[str, list[str]]:
+        dropped.append(paths)
+        with sqlite3.connect(str(repo_root / "knowledge" / "code_graph.db")) as conn:
+            conn.execute("DELETE FROM anchor WHERE path = 'docs/prd.md'")
+        return {"deleted_nodes": ["swarmtest_prd"], "reanchored_nodes": []}
+
+    monkeypatch.setattr(graph, "drop_anchors", fake_drop)
     handoff = ledger.handoff_submit(coder["name"], coder["agent_id"], coder["file_id"], [], [])
 
+    assert dropped == [["docs/prd.md"]]
+    assert handoff["graph_pruned"] == {"deleted_nodes": ["swarmtest_prd"], "reanchored_nodes": []}
     assert handoff["deleted"] is True
     version = _versions(ledger, coder["file_id"])[0]
     assert (version["deleted"], version["content"], version["stored_path"]) == (1, b"", None)

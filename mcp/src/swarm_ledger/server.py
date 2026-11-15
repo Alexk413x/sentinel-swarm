@@ -87,6 +87,16 @@ _CLAIM_FILE_PRODUCT_OF = Field(
     description="For a generated file, such as a build output: the file_id of the live claim it "
     "is built from. for_name is that file's Coder, and the product rides its handoff.",
 )
+_CLAIM_FILE_MOVED_FROM = Field(
+    default=None,
+    description="For a file that replaces others, the old file and old test file it moves: "
+    "paths no live claim holds. The Coder deletes them with file_delete and re-anchors their "
+    "graph nodes with graph_upsert.",
+)
+_FILE_MOVE_TEST_PATH = Field(
+    default=None,
+    description="The test file's new path. Leave it unset when the test file does not move.",
+)
 _RUN_CLOSE_FILES = Field(
     default=None,
     description='Each unsettled file, as {"file_id": <id>, "reason": <why it stops short>}.',
@@ -408,11 +418,27 @@ def claim_file(
     depends_on: list[int] | None = _CLAIM_FILE_DEPENDS_ON,
     module_id: int | None = _CLAIM_FILE_MODULE_ID,
     product_of: int | None = _CLAIM_FILE_PRODUCT_OF,
+    moved_from: list[str] | None = _CLAIM_FILE_MOVED_FROM,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Claims a file path for a coder under the caller's module; a Lead calls this, or a
     Manager for an unowned path, with the module_id of one of its modules. for_name is
     coder-p<phase ordinal>-<module>-<file slug>."""
+    ...
+
+
+@_tool()
+def file_move(
+    caller: CallerName,
+    path: str,
+    new_path: str,
+    test_path: str | None = _FILE_MOVE_TEST_PATH,
+    agent_id: str | None = _STAMPED_AGENT_ID,
+) -> dict[str, Any]:
+    """Moves a live claim of the caller's module to new_path, and its test file to test_path
+    when given; a Lead calls this. The Coder keeps the claim, deletes the old paths with
+    file_delete, and may re-anchor their graph nodes with graph_upsert. It refuses a handed-up
+    file and a new path another claim holds."""
     ...
 
 
@@ -880,8 +906,10 @@ def version_restore(
 def file_delete(
     caller: CallerName, path: str, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> dict[str, Any]:
-    """Deletes the Coder's own claimed file, test file, or product from disk; a Coder calls
-    this. handoff_submit records the deletion as the file's version for review."""
+    """Deletes the Coder's own claimed file, test file, product, or a file its claim replaces
+    from disk; a Coder calls this, and it is the way to delete a file: the shell gate denies
+    Remove-Item, rm, and del. handoff_submit records the deletion as the file's version for
+    review, and removes the deleted file's graph anchors."""
     ...
 
 

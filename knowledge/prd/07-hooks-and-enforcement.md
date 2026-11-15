@@ -247,12 +247,15 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
 - `pre_shell`: while a run is active or paused, denies the shell to every role but the
   Coder, the Manager, and the Driver. A Coder may run a command that starts with the
   profile's test or build command, the lint command, `git rm` of its own claimed path, test path,
-  or products (with `-q`, `--quiet`, or `--` only), or read-only git (`status`, `diff`,
+  or products, or a path its claim replaces (with `-q`, `--quiet`, or `--` only), or read-only git (`status`, `diff`,
   `log`, `show`, `ls-files`, `branch`). A lint command that holds `{target}` is allowed
   only exactly as written, with `{target}` replaced by one of the Coder's own claimed
   paths (its file, test file, or products); a lint command without `{target}` is a
   prefix like the test and build commands. An allowed `git rm` marks the file stale, so the
-  handoff needs a newer self review. A Coder and a Manager may run each named host
+  handoff needs a newer self review. When the gate denies a Coder's delete command
+  (`git rm`, `rm`, `rmdir`, `rd`, `del`, `erase`, `Remove-Item`, `ri`, `unlink`), the denial
+  adds that the Coder deletes with the ledger tool `file_delete(path)` on a path it owns,
+  and lists those paths. A Coder and a Manager may run each named host
   command in the settings' `commands` list, exactly as
   `cd <cwd> && <interpreter> <run>`, or `<interpreter> <run>` when `cwd` is `.`, with
   whitespace folded; the Manager may run nothing else. A Driver may run only a command
@@ -350,7 +353,7 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
 |---|---|
 | Only the Coder writes project files | `pre_write`; no write tool in the other agent files, and no shell except the Driver's, which `pre_shell` limits to the build command, and the Manager's, which `pre_shell` limits to the named host commands |
 | A Coder writes only its own file and test file | `pre_write` for edit tools; `pre_shell` and `post_shell` for the shell |
-| A Coder deletes only its own file, and the deletion is reviewed | `file_delete` and `pre_shell`'s `git rm` rule refuse any other path; `handoff_submit` records the deletion as the file's version |
+| A Coder deletes only its own file, and the deletion is reviewed | `file_delete` and `pre_shell`'s `git rm` rule refuse any other path, and `pre_shell` names `file_delete` when it denies another delete command; `handoff_submit` records the deletion as the file's version |
 | A generated file changes with its source | `claim_file(product_of)` gives it the source's Coder; `handoff_submit` saves its version, and `approve`, `return_work`, and `accept_incomplete` give it the source's state |
 | A run step outside test, build, and lint runs only as a named host command | `pre_shell` matches the settings' `commands` exactly; `tests_run` names the command a failing test's output mentions |
 | Nobody edits the records by hand | `pre_write` |

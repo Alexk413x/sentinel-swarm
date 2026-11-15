@@ -18,14 +18,22 @@ from .lock import file_lock
 KG_LOCK_FILE = "kg.lock"
 
 _ENV_VAR = "SENTINEL_SWARM_KG_ROOT"
-_UPSERT_SCRIPT = (
-    "import json,sys; from codebase_kg import edits; "
-    "print(json.dumps(edits.upsert_node(sys.argv[1], json.loads(sys.stdin.read()))))"
-)
-_BASE_UPSERT_SCRIPT = (
-    "import json,sys; sys.path.insert(0, sys.argv[1]); from codebase_kg import edits; "
-    "print(json.dumps(edits.upsert_node(sys.argv[2], json.loads(sys.stdin.read()))))"
-)
+
+# Each body runs after `from codebase_kg import edits`. The graph path is the last argument on
+# both launch paths.
+_UPSERT_BODY = "print(json.dumps(edits.upsert_node(sys.argv[-1], json.loads(sys.stdin.read()))))"
+_PRUNE_BODY = """
+wanted = json.loads(sys.stdin.read())
+graph_path = sys.argv[-1]
+out = {}
+if wanted["upsert"]:
+    out["upsert"] = edits.upsert_node(graph_path, wanted["upsert"])
+if wanted["delete"]:
+    out["delete"] = edits.delete_node(
+        graph_path, wanted["delete"], dry_run=False, cascade_inbound=True
+    )
+print(json.dumps(out))
+"""
 # codebase-kg's schema.MAX_DESCRIPTION; the ledger does not import codebase-kg in-process.
 MAX_DESCRIPTION = 240
 _DEFAULT_FLOOR = (3, 10)
@@ -101,20 +109,19 @@ def runs_on_base(kg_root: Path) -> bool:
     )
 
 
-def upsert_command(kg_root: Path, graph_path: Path, base: bool) -> list[str]:
+def upsert_command(
+    kg_root: Path, graph_path: Path, base: bool, body: str = _UPSERT_BODY
+) -> list[str]:
     if base:
         # The base interpreter, as codebase-kg's own workers run: a Windows venv's python.exe
         # is a launcher that starts the base interpreter as a second process.
         python = getattr(sys, "_base_executable", None) or sys.executable
-        return [
-            python,
-            "-I",
-            "-S",
-            "-c",
-            _BASE_UPSERT_SCRIPT,
-            str(kg_root / "src"),
-            str(graph_path),
-        ]
+        script = (
+            "import json,sys; sys.path.insert(0, sys.argv[1]); from codebase_kg import edits\n"
+            + body
+        )
+        return [python, "-I", "-S", "-c", script, str(kg_root / "src"), str(graph_path)]
+    script = "import json,sys; from codebase_kg import edits\n" + body
     return [
         "uv",
         "run",
@@ -124,13 +131,47 @@ def upsert_command(kg_root: Path, graph_path: Path, base: bool) -> list[str]:
         "--no-dev",
         "python",
         "-c",
-        _UPSERT_SCRIPT,
+        script,
         str(graph_path),
     ]
 
 
 def _tail(text: str, lines: int = 20) -> str:
     return "\n".join(text.splitlines()[-lines:])
+
+
+def _run_edit(repo_root: Path, kg_root: Path, body: str, payload: object, tool: str) -> dict:
+    graph_path = repo_root / "knowledge" / "code_graph.db"
+    # A caller's venv leaks through VIRTUAL_ENV and makes uv refuse the kg project.
+    env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+
+    base = runs_on_base(kg_root)
+    with file_lock(ledger_path(repo_root).parent / KG_LOCK_FILE):
+        try:
+            completed = subprocess.run(
+                upsert_command(kg_root, graph_path, base, body),
+                cwd=repo_root,
+                env=env,
+                input=json.dumps(payload),
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise LedgerError(f"{tool} timed out after 120s") from exc
+        except OSError as exc:
+            launcher = "Python" if base else "uv"
+            raise LedgerError(f"failed to launch {launcher} for {tool}: {exc}") from exc
+
+    if completed.returncode != 0:
+        raise LedgerError(f"{tool} failed: {_tail(completed.stderr)}")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        tail = _tail(completed.stderr or completed.stdout)
+        raise LedgerError(f"{tool} produced unparsable output: {tail}") from exc
 
 
 def graph_upsert(repo_root: Path, nodes: list[dict]) -> dict:
@@ -140,36 +181,23 @@ def graph_upsert(repo_root: Path, nodes: list[dict]) -> dict:
     kg_root = codebase_kg_root(repo_root)
     # A write states that the caller re-read each node against its files, so it re-baselines them.
     patches = [{**node, "rebaseline": True} for node in nodes]
-    # A caller's venv leaks through VIRTUAL_ENV and makes uv refuse the kg project.
-    env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+    return _run_edit(repo_root, kg_root, _UPSERT_BODY, patches, "graph_upsert")
 
-    base = runs_on_base(kg_root)
-    with file_lock(ledger_path(repo_root).parent / KG_LOCK_FILE):
-        try:
-            completed = subprocess.run(
-                upsert_command(kg_root, graph_path, base),
-                cwd=repo_root,
-                env=env,
-                input=json.dumps(patches),
-                capture_output=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=120,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise LedgerError("graph_upsert timed out after 120s") from exc
-        except OSError as exc:
-            launcher = "Python" if base else "uv"
-            raise LedgerError(f"failed to launch {launcher} for graph_upsert: {exc}") from exc
 
-    if completed.returncode != 0:
-        raise LedgerError(f"graph_upsert failed: {_tail(completed.stderr)}")
-
-    try:
-        return json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
-        tail = _tail(completed.stderr or completed.stdout)
-        raise LedgerError(f"graph_upsert produced unparsable output: {tail}") from exc
+def drop_anchors(repo_root: Path, rel_paths: list[str]) -> dict[str, list[str]]:
+    gone = set(rel_paths)
+    deleted: list[str] = []
+    upserts: list[dict] = []
+    for node_id in sorted({n for ids in nodes_on(repo_root, rel_paths).values() for n in ids}):
+        kept = [(p, s) for p, s in node_anchors(repo_root, node_id) if p not in gone]
+        if kept:
+            upserts.append({"id": node_id, "anchors": [f"{p}#{s}" if s else p for p, s in kept]})
+        else:
+            deleted.append(node_id)
+    if upserts or deleted:
+        wanted = {"upsert": upserts, "delete": deleted}
+        _run_edit(repo_root, codebase_kg_root(repo_root), _PRUNE_BODY, wanted, "graph prune")
+    return {"deleted_nodes": deleted, "reanchored_nodes": [n["id"] for n in upserts]}
 
 
 def _symbol_in_source(symbol: str, text: str) -> bool:
@@ -233,6 +261,26 @@ def anchored_paths(repo_root: Path, rel_paths: list[str]) -> set[str]:
         }
     except sqlite3.Error:
         return set()
+    finally:
+        conn.close()
+
+
+def nodes_on(repo_root: Path, rel_paths: list[str]) -> dict[str, list[str]]:
+    graph_path = repo_root / "knowledge" / "code_graph.db"
+    if not rel_paths or not graph_path.is_file():
+        return {}
+    conn = open_readonly(graph_path)
+    try:
+        found: dict[str, list[str]] = {}
+        for path, node_id in conn.execute(
+            "SELECT DISTINCT path, node_id FROM anchor "
+            f"WHERE path IN ({in_clause(rel_paths)}) ORDER BY path, node_id",
+            rel_paths,
+        ):
+            found.setdefault(path, []).append(node_id)
+        return found
+    except sqlite3.Error:
+        return {}
     finally:
         conn.close()
 

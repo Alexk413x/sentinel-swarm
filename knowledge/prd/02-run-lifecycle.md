@@ -153,6 +153,20 @@ message. The Oracle then calls, in order:
   class.
 - A re-claim of a released path in the same run supersedes the old claim. The old row
   becomes `superseded`, and every gate treats it as settled.
+- **A move is one claim with both paths.** `file_move(path, new_path, test_path=None)`
+  points a live claim of the Lead's module at a new path, and at a new test path when
+  given; the claim keeps its Coder, its `file_id`, and its dependencies. It refuses a
+  handed-up file, a path with no live claim, and a new path any live claim holds. The old
+  file and old test file go in `file_moves`, one row per path. For a move planned before
+  the Coder starts, `claim_file(..., moved_from=[<old path>, <old test path>])` records
+  the same rows, and refuses an old path a live claim holds. A product has no
+  `moved_from`. The paths in `file_moves` change what the claim's Coder may do, and only
+  that: it deletes them with `file_delete` or `git rm` (neither writes them), and
+  `graph_upsert` accepts a node that re-anchors from them to the Coder's new paths (see
+  "The code graph" in [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md)).
+  `tests_run` and the write gate follow the claim's new paths. A test run's fingerprint
+  includes every path in `file_moves`, so deleting the old file invalidates a reused run.
+  The result's `next` tells the Lead to post the new paths to the Coder.
 - `release_file(path)` drops a claim that is no longer needed, with its products. It
   refuses while the owning Coder is live: release the Coder first with
   `agent_release`. When the owner is a queued spawn, it drops that spawn, so a Coder
@@ -188,7 +202,9 @@ refuses unless:
    A deleted file whose test file is deleted too runs no tests.
 4. The code graph is current for the file, and neither the file nor its test file is stale against its recorded baseline. See "The code graph" in [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
    A binary file is read as bytes: its anchors need no symbol check. A deleted file
-   needs the opposite: no node may still anchor on it.
+   needs the opposite: no node may still anchor on it, and `handoff_submit` removes
+   those anchors itself (see "Deleting a file" below). A claim that replaces files
+   (`file_moves`) also needs each replaced file gone from disk and no node anchored on it.
 5. A self review exists and is newer than the Coder's last edit of either path.
 6. After a returned handoff of the file, the Coder has read its brief with `brief_get`
    since the latest return. This is principle 9 in [01-roles.md](01-roles.md).
@@ -205,10 +221,21 @@ the Lead a wake-up. It also sets every earlier `submitted` handoff of the file t
 `accept_incomplete` refuse a superseded handoff, and the watchdog and the Oracle's Stop
 hook do not count it as work awaiting review.
 
-A Coder deletes its own file, test file, or product with `file_delete(path)`, or with
-`git rm <path>` through its shell gate. Either marks the file stale. The Coder then
-scores and hands off as for an edit, and the Lead reviews the deletion. Restoring a
-deletion version with `version_restore` deletes the file again.
+**Deleting a file.** A Coder deletes its own file, test file, product, or a file its
+claim replaces with `file_delete(path)`, or with `git rm <path>` through its shell gate.
+Either marks the file stale. The shell gate denies every other delete command
+(`Remove-Item`, `rm`, `del`, `erase`, `rmdir`), and its denial names `file_delete(path)`
+and the paths the Coder owns. The Coder then scores and hands off as for an edit, and the
+Lead reviews the deletion. Restoring a deletion version with `version_restore` deletes
+the file again.
+
+Before `handoff_submit` checks the graph, it removes the anchors on each of the claim's
+own paths (file, test file, products) that no longer exist on disk. A node left with no
+anchor is deleted, with its outbound edges and the edges that point at it. A node that
+anchors other files keeps those anchors, and keeps its baselines, because the write does
+not re-baseline. The handoff result lists the node ids as `graph_pruned`
+(`deleted_nodes`, `reanchored_nodes`). The Coder needs no `graph_upsert` for a deletion,
+and no Coder has a node-delete tool.
 
 ## Lead review
 

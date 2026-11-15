@@ -552,7 +552,7 @@ class ReviewMixin(LedgerHost):
         ]
 
     def _claimed_paths(self, run_id: int | None) -> list[str]:
-        return [
+        paths = [
             path
             for row in self.conn.execute(
                 "SELECT f.path, f.test_path FROM files f "
@@ -562,6 +562,24 @@ class ReviewMixin(LedgerHost):
             )
             for path in (row["path"], row["test_path"])
             if path
+        ]
+        paths += [
+            row["path"]
+            for row in self.conn.execute(
+                "SELECT mv.path FROM file_moves mv JOIN files f ON f.file_id = mv.file_id "
+                "JOIN modules m ON m.module_id = f.module_id "
+                "JOIN phases p ON p.phase_id = m.phase_id WHERE p.run_id = ?",
+                (run_id,),
+            )
+        ]
+        return paths
+
+    def _moved_paths(self, file_id: int | None) -> list[str]:
+        return [
+            row["path"]
+            for row in self.conn.execute(
+                "SELECT path FROM file_moves WHERE file_id = ? ORDER BY path", (file_id,)
+            )
         ]
 
     def _reusable_run(
@@ -600,6 +618,7 @@ class ReviewMixin(LedgerHost):
         require_role(c, "coder", "lead", "oracle")
         claims = self._live_claims(c.run_id) if c.role != "coder" else set()
         own: set[str] = set()
+        moved: set[str] = set()
         file_of: dict[str, int] = {}
         if c.role == "lead":
             for row in self.conn.execute(
@@ -607,7 +626,7 @@ class ReviewMixin(LedgerHost):
                 "AND state NOT IN ('released', 'superseded')",
                 (c.module_id,),
             ):
-                for p in (row["path"], row["test_path"]):
+                for p in (row["path"], row["test_path"], *self._moved_paths(row["file_id"])):
                     if p:
                         file_of[p] = row["file_id"]
         elif c.role == "coder":
@@ -619,6 +638,7 @@ class ReviewMixin(LedgerHost):
             if file_row is None:
                 raise LedgerError(f"{caller!r} has no claimed file")
             own = {p for p in (file_row["path"], file_row["test_path"]) if p}
+            moved = set(self._moved_paths(file_row["file_id"]))
 
         for node in nodes:
             node_id = str(node.get("id"))
@@ -627,7 +647,7 @@ class ReviewMixin(LedgerHost):
             after = supplied if "anchors" in node else stored
             touched = {p for p, _ in (*supplied, *stored)}
             if c.role == "coder":
-                self._coder_may_upsert(node, own, supplied, stored, touched)
+                self._coder_may_upsert(node, own, moved, supplied, stored, touched)
             elif c.role == "lead":
                 _lead_may_upsert(file_of, claims, touched, {p for p, _ in after})
             else:
@@ -666,11 +686,12 @@ class ReviewMixin(LedgerHost):
         self,
         node: dict,
         own: set[str],
+        moved: set[str],
         supplied: list[tuple[str, str]],
         stored: list[tuple[str, str]],
         touched: set[str],
     ) -> None:
-        if touched <= own:
+        if touched <= own | moved:
             return
         refusal = (
             "a Coder updates only the nodes that anchor on its own file; ask your Lead to "
@@ -681,7 +702,7 @@ class ReviewMixin(LedgerHost):
         if set(node) - {"id", "anchors"}:
             raise LedgerError(refusal)
         if "anchors" in node:
-            if not set(stored) <= set(supplied):
+            if not {a for a in stored if a[0] not in moved} <= set(supplied):
                 raise LedgerError(refusal)
             if any(path not in own for path, _ in set(supplied) - set(stored)):
                 raise LedgerError(refusal)
@@ -894,6 +915,8 @@ class ReviewMixin(LedgerHost):
             raise LedgerError(f"{caller!r} does not own file {file_id!r}")
         self._block_handoff_for_open_cr(self.conn, file_id)
         self._require_brief_reread(c, file_id)
+        pruned = self._drop_deleted_anchors(file_row)
+        self._require_replaced_files_gone(file_row)
         test_run_id, self_review = self._require_handoff_evidence(caller, agent_id, file_row)
 
         records_dir = ledger_path(self.repo_root).parent
@@ -968,6 +991,8 @@ class ReviewMixin(LedgerHost):
             handoff["product_version_ids"] = product_version_ids
         if path_version["deleted"]:
             handoff["deleted"] = True
+        if pruned is not None:
+            handoff["graph_pruned"] = pruned
         if superseded_ids:
             handoff["superseded_handoff_ids"] = superseded_ids
         if closed_departures:
@@ -978,6 +1003,36 @@ class ReviewMixin(LedgerHost):
             )
         handoff["next"] = self.next_step(wakeup)
         return handoff
+
+    def _drop_deleted_anchors(self, file_row: sqlite3.Row) -> dict[str, list[str]] | None:
+        owned = [
+            file_row["path"],
+            file_row["test_path"],
+            *(p["path"] for p in self._products(file_row["file_id"])),
+        ]
+        gone = [p for p in owned if p and not (self.repo_root / p).exists()]
+        anchored = graph.anchored_paths(self.repo_root, gone)
+        if not anchored:
+            return None
+        return graph.drop_anchors(self.repo_root, sorted(anchored))
+
+    def _require_replaced_files_gone(self, file_row: sqlite3.Row) -> None:
+        replaced = self._moved_paths(file_row["file_id"])
+        left = [p for p in replaced if (self.repo_root / p).exists()]
+        if left:
+            raise LedgerError(
+                "; ".join(f"{p} is the file this one replaces and still exists" for p in left)
+                + f". Delete {'it' if len(left) == 1 else 'each'} with file_delete(path), then "
+                "hand off again"
+            )
+        anchored = graph.nodes_on(self.repo_root, replaced)
+        if anchored:
+            detail = "; ".join(f"{p} (nodes {', '.join(ids)})" for p, ids in anchored.items())
+            raise LedgerError(
+                f"the code graph still anchors nodes on a file this one replaces: {detail}. "
+                "Call graph_upsert for each node with anchors that leave the old path out and "
+                f"name {file_row['path']}; a node that spans files keeps its other anchors"
+            )
 
     def _require_handoff_evidence(
         self, caller: str, agent_id: str, file_row: sqlite3.Row
@@ -997,14 +1052,7 @@ class ReviewMixin(LedgerHost):
                 raise LedgerError(f"tests are not passing: {test_result['reason']}")
             test_run_id = test_result["test_run_id"]
 
-        if deleted:
-            if graph.anchored_paths(self.repo_root, [file_row["path"]]):
-                raise LedgerError(
-                    f"{file_row['path']} is deleted, but the code graph still anchors nodes on "
-                    "it. Find them with kg_find_by_path, then call graph_upsert for each with "
-                    "anchors that leave the deleted path out"
-                )
-        else:
+        if not deleted:
             graph_ok, graph_reasons = graph.graph_current_for(self.repo_root, file_row["path"])
             if not graph_ok:
                 raise LedgerError(
@@ -1070,6 +1118,7 @@ class ReviewMixin(LedgerHost):
                 file_row["path"],
                 file_row["test_path"],
                 *(p["path"] for p in self._products(file_row["file_id"])),
+                *self._moved_paths(file_row["file_id"]),
             }
             if file_row is not None
             else set()
