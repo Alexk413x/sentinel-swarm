@@ -48,6 +48,7 @@ ROLE_TOOLS: dict[str, frozenset[str]] = {
             "message_inbox",
             "directive_submit",
             "directive_inbox",
+            "directive_ack",
             "directive_resolve",
             "user_ask",
             "override_grant",

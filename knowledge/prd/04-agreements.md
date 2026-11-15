@@ -187,8 +187,22 @@ The responsible level:
 - A directive does not interrupt the agents. The Oracle reads `directive_inbox()` at
   safe points and turns each directive into a plan change, a guideline change, a brief,
   or a message. It never forwards a directive's text down the tree.
+- `directive_inbox()` sets `seen_at` on each open directive it returns the first time.
+  The ledger records no other read.
 - Every directive carries full authority, whatever its source. The Oracle acts without
   a confirmation step.
+- `directive_ack(directive_id, note)` marks an open directive queued: it sets
+  `queued_at` and `queue_note`, and sets `seen_at` when the Oracle has not read it. The
+  directive stays open, so `run_finish` still refuses it. The note says when or how the
+  directive applies. A later `directive_ack` replaces the note and the time. The Oracle
+  only, and it refuses an empty note, an unknown directive, and a resolved one. The
+  Oracle calls it for a directive it cannot apply at once.
+- A directive from `user_chat`, `outside_session`, or `skill` has a visible state, in
+  this order: resolved (with its outcome and resolution), waiting on the user
+  (`needs_user`), `queued` (with its note and time), `seen` (with the time), or `unread`.
+  `mcp/launch/ledger.py directive --status` prints the live run's open directives and
+  its 5 newest resolved ones with that state, and the run panel lists them (see
+  [17-run-panel.md](17-run-panel.md)).
 - `directive_resolve(directive_id, outcome, resolution)` closes it. The outcome is
   `applied`, `scheduled`, `declined`, or `needs_user`, and the ledger refuses any other
   value. The report lists each directive with its source and outcome.

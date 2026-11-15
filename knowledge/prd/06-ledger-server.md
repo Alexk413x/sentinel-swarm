@@ -143,7 +143,10 @@
   steers a live run with `mcp/launch/ledger.py directive [--repo <root>] [--source
   skill|outside_session|user_chat] [--sender <name>] [--reply-to <id>] "<text>"`, which
   records the directive in the repo's ledger the way `directive_submit` does and prints
-  it as JSON. It exits 1 with the ledger's reason when no run is active. The same session
+  it as JSON. With `--status` and no text it prints `{"directives": [...]}`: the live
+  run's open user directives and its 5 newest resolved ones, each with its state (see
+  "Directives" in [04-agreements.md](04-agreements.md)). It exits 1 with the ledger's
+  reason when no run is active. The same session
   pauses and resumes the run without the Oracle with `mcp/launch/ledger.py pause
   --reason <text>` and `resume`; see "Pause and resume" in
   [02-run-lifecycle.md](02-run-lifecycle.md).
@@ -214,7 +217,7 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
 | Repo | `repo_check`, `repo_branch_create` |
 | Briefs and agents | `brief_create`, `brief_get`, `brief_ack`, `agent_spawn`, `agent_resume`, `agent_release` |
 | Ownership | `claim_file` (Lead, Manager), `release_file`, `who_owns`, `wait_for` (Coder, Lead), `file_delete` (Coder) |
-| Messages and directives | `message_post`, `message_inbox`, `directive_submit`, `directive_inbox`, `directive_resolve`, `user_ask` |
+| Messages and directives | `message_post`, `message_inbox`, `directive_submit`, `directive_inbox`, `directive_ack`, `directive_resolve`, `user_ask` |
 | Tests and graph | `tests_run`, `test_run_get`, `graph_upsert` |
 | Review | `score_record`, `handoff_submit`, `review_compare`, `approve`, `return_work`, `attempt_record`, `accept_incomplete`, `file_accept_incomplete` (Oracle), `version_restore`, `module_review`, `phase_review` |
 | Issues | `issue_open`, `issue_list`, `issue_close`, `idea_record`, `issue_escalate` |
@@ -256,7 +259,7 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
   `who_owns`, `issue_list`, `cr_list`, `run_status`, `status_tree`, `guidelines_get`,
   `plan_unlocked`, `events`, `analytics_query`, and `test_run_get`. A tool that marks a row is not
   read-only: `message_inbox` marks its messages read, and `directive_inbox` sets
-  `notified_at`. Mark a new tool read-only only when it writes no row, file, or session.
+  `notified_at` and `seen_at`. Mark a new tool read-only only when it writes no row, file, or session.
 - `tests_run(scope, target, force, include_slow)` is role-bound: `file` to the Coder
   (its own path or test path only), `module` to the Lead, `phase` to the Manager, `full`
   to the Oracle. It builds the scope's command: `test_command_by_scope.<scope>`, else the

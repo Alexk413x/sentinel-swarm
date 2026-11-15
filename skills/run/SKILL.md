@@ -72,6 +72,11 @@ recorded directive as JSON. A directive steers the plan, a future phase, or the
 guidelines. It does not interrupt the agents; the Oracle applies it at its next safe
 point.
 
+To see whether the Oracle has read a directive, run the same command with `--status` and
+no text. It prints each recent directive of the live run as JSON, with its `status`
+(`unread`, `seen`, `queued`, `needs_user`, or `resolved`), the time of that state, and
+the Oracle's note or outcome.
+
 ## Pause and resume a live run
 
 To pause the run when you have to leave, without waiting for the Oracle's next safe

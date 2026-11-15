@@ -473,7 +473,21 @@ def directive_submit(
 def directive_inbox(
     caller: CallerName, agent_id: str | None = _STAMPED_AGENT_ID
 ) -> list[dict[str, Any]]:
-    """Returns the run's open directives; the Oracle calls this."""
+    """Returns the run's open directives and records when the Oracle first read each; the
+    Oracle calls this."""
+    ...
+
+
+@_tool()
+def directive_ack(
+    caller: CallerName,
+    directive_id: int,
+    note: str,
+    agent_id: str | None = _STAMPED_AGENT_ID,
+) -> dict[str, Any]:
+    """Marks an open directive queued, with a note that says when or how it applies, so its
+    sender sees the Oracle has it; the Oracle calls this. The directive stays open until
+    directive_resolve."""
     ...
 
 

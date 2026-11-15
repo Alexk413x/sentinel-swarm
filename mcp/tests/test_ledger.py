@@ -808,6 +808,137 @@ def test_directive_submit_refuses_a_reply_to_an_unknown_directive(ledger: Ledger
         ledger.directive_submit("user_chat", "alex", "Yes.", reply_to=99)
 
 
+def _directive_row(ledger: Ledger, directive_id: int) -> dict:
+    return dict(
+        ledger.conn.execute(
+            "SELECT * FROM directives WHERE directive_id = ?", (directive_id,)
+        ).fetchone()
+    )
+
+
+def test_directive_inbox_records_when_the_oracle_first_read_a_directive(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    directive = ledger.directive_submit("user_chat", "alex", "Scope it to phase 1.")
+    assert _directive_row(ledger, directive["directive_id"])["seen_at"] is None
+
+    ledger.directive_inbox("oracle", ctx["oracle_id"])
+    first = _directive_row(ledger, directive["directive_id"])["seen_at"]
+    assert first is not None
+
+    ledger.directive_inbox("oracle", ctx["oracle_id"])
+    assert _directive_row(ledger, directive["directive_id"])["seen_at"] == first
+
+
+def test_directive_ack_queues_an_open_directive_with_a_note(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    directive = ledger.directive_submit("user_chat", "alex", "Drop the CLI.")
+
+    acked = ledger.directive_ack(
+        "oracle", ctx["oracle_id"], directive["directive_id"], "after the phase 1 review"
+    )
+
+    assert acked["state"] == "open"
+    assert acked["queue_note"] == "after the phase 1 review"
+    assert acked["queued_at"] is not None
+    assert acked["seen_at"] is not None
+    inbox = ledger.directive_inbox("oracle", ctx["oracle_id"])
+    assert directive["directive_id"] in {d["directive_id"] for d in inbox}
+
+
+def test_directive_ack_refuses_a_non_oracle_an_unknown_id_and_a_resolved_directive(
+    ledger: Ledger,
+) -> None:
+    ctx = bootstrap_module(ledger)
+    directive = ledger.directive_submit("user_chat", "alex", "Drop the CLI.")
+    with pytest.raises(LedgerError):
+        ledger.directive_ack(
+            "mgr-p1-phase-1", ctx["manager"]["agent_id"], directive["directive_id"], "later"
+        )
+    with pytest.raises(LedgerError, match="unknown directive_id 99"):
+        ledger.directive_ack("oracle", ctx["oracle_id"], 99, "later")
+    with pytest.raises(LedgerError, match="needs a note"):
+        ledger.directive_ack("oracle", ctx["oracle_id"], directive["directive_id"], "  ")
+    ledger.directive_resolve(
+        "oracle", ctx["oracle_id"], directive["directive_id"], "declined", "No."
+    )
+    with pytest.raises(LedgerError, match="already resolved"):
+        ledger.directive_ack("oracle", ctx["oracle_id"], directive["directive_id"], "later")
+
+
+def test_directive_status_shows_each_user_directive_with_its_state(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    first = ledger.directive_submit("outside_session", "ci", "First one.")
+    ledger.directive_inbox("oracle", ctx["oracle_id"])
+    seen = ledger.directive_submit("user_chat", "alex", "Seen one.")
+    ledger.directive_inbox("oracle", ctx["oracle_id"])
+    unseen = ledger.directive_submit("user_chat", "alex", "Unseen one.")
+    queued = ledger.directive_submit("skill", "alex", "Queued one.")
+    ledger.directive_ack("oracle", ctx["oracle_id"], queued["directive_id"], "after review")
+    done = ledger.directive_submit("user_chat", "alex", "Done one.")
+    ledger.directive_resolve("oracle", ctx["oracle_id"], done["directive_id"], "applied", "Did it.")
+    ledger.directive_submit("watchdog", "watchdog", "Not a user directive.")
+
+    rows = {d["directive_id"]: d for d in ledger.directive_status()}
+
+    assert set(rows) == {d["directive_id"] for d in (first, seen, unseen, queued, done)}
+    assert rows[first["directive_id"]]["status"] == "seen"
+    assert rows[seen["directive_id"]]["status"] == "seen"
+    assert rows[unseen["directive_id"]]["status"] == "unread"
+    assert rows[queued["directive_id"]]["status"] == "queued"
+    assert rows[queued["directive_id"]]["note"] == "after review"
+    assert rows[done["directive_id"]]["status"] == "resolved"
+    assert rows[done["directive_id"]]["outcome"] == "applied"
+    assert rows[done["directive_id"]]["note"] == "Did it."
+    assert all(row["at"] is not None for row in rows.values())
+
+
+def test_directive_status_keeps_an_old_open_directive_and_caps_the_resolved_ones(
+    ledger: Ledger,
+) -> None:
+    ctx = bootstrap_module(ledger)
+    old = ledger.directive_submit("user_chat", "alex", "Still open.")
+    for n in range(7):
+        row = ledger.directive_submit("user_chat", "alex", f"Resolved {n}.")
+        ledger.directive_resolve("oracle", ctx["oracle_id"], row["directive_id"], "applied", "ok")
+
+    ids = [d["directive_id"] for d in ledger.directive_status(limit=3)]
+
+    assert ids[0] == old["directive_id"]
+    assert len(ids) == 4
+
+
+def test_directive_command_prints_each_directive_with_its_state(
+    ledger: Ledger, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from swarm_ledger import directive, env
+
+    ctx = bootstrap_module(ledger)
+    monkeypatch.setenv(env.DB_PATH_VAR, str(ledger.repo_root / ".sentinel-swarm" / "ledger.db"))
+    sent = ledger.directive_submit("outside_session", "alex", "Scope it to phase 1.")
+    ledger.directive_ack("oracle", ctx["oracle_id"], sent["directive_id"], "after the review")
+
+    assert directive.main(["--repo", str(ledger.repo_root), "--status"]) == 0
+
+    [row] = json.loads(capsys.readouterr().out)["directives"]
+    assert (row["directive_id"], row["status"], row["note"]) == (
+        sent["directive_id"],
+        "queued",
+        "after the review",
+    )
+
+
+def test_directive_command_needs_a_body_or_status(
+    ledger: Ledger, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from swarm_ledger import directive, env
+
+    bootstrap_module(ledger)
+    monkeypatch.setenv(env.DB_PATH_VAR, str(ledger.repo_root / ".sentinel-swarm" / "ledger.db"))
+    with pytest.raises(SystemExit):
+        directive.main(["--repo", str(ledger.repo_root)])
+    assert "body" in capsys.readouterr().err
+
+
 # -- overrides --------------------------------------------------------------------
 
 
