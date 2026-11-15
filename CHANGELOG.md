@@ -28,6 +28,9 @@ All notable changes to the `sentinel-swarm` plugin.
   with none left is reported for replacement from its brief. The watchdog keeps one
   `crashed` finding per agent with the count and cause of failed resumes, and records
   why each resume exited.
+- A Manager or Lead waiting on working children was reported `stuck` or `blocked`, and the
+  change from one to the other filed a second directive. A parent that waits on a working
+  child, a queued spawn, or an open `wait_for` raises neither, and the two are one finding.
 - `models.oracle: [fable, opus]` had no effect, since the Oracle's role file names
   `model: opus`. Name the Oracle's model with `--model`, or set it in the role file.
 

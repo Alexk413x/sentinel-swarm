@@ -32,6 +32,7 @@ its run is live.
 | 22 | A usage-limit stop reads as user waits, and the run does not recover | Fixed on `fix/live-run-bugs` |
 | 26 | `models.oracle` is ignored when the Oracle's role file names a model | Fixed in 0.8.1 |
 | 27 | A parked agent dies on each resume and re-keys to dead ids | Fixed in 0.8.1 |
+| 28 | A parent waiting on working children is reported stuck or blocked | Fixed in 0.8.1 |
 
 Suggested grouping for later sessions: panel work (5, 16, 17); file moves and
 deletions (11, 13, 12); process and memory hygiene (6, 14, 9); run control (7, 15);
