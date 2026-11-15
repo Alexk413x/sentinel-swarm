@@ -199,6 +199,21 @@ class SpawnDeferred(LedgerError):
     pass
 
 
+class ResumeDeferred(LedgerError):
+    # A resume that waits for free memory. The agent stays parked and a later pass retries.
+    pass
+
+
+class NoConversation(LedgerError):
+    # A resume with no session id left whose transcript exists: nothing can be resumed.
+    pass
+
+
+class ResumeClaimed(LedgerError):
+    # A resume that another actor already carries out, or that the session's state makes moot.
+    pass
+
+
 @contextmanager
 def ledger_errors() -> Iterator[None]:
     try:

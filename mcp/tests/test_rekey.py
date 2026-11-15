@@ -6,11 +6,13 @@ from pathlib import Path
 import pytest
 from test_sessions import Ctx, FakeClaude, _bootstrap, _row, _spawn_coder, host
 
-from swarm_ledger import rekey, sessions
+from swarm_ledger import rekey, sessions, watchdog
+from swarm_ledger.clock import utcnow
 from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import events, run_event
-from swarm_ledger.identity import LedgerError
+from swarm_ledger.identity import LedgerError, ResumeClaimed
 from swarm_ledger.ledger import Ledger
+from swarm_ledger.settings import WatchdogSettings
 
 __all__ = ["host"]
 
@@ -262,3 +264,168 @@ def test_a_coder_resumed_under_a_new_id_keeps_its_claim_and_handoff_history(
     handoff = ledger.conn.execute("SELECT agent_id FROM handoffs").fetchone()
     assert handoff["agent_id"] == new_id
     assert _all_values(ledger, coder[1]) == []
+
+
+# -- one resumer at a time -----------------------------------------------------------------------
+
+
+def test_the_resume_claim_is_taken_once_and_released_on_request(
+    ledger: Ledger, claude: MovingClaude
+) -> None:
+    ctx = _stopped_manager(ledger, claude)
+    assert rekey.claim_resume(ledger.conn, ctx.manager[1]) is True
+    assert rekey.claim_resume(ledger.conn, ctx.manager[1]) is False
+    rekey.release_resume(ledger.conn, ctx.manager[1])
+    assert rekey.claim_resume(ledger.conn, ctx.manager[1]) is True
+
+
+def test_a_resume_checks_the_session_again_once_it_holds_the_claim(
+    ledger: Ledger, claude: MovingClaude
+) -> None:
+    ctx = _stopped_manager(ledger, claude)
+    stale = ledger._row(ctx.manager[1])
+    entry = claude.entry(ctx.manager[1])
+    assert entry is not None
+    entry["status"] = "busy"
+
+    with pytest.raises(ResumeClaimed, match="still running"):
+        ledger.resume_agent(stale, "a second resumer")
+
+    assert claude.resumed == []
+    assert _row(ledger, ctx.manager[1])["resume_started_at"] is None
+
+
+def test_a_resume_that_finds_the_session_moved_adopts_it_instead_of_starting_another(
+    ledger: Ledger, claude: MovingClaude
+) -> None:
+    ctx = _stopped_manager(ledger, claude)
+    stale = ledger._row(ctx.manager[1])
+    session_name = _row(ledger, ctx.manager[1])["session_name"]
+    claude.add("0badc0de-0000-0000-0000-000000000000", session_name, bg_id="0badc0de")
+
+    result = ledger.resume_agent(stale, "a second resumer")
+
+    assert result["rekeyed_from"] == ctx.manager[1]
+    assert result["session_id"] == "0badc0de-0000-0000-0000-000000000000"
+    assert claude.resumed == []
+
+
+def test_a_resume_of_an_agent_that_was_re_keyed_meanwhile_is_skipped(
+    ledger: Ledger, claude: MovingClaude
+) -> None:
+    ctx = _stopped_manager(ledger, claude)
+    ledger._park(ctx.manager[1], "retired")
+    ledger.message_post(*ctx.lead, "mgr-p1-phase-1", "module-1 is done")
+    session_name = _row(ledger, ctx.manager[1])["session_name"]
+    moved_to = "0badc0de-0000-0000-0000-000000000000"
+    real_row = ledger._row
+    moved = [False]
+
+    def row_after_a_rekey(agent_id: str):
+        if agent_id == ctx.manager[1] and not moved[0]:
+            moved[0] = True
+            claude.add(moved_to, session_name, bg_id="0badc0de")
+            ledger.adopt_resumed(ctx.manager[1], moved_to)
+        return real_row(agent_id)
+
+    ledger._row = row_after_a_rekey  # type: ignore[method-assign]
+
+    assert ledger.resume_parked() == []
+    assert claude.resumed == []
+    assert _row(ledger, moved_to)["name"] == "mgr-p1-phase-1"
+
+
+def test_agent_resume_refuses_while_another_resume_holds_the_claim(
+    ledger: Ledger, claude: MovingClaude
+) -> None:
+    ctx = _stopped_manager(ledger, claude)
+    assert rekey.claim_resume(ledger.conn, ctx.manager[1]) is True
+
+    with pytest.raises(LedgerError, match="already being resumed"):
+        ledger.agent_resume(*ctx.lead, "mgr-p1-phase-1")
+
+    assert claude.resumed == []
+
+
+# -- a resumed session that never wrote a transcript ---------------------------------------------
+
+
+def _strict_claude(
+    claude: MovingClaude, monkeypatch: pytest.MonkeyPatch, folder: Path, *, always: bool = False
+) -> None:
+    def run(args: list[str], cwd: Path | None = None) -> str:
+        if args[0] == "--resume" and (always or not (folder / f"{args[1]}.jsonl").is_file()):
+            raise LedgerError(
+                "claude --resume failed with exit code 1: "
+                f"No conversation found with session ID: {args[1]}"
+            )
+        return claude(args, cwd)
+
+    monkeypatch.setattr(sessions, "_run", run)
+
+
+def _with_transcript(ledger: Ledger, agent_id: str, folder: Path, *, written: bool) -> None:
+    folder.mkdir(exist_ok=True)
+    path = folder / f"{agent_id}.jsonl"
+    if written:
+        path.write_bytes(b"{}\n")
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET transcript_path = ? WHERE agent_id = ?", (str(path), agent_id)
+        )
+
+
+def test_a_resume_starts_from_the_last_session_id_that_has_a_transcript(
+    ledger: Ledger, claude: MovingClaude, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _stopped_manager(ledger, claude)
+    first_id = ctx.manager[1]
+    folder = tmp_path / "projects"
+    _with_transcript(ledger, first_id, folder, written=True)
+    _strict_claude(claude, monkeypatch, folder)
+
+    ledger.agent_resume(*ctx.lead, "mgr-p1-phase-1")
+    second_id = claude.resumed[0]
+    assert _row(ledger, second_id)["resume_from_id"] == first_id
+    claude.stop_session(second_id)
+    ledger.agent_resume(*ctx.lead, "mgr-p1-phase-1")
+
+    third_id = claude.resumed[1]
+    resumes = [args[1] for args, _ in claude.calls if args[0] == "--resume"]
+    assert resumes == [first_id, first_id]
+    assert _row(ledger, third_id)["resume_from_id"] == first_id
+
+
+def test_a_resume_with_no_transcript_left_is_refused_and_reported_for_replacement(
+    ledger: Ledger, claude: MovingClaude, tmp_path: Path
+) -> None:
+    ctx = _stopped_manager(ledger, claude)
+    _with_transcript(ledger, ctx.manager[1], tmp_path / "projects", written=False)
+
+    with pytest.raises(LedgerError, match="no conversation left"):
+        ledger.agent_resume(*ctx.lead, "mgr-p1-phase-1")
+
+    assert claude.resumed == []
+    assert _row(ledger, ctx.manager[1])["resume_started_at"] is None
+    findings = watchdog.scan(ledger.conn, claude.listing, utcnow(), WatchdogSettings())
+    (crashed,) = [f for f in findings if f.kind == "crashed" and f.name == "mgr-p1-phase-1"]
+    assert "no conversation is left to resume" in crashed.detail
+    assert "agent_release" in crashed.next_step and "from its brief" in crashed.next_step
+    assert "agent_resume" not in crashed.next_step
+
+
+def test_a_cli_that_finds_no_conversation_makes_the_agent_one_to_replace(
+    ledger: Ledger, claude: MovingClaude, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _stopped_manager(ledger, claude)
+    folder = tmp_path / "projects"
+    _with_transcript(ledger, ctx.manager[1], folder, written=True)
+    _strict_claude(claude, monkeypatch, folder, always=True)
+
+    with pytest.raises(LedgerError, match="No conversation found"):
+        ledger.agent_resume(*ctx.lead, "mgr-p1-phase-1")
+
+    findings = watchdog.scan(ledger.conn, claude.listing, utcnow(), WatchdogSettings())
+    (crashed,) = [f for f in findings if f.kind == "crashed" and f.name == "mgr-p1-phase-1"]
+    assert "found no conversation" in crashed.detail
+    assert "agent_release" in crashed.next_step and "agent_resume" not in crashed.next_step

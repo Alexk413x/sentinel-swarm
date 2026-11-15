@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from swarm_ledger import auth, launch, setup
+from swarm_ledger import agentfiles, auth, launch, setup
 
 URL = "http://127.0.0.1:5123/mcp"
 
@@ -137,6 +137,34 @@ def test_an_oracle_file_without_a_model_uses_the_approved_list(env):
 
     command = env["run"].calls[-1]["command"]
     assert _option(command, "--model") == "opus"
+
+
+def test_a_model_the_user_names_at_launch_overrides_the_role_file_once(
+    env, capsys: pytest.CaptureFixture[str]
+):
+    setup.run_setup(env["repo"])
+
+    launch.main(["--repo", str(env["repo"]), "--model", "fable", "go"])
+    assert _option(env["run"].calls[-1]["command"], "--model") == "fable"
+    assert "The Oracle starts on fable, the model you named" in capsys.readouterr().out
+    assert agentfiles.oracle_model(env["repo"], ["opus", "fable"]) == "fable"
+
+    launch.main(["--repo", str(env["repo"]), "go"])
+    assert _option(env["run"].calls[-1]["command"], "--model") == "opus"
+    assert agentfiles.oracle_model(env["repo"], ["opus", "fable"]) == "opus"
+
+
+def test_a_named_model_off_the_list_warns_and_suggests_adding_it(
+    env, capsys: pytest.CaptureFixture[str]
+):
+    setup.run_setup(env["repo"])
+
+    assert launch.main(["--repo", str(env["repo"]), "--model", "sonnet", "go"]) == 0
+
+    assert _option(env["run"].calls[-1]["command"], "--model") == "sonnet"
+    err = capsys.readouterr().err
+    assert "sonnet is not in models.oracle" in err
+    assert "add it to models.oracle" in err
 
 
 def test_a_broken_role_file_is_reported(env, capsys: pytest.CaptureFixture[str]):

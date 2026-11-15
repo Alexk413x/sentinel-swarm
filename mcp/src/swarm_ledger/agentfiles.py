@@ -299,7 +299,29 @@ def read_agent_file(repo_root: Path, role: str) -> dict[str, Any]:
     return {**data, "body": body}
 
 
-def oracle_model(repo_root: Path, approved: list[str]) -> str | None:
+ORACLE_MODEL_OVERRIDE = Path(".sentinel-swarm") / "oracle-model"
+# A model goes to claude as the value of --model, so it may not start with "-".
+MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,79}")
+
+
+def oracle_override(repo_root: Path) -> str | None:
+    try:
+        named = (repo_root / ORACLE_MODEL_OVERRIDE).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return named or None
+
+
+def set_oracle_override(repo_root: Path, model: str | None) -> None:
+    path = repo_root / ORACLE_MODEL_OVERRIDE
+    if model is None:
+        path.unlink(missing_ok=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(model + "\n", encoding="utf-8")
+
+
+def oracle_file_model(repo_root: Path, approved: list[str]) -> str | None:
     try:
         model = read_agent_file(repo_root, "oracle").get("model")
     except LedgerError:
@@ -307,6 +329,10 @@ def oracle_model(repo_root: Path, approved: list[str]) -> str | None:
     if model:
         return str(model)
     return approved[0] if approved else None
+
+
+def oracle_model(repo_root: Path, approved: list[str]) -> str | None:
+    return oracle_override(repo_root) or oracle_file_model(repo_root, approved)
 
 
 def tool_list(agent_file: dict[str, Any]) -> list[str]:

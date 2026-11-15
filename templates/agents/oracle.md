@@ -131,6 +131,11 @@ For each unlocked phase:
 
 1. `brief_create(child_name="mgr-<phase name>", child_role="manager", model=<a model
    from the approved list for manager>, body=<the brief>, phase_id=<the phase id>)`.
+   Pick the model by how hard the phase is: a stronger one from the list for harder
+   work. When the user named a model for a role in the PRD or a directive, use it with
+   `user_named=true`, even when it is off the list, write the user's model choices
+   into the brief so they reach the roles below, and tell the user any `warning` the
+   result returns.
    The brief states the phase goal, its acceptance criteria, the modules you expect,
    the contracts it must honor, and the guidelines that apply. It refuses a phase that
    is not unlocked yet. `agent_spawn` refuses a

@@ -374,7 +374,64 @@ def test_a_resume_waits_for_memory_while_other_sessions_of_the_run_run(
         "waiting for memory to resume it for a wake-up"
     )
     free["mb"] = 64_000
-    resumed = ledger.resume_parked(claude.listing)
+    resumed = ledger.resume_parked()
+    assert [r["session_id"] for r in resumed] == claude.resumed
+
+
+def test_a_wake_up_resume_waits_for_memory_even_when_no_session_of_the_run_runs(
+    ledger: Ledger, claude: MovingClaude, free: dict
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    _park_manager(ledger, claude, ctx)
+    claude.stop_session(ctx.lead[1])
+    free["mb"] = 1_000
+    ledger.message_post(*ctx.lead, "mgr-p1-phase-1", "module-1 is done")
+
+    events.handle_owed(ledger, {"session_id": ctx.lead[1]})
+
+    assert claude.resumed == []
+    assert _row(ledger, ctx.manager[1])["parked_at"] is not None
+
+
+def test_the_watchdog_resume_waits_for_memory_even_when_no_session_of_the_run_runs(
+    ledger: Ledger, claude: MovingClaude, free: dict
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    _park_manager(ledger, claude, ctx)
+    claude.stop_session(ctx.lead[1])
+    ledger.message_post(*ctx.lead, "mgr-p1-phase-1", "module-1 is done")
+    free["mb"] = 1_000
+
+    assert ledger.resume_parked() == []
+    assert claude.resumed == []
+    free["mb"] = 64_000
+    assert [r["session_id"] for r in ledger.resume_parked()] == claude.resumed
+
+
+def test_agent_resume_leaves_the_agent_parked_while_memory_is_short(
+    ledger: Ledger, claude: MovingClaude, free: dict
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    _park_manager(ledger, claude, ctx)
+    free["mb"] = 1_000
+
+    answer = ledger.agent_resume(*ctx.lead, "mgr-p1-phase-1")
+
+    assert claude.resumed == []
+    assert answer["deferred"] is True
+    assert answer["reachable"] is False
+    assert "1000 MB free" in answer["reason"]
+    assert "retries" in answer["next"]
+    row = _row(ledger, ctx.manager[1])
+    assert row["parked_at"] is not None and row["resume_started_at"] is None
+    owed = [w for w in _owed_rows(ledger, ctx.manager[1]) if w["sent_at"] is None]
+    assert len(owed) == 1
+
+    ledger.agent_resume(*ctx.lead, "mgr-p1-phase-1")
+    assert len([w for w in _owed_rows(ledger, ctx.manager[1]) if w["sent_at"] is None]) == 1
+
+    free["mb"] = 64_000
+    resumed = ledger.resume_parked()
     assert [r["session_id"] for r in resumed] == claude.resumed
 
 
@@ -395,7 +452,7 @@ def test_parked_agents_resume_parents_of_finished_children_first(
     free["mb"] = 1_500 + 300 + 100
     _reservations_on(monkeypatch)
 
-    resumed = ledger.resume_parked(claude.listing)
+    resumed = ledger.resume_parked()
 
     assert [r["agent"]["name"] for r in resumed] == [second]
 
@@ -637,7 +694,7 @@ def test_a_parked_blocked_coder_resumes_when_its_lead_answers(
     ledger.message_post(*ctx.lead, coder[0], "use the second option")
     free["mb"] = 64_000
 
-    resumed = ledger.resume_parked(claude.listing)
+    resumed = ledger.resume_parked()
 
     assert [r["agent"]["name"] for r in resumed] == [coder[0]]
     assert claude.resumed != []

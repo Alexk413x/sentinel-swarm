@@ -3,10 +3,32 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from .db import NOW
 from .queries import UNPARK_SET
 
 # Session-id columns that neither end in agent_id nor reference agents.
 SESSION_COLUMNS = frozenset({("mod_sessions", "session_id")})
+RESUME_WINDOW_S = 120
+
+
+def claim_resume(conn: sqlite3.Connection, agent_id: str) -> bool:
+    """Take the one claim every resume path holds: the watchdog, the wake-up path and agent_resume.
+
+    The claim is a fresh `resume_started_at`, set by one conditional UPDATE, so two actors
+    never both win it. It lapses after the window.
+    """
+    return bool(
+        conn.execute(
+            f"UPDATE agents SET resume_started_at = {NOW} WHERE agent_id = ? "
+            "AND ended_at IS NULL AND (resume_started_at IS NULL OR resume_started_at < "
+            f"strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-{RESUME_WINDOW_S} seconds'))",
+            (agent_id,),
+        ).rowcount
+    )
+
+
+def release_resume(conn: sqlite3.Connection, agent_id: str) -> None:
+    conn.execute("UPDATE agents SET resume_started_at = NULL WHERE agent_id = ?", (agent_id,))
 
 
 def agent_id_columns(conn: sqlite3.Connection) -> list[tuple[str, str]]:
@@ -45,10 +67,13 @@ def rekey(conn: sqlite3.Connection, old_id: str, new_id: str) -> bool:
 
 def adopt(conn: sqlite3.Connection, old_id: str, new_id: str) -> None:
     row = conn.execute(
-        "SELECT transcript_path FROM agents WHERE agent_id = ?", (old_id,)
+        "SELECT transcript_path, resume_from_id FROM agents WHERE agent_id = ?", (old_id,)
     ).fetchone()
     if row is None:
         return
+    resume_from = row["resume_from_id"]
+    if old_id != new_id and row["transcript_path"] and Path(row["transcript_path"]).is_file():
+        resume_from = old_id
     if rekey(conn, old_id, new_id):
         conn.execute(
             "INSERT INTO agent_events (agent_id, from_state, to_state, reason) "
@@ -60,7 +85,7 @@ def adopt(conn: sqlite3.Connection, old_id: str, new_id: str) -> None:
         transcript = str(Path(transcript).with_name(f"{new_id}.jsonl"))
     conn.execute(
         f"UPDATE agents SET resume_started_at = NULL, {UNPARK_SET}, "
-        "session_pid = NULL, session_pid_created = NULL, bg_id = ?, transcript_path = ? "
-        "WHERE agent_id = ?",
-        (new_id[:8], transcript, new_id),
+        "session_pid = NULL, session_pid_created = NULL, bg_id = ?, transcript_path = ?, "
+        "resume_from_id = ? WHERE agent_id = ?",
+        (new_id[:8], transcript, resume_from, new_id),
     )

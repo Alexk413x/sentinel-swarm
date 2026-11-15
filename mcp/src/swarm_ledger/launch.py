@@ -94,7 +94,33 @@ def _run(command: list[str], repo: Path, prompt: str, mode: Mode, transcript: Pa
         ).returncode
 
 
-def launch(repo: Path, prompt: str, mode: Mode, transcript: Path | None = None) -> int:
+def choose_oracle_model(repo: Path, named: str | None) -> str | None:
+    from .agentfiles import oracle_file_model, set_oracle_override
+    from .settings import load_settings
+
+    approved = load_settings(repo).models.get("oracle", [])
+    set_oracle_override(repo, named)
+    if named is None:
+        model = oracle_file_model(repo, approved)
+        print(f"The Oracle starts on {model}, its role file's model. Name another with --model.")
+        return model
+    print(f"The Oracle starts on {named}, the model you named, for this launch.")
+    if named not in approved:
+        sys.stderr.write(
+            f"warning: {named} is not in models.oracle ({', '.join(approved) or 'empty'}). It "
+            "runs this launch only; add it to models.oracle in "
+            ".claude/sentinel-swarm.local.md to approve it for future runs.\n"
+        )
+    return named
+
+
+def launch(
+    repo: Path,
+    prompt: str,
+    mode: Mode,
+    transcript: Path | None = None,
+    model: str | None = None,
+) -> int:
     repo = repo.resolve()
     if _needs_setup(repo):
         report = setup.run_setup(repo)
@@ -111,6 +137,7 @@ def launch(repo: Path, prompt: str, mode: Mode, transcript: Path | None = None) 
         return 1
     name = oracle_session_name(repo)
     try:
+        choose_oracle_model(repo, model)
         command = oracle_command(repo, prompt, _ensure_server(repo), mode, name)
     except Exception as exc:
         sys.stderr.write(f"cannot start the Oracle: {exc}\n")
@@ -133,13 +160,22 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument("--bg", action="store_true", help="start the Oracle as a background session")
     group.add_argument("--headless", action="store_true", help="run the Oracle with claude -p")
     parser.add_argument("--transcript", type=Path, help="with --headless: the stream-json file")
+    parser.add_argument(
+        "--model", default=None, help="the Oracle's model for this launch, over its role file's"
+    )
     parser.add_argument("prompt")
     args = parser.parse_args(argv)
     env.utf8_stdout()
     if args.transcript is not None and not args.headless:
         parser.error("--transcript works only with --headless")
     mode: Mode = "bg" if args.bg else "headless" if args.headless else "interactive"
-    return launch(args.repo or Path.cwd(), args.prompt, mode, args.transcript)
+    named = (args.model or "").strip() or None
+    if named is not None:
+        from .agentfiles import MODEL_NAME
+
+        if not MODEL_NAME.fullmatch(named):
+            parser.error(f"--model {named!r} is not a model name")
+    return launch(args.repo or Path.cwd(), args.prompt, mode, args.transcript, named)
 
 
 if __name__ == "__main__":

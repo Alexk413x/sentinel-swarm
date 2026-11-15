@@ -75,7 +75,10 @@ still holds.
 ## Run one Lead
 
 1. `brief_create(child_name="lead-p<phase ordinal>-<module>", child_role="lead",
-   model=<a model from the approved list for lead>, body=<the brief>, module_id=<the
+   model=<a model from the approved list for lead, by the module's difficulty; or the
+   model your brief says the user named, with user_named=true> (a `warning` in the result goes to
+   your parent with `message_post`, so the user hears it), body=<the brief, which
+   carries on any model the user named for the roles below>, module_id=<the
    module id>, contract=<the module's public contract>)`. The brief states the
    module's goal, the files you expect in it, what the tests must prove, and the
    guidelines that apply. A module that others depend on is briefed first, with its

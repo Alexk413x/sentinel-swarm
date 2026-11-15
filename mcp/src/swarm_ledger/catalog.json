@@ -649,7 +649,7 @@
   {
    "name": "brief_create",
    "title": "Brief Create",
-   "description": "Creates a brief for the caller's child role (Oracle->Manager, Manager->Lead, Lead->Coder).\nA Manager brief needs an unlocked phase_id of the run; a Lead brief a module_id of the\ncaller's phase; a Coder brief the file_id claimed for child_name. A refusal for missing\n`finding_ids` lists the open ids and titles. Refuses an unknown finding, one that hit a\nstop rule, or one whose area has an open pattern stop directive. Refuses a Driver: only\ndrive_request starts one.",
+   "description": "Creates a brief for the caller's child role (Oracle->Manager, Manager->Lead, Lead->Coder).\nA Manager brief needs an unlocked phase_id of the run; a Lead brief a module_id of the\ncaller's phase; a Coder brief the file_id claimed for child_name. Pick the model from the\nchild role's approved list by the task's difficulty. user_named=true marks a model the user\nnamed for that role in the PRD or a directive: it may be off the list, and the result's\n`warning` then says to tell the user to add it. A refusal for missing `finding_ids` lists\nthe open ids and titles. Refuses an unknown finding, one that hit a stop rule, or one whose\narea has an open pattern stop directive. Refuses a Driver: only drive_request starts one.",
    "inputSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -760,6 +760,10 @@
       ],
       "default": null,
       "description": "The agent_id of an ended agent the child replaces. brief_ack moves that agent's live children and briefs to the child; an ended agent of the same name needs no replaces."
+     },
+     "user_named": {
+      "default": false,
+      "type": "boolean"
      }
     },
     "required": [

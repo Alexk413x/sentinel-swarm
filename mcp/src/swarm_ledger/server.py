@@ -356,14 +356,17 @@ def brief_create(
     effort: Literal["low", "medium", "high", "xhigh", "max"] | None = _BRIEF_CREATE_EFFORT,
     contract: str | None = _BRIEF_CREATE_CONTRACT,
     replaces: str | None = _BRIEF_CREATE_REPLACES,
+    user_named: bool = False,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Creates a brief for the caller's child role (Oracle->Manager, Manager->Lead, Lead->Coder).
     A Manager brief needs an unlocked phase_id of the run; a Lead brief a module_id of the
-    caller's phase; a Coder brief the file_id claimed for child_name. A refusal for missing
-    `finding_ids` lists the open ids and titles. Refuses an unknown finding, one that hit a
-    stop rule, or one whose area has an open pattern stop directive. Refuses a Driver: only
-    drive_request starts one."""
+    caller's phase; a Coder brief the file_id claimed for child_name. Pick the model from the
+    child role's approved list by the task's difficulty. user_named=true marks a model the user
+    named for that role in the PRD or a directive: it may be off the list, and the result's
+    `warning` then says to tell the user to add it. A refusal for missing `finding_ids` lists
+    the open ids and titles. Refuses an unknown finding, one that hit a stop rule, or one whose
+    area has an open pattern stop directive. Refuses a Driver: only drive_request starts one."""
     ...
 
 

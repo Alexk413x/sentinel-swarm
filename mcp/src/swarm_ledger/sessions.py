@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
@@ -62,6 +63,9 @@ _TIMEOUT_S = 60.0
 _CONFIG_PARSE = re.compile(r"JSON Parse error|\.claude\.json\S*\s+is\s+corrupt", re.IGNORECASE)
 CONFIG_RETRY_DELAYS_S = (1.0, 2.0, 4.0, 8.0)
 CONFIG_PAUSE = "~/.claude.json does not parse"
+NO_CONVERSATION = "none of its session ids has a transcript, so no conversation is left to resume"
+# What `claude --resume` prints for an id whose transcript it cannot open.
+CLI_NO_CONVERSATION = "No conversation found"
 _SPAWN_WAIT_S = 15.0
 _RESUME_WAIT_S = 15.0
 _POLL_S = 0.5
@@ -169,6 +173,14 @@ def cmd_args(args: Sequence[str], cwd: Path | None) -> list[str]:
     return out
 
 
+_REPORT = threading.local()
+
+
+def last_run_report() -> tuple[int, str]:
+    """The exit code and trimmed stderr of this thread's last claude command."""
+    return getattr(_REPORT, "value", (0, ""))
+
+
 def _run(args: list[str], cwd: Path | None = None) -> str:
     binary, through_cmd = _launcher(claude_binary())
     if through_cmd:
@@ -195,6 +207,7 @@ def _run(args: list[str], cwd: Path | None = None) -> str:
         err.seek(0)
         stdout = out.read().decode("utf-8", errors="replace")
         stderr = err.read().decode("utf-8", errors="replace")
+    _REPORT.value = (result.returncode, _strip_ansi(stderr).strip())
     if result.returncode != 0:
         detail = _strip_ansi(stderr).strip() or _strip_ansi(stdout).strip()
         raise LedgerError(
@@ -436,4 +449,26 @@ def resume(
     named = ["--name", name] if name else []
     text = launcher_text(message)
     args = ["--resume", session_id, "--bg", text, *named, *options, *dev_channel_args()]
+    _REPORT.value = (0, "")
     return parse_bg_id(_run_retrying(args, cwd=cwd))
+
+
+def resume_source(agent: Mapping[str, object]) -> str | None:
+    """The session id a resume of the agent starts from, or None when no conversation is left.
+
+    A resumed session that dies before it writes a transcript has an id `claude --resume`
+    cannot open. The agent is re-keyed to that id all the same, so its own id is a source only
+    when its transcript exists, and `resume_from_id` otherwise. Without a recorded transcript
+    path nothing says the id is dead, so the agent's own id stands.
+    """
+    agent_id = str(agent["agent_id"])
+    raw = agent.get("transcript_path")
+    if not raw:
+        return agent_id
+    path = Path(str(raw))
+    if path.is_file():
+        return agent_id
+    earlier = agent.get("resume_from_id")
+    if earlier and path.with_name(f"{earlier}.jsonl").is_file():
+        return str(earlier)
+    return None

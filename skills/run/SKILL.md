@@ -37,6 +37,13 @@ $python -I -S "${CLAUDE_PLUGIN_ROOT}/mcp/launch/ledger.py" launch --bg "<the PRD
 When the PRD is long, save it to a file in the repo and pass a prompt that names the
 file, for example `"Build the PRD in docs/prd.md."`.
 
+When the user names a model for the Oracle, add `--model <name>` before the prompt. It
+overrides the Oracle's role file for this launch only. A model off `models.oracle`
+still runs, and the launcher prints a warning: show it to the user, with its suggestion
+to add the model to `models.oracle`. A model the user names for another role goes in the
+prompt or the PRD in plain words, such as "use opus for the Coders"; the Oracle passes
+it on.
+
 The launcher writes the role files first when any is missing, and it refuses to start
 a background or headless run in an untrusted repo. When it refuses, show the user the command it
 prints and stop.

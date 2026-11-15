@@ -28,7 +28,7 @@ __all__ = ["claude", "dog_claude", "dog_ledger", "dog_now", "host"]
 # -- capacity ------------------------------------------------------------------------------------
 
 
-def test_one_resume_pass_does_not_resume_every_parked_agent_when_memory_is_short(
+def test_a_resume_pass_resumes_no_parked_agent_while_memory_is_short(
     ledger: Ledger, claude: MovingClaude, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ctx = _bootstrap(ledger, claude)
@@ -44,9 +44,10 @@ def test_one_resume_pass_does_not_resume_every_parked_agent_when_memory_is_short
     ledger.message_post(*ctx.manager, second, "three")
     monkeypatch.setattr(memory, "free_mb", lambda: 1_000)
 
-    resumed = ledger.resume_parked(list(claude.listing))
+    resumed = ledger.resume_parked()
 
-    assert len(resumed) == 1
+    assert resumed == []
+    assert claude.resumed == []
 
 
 def test_a_wake_up_owed_to_an_agent_whose_park_is_claimed_waits_for_its_resume(
