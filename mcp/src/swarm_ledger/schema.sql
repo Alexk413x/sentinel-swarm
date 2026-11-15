@@ -39,6 +39,13 @@ CREATE TABLE IF NOT EXISTS phases (
     pause_reason TEXT
 );
 
+-- A table of its own, not a phases column: migrate adds new tables to an existing ledger, but
+-- a new column in an existing table needs a new ledger.
+CREATE TABLE IF NOT EXISTS phase_goals (
+    phase_id INTEGER PRIMARY KEY REFERENCES phases (phase_id) ON DELETE RESTRICT,
+    goal TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS phase_deps (
     phase_id INTEGER NOT NULL REFERENCES phases (phase_id) ON DELETE RESTRICT,
     depends_on_phase_id INTEGER NOT NULL REFERENCES phases (phase_id) ON DELETE RESTRICT,

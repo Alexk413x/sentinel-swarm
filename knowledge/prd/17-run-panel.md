@@ -226,6 +226,9 @@ answers it. The hold is a mod hook, since the plugin has no command hooks.
   (`wrap="truncate-start"`), so the end of the file name stays visible.
 - Work that no agent owns yet appears under the agent it belongs to, in ledger order.
   Work a queued child will own sits on that child's row.
+- A phase with no Manager brief yet shows the goal `phase_add` recorded as its brief,
+  and its summary is the goal's first sentence. With neither, the detail says "No brief
+  recorded."
 - Clicking a task opens its brief below it, with simple Markdown (headings, lists,
   bold, italic, code), and its latest review. One task is open at a time. Clicking the
   open text, another task, or any control closes it.

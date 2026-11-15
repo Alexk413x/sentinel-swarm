@@ -25,9 +25,12 @@ message. The Oracle then calls, in order:
    pass. The word list lives in one place, `ledger.py`.
 6. `guidelines_set(body)`: the architecture, stack, conventions, commands, and every
    assumption about the PRD. Lower layers read it with `guidelines_get`.
-7. `phase_add(name, depends_on)` once per phase, in dependency order. The stored name
-   is `p<ordinal>-<name>`; see "Names" in [01-roles.md](01-roles.md). `depends_on`
-   names phases of this run; `phase_add` refuses an id from another run.
+7. `phase_add(name, depends_on, goal)` once per phase, in dependency order. The stored
+   name is `p<ordinal>-<name>`; see "Names" in [01-roles.md](01-roles.md). `depends_on`
+   names phases of this run; `phase_add` refuses an id from another run. `goal`, one or
+   two sentences on what the phase delivers, is optional; the ledger keeps it in
+   `phase_goals`, a table of its own so an existing ledger gains it on migrate, and the
+   run panel shows it as the phase's brief until the Oracle briefs the phase's Manager.
 8. `phase_update(phase_id, "unlocked")` for each phase with no dependency.
 9. Arm the watchdog listener. See "Watchdog" in [08-watchdog.md](08-watchdog.md).
 

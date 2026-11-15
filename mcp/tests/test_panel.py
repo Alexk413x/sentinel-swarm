@@ -547,3 +547,24 @@ def test_the_detail_agent_carries_its_recent_activity(ledger: Ledger, tmp_path: 
         {"at": "2026-11-14T10:00:00Z", "kind": "say", "text": "Waiting for the lint gate."}
     ]
     assert _node(run, "lead")["recent"] is None
+
+
+def test_a_planned_phase_shows_its_goal_until_its_manager_is_briefed(ledger: Ledger) -> None:
+    ctx = _build(ledger)
+    later = ledger.phase_add(
+        "oracle", ctx["oracle_id"], "people", goal="Members and roles.\nAdmins approve."
+    )
+
+    run = _run_snapshot(ledger)
+    waiting = {t["id"]: t for t in run["agents"][0]["tasks"]}
+
+    assert later["goal"] == "Members and roles.\nAdmins approve."
+    assert (
+        waiting[f"phase_id:{later['phase_id']}"]["brief"] == "Members and roles.\nAdmins approve."
+    )
+    assert waiting[f"phase_id:{later['phase_id']}"]["summary"] == "Members and roles"
+
+
+def test_phase_add_without_a_goal_stores_none(ledger: Ledger) -> None:
+    ctx = _build(ledger)
+    assert ledger.phase_add("oracle", ctx["oracle_id"], "later")["goal"] is None

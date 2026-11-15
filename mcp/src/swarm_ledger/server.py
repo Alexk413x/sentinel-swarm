@@ -293,10 +293,13 @@ def phase_add(
     caller: CallerName,
     name: str,
     depends_on: list[int] | None = None,
+    goal: str | None = None,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Adds a phase to the plan with optional phase dependencies; the Oracle calls this. The
-    stored name is p<ordinal>-<name>, and its Manager is named mgr-<that name>."""
+    stored name is p<ordinal>-<name>, and its Manager is named mgr-<that name>. goal is a
+    short statement of what the phase delivers, which the run panel shows until the phase's
+    Manager is briefed."""
     ...
 
 

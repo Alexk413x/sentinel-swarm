@@ -466,7 +466,7 @@
   {
    "name": "phase_add",
    "title": "Phase Add",
-   "description": "Adds a phase to the plan with optional phase dependencies; the Oracle calls this. The\nstored name is p<ordinal>-<name>, and its Manager is named mgr-<that name>.",
+   "description": "Adds a phase to the plan with optional phase dependencies; the Oracle calls this. The\nstored name is p<ordinal>-<name>, and its Manager is named mgr-<that name>. goal is a\nshort statement of what the phase delivers, which the run panel shows until the phase's\nManager is briefed.",
    "inputSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -485,6 +485,17 @@
          "type": "integer"
         },
         "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "goal": {
+      "anyOf": [
+       {
+        "type": "string"
        },
        {
         "type": "null"

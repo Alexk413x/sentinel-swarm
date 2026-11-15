@@ -116,6 +116,18 @@ def _task_lists(
         "WHERE run_id = ? ORDER BY brief_id",
         run_id,
     )
+    goals: dict[int, str] = (
+        {
+            row["phase_id"]: row["goal"]
+            for row in conn.execute(
+                "SELECT g.phase_id, g.goal FROM phase_goals g "
+                "JOIN phases p ON p.phase_id = g.phase_id WHERE p.run_id = ?",
+                (run_id,),
+            )
+        }
+        if _has_table(conn, "phase_goals")
+        else {}
+    )
     reviews = _latest_by_subject(
         conn,
         "SELECT r.phase_id, r.module_id, r.file_id, r.kind, r.outcome, r.notes FROM reviews r "
@@ -149,6 +161,8 @@ def _task_lists(
         brief = briefs.get((column, key))
         review = reviews.get((column, key))
         body = brief["body"] if brief is not None else None
+        if body is None and column == "phase_id":
+            body = goals.get(key)
         return {
             "id": f"{column}:{key}",
             "name": name,

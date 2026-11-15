@@ -23,7 +23,7 @@ its run is live.
 | 13 | Deletion Coders block on the shell gate | Open; overlaps 11 |
 | 14 | Stray-process attribution is wrong | Open; overlaps 6 |
 | 15 | Directives sit open with no acknowledgement | Open |
-| 16 | Planned phases show no brief in the panel | Open; panel |
+| 16 | Planned phases show no brief in the panel | Fixed on `fix/live-run-bugs` |
 | 17 | The panel's phase list cannot collapse | Fixed on `fix/live-run-bugs` |
 | 18 | The phase gate never runs the build | Open |
 | 19 | Per-phase commits are impossible while later phases write | Open; needs a design decision |

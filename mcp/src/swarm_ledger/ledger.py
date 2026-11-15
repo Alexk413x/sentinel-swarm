@@ -781,8 +781,14 @@ class Ledger(
         return dict(row) if row is not None else {}
 
     def phase_add(
-        self, caller: str, agent_id: str, name: str, depends_on: list[int] | None = None
+        self,
+        caller: str,
+        agent_id: str,
+        name: str,
+        depends_on: list[int] | None = None,
+        goal: str | None = None,
     ) -> dict:
+        goal = (goal or "").strip() or None
         depends_on = depends_on or []
         with write_tx(self.conn) as conn:
             c = resolve(conn, caller, agent_id)
@@ -807,9 +813,14 @@ class Ledger(
                     "INSERT INTO phase_deps (phase_id, depends_on_phase_id) VALUES (?, ?)",
                     (phase_id, dep_id),
                 )
+            if goal is not None:
+                conn.execute(
+                    "INSERT INTO phase_goals (phase_id, goal) VALUES (?, ?)", (phase_id, goal)
+                )
 
         phase = row_dict(self.conn, "phases", "phase_id", phase_id)
         phase["depends_on"] = list(depends_on)
+        phase["goal"] = goal
         return phase
 
     def phase_update(self, caller: str, agent_id: str, phase_id: int, state: str) -> dict:

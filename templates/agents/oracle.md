@@ -79,8 +79,10 @@ Call these in order. Nothing else works until `run_start` succeeds.
 7. Search the code graph at the system level: `kg_search` for the components the
    PRD touches and how they depend on each other, so the phases follow the existing
    boundaries. Plan the phases, as "Plan the phases" describes, then call
-   `phase_add(name=..., depends_on=[<phase_id>, ...])` once per phase, in dependency
-   order, so a phase can name the ids it depends on.
+   `phase_add(name=..., depends_on=[<phase_id>, ...], goal=...)` once per phase, in
+   dependency order, so a phase can name the ids it depends on. `goal` is one or two
+   sentences on what the phase delivers; the run panel shows it until you brief the
+   phase's Manager.
 8. `phase_update(phase_id, state="unlocked")` for every phase with no dependency. It
    refuses a phase whose dependencies are not all approved.
 9. Arm the watchdog. See "The watchdog".
