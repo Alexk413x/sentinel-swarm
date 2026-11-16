@@ -25,7 +25,10 @@ with verified evidence.
   with the recipient, since `cr_verify` belongs to the requester's side.
 - A claim of a path that supersedes an earlier file on it moves every `open`, `accepted`,
   or `completed` request on the superseded files to the new file. The request keeps its
-  recipient and requester. A `verified` or `declined` request stays where it is.
+  recipient and requester. A `verified` or `declined` request stays where it is. The same
+  claim moves the unacknowledged Coder brief of the new claim's Coder, and the unsettled
+  dependents' `depends_on` rows, to the new file; see "Files and claims" in
+  [02-run-lifecycle.md](02-run-lifecycle.md).
 - `phase_update(handed_up)` refuses while a request on a file of the phase is
   `accepted`, naming each request and its recipient. The Manager closes it, or has the
   recipient close it, before the phase hands up.

@@ -224,19 +224,23 @@ class OversightMixin(LedgerHost):
                 conn.execute(
                     "SELECT f.* FROM files f JOIN modules m ON m.module_id = f.module_id "
                     "WHERE m.phase_id = ? AND f.state IN ('approved', 'incomplete') "
-                    "AND (f.test_path IS NULL OR f.test_path = '')",
+                    "AND (f.test_path IS NULL OR f.test_path = '') "
+                    "AND (f.no_test_reason IS NULL OR f.no_test_reason = '')",
                     (phase_id,),
                 )
             )
-            if graph.code_symbols_for(self.repo_root, f["path"])
+            if (self.repo_root / f["path"]).exists()
+            and graph.code_symbols_for(self.repo_root, f["path"])
         ]
         if untested:
             raise LedgerError(
                 f"{', '.join(untested)} contain functions or classes in the code graph but were "
                 "claimed with no test_path, so the ledger never ran tests for them. Test anchors "
                 "in the graph do not count. Return the phase so the module's Lead re-claims each "
-                "path with claim_file(path, test_path=<its test file>) for a new Coder; the new "
-                "claim supersedes the old one"
+                "path for a new Coder; the new claim supersedes the old one. A standalone test "
+                "file is claimed with test_path equal to its own path. Any other file takes "
+                "claim_file(path, test_path=<its test file>), or, for a file with no behaviour to "
+                "test (types, constants, fixtures), claim_file(path, None, no_test_reason=<why>)"
             )
 
         target = self.settings.rubric.target
@@ -388,6 +392,9 @@ class OversightMixin(LedgerHost):
             )
             notice = None
             if outcome == "accepted":
+                conn.execute(
+                    "UPDATE modules SET state = 'approved' WHERE module_id = ?", (module_id,)
+                )
                 notice = notify.record(
                     conn,
                     require_run(c, "manager"),

@@ -207,7 +207,8 @@ keeps every gate.
 
 - The tests fail, are missing, or are skipped. A file claimed with no `test_path`,
   such as an empty `__init__.py` or a config file, runs no tests; `phase_review` later
-  refuses any such file that the code graph maps with functions or classes.
+  refuses any such file that the code graph maps with functions or classes, unless the
+  claim names a `no_test_reason` or the file no longer exists.
 - The code graph is not current for the file: no node, an anchor that does not
   resolve, or a symbol in the file that no node maps.
 - The self review is missing or older than the last edit.

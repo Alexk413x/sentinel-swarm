@@ -105,7 +105,10 @@ message. The Oracle then calls, in order:
 
 - A Manager adds modules to its own phase with `module_add`. A module name is a slug.
 - Module states: `planned`, `returned` (by `module_review` or a departure pushback), and
-  `approved` (set by `approve` when no file of the module is still pending).
+  `approved`. `approve` sets it when no file of the module is still pending,
+  `module_review(accepted)` sets it, and `phase_update(approved)` sets it on every module
+  of the phase not yet approved. `migrate` also sets a `returned` module of an approved
+  phase to `approved`, which repairs ledgers made before these rules.
 
 ## Briefs
 
@@ -156,9 +159,20 @@ message. The Oracle then calls, in order:
   an empty package marker. Its handoff runs no tests, and the reviews judge it. The
   ledger reads the strings `""`, `"none"`, and `"null"` as no test file. The Oracle's
   `phase_review` refuses any such file that the code graph maps with a function or
-  class.
+  class, with two exceptions: a file whose path no longer exists, and a file claimed with
+  `no_test_reason`.
+- `claim_file(..., no_test_reason=<why>)` is for a file with code and no behaviour to
+  test, such as types, constants, or fixtures. The ledger stores the reason on the claim.
+  It refuses a reason together with a `test_path`, and an empty or whitespace reason.
+  `status_tree` and the run report show each file's reason, so the Oracle can judge it.
+- A standalone test file is claimed with `test_path` equal to its own path. The refusal
+  from `phase_review` names this and `no_test_reason` as the two ways out.
 - A re-claim of a released path in the same run supersedes the old claim. The old row
-  becomes `superseded`, and every gate treats it as settled.
+  becomes `superseded`, and every gate treats it as settled. The re-claim also carries
+  the old claim's links to the new file: an unacknowledged Coder brief for the new
+  claim's Coder name moves to the new `file_id`, and each dependent file that is not
+  settled now depends on the new file instead of the old one. A settled dependent keeps
+  its row as history. A change request moves too; see [04-agreements.md](04-agreements.md).
 - **A move is one claim with both paths.** `file_move(path, new_path, test_path=None)`
   points a live claim of the Lead's module at a new path, and at a new test path when
   given; the claim keeps its Coder, its `file_id`, and its dependencies. It refuses a
@@ -180,6 +194,12 @@ message. The Oracle then calls, in order:
   `who_owns(path)` names the live owner.
 - `agent_release(<child name>)` on a queued child cancels its spawn and keeps its brief
   and its claim.
+- `agent_release(<child name>)` on a child with no agent and no queued spawn voids the
+  child's unacknowledged brief, when the caller wrote it. The brief gets `voided_at`, and
+  every unacknowledged-brief check ignores it: `brief_create` accepts a new brief for the
+  name, `agent_spawn` and `brief_ack` find none, and `brief_get`, the contract check
+  for a dependent, the panel, and the fix list skip it. A voided Coder brief leaves the
+  file claim alone.
 - `agent_spawn`, and the queue when memory frees, refuse a Coder whose file has no live
   claim for it; the queue drops the spawn and tells the parent why.
 - Nothing else ends a claim early. Parking a parent under memory pressure, releasing
@@ -247,7 +267,8 @@ anchor is deleted, with its outbound edges and the edges that point at it. A nod
 anchors other files keeps those anchors, and keeps its baselines, because the write does
 not re-baseline. The handoff result lists the node ids as `graph_pruned`
 (`deleted_nodes`, `reanchored_nodes`). The Coder needs no `graph_upsert` for a deletion,
-and no Coder has a node-delete tool.
+and no Coder has a node-delete tool. `file_accept_incomplete` removes the anchors of a
+deleted file the same way and lists the node ids as `graph_pruned`.
 
 ## Lead review
 
@@ -311,6 +332,8 @@ Manager of the module's phase.
   Lead returns the module's latest review as `returned_review` (`review_id`, `outcome`,
   `notes`, `file_notes`, `created_at`) while that review is the latest and was returned;
   it is `null` otherwise.
+- `accepted` also sets the module to `approved`, so the run panel shows it done once its
+  files are.
 - After an accepted review, the Manager releases the Lead with `agent_release`.
 
 ## Phase hand-up
@@ -334,7 +357,8 @@ for a phase in `handed_up`.
   and a failed build refuses with the build's command, exit code, and the last 2,000
   characters of its output. A full run made before `build_command` was set does not
   count; no approved or incomplete file of the phase lacks a test file while
-  the code graph anchors a function or class in it; `low_score_notes` holds a
+  the code graph anchors a function or class in it (a file whose path no longer exists,
+  and a file claimed with `no_test_reason`, are exempt); `low_score_notes` holds a
   non-empty note, keyed by `file_id`, for each file whose latest Lead review has a
   dimension below the target; and `scores` rates completeness, integration, and open
   items from 1 to 10, with a reason below 9.

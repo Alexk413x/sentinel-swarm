@@ -278,10 +278,20 @@ def touch_module(host: Path, name: str, marker: str) -> None:
 
 
 def spawn_coder(
-    ledger: Ledger, ctx: dict, coder_name: str, path: str, test_path: str | None
+    ledger: Ledger,
+    ctx: dict,
+    coder_name: str,
+    path: str,
+    test_path: str | None,
+    no_test_reason: str | None = None,
 ) -> dict:
     claimed = ledger.claim_file(
-        "lead-p1-module-1", ctx["lead"]["agent_id"], path, test_path, coder_name
+        "lead-p1-module-1",
+        ctx["lead"]["agent_id"],
+        path,
+        test_path,
+        coder_name,
+        no_test_reason=no_test_reason,
     )
     ledger.brief_create(
         "lead-p1-module-1",

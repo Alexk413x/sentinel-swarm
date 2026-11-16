@@ -23,6 +23,8 @@ ADDED_COLUMNS = (
     ("agents", "last_resume_detail", "TEXT"),
     ("agents", "resume_from_id", "TEXT"),
     ("agents", "prior_session_ids", "TEXT"),
+    ("files", "no_test_reason", "TEXT"),
+    ("briefs", "voided_at", "TEXT"),
 )
 
 
@@ -144,6 +146,10 @@ def migrate(conn: sqlite3.Connection) -> None:
                 # Another process migrating the same ledger added it first.
                 if "duplicate column" not in str(exc):
                     raise
+    conn.execute(
+        "UPDATE modules SET state = 'approved' WHERE state = 'returned' "
+        "AND phase_id IN (SELECT phase_id FROM phases WHERE state = 'approved')"
+    )
     conn.execute("INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 1)")
     conn.execute(f"PRAGMA user_version = {stamp}")
 

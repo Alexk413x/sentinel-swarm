@@ -75,6 +75,7 @@ class ClosingMixin(LedgerHost):
                 "cover the file"
             )
         woken: list[dict] = []
+        pruned = self._drop_deleted_anchors(self._settleable_file(caller, agent_id, file_id))
         with self._release_tx() as conn:
             c = resolve(conn, caller, agent_id)
             require_role(c, "oracle")
@@ -100,11 +101,21 @@ class ClosingMixin(LedgerHost):
 
         result = row_dict(self.conn, "files", "file_id", file_id)
         result["deferral"] = row_dict(self.conn, "deferrals", "deferral_id", deferral_id)
+        if pruned is not None:
+            result["graph_pruned"] = pruned
         if woken:
             result["woken_waiters"] = [
                 {"name": w["to_name"], "next": self.next_step(w)} for w in woken
             ]
         return result
+
+    def _settleable_file(self, caller: str, agent_id: str, file_id: int) -> sqlite3.Row:
+        c = resolve(self.conn, caller, agent_id)
+        require_role(c, "oracle")
+        file_row = self._run_file(self.conn, c, file_id)
+        if settle.file_settled(self.conn, self.repo_root, file_row):
+            raise LedgerError(f"file {file_id} ({file_row['path']}) is already settled")
+        return file_row
 
     @staticmethod
     def _run_file(conn: sqlite3.Connection, c: Caller, file_id: int) -> sqlite3.Row:

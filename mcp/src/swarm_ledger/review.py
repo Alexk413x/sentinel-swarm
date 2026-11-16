@@ -146,7 +146,8 @@ def fix_briefs(conn: sqlite3.Connection, run_id: int) -> list[dict]:
         }
         for b in conn.execute(
             "SELECT brief_id, child_name, child_role, finding_ids_json FROM briefs "
-            "WHERE run_id = ? AND finding_ids_json IS NOT NULL ORDER BY brief_id",
+            "WHERE run_id = ? AND finding_ids_json IS NOT NULL AND voided_at IS NULL "
+            "ORDER BY brief_id",
             (run_id,),
         )
     ]
@@ -1929,6 +1930,7 @@ class ReviewMixin(LedgerHost):
                             # files.owner_agent_id holds the owner's agent name.
                             "owner": file_row["owner_agent_id"],
                             "state": file_row["state"],
+                            "no_test_reason": file_row["no_test_reason"],
                             "latest_handoff_state": (
                                 latest_handoff["state"] if latest_handoff is not None else None
                             ),

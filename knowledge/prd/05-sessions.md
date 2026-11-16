@@ -486,7 +486,8 @@ fails as ambiguous, or goes to the offline entry and waits there for good. See
   id, or the name or session name of a live agent of the caller's run, so a parent can
   release a parked or dead child it knows only by name. The Oracle may also
   release an agent whose parent has ended, such as a Lead left live under a released
-  Manager. The other releases are automatic. Every release hands the released agent's
+  Manager. A child name with no agent and no queued spawn voids the caller's
+  unacknowledged brief for it. The other releases are automatic. Every release hands the released agent's
   `open` and `accepted` change
   requests to its nearest live ancestor; see "Change requests" in
   [04-agreements.md](04-agreements.md).
@@ -728,7 +729,8 @@ for the measured figures.
   start that fails on an unreadable `~/.claude.json` stays
   queued; see "An unreadable ~/.claude.json" below. A parent cancels a queued spawn with
   `agent_release(<child name>)`, which keeps the brief and the claim; `release_file` on
-  the queued Coder's path drops its spawn too. While a spawn is queued, the
+  the queued Coder's path drops its spawn too. A second `agent_release(<child name>)`, with no
+  queued spawn left, voids the unacknowledged brief and keeps the claim. While a spawn is queued, the
   Oracle's Stop hook does not block for pending work, and the watchdog reports no stall.
 - **Capacity.** `run_status` returns `capacity`: `free_mb`, `reserved_mb` (the
   reservations above), `other_swarms` (every other live swarm on the machine, from the

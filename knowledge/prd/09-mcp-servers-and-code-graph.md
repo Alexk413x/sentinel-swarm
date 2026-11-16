@@ -211,6 +211,7 @@ find what exists while many agents change the code at once. The graph file,
   [10-report-and-costs.md](10-report-and-costs.md).
 - **Test-file gate:** `phase_review(accepted)` refuses an approved or incomplete file
   with no test file when the graph anchors any symbol in it. Test anchors in the graph
-  do not count as tests.
+  do not count as tests. A file whose path no longer exists, and a file claimed with
+  `no_test_reason`, pass the gate.
 - The `setup` skill builds the graph when the host has none. An empty repo starts with
   an empty graph.
