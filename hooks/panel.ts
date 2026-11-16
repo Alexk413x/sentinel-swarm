@@ -15,7 +15,7 @@ export const WAIT_COLOR = 'warning'
 export const ASK_COLOR = 'error'
 export const TASK_MARK: Readonly<Record<string, readonly [string, string | undefined]>> = {
   done: ['✓', 'success'],
-  active: ['●', 'warning'],
+  active: ['●', '#5f87af'],
   problem: ['!', 'error'],
 }
 

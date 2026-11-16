@@ -78,8 +78,6 @@ def _status(state: str) -> str:
 
 
 def _combine(statuses: list[str]) -> str:
-    if "problem" in statuses:
-        return "problem"
     if all(status == "done" for status in statuses):
         return "done"
     if all(status == "waiting" for status in statuses):

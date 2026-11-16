@@ -110,14 +110,18 @@ def test_unowned_work_lists_under_the_agent_above_it(ledger: Ledger) -> None:
     assert _node(run, "oracle")["tasks"] == []
 
 
-def test_an_incomplete_file_makes_module_phase_and_run_a_problem(ledger: Ledger) -> None:
+def test_an_incomplete_file_is_a_problem_and_keeps_its_parents_in_progress(
+    ledger: Ledger,
+) -> None:
     ctx = _build(ledger)
     _set_state(ledger, "files", "file_id", ctx["file_id"], "incomplete")
+    _set_state(ledger, "modules", "module_id", ctx["module_id"], "approved")
+    _set_state(ledger, "phases", "phase_id", ctx["phase_id"], "approved")
 
     assert _statuses(_run_snapshot(ledger)) == {
-        "run": "problem",
-        "phase": "problem",
-        "module": "problem",
+        "run": "active",
+        "phase": "active",
+        "module": "active",
         "file": "problem",
     }
 
@@ -128,7 +132,33 @@ def test_a_released_file_is_a_problem(ledger: Ledger) -> None:
 
     statuses = _statuses(_run_snapshot(ledger))
     assert statuses["file"] == "problem"
-    assert statuses["module"] == "problem"
+    assert statuses["module"] == "active"
+    assert statuses["phase"] == "active"
+    assert statuses["run"] == "active"
+
+
+def test_a_fixed_incomplete_file_returns_its_parents_to_done(ledger: Ledger) -> None:
+    ctx = _build(ledger)
+    _approve_all(ledger, ctx)
+    _set_state(ledger, "files", "file_id", ctx["file_id"], "incomplete")
+    ledger.conn.execute(
+        "UPDATE files SET released_at = CURRENT_TIMESTAMP WHERE file_id = ?", (ctx["file_id"],)
+    )
+    ledger.conn.commit()
+    new = ledger.claim_file(
+        "lead-p1-module-1",
+        ctx["lead"]["agent_id"],
+        "src/a.py",
+        "tests/test_a.py",
+        "coder-p1-module-1-b",
+    )
+
+    statuses = _statuses(_run_snapshot(ledger))
+    assert statuses["file"] == "done"
+    assert {statuses["module"], statuses["phase"], statuses["run"]} == {"active"}
+
+    _set_state(ledger, "files", "file_id", new["file_id"], "approved")
+    assert set(_statuses(_run_snapshot(ledger)).values()) == {"done"}
 
 
 def test_a_reclaimed_file_counts_the_superseded_version_as_done(ledger: Ledger) -> None:
