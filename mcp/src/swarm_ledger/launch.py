@@ -103,6 +103,14 @@ def choose_oracle_model(repo: Path, named: str | None) -> str | None:
     if named is None:
         model = oracle_file_model(repo, approved)
         print(f"The Oracle starts on {model}, its role file's model. Name another with --model.")
+        if model and approved and model != approved[0]:
+            role_file = setup.role_file(repo, "oracle").relative_to(repo).as_posix()
+            sys.stderr.write(
+                f"warning: the Oracle's role file names {model}, but the first entry of "
+                f"models.oracle is {approved[0]}. The role file wins. To start on {approved[0]} "
+                f"for one launch, pass --model {approved[0]}; to change it for every launch, "
+                f"edit model in {role_file}.\n"
+            )
         return model
     print(f"The Oracle starts on {named}, the model you named, for this launch.")
     if named not in approved:

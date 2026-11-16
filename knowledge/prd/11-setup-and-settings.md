@@ -289,7 +289,10 @@ or the `/sentinel-swarm:run` skill.
   as `agent_spawn`, including the ledger token header. It stops with the reason when the
   URL in `server.json` or the token fails `session_options`' checks; see
   [06-ledger-server.md](06-ledger-server.md). If the file has no `model`, it uses the
-  first entry of the Oracle's approved list.
+  first entry of the Oracle's approved list. When the file's model is not that first
+  entry and the launch names no `--model`, it warns on stderr, naming both models, that
+  the role file wins, and gives `--model <name>` for one launch or an edit to the role
+  file for every launch.
 - After a plugin upgrade, the server that answers still runs the older version. With no
   active run, the launch replaces it. With an active run, the launch refuses and names
   both versions: pause the run with `ledger.py pause --reason <text>`, then launch
