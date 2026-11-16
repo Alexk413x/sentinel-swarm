@@ -283,10 +283,13 @@ def profile_set(
     test_command: str | None = None,
     build_command: str | None = None,
     lint_command: str | None = None,
+    test_command_by_path: dict[str, str] | None = None,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Sets the run's test, build, and lint commands; the Oracle calls this. Refuses a build
-    command that serves or watches (--watch, serve, dev-server, npm run dev, npm start)."""
+    command that serves or watches (--watch, serve, dev-server, npm run dev, npm start).
+    test_command_by_path maps a repo-relative path prefix to the test command for files under
+    it and replaces the whole map; pass {} to clear it."""
     ...
 
 

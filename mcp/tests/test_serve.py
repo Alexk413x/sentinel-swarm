@@ -11,19 +11,21 @@ import subprocess
 import sys
 import threading
 import time
+import types
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Iterator
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
-from helpers import make_host
+from helpers import ledger_for, make_host
 
-from swarm_ledger import auth, front, serve
+from swarm_ledger import __version__, auth, front, procs, serve
 from swarm_ledger import hooks as hooks_package
 from swarm_ledger.hooks import run_event
 from swarm_ledger.http_front import LedgerHttpServer
@@ -88,7 +90,9 @@ def test_ensure_server_starts_one_server_per_repo_and_it_exits_after_run_finish(
     url = serve.ensure_server(host, timeout=60)
     info = serve.read_server_info(host)
     assert info is not None
-    assert set(info) == {"url", "port", "pid", "started_at"}
+    assert set(info) == {"url", "port", "pid", "started_at", "version", "plugin_root"}
+    assert info["version"] == __version__
+    assert info["plugin_root"] == str(serve.PLUGIN_ROOT)
     assert url == info["url"] == f"http://127.0.0.1:{info['port']}/mcp"
 
     assert serve.ensure_server(host) == url
@@ -229,7 +233,7 @@ def lean(host: Path) -> Iterator[int]:
         sock,
         host,
         lambda client, headers, path: serve.refusal(client, headers, path, token, port),
-        {"name": "swarm-ledger", "repo_root": str(host), "pid": os.getpid()},
+        serve.health_info(host),
     )
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -316,7 +320,13 @@ def test_the_lean_front_answers_health_without_a_token(host: Path, lean: int) ->
     finally:
         conn.close()
     assert response.status == 200
-    assert data == {"name": "swarm-ledger", "repo_root": str(host), "pid": os.getpid()}
+    assert data == {
+        "name": "swarm-ledger",
+        "repo_root": str(host),
+        "pid": os.getpid(),
+        "version": __version__,
+        "plugin_root": str(serve.PLUGIN_ROOT),
+    }
 
 
 @pytest.mark.parametrize("path", ["/mcp", "/hook/pre_ledger", "/unrouted"])
@@ -325,6 +335,246 @@ def test_the_lean_front_refuses_a_missing_token_with_403(host: Path, lean: int, 
     status, body, _ = _post(lean, path, headers=repo)
     assert status == 403
     assert b"bearer token" in body
+
+
+class Servers:
+    """In-process stand-ins for ledger servers, started on the repo's saved port."""
+
+    def __init__(self, host: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.host = host
+        self.monkeypatch = monkeypatch
+        self.shutdowns = 0
+        self.spawned = 0
+        self.running: list[LedgerHttpServer] = []
+
+    def start(
+        self, health: dict[str, Any] | None = None, *, shutdown_route: bool = True, pid: int = 0
+    ) -> dict[str, Any]:
+        token = auth.ensure_token(self.host)
+        sock = serve.bind_socket(self.host)
+        port = sock.getsockname()[1]
+        front.configure(self.host)
+        body = serve.health_info(self.host) if health is None else health
+        index = len(self.running)
+        httpd = LedgerHttpServer(
+            sock,
+            self.host,
+            lambda client, headers, path: serve.refusal(client, headers, path, token, port),
+            {**body, "pid": pid or os.getpid()},
+            (lambda: self._on_shutdown(index)) if shutdown_route else None,
+        )
+        self.running.append(httpd)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        info = {
+            "url": f"http://127.0.0.1:{port}/mcp",
+            "port": port,
+            "pid": pid or os.getpid(),
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+        serve.write_server_info(serve.server_info_path(self.host), info)
+        return info
+
+    def _on_shutdown(self, index: int) -> None:
+        self.shutdowns += 1
+        threading.Thread(target=self.stop, args=(index,), daemon=True).start()
+
+    def stop(self, index: int) -> None:
+        httpd = self.running[index]
+        httpd.shutdown()
+        httpd.server_close()
+
+    def replace_launch(self) -> None:
+        real_popen = subprocess.Popen
+
+        def fake_popen(command: list[str], **kwargs: Any) -> Any:
+            if str(serve.LAUNCHER) not in command:
+                return real_popen(command, **kwargs)
+            self.spawned += 1
+            self.start()
+            return types.SimpleNamespace(poll=lambda: None)
+
+        self.monkeypatch.setattr(serve.subprocess, "Popen", fake_popen)
+
+    def close(self) -> None:
+        for index in range(len(self.running)):
+            with contextlib.suppress(OSError):
+                self.stop(index)
+        serve.server_info_path(self.host).unlink(missing_ok=True)
+
+
+@pytest.fixture
+def servers(host: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Servers]:
+    stand_ins = Servers(host, monkeypatch)
+    yield stand_ins
+    stand_ins.close()
+
+
+def _set_run_state(host: Path, state: str | None) -> None:
+    ledger = ledger_for(host)
+    if state is not None:
+        ledger.conn.execute("INSERT INTO runs (state) VALUES (?)", (state,))
+    ledger.conn.close()
+
+
+def _old(host: Path, **changes: str) -> dict[str, str]:
+    health = {
+        "name": "swarm-ledger",
+        "repo_root": str(host),
+        "version": "0.0.1",
+        "plugin_root": "/old/install",
+    }
+    return health | changes
+
+
+def test_a_server_of_the_same_version_and_plugin_root_is_reused(
+    host: Path, servers: Servers
+) -> None:
+    info = servers.start()
+    servers.replace_launch()
+    _set_run_state(host, "active")
+    assert serve.ensure_server(host, timeout=5) == info["url"]
+    assert (servers.spawned, servers.shutdowns) == (0, 0)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"version": "0.0.1"},
+        {"plugin_root": "/old/install"},
+        {"version": None},
+        {"plugin_root": None},
+        {"version": None, "plugin_root": None},
+    ],
+    ids=["old version", "other root", "no version", "no root", "reports neither"],
+)
+def test_a_server_that_differs_in_version_or_plugin_root_is_replaced(
+    host: Path, servers: Servers, change: dict[str, str | None]
+) -> None:
+    health = {**serve.health_info(host), **change}
+    servers.start({key: value for key, value in health.items() if value is not None})
+    servers.replace_launch()
+    _set_run_state(host, "paused")
+    url = serve.ensure_server(host, timeout=10)
+    assert (servers.spawned, servers.shutdowns) == (1, 1)
+    info = serve.read_server_info(host)
+    assert info is not None and info["url"] == url
+
+
+def test_a_mismatched_server_with_no_run_is_replaced(host: Path, servers: Servers) -> None:
+    servers.start(_old(host))
+    servers.replace_launch()
+    _set_run_state(host, None)
+    serve.ensure_server(host, timeout=10)
+    assert (servers.spawned, servers.shutdowns) == (1, 1)
+
+
+def test_a_mismatched_server_with_an_active_run_is_refused(host: Path, servers: Servers) -> None:
+    servers.start(_old(host))
+    servers.replace_launch()
+    _set_run_state(host, "active")
+    with pytest.raises(LedgerError) as raised:
+        serve.ensure_server(host, timeout=5)
+    message = str(raised.value)
+    for fact in ("0.0.1", __version__, "/old/install", str(serve.PLUGIN_ROOT)):
+        assert fact in message
+    assert "ledger.py pause --reason" in message
+    assert (servers.spawned, servers.shutdowns) == (0, 0)
+
+
+def test_a_refusal_names_a_server_that_reports_neither_version_nor_root_as_unknown(
+    host: Path, servers: Servers
+) -> None:
+    servers.start({"name": "swarm-ledger", "repo_root": str(host)})
+    _set_run_state(host, "active")
+    with pytest.raises(LedgerError, match="unknown"):
+        serve.ensure_server(host, timeout=5)
+
+
+def test_a_launch_may_replace_a_mismatched_server_for_a_run_it_just_resumed(
+    host: Path, servers: Servers
+) -> None:
+    servers.start(_old(host))
+    servers.replace_launch()
+    _set_run_state(host, "active")
+    serve.ensure_server(host, timeout=10, replace_active=True)
+    assert (servers.spawned, servers.shutdowns) == (1, 1)
+
+
+def test_a_server_without_the_shutdown_route_is_terminated_by_its_recorded_pid(
+    host: Path, servers: Servers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    servers.start(_old(host), shutdown_route=False, pid=4242)
+    servers.replace_launch()
+    terminated: list[procs.Proc] = []
+
+    def terminate(proc: procs.Proc) -> bool:
+        terminated.append(proc)
+        servers.stop(0)
+        return True
+
+    monkeypatch.setattr(procs, "created_of", lambda pid: 1_000)
+    monkeypatch.setattr(procs, "created_epoch_ms", lambda created: 1)
+    monkeypatch.setattr(procs, "terminate", terminate)
+    serve.ensure_server(host, timeout=10)
+    assert [(proc.pid, proc.created) for proc in terminated] == [(4242, 1_000)]
+    assert servers.spawned == 1
+
+
+def test_a_recorded_pid_that_started_after_the_server_is_not_terminated(
+    host: Path, servers: Servers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    servers.start(_old(host), shutdown_route=False, pid=4242)
+    monkeypatch.setattr(procs, "created_of", lambda pid: 1_000)
+    monkeypatch.setattr(procs, "created_epoch_ms", lambda created: 4_000_000_000_000)
+    monkeypatch.setattr(procs, "terminate", lambda proc: pytest.fail("killed another process"))
+    with pytest.raises(LedgerError, match="cannot stop"):
+        serve.ensure_server(host, timeout=5)
+
+
+def test_the_shutdown_route_needs_the_token_and_stops_the_server(
+    host: Path, servers: Servers
+) -> None:
+    info = servers.start()
+    assert _post(info["port"], serve.SHUTDOWN_PATH)[0] == 403
+    assert servers.shutdowns == 0
+    assert _post(info["port"], serve.SHUTDOWN_PATH, headers=auth.auth_headers(host))[0] == 200
+    assert _wait_for(lambda: not serve.is_answering(info, host))
+    assert servers.shutdowns == 1
+
+
+def test_a_server_without_the_shutdown_route_answers_404(host: Path, servers: Servers) -> None:
+    info = servers.start(shutdown_route=False)
+    assert _post(info["port"], serve.SHUTDOWN_PATH, headers=auth.auth_headers(host))[0] == 404
+
+
+def test_serve_main_refuses_a_mismatched_server_while_a_run_is_active(
+    host: Path, servers: Servers, capsys: pytest.CaptureFixture[str]
+) -> None:
+    servers.start(_old(host))
+    _set_run_state(host, "active")
+    assert serve.main(["--repo", str(host)]) == 1
+    err = capsys.readouterr().err
+    assert "0.0.1" in err and "ledger.py pause --reason" in err
+
+
+def test_serve_main_prints_the_url_of_a_current_server(
+    host: Path, servers: Servers, capsys: pytest.CaptureFixture[str]
+) -> None:
+    info = servers.start()
+    assert serve.main(["--repo", str(host)]) == 0
+    assert capsys.readouterr().out.strip() == info["url"]
+
+
+def test_serve_main_replaces_a_mismatched_server_before_it_serves(
+    host: Path, servers: Servers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    servers.start(_old(host))
+    served: list[Path] = []
+    monkeypatch.setattr(serve, "serve", served.append)
+    _set_run_state(host, None)
+    assert serve.main(["--repo", str(host)]) == 0
+    assert servers.shutdowns == 1
+    assert served == [host.resolve()]
 
 
 def _load_shim(repo_root: Path) -> Any:

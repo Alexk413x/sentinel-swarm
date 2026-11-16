@@ -133,6 +133,50 @@ def test_the_role_file_model_and_the_permission_mode_setting_are_used(env):
     assert _option(command, "--permission-mode") == "plan"
 
 
+def test_a_role_file_model_that_is_not_the_first_approved_model_warns_and_still_wins(
+    env, capsys: pytest.CaptureFixture[str]
+):
+    setup.run_setup(env["repo"])
+    path = setup.role_file(env["repo"], "oracle")
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("model: opus", "model: fable"), "utf-8"
+    )
+
+    launch.main(["--repo", str(env["repo"]), "go"])
+
+    assert _option(env["run"].calls[-1]["command"], "--model") == "fable"
+    err = capsys.readouterr().err
+    assert err.count("warning:") == 1
+    assert "fable" in err and "opus" in err
+    assert "role file wins" in err
+    assert "--model opus" in err
+    assert ".claude/agents/swarm-oracle.md" in err
+
+
+def test_a_role_file_model_that_matches_the_first_approved_model_does_not_warn(
+    env, capsys: pytest.CaptureFixture[str]
+):
+    setup.run_setup(env["repo"])
+
+    launch.main(["--repo", str(env["repo"]), "go"])
+
+    assert "warning" not in capsys.readouterr().err
+
+
+def test_a_model_named_at_launch_does_not_warn_about_the_role_file(
+    env, capsys: pytest.CaptureFixture[str]
+):
+    setup.run_setup(env["repo"])
+    path = setup.role_file(env["repo"], "oracle")
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("model: opus", "model: fable"), "utf-8"
+    )
+
+    launch.main(["--repo", str(env["repo"]), "--model", "opus", "go"])
+
+    assert "role file" not in capsys.readouterr().err
+
+
 def test_an_oracle_file_without_a_model_uses_the_approved_list(env):
     setup.run_setup(env["repo"])
     path = setup.role_file(env["repo"], "oracle")

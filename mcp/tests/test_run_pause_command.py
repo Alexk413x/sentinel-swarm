@@ -29,7 +29,8 @@ def _ledger_db(ledger: Ledger, monkeypatch: pytest.MonkeyPatch) -> None:
 def started_servers(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
     started: list[Path] = []
 
-    def fake_ensure(root: Path) -> str:
+    def fake_ensure(root: Path, **options: object) -> str:
+        assert options == {"replace_active": True}
         started.append(root)
         return "http://127.0.0.1:1234/mcp"
 
@@ -129,6 +130,18 @@ def test_pause_command_refuses_an_empty_reason(
 
     assert "reason" in capsys.readouterr().err
     assert _run(ledger)["state"] == "active"
+
+
+def test_pause_command_never_starts_or_checks_the_ledger_server(
+    ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(*args: object, **kwargs: object) -> str:
+        raise AssertionError("pause touched the ledger server")
+
+    monkeypatch.setattr(serve, "ensure_server", refuse)
+    bootstrap_module(ledger)
+
+    assert _pause(ledger) == 0
 
 
 def test_resume_command_clears_the_pause_and_files_a_wake_directive(

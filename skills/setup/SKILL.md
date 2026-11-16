@@ -53,6 +53,10 @@ Then fill in the test settings:
 - `test_command_by_scope` takes a command per scope (`file`, `module`, `phase`,
   `full`). Use it for what only one scope needs, such as an environment variable that
   turns on a slow benchmark: put it in `test_command`, and every handoff runs it.
+- `test_command_by_path` maps a repo-relative folder to its own test command, for a
+  repo with more than one test runner, such as `apps/web` and `packages/api`. Setup
+  prints a block to paste when it finds several packages with a `test` script. It
+  never edits the settings file.
 - `allowed_skips` names the skips the environment causes on purpose, by text in the
   skip's location or reason. Every other skip fails its run and blocks every handoff
   and phase review. For pytest, add `-rs` to the command so the ledger can read the

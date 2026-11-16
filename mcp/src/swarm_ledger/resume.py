@@ -36,8 +36,9 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(f"cannot resume the run: {exc}\n")
         return 1
     # The watchdog that wakes the Oracle runs in the ledger server, which exits while paused.
+    # The run was paused a moment ago, so a server from another version may be replaced.
     try:
-        serve.ensure_server(root)
+        serve.ensure_server(root, replace_active=True)
     except LedgerError as exc:
         sys.stderr.write(
             f"the run is active, but the ledger server did not start: {exc}\n"

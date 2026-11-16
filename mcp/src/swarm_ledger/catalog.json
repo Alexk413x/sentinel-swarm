@@ -345,7 +345,7 @@
   {
    "name": "profile_set",
    "title": "Profile Set",
-   "description": "Sets the run's test, build, and lint commands; the Oracle calls this. Refuses a build\ncommand that serves or watches (--watch, serve, dev-server, npm run dev, npm start).",
+   "description": "Sets the run's test, build, and lint commands; the Oracle calls this. Refuses a build\ncommand that serves or watches (--watch, serve, dev-server, npm run dev, npm start).\ntest_command_by_path maps a repo-relative path prefix to the test command for files under\nit and replaces the whole map; pass {} to clear it.",
    "inputSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -380,6 +380,20 @@
       "anyOf": [
        {
         "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "test_command_by_path": {
+      "anyOf": [
+       {
+        "additionalProperties": {
+         "type": "string"
+        },
+        "type": "object"
        },
        {
         "type": "null"

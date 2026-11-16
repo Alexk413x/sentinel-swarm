@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 import socket
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -17,9 +18,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from . import auth, lock, sessions
+from . import __version__, auth, lock, procs, sessions
 from .agentfiles import LEDGER_SERVER
-from .db import ledger_path
+from .db import ledger_path, open_readonly
 from .identity import LedgerError
 from .paths import same_path, unlink_quiet
 from .pool import Pool, base_python, hidden_console_flags, worker_command
@@ -27,11 +28,13 @@ from .pool import Pool, base_python, hidden_console_flags, worker_command
 if TYPE_CHECKING:
     from .settings import Settings
 
-LAUNCHER = Path(__file__).resolve().parents[2] / "launch" / "ledger.py"
+PLUGIN_ROOT = Path(__file__).resolve().parents[3]
+LAUNCHER = PLUGIN_ROOT / "mcp" / "launch" / "ledger.py"
 HOST = "127.0.0.1"
 MCP_PATH = "/mcp"
 HEALTH_PATH = "/health"
 HOOK_PATH = "/hook"
+SHUTDOWN_PATH = "/shutdown"
 REPO_HEADER = "X-Sentinel-Swarm-Repo"
 SERVER_FILE = "server.json"
 PORT_FILE = "server.port"
@@ -39,6 +42,9 @@ LOG_FILE = "server.log"
 EXIT_DELAY_S = 3.0
 ORACLE_TURN_WAIT_S = 300.0
 START_TIMEOUT_S = 30.0
+STOP_TIMEOUT_S = 10.0
+_PID_REUSE_GRACE_MS = 60_000
+_SHUTDOWN_DELAY_S = 0.2
 _PROBE_TIMEOUT_S = 2.0
 _LOOPBACK_CLIENTS = frozenset({"127.0.0.1", "::1"})
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost"})
@@ -107,30 +113,167 @@ def server_url(repo_root: Path) -> str:
     return str(info["url"])
 
 
-def is_answering(info: dict[str, Any], repo_root: Path) -> bool:
+def health_info(repo_root: Path) -> dict[str, Any]:
+    return {
+        "name": LEDGER_SERVER,
+        "repo_root": str(repo_root),
+        "pid": os.getpid(),
+        "version": __version__,
+        "plugin_root": str(PLUGIN_ROOT),
+    }
+
+
+def _probe(info: dict[str, Any], repo_root: Path) -> dict[str, Any] | None:
     url = f"http://{HOST}:{info['port']}{HEALTH_PATH}"
     try:
         with urllib.request.urlopen(url, timeout=_PROBE_TIMEOUT_S) as response:
             data = json.loads(response.read().decode("utf-8"))
     except (OSError, ValueError, urllib.error.URLError):
-        return False
-    return (
+        return None
+    if (
         isinstance(data, dict)
         and data.get("name") == LEDGER_SERVER
         and same_path(str(data.get("repo_root") or ""), repo_root)
-    )
-
-
-def _answering_url(repo_root: Path) -> str | None:
-    info = read_server_info(repo_root)
-    if info is not None and is_answering(info, repo_root):
-        return str(info["url"])
+    ):
+        return data
     return None
 
 
-def ensure_server(repo_root: Path, timeout: float = START_TIMEOUT_S) -> str:
+def is_answering(info: dict[str, Any], repo_root: Path) -> bool:
+    return _probe(info, repo_root) is not None
+
+
+def _is_current(health: dict[str, Any]) -> bool:
+    return health.get("version") == __version__ and same_path(
+        health.get("plugin_root"), PLUGIN_ROOT
+    )
+
+
+def _run_is_active(repo_root: Path) -> bool:
+    from . import env
+
+    path = env.db_path_for(repo_root)
+    if not path.is_file():
+        return False
+    try:
+        conn = open_readonly(path)
+        try:
+            row = conn.execute("SELECT 1 FROM runs WHERE state = 'active' LIMIT 1").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc):
+            return False
+        raise LedgerError(f"cannot read the run state in {path}: {exc}") from None
+    return row is not None
+
+
+def _stale_message(health: dict[str, Any]) -> str:
+    version = health.get("version") or "unknown"
+    root = health.get("plugin_root") or "unknown"
+    return (
+        f"the ledger server that answers runs version {version} from {root}, "
+        f"and this plugin is version {__version__} at {PLUGIN_ROOT}"
+    )
+
+
+def _request_shutdown(info: dict[str, Any], repo_root: Path) -> bool:
+    try:
+        token = auth.read_token(repo_root)
+    except LedgerError:
+        return False
+    request = urllib.request.Request(
+        f"http://{HOST}:{info['port']}{SHUTDOWN_PATH}",
+        data=b"{}",
+        method="POST",
+        headers={auth.AUTHORIZATION: auth.bearer(token), "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=_PROBE_TIMEOUT_S) as response:
+            return bool(response.status == 200)
+    except (OSError, ValueError):
+        return False
+
+
+def _started_ms(info: dict[str, Any]) -> float | None:
+    try:
+        return datetime.fromisoformat(str(info["started_at"])).timestamp() * 1000
+    except (KeyError, ValueError):
+        return None
+
+
+def _terminate_recorded(info: dict[str, Any], health: dict[str, Any]) -> bool:
+    pid = info.get("pid")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0 or health.get("pid") != pid:
+        return False
+    created = procs.created_of(pid)
+    started = _started_ms(info)
+    if created is None or started is None:
+        return False
+    # A pid that started after the server wrote server.json belongs to another process.
+    if procs.created_epoch_ms(created) > started + _PID_REUSE_GRACE_MS:
+        return False
+    return procs.terminate(procs.Proc(pid, 0, created, ""))
+
+
+def _wait_until_stopped(info: dict[str, Any], repo_root: Path, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not is_answering(info, repo_root):
+            return True
+        time.sleep(_POLL_S)
+    return not is_answering(info, repo_root)
+
+
+def _stop_server(info: dict[str, Any], health: dict[str, Any], repo_root: Path) -> None:
+    stopped = _request_shutdown(info, repo_root) and _wait_until_stopped(
+        info, repo_root, STOP_TIMEOUT_S
+    )
+    if not stopped and _terminate_recorded(info, health):
+        stopped = _wait_until_stopped(info, repo_root, STOP_TIMEOUT_S)
+        if stopped:
+            lock.release_owned(repo_root, int(info["pid"]))
+            _remove_record(server_info_path(repo_root), int(info["pid"]))
+    if not stopped:
+        raise LedgerError(
+            f"cannot stop the ledger server on port {info['port']} (pid {info.get('pid')}); "
+            "stop it by hand, then launch again"
+        )
+
+
+def _replace_stale(
+    repo_root: Path, info: dict[str, Any], health: dict[str, Any], replace_active: bool
+) -> None:
+    if not replace_active and _run_is_active(repo_root):
+        raise LedgerError(
+            f"{_stale_message(health)}, and a run is active, so the server stays up. "
+            "Pause the run with `ledger.py pause --reason <text>`, then launch again."
+        )
+    _stop_server(info, health, repo_root)
+
+
+def _answering(repo_root: Path) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    info = read_server_info(repo_root)
+    health = _probe(info, repo_root) if info is not None else None
+    return None if info is None or health is None else (info, health)
+
+
+def _current_url(repo_root: Path, replace_active: bool = False) -> str | None:
+    answering = _answering(repo_root)
+    if answering is None:
+        return None
+    info, health = answering
+    if _is_current(health):
+        return str(info["url"])
+    _replace_stale(repo_root, info, health, replace_active)
+    return None
+
+
+def ensure_server(
+    repo_root: Path, timeout: float = START_TIMEOUT_S, *, replace_active: bool = False
+) -> str:
     root = repo_root.resolve()
-    url = _answering_url(root)
+    url = _current_url(root, replace_active)
     if url is not None:
         return url
 
@@ -150,9 +293,9 @@ def ensure_server(repo_root: Path, timeout: float = START_TIMEOUT_S) -> str:
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        url = _answering_url(root)
-        if url is not None:
-            return url
+        answering = _answering(root)
+        if answering is not None and _is_current(answering[1]):
+            return str(answering[0]["url"])
         exit_code = process.poll()
         if exit_code is not None and exit_code != 0:
             raise LedgerError(
@@ -203,13 +346,17 @@ def refusal(
     return None
 
 
-def _remove_if_ours(path: Path) -> None:
+def _remove_record(path: Path, pid: int) -> None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return
-    if isinstance(data, dict) and data.get("pid") == os.getpid():
+    if isinstance(data, dict) and data.get("pid") == pid:
         unlink_quiet(path)
+
+
+def _remove_if_ours(path: Path) -> None:
+    _remove_record(path, os.getpid())
 
 
 def write_server_info(path: Path, info: dict[str, Any]) -> None:
@@ -240,6 +387,12 @@ def _exit_now(path: Path, repo_root: Path) -> None:
     # os._exit, not sys.exit: this runs on a timer thread, and the HTTP server owns the main
     # thread.
     os._exit(0)
+
+
+def shutdown_later(path: Path, repo_root: Path, delay: float = _SHUTDOWN_DELAY_S) -> None:
+    timer = threading.Timer(delay, _exit_now, args=(path, repo_root))
+    timer.daemon = True
+    timer.start()
 
 
 def stop_finished_oracle(session_id: str | None, wait_s: float = ORACLE_TURN_WAIT_S) -> str:
@@ -296,15 +449,19 @@ def serve(repo_root: Path) -> None:
         sock,
         root,
         lambda client, headers, route: refusal(client, headers, route, token, port),
-        {"name": LEDGER_SERVER, "repo_root": str(root), "pid": os.getpid()},
+        health_info(root),
+        lambda: shutdown_later(path, root),
     )
     info = {
         "url": f"http://{HOST}:{port}{MCP_PATH}",
         "port": port,
         "pid": os.getpid(),
         "started_at": datetime.now(timezone.utc).isoformat(),
+        "version": __version__,
+        "plugin_root": str(PLUGIN_ROOT),
     }
     write_server_info(path, info)
+    print(f"ledger server {__version__} from {PLUGIN_ROOT}", file=sys.stderr, flush=True)
     _start_watchdog(root, path, settings)
     try:
         httpd.serve_forever()
@@ -358,10 +515,14 @@ def main(argv: list[str] | None = None) -> int:
     from . import env
 
     root = (args.repo or env.repo_root()).resolve()
-    if args.detach:
-        print(ensure_server(root))
-        return 0
-    url = _answering_url(root)
+    try:
+        if args.detach:
+            print(ensure_server(root))
+            return 0
+        url = _current_url(root)
+    except LedgerError as exc:
+        sys.stderr.write(f"cannot start the ledger server: {exc}\n")
+        return 1
     if url is not None:
         print(url)
         return 0

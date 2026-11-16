@@ -136,6 +136,26 @@ def find_install(plugin_id: str, repo: Path, registry: Path | None = None) -> Pa
     raise ShimError(f"{plugin_id} is not installed for {repo}")
 
 
+def recorded_plugin_root(repo: Path) -> Path | None:
+    try:
+        info = json.loads((repo / ".sentinel-swarm" / SERVER_FILE).read_text(encoding="utf-8"))
+        root = Path(info["plugin_root"])
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+    usable = root.is_absolute() and (root / "mcp" / "launch" / "ledger.py").is_file()
+    return root if usable else None
+
+
+def plugin_install(plugin_id: str, repo: Path) -> Path:
+    # The running server's own install, so a fallback runs the code the server runs; after an
+    # upgrade the registry names the newer install while the old server keeps serving.
+    if plugin_id == PLUGIN_NAME:
+        recorded = recorded_plugin_root(repo)
+        if recorded is not None:
+            return recorded
+    return find_install(plugin_id, repo)
+
+
 def _read_servers(path: Path) -> dict:
     data = json.loads(path.read_text(encoding="utf-8"))
     servers = data.get("mcpServers") if isinstance(data, dict) else None
@@ -215,7 +235,7 @@ def failure_answer(event: str, reason: str) -> dict:
 
 
 def ledger_command(repo: Path, module: str, *args: str) -> tuple[list[str], dict[str, str]]:
-    install = find_install(PLUGIN_NAME, repo)
+    install = plugin_install(PLUGIN_NAME, repo)
     launcher = install / "mcp" / "launch" / "ledger.py"
     if not launcher.is_file():
         raise ShimError(f"the ledger launcher {launcher} is missing")
@@ -350,7 +370,7 @@ def hook_main(event: str) -> int:
 
 
 def server_command(plugin_id: str, server: str) -> tuple[list[str], dict[str, str]]:
-    install = find_install(plugin_id, repo_root())
+    install = plugin_install(plugin_id, repo_root())
     entry = plugin_servers(install).get(server)
     if entry is None:
         raise ShimError(f"{plugin_id} at {install} has no MCP server named {server}")

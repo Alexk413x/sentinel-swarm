@@ -17,7 +17,10 @@ message. The Oracle then calls, in order:
 3. `run_start(prd, session_id)`. It opens the run and registers the Oracle.
 4. `repo_check(fetch)`, then `repo_branch_create(name)` or a question to the user. See
    "Git in the host repo".
-5. `profile_set(test_command, build_command, lint_command)`. It refuses a build command
+5. `profile_set(test_command, build_command, lint_command, test_command_by_path)`.
+   `test_command_by_path` replaces the run's whole map of path prefixes to test
+   commands, and `{}` clears it; the call refuses an entry whose key is not a
+   repo-relative folder or whose command is empty. It refuses a build command
    that serves or watches, because the Driver tests one build made at the start of an
    exploration: one whose words include `--watch`, `serve`, or `dev-server`, or a
    `dev` or `start` script run through `npm`, `yarn`, or `pnpm` (`npm run dev`,

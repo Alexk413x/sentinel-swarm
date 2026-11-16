@@ -45,7 +45,7 @@ DEFAULT_MAX_WORKERS = 8
 DEFAULT_HEADROOM_MB = 1500
 DEFAULT_PARK_BLOCKED_MINUTES = 10
 _FALSE_WORDS = frozenset({"false", "no", "off", "0"})
-PROFILE_KEYS = ("test_command", "build_command", "lint_command")
+PROFILE_KEYS = ("test_command", "build_command", "lint_command", "test_command_by_path")
 SHELL_OPERATORS = re.compile(r"[;&|<>`\n]|\$\(")
 TEST_SCOPES = ("file", "module", "phase", "full")
 DEFAULT_TEST_TIMEOUT_S = 600
@@ -108,6 +108,30 @@ def normalize_scope_commands(raw: object) -> dict[str, str]:
         for scope in TEST_SCOPES
         if raw.get(scope) is not None and str(raw[scope]).strip()
     }
+
+
+def normalize_path_prefix(raw: object) -> str | None:
+    text = str(raw).strip().replace("\\", "/")
+    while text.startswith("./"):
+        text = text[2:]
+    text = text.rstrip("/")
+    if text.startswith("/") or re.match(r"[A-Za-z]:", text):
+        return None
+    if any(segment in ("", ".", "..") for segment in text.split("/")):
+        return None
+    return text
+
+
+def normalize_path_commands(raw: object) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    found: dict[str, str] = {}
+    for key, value in raw.items():
+        prefix = normalize_path_prefix(key)
+        command = str(value).strip() if value is not None else ""
+        if prefix is not None and command:
+            found[prefix] = command
+    return found
 
 
 def normalize_parallelism_cap(raw: object) -> int | None:
@@ -289,6 +313,9 @@ class Settings:
     build_command: str | None = None
     lint_command: str | None = None
     test_command_by_scope: dict[str, str] = field(default_factory=dict)
+    # Repo-relative path prefix to a test command template: a file under the prefix, or a
+    # module, phase, or full run that reaches it, runs that command.
+    test_command_by_path: dict[str, str] = field(default_factory=dict)
     test_timeout_s: int = DEFAULT_TEST_TIMEOUT_S
     full_target: str | None = None
     allowed_skips: list[str] = field(default_factory=list)
@@ -355,7 +382,12 @@ class Settings:
         if isinstance(data, dict):
             for key in PROFILE_KEYS:
                 if key in data:
-                    setattr(self, key, data[key])
+                    value = data[key]
+                    setattr(
+                        self,
+                        key,
+                        normalize_path_commands(value) if key == "test_command_by_path" else value,
+                    )
 
 
 def _frontmatter(text: str) -> dict[str, Any]:
@@ -424,6 +456,7 @@ def load_settings(repo_root: Path) -> Settings:
         build_command=data.get("build_command") or defaults.build_command,
         lint_command=data.get("lint_command") or defaults.lint_command,
         test_command_by_scope=normalize_scope_commands(data.get("test_command_by_scope")),
+        test_command_by_path=normalize_path_commands(data.get("test_command_by_path")),
         test_timeout_s=normalize_test_timeout(data.get("test_timeout_s")),
         full_target=str(data["full_target"]).strip() or None
         if data.get("full_target") is not None
