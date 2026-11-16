@@ -24,6 +24,10 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
 - The CLI has no command that sends a message to a session. (2026-09-23)
 - Claude Code writes one API response as one transcript line per content block, each
   repeating the response's usage. (2026-09-24)
+- A transcript also holds records of other types: `api-request-blob` (keys `hash`,
+  `message`, `sessionId`, `type`) replays a request's `tool_use` blocks after their
+  `tool_result` records, and `cost-state` and `last-prompt` close the file. Only
+  `assistant` and `user` records are the conversation. (2026-11-16)
 - Sonnet, Opus, and Fable run with a 1,000,000-token context window in Claude Code, with
   or without `[1m]`. Haiku runs with 200,000. (2026-09-24)
 - `--strict-mcp-config` with `--mcp-config` starts only the listed MCP servers. Plugin

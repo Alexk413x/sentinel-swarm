@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import memory, notify, pauses, permission, procs, rekey, sessions, testrun, transcript, wake
+from .capacity import WAITING_FOR_MEMORY
 from .clock import parse_stamp, stamp, utcnow
 from .db import write_tx
 from .identity import ROLES, LedgerError
@@ -406,6 +407,28 @@ def _landed_wait_findings(
     ]
 
 
+def _relay_parent(target: dict, by_id: dict[str, dict]) -> dict | None:
+    # hooks pre_send_message lets the Oracle message its children and any agent that does not
+    # work, so the first ancestor that passes that gate carries the wake-up.
+    if target["state"] != "working":
+        return None
+    seen = {target["agent_id"]}
+    parent = by_id.get(target["parent_agent_id"] or "")
+    while parent is not None and parent["agent_id"] not in seen:
+        if parent["role"] == "oracle":
+            return None
+        if parent["state"] != "working" or _child_of_oracle(parent, by_id):
+            return parent
+        seen.add(parent["agent_id"])
+        parent = by_id.get(parent["parent_agent_id"] or "")
+    return None
+
+
+def _child_of_oracle(agent: dict, by_id: dict[str, dict]) -> bool:
+    parent = by_id.get(agent["parent_agent_id"] or "")
+    return parent is not None and parent["role"] == "oracle"
+
+
 def _unsent_findings(
     conn: sqlite3.Connection,
     run_id: int,
@@ -433,11 +456,21 @@ def _unsent_findings(
             continue
         if owed is None or now - owed < after:
             continue
+        if target.get("park_reason") == WAITING_FOR_MEMORY:
+            continue
         seen.add(row["to_agent_id"])
         pointer = " ".join(str(row["pointer"]).split())
         call = _wake_call(target, by_session)
         step = f"Wake it: {call}."
-        if target.get("parked_at"):
+        parent = None if row["from_role"] == "oracle" else _relay_parent(target, by_id)
+        if parent is not None and "SendMessage(" in call:
+            call = _wake_call(parent, by_session)
+            step = (
+                f"The Oracle's SendMessage to {target['name']} is refused: it is working and is "
+                f"not the Oracle's child. Wake its parent {parent['name']}: {call}. The parent "
+                f"can message {target['name']}."
+            )
+        elif target.get("parked_at"):
             step = (
                 f"The ledger resumes it itself once memory allows ({target['park_reason']}). "
                 f"To wake it now: {call}."
@@ -1141,6 +1174,13 @@ def _pause_reason(conn: sqlite3.Connection, run_id: int) -> str | None:
     return row["reason"] if row is not None else None
 
 
+ARM_WATCHDOG = (
+    f"Arm the watchdog Monitor again with {MONITOR_CALL}, then read directive_inbox and act on "
+    "what it holds."
+)
+OWED_REASON = "watchdog_directive"
+
+
 def directive_body(finding: Finding) -> str:
     session = finding.session_name or "none recorded"
     return (
@@ -1190,11 +1230,66 @@ def _directive_open(conn: sqlite3.Connection, directive_id: int | None) -> bool:
     return row is not None and row["state"] == "open"
 
 
+def digest_body(findings: Sequence[Finding]) -> str:
+    lines = [f"Watchdog pass: {len(findings)} findings"]
+    for finding in findings:
+        session = finding.session_name or "none recorded"
+        step = " ".join(finding.next_step.split())
+        lines.append(
+            f"- {finding.kind}: {finding.name} (session {session}): "
+            f"{' '.join(finding.detail.split())}. Next: {step}"
+        )
+    lines.append(
+        "Then resolve this directive with directive_resolve once every finding above is handled."
+    )
+    return "\n".join(lines)
+
+
+def _needs_own_directive(conn: sqlite3.Connection, finding: Finding) -> bool:
+    if finding.kind in USER_KINDS or finding.kind == "driver_overdue":
+        return True
+    if finding.kind not in DRIVER_ERRORS:
+        return False
+    agent = conn.execute(
+        "SELECT role FROM agents WHERE agent_id = ?", (finding.agent_id,)
+    ).fetchone()
+    return agent is not None and agent["role"] == "driver"
+
+
+def _file_directives(
+    conn: sqlite3.Connection, run_id: int, due: list[tuple[Finding, int]], at: str
+) -> None:
+    shared: list[tuple[Finding, int]] = []
+    groups: list[list[tuple[Finding, int]]] = []
+    for item in due:
+        if _needs_own_directive(conn, item[0]):
+            groups.append([item])
+        else:
+            shared.append(item)
+    if shared:
+        groups.append(shared)
+    for group in groups:
+        body = (
+            directive_body(group[0][0])
+            if len(group) == 1
+            else digest_body([finding for finding, _ in group])
+        )
+        cur = conn.execute(
+            "INSERT INTO directives (run_id, source, sender_name, body, created_at) "
+            "VALUES (?, 'watchdog', 'watchdog', ?, ?)",
+            (run_id, body, at),
+        )
+        conn.executemany(
+            "UPDATE watchdog_findings SET reported_at = ?, directive_id = ? WHERE finding_id = ?",
+            [(at, cur.lastrowid, finding_id) for _, finding_id in group],
+        )
+
+
 def record(
     conn: sqlite3.Connection, run_id: int, findings: list[Finding], now: datetime
 ) -> list[dict]:
     at = stamp(now)
-    reported: list[dict] = []
+    due: list[tuple[Finding, int]] = []
     with write_tx(conn):
         live = {
             _identity(row["kind"], row["agent_id"], row["agent_name"]): dict(row)
@@ -1222,7 +1317,7 @@ def record(
                     "first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)",
                     (run_id, finding.agent_id, finding.kind, finding.detail, at, at),
                 )
-                finding_id = cur.lastrowid
+                finding_id = int(cur.lastrowid or 0)
                 if _needs_confirmation(finding.kind):
                     continue
             else:
@@ -1237,23 +1332,16 @@ def record(
                     not reopened or _directive_open(conn, row["directive_id"])
                 ):
                     continue
-            cur = conn.execute(
-                "INSERT INTO directives (run_id, source, sender_name, body, created_at) "
-                "VALUES (?, 'watchdog', 'watchdog', ?, ?)",
-                (run_id, directive_body(finding), at),
+            due.append((finding, finding_id))
+        _file_directives(conn, run_id, due, at)
+        reported = [
+            dict(
+                conn.execute(
+                    "SELECT * FROM watchdog_findings WHERE finding_id = ?", (finding_id,)
+                ).fetchone()
             )
-            conn.execute(
-                "UPDATE watchdog_findings SET reported_at = ?, directive_id = ? "
-                "WHERE finding_id = ?",
-                (at, cur.lastrowid, finding_id),
-            )
-            reported.append(
-                dict(
-                    conn.execute(
-                        "SELECT * FROM watchdog_findings WHERE finding_id = ?", (finding_id,)
-                    ).fetchone()
-                )
-            )
+            for _, finding_id in due
+        ]
         for key, row in live.items():
             if key not in seen:
                 conn.execute(
@@ -1629,17 +1717,19 @@ class Watchdog:
         running = entry is not None and sessions.is_running(entry)
         if running and str((entry or {}).get("status") or "").lower() == "busy":
             return
-        pending = self.conn.execute(
-            "SELECT COUNT(*) AS n, MIN(directive_id) AS first FROM directives WHERE run_id = ? "
-            "AND source = 'watchdog' AND state = 'open' AND notified_at IS NULL "
-            "AND created_at <= ?",
+        rows = self.conn.execute(
+            "SELECT d.directive_id, d.created_at, (SELECT COUNT(*) FROM watchdog_findings f "
+            "WHERE f.directive_id = d.directive_id) AS findings FROM directives d "
+            "WHERE d.run_id = ? AND d.source = 'watchdog' AND d.state = 'open' "
+            "AND d.notified_at IS NULL AND d.created_at <= ? ORDER BY d.directive_id",
             (run["run_id"], stamp(now - self.interval)),
-        ).fetchone()
-        waiting = int(pending["n"])
+        ).fetchall()
+        waiting = sum(max(1, int(row["findings"])) for row in rows)
         if not waiting:
             return
         if running:
-            self._oracle_unreachable(run, oracle, entry, waiting, pending["first"])
+            if not self._owe_directive_wakeup(run, oracle, waiting, rows[0]["created_at"], now):
+                self._oracle_unreachable(run, oracle, entry, waiting, rows[0]["directive_id"])
             return
         attempts = [
             parse_stamp(row["at"])
@@ -1697,6 +1787,26 @@ class Watchdog:
                 (agent_id, oracle["state"], WAKE_STATE, reason, stamp(now)),
             )
         self._log(reason)
+
+    def _owe_directive_wakeup(
+        self, run: sqlite3.Row, oracle: sqlite3.Row, count: int, since: str, now: datetime
+    ) -> bool:
+        last = self.conn.execute(
+            "SELECT created_at, sent_at FROM wakeups WHERE from_agent_id = ? "
+            "AND to_agent_id = ? AND reason = ? ORDER BY wakeup_id DESC LIMIT 1",
+            (oracle["agent_id"], oracle["agent_id"], OWED_REASON),
+        ).fetchone()
+        if last is not None:
+            owed_at = parse_stamp(last["created_at"]) or now
+            if last["sent_at"] is None or owed_at >= (parse_stamp(since) or now):
+                return now - owed_at < self.interval
+        message = f"The watchdog reported {count} finding(s). {ARM_WATCHDOG}"
+        with write_tx(self.conn) as conn:
+            pauses.owe_oracle_wakeup(
+                conn, run["run_id"], oracle["agent_id"], OWED_REASON, message, now
+            )
+        self._log("owed the idle Oracle a wake-up for the unread watchdog directives")
+        return True
 
     def _oracle_unreachable(
         self, run: sqlite3.Row, oracle: sqlite3.Row, entry: dict | None, count: int, first: int

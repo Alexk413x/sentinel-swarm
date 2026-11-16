@@ -504,6 +504,7 @@ def test_the_stop_hook_delivers_a_recorded_test_result_once(
     assert events.handle_self_owed(ledger, {"session_id": coder["agent_id"]}) == {
         "text": None,
         "running": 0,
+        "poll": True,
     }
 
 

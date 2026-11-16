@@ -62,6 +62,8 @@ from .settings import Settings, load_settings
 from .waits import WaitsMixin, open_file_waits
 
 _RESUME_POINTER = "Re-read your brief and your inbox in the ledger."
+# The sender's mod delivers a wake-up first; the recipient takes one only after this long.
+RECIPIENT_TAKES_AFTER_S = 60
 _DEFERRED_RESUME = "resume_deferred"
 _PHASE_STATES = ("planned", "unlocked", "working", "handed_up", "approved")
 # The only moves phase_update makes. Approved is final. unlocked -> planned is the Oracle's
@@ -2337,9 +2339,11 @@ class Ledger(
         with write_tx(self.conn) as conn:
             owed = dict_rows(
                 conn.execute(
-                    "SELECT * FROM wakeups WHERE from_agent_id = ? AND to_agent_id = ? "
-                    "AND sent_at IS NULL ORDER BY wakeup_id",
-                    (agent_id, agent_id),
+                    "SELECT * FROM wakeups WHERE to_agent_id = ? AND sent_at IS NULL "
+                    "AND (from_agent_id = to_agent_id OR created_at <= "
+                    f"strftime('%Y-%m-%dT%H:%M:%fZ','now','-{RECIPIENT_TAKES_AFTER_S} seconds')) "
+                    "ORDER BY wakeup_id",
+                    (agent_id,),
                 )
             )
             if owed:
@@ -2348,7 +2352,17 @@ class Ledger(
                     f"UPDATE wakeups SET sent_at = {NOW} WHERE wakeup_id IN ({in_clause(ids)})",
                     ids,
                 )
+        for sender in {w["from_agent_id"] for w in owed if w["from_agent_id"] != agent_id}:
+            self.release_closed_driver(sender)
         return owed
+
+    def polls_self_wakeups(self, agent_id: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM agents a JOIN runs r ON r.run_id = a.run_id "
+            "WHERE a.agent_id = ? AND a.ended_at IS NULL AND r.state IN ('active', 'paused')",
+            (agent_id,),
+        ).fetchone()
+        return row is not None
 
     def running_test_runs(self, agent_id: str) -> int:
         return self.conn.execute(

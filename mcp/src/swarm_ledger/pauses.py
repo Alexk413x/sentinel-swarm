@@ -17,6 +17,7 @@ from .paths import claude_json_path
 CONFIG_CHECK = "config_parses"
 USAGE_CHECK = "usage_limit"
 USAGE_WAKE_REASON = "usage_limit_reset"
+RESUMED_WAKE_REASON = "run_resumed"
 RESUME_HINT = "Say continue or run /sentinel-swarm:resume to continue it."
 # The limit can lift a little after the time the message names.
 _RESET_GRACE = timedelta(minutes=2)
@@ -171,6 +172,7 @@ def clear_resume(conn: sqlite3.Connection, run: sqlite3.Row, agent_id: str, now:
             at,
         ),
     )
+    _owe_resume_wakeup(conn, run["run_id"], agent_id, now)
     return note
 
 
@@ -208,6 +210,51 @@ def user_pause(
     return notice
 
 
+def owe_oracle_wakeup(
+    conn: sqlite3.Connection, run_id: int, oracle_id: str, reason: str, pointer: str, now: datetime
+) -> bool:
+    """Owes the live Oracle a wake-up from itself; its own mod delivers it from the poll."""
+    oracle = conn.execute(
+        "SELECT name, session_name FROM agents WHERE agent_id = ? AND ended_at IS NULL",
+        (oracle_id,),
+    ).fetchone()
+    if oracle is None:
+        return False
+    pending = conn.execute(
+        "SELECT 1 FROM wakeups WHERE from_agent_id = ? AND to_agent_id = ? AND reason = ? "
+        "AND sent_at IS NULL",
+        (oracle_id, oracle_id, reason),
+    ).fetchone()
+    if pending is not None:
+        return False
+    conn.execute(
+        "INSERT INTO wakeups (run_id, from_agent_id, to_agent_id, to_name, to_session_name, "
+        "reason, pointer, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            run_id,
+            oracle_id,
+            oracle_id,
+            oracle["name"],
+            oracle["session_name"] or oracle["name"],
+            reason,
+            pointer,
+            stamp(now),
+        ),
+    )
+    return True
+
+
+def _owe_resume_wakeup(
+    conn: sqlite3.Connection, run_id: int, oracle_id: str, now: datetime
+) -> None:
+    # Imported here: watchdog imports this module.
+    from .watchdog import ARM_WATCHDOG
+
+    owe_oracle_wakeup(
+        conn, run_id, oracle_id, RESUMED_WAKE_REASON, f"The run resumed. {ARM_WATCHDOG}", now
+    )
+
+
 def user_resume(
     conn: sqlite3.Connection, run: sqlite3.Row, agent_id: str, who: str, now: datetime
 ) -> str:
@@ -235,4 +282,5 @@ def user_resume(
             at,
         ),
     )
+    _owe_resume_wakeup(conn, run["run_id"], agent_id, now)
     return note

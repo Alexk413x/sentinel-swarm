@@ -1367,6 +1367,7 @@ def handle_self_owed(ledger: Ledger, data: dict) -> dict | None:
     return {
         "text": _self_wakeup_text(ledger, caller["agent_id"]),
         "running": ledger.running_test_runs(caller["agent_id"]),
+        "poll": ledger.polls_self_wakeups(caller["agent_id"]),
     }
 
 

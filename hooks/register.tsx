@@ -911,7 +911,7 @@ async function wakeSelf($: EngineInterface): Promise<void> {
   if (s === null) return
   const answer = await post($, s, 'self_owed', base(s)).catch(() => null)
   if (!isRecord(answer)) return
-  selfWakePending = typeof answer.running === 'number' && answer.running > 0
+  selfWakePending = (typeof answer.running === 'number' && answer.running > 0) || answer.poll === true
   if (typeof answer.text === 'string' && answer.text !== '') await $.prompt.submit({ text: answer.text }).catch(() => undefined)
 }
 
