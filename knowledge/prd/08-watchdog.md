@@ -3,9 +3,9 @@
 The watchdog is a background job, not a role. It detects and reports. It never replaces a
 Manager, Lead, or Coder. Its only resumes and stops serve memory: it resumes a parked
 agent that is owed a wake-up once memory allows, starts queued spawns, stops a Coder idle on
-a blocker while a spawn waits, stops an idle parent under memory pressure, and releases a
-parked parent whose work is done; see
-"Memory" and "Parked agents" in [05-sessions.md](05-sessions.md). It
+a blocker while a spawn waits, stops an idle parent under memory pressure, releases a
+parked parent whose work is done, and stops a listed session that no live agent owns; see
+"Memory", "Parked agents", and "Orphaned sessions" in [05-sessions.md](05-sessions.md). It
 resumes the Oracle when the Oracle's session is not running, so that a report can reach
 the Oracle at all, and it resumes a paused run whose clear-check passes. What only the
 user can answer, it reports to the user as well, with an OS notification. For any
@@ -27,9 +27,10 @@ Before the scan, each pass of an active run runs the memory steps in this order,
 on its own so a failure in one is logged and the next still runs: sample each session's
 memory and record each running session's pid, park agents whose session is gone,
 resume parked agents that are owed a wake-up, start queued spawns, park blocked Coders,
-park idle parents, and release finished parked parents. When a step changed anything, the pass reads the
-listing again for the scan. See "Parked agents" and "Memory" in
-[05-sessions.md](05-sessions.md).
+park idle parents, release finished parked parents, and stop orphaned sessions (listed
+entries of released agents and earlier session ids, seen on two passes in a row). When a step
+changed anything, the pass reads the listing again for the scan. See "Parked agents", "Memory",
+and "Orphaned sessions" in [05-sessions.md](05-sessions.md).
 
 | Kind | Condition | Next step the report names |
 |---|---|---|

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from helpers import make_host, settings_text
-from test_rekey import MovingClaude, claude
+from test_rekey import MovingClaude, _dormant, _stops, claude
 from test_sessions import (
     Ctx,
     _bootstrap,
@@ -728,6 +728,78 @@ def test_the_watchdog_parks_a_blocked_coder_for_a_queued_spawn(
     dog.tick(utcnow())
 
     assert _row(ledger, coder[1])["parked_at"] is not None
+
+
+def _watchdog(host: Path, ledger: Ledger) -> watchdog.Watchdog:
+    return watchdog.Watchdog(
+        host, ledger.conn, ledger.settings.watchdog, exit_server=lambda: None, ledger=ledger
+    )
+
+
+def test_the_watchdog_stops_a_listed_entry_of_a_released_agent_once_two_passes_see_it(
+    ledger: Ledger, claude: MovingClaude, free: dict, host: Path
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    coder = _spawn_coder(ledger, ctx)
+    ledger.agent_release(*ctx.lead, coder[1])
+    _dormant(claude, coder[1])
+    claude.calls.clear()
+    dog = _watchdog(host, ledger)
+
+    dog.tick(utcnow())
+    assert _stops(claude) == []
+    dog.tick(utcnow())
+    assert _stops(claude) == [coder[1][:8]]
+    dog.tick(utcnow())
+    assert _stops(claude) == [coder[1][:8]]
+    (event,) = [
+        r["reason"]
+        for r in ledger.conn.execute(
+            "SELECT reason FROM agent_events WHERE agent_id = ? AND to_state = 'orphan_stopped'",
+            (coder[1],),
+        )
+    ]
+    assert f"stopped session {coder[1][:8]}" in event
+
+
+def test_an_entry_that_one_pass_saw_and_the_next_did_not_starts_the_count_again(
+    ledger: Ledger, claude: MovingClaude, free: dict, host: Path
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    coder = _spawn_coder(ledger, ctx)
+    ledger.agent_release(*ctx.lead, coder[1])
+    _dormant(claude, coder[1])
+    claude.calls.clear()
+    dog = _watchdog(host, ledger)
+
+    dog.tick(utcnow())
+    entry = claude.entry(coder[1])
+    assert entry is not None
+    entry["status"] = "stopped"
+    dog.tick(utcnow())
+    _dormant(claude, coder[1])
+    dog.tick(utcnow())
+
+    assert _stops(claude) == []
+
+
+def test_the_watchdog_stops_an_earlier_session_of_a_live_agent_but_not_its_current_one(
+    ledger: Ledger, claude: MovingClaude, free: dict, host: Path
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    old_id = ctx.manager[1]
+    _dormant(claude, old_id)
+    ledger.agent_resume(*ctx.lead, "mgr-p1-phase-1")
+    new_id = claude.resumed[0]
+    _dormant(claude, old_id)
+    _dormant(claude, new_id)
+    claude.calls.clear()
+    dog = _watchdog(host, ledger)
+
+    for _ in range(3):
+        dog.tick(utcnow())
+
+    assert _stops(claude) == [old_id[:8]]
 
 
 # -- the watchdog --------------------------------------------------------------------------------

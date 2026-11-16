@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 
 from . import lock, memory, permission, procs, rekey, sessions, transcript
@@ -146,6 +147,54 @@ class CapacityMixin(LedgerHost):
                 )
             started.append(spawned)
         return started
+
+    def orphaned_sessions(self, listing: list[dict]) -> dict[str, tuple[str, str]]:
+        run = self.conn.execute("SELECT run_id FROM runs WHERE state = 'active'").fetchone()
+        if run is None:
+            return {}
+        rows = dict_rows(
+            self.conn.execute(
+                "SELECT agent_id, name, bg_id, ended_at, prior_session_ids FROM agents "
+                "WHERE run_id = ?",
+                (run["run_id"],),
+            )
+        )
+        live_ids = {r["agent_id"] for r in rows if r["ended_at"] is None}
+        live_bg = {r["bg_id"] for r in rows if r["ended_at"] is None and r["bg_id"]}
+        owners: dict[str, tuple[str, str]] = {}
+        for row in rows:
+            for session_id in rekey.prior_ids(row["prior_session_ids"]):
+                owners.setdefault(
+                    session_id, (row["agent_id"], f"an earlier session of {row['name']}")
+                )
+            if row["ended_at"] is not None:
+                owners.setdefault(row["agent_id"], (row["agent_id"], f"{row['name']} is released"))
+        found: dict[str, tuple[str, str]] = {}
+        for entry in listing:
+            session_id = str(entry.get("sessionId") or "")
+            if session_id in live_ids or entry.get("id") in live_bg or session_id not in owners:
+                continue
+            if sessions.stoppable(entry):
+                found[str(entry["id"])] = owners[session_id]
+        return found
+
+    def stop_orphaned_sessions(
+        self, found: Mapping[str, tuple[str, str]]
+    ) -> tuple[list[str], list[str]]:
+        stopped: list[str] = []
+        failed: list[str] = []
+        for bg_id, (agent_id, why) in found.items():
+            try:
+                sessions.stop(bg_id)
+            except LedgerError as exc:
+                failed.append(f"session {bg_id} ({why}): {exc}")
+                continue
+            stopped.append(bg_id)
+            with write_tx(self.conn) as conn:
+                self._log_event(
+                    conn, agent_id, None, "orphan_stopped", f"stopped session {bg_id}: {why}"
+                )
+        return stopped, failed
 
     def _drop_queued(self, entry: dict, reason: str) -> None:
         with write_tx(self.conn) as conn:

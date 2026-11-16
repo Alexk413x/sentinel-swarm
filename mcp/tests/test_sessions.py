@@ -725,6 +725,43 @@ def test_run_start_resumes_past_a_stale_entry_left_by_a_reboot(
     assert resumed["run"]["run_id"] == first["run"]["run_id"]
 
 
+def test_run_start_stops_the_replaced_oracles_dormant_background_entry(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    claude.add(_ORACLE_SESSION, "my-host-oracle")
+    ledger.run_start(prd="Build X", session_id=_ORACLE_SESSION)
+    claude.listing[:] = [
+        {
+            "id": "3d4ff845",
+            "kind": "background",
+            "sessionId": _ORACLE_SESSION,
+            "name": "my-host-oracle",
+            "startedAt": 1794460341935,
+            "state": "blocked",
+        }
+    ]
+    claude.add("sess-new", "my-host-oracle", bg_id="9f8e7d6c")
+
+    ledger.run_start(prd="ignored", session_id="sess-new")
+
+    assert claude.commands("stop") == [["stop", "3d4ff845"]]
+
+
+def test_run_start_leaves_an_interactive_replaced_oracle_alone(
+    ledger: Ledger, claude: FakeClaude
+) -> None:
+    claude.add(_ORACLE_SESSION, "my-host-oracle")
+    ledger.run_start(prd="Build X", session_id=_ORACLE_SESSION)
+    claude.listing[:] = [
+        {"kind": "interactive", "sessionId": _ORACLE_SESSION, "name": "my-host-oracle"}
+    ]
+    claude.add("sess-new", "my-host-oracle", bg_id="9f8e7d6c")
+
+    ledger.run_start(prd="ignored", session_id="sess-new")
+
+    assert claude.commands("stop") == []
+
+
 def test_run_start_refuses_when_it_cannot_list_sessions_to_check(
     ledger: Ledger, claude: FakeClaude
 ) -> None:

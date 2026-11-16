@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
-from .db import NOW
+from . import sessions
+from .db import NOW, write_tx
 from .queries import UNPARK_SET
 
 # Session-id columns that neither end in agent_id nor reference agents.
@@ -65,16 +67,29 @@ def rekey(conn: sqlite3.Connection, old_id: str, new_id: str) -> bool:
     return True
 
 
-def adopt(conn: sqlite3.Connection, old_id: str, new_id: str) -> None:
+def prior_ids(raw: object) -> list[str]:
+    try:
+        ids = json.loads(raw) if isinstance(raw, str) and raw else []
+    except ValueError:
+        return []
+    return [i for i in ids if isinstance(i, str)] if isinstance(ids, list) else []
+
+
+def adopt(conn: sqlite3.Connection, old_id: str, new_id: str) -> bool:
     row = conn.execute(
-        "SELECT transcript_path, resume_from_id FROM agents WHERE agent_id = ?", (old_id,)
+        "SELECT transcript_path, resume_from_id, prior_session_ids FROM agents WHERE agent_id = ?",
+        (old_id,),
     ).fetchone()
     if row is None:
-        return
+        return False
     resume_from = row["resume_from_id"]
     if old_id != new_id and row["transcript_path"] and Path(row["transcript_path"]).is_file():
         resume_from = old_id
-    if rekey(conn, old_id, new_id):
+    prior = prior_ids(row["prior_session_ids"])
+    rekeyed = rekey(conn, old_id, new_id)
+    if rekeyed:
+        if old_id not in prior:
+            prior.append(old_id)
         conn.execute(
             "INSERT INTO agent_events (agent_id, from_state, to_state, reason) "
             "VALUES (?, NULL, 'rekeyed', ?)",
@@ -86,6 +101,24 @@ def adopt(conn: sqlite3.Connection, old_id: str, new_id: str) -> None:
     conn.execute(
         f"UPDATE agents SET resume_started_at = NULL, {UNPARK_SET}, "
         "session_pid = NULL, session_pid_created = NULL, bg_id = ?, transcript_path = ?, "
-        "resume_from_id = ? WHERE agent_id = ?",
-        (new_id[:8], transcript, resume_from, new_id),
+        "resume_from_id = ?, prior_session_ids = ? WHERE agent_id = ?",
+        (new_id[:8], transcript, resume_from, json.dumps(prior) if prior else None, new_id),
     )
+    return rekeyed
+
+
+def stop_earlier_sessions(conn: sqlite3.Connection, agent_id: str) -> list[str]:
+    row = conn.execute(
+        "SELECT bg_id, prior_session_ids FROM agents WHERE agent_id = ?", (agent_id,)
+    ).fetchone()
+    if row is None:
+        return []
+    stopped = sessions.stop_listed(prior_ids(row["prior_session_ids"]), keep_bg_id=row["bg_id"])
+    if stopped:
+        with write_tx(conn):
+            conn.execute(
+                "INSERT INTO agent_events (agent_id, from_state, to_state, reason) "
+                "VALUES (?, NULL, 'earlier_session_stopped', ?)",
+                (agent_id, "; ".join(stopped)),
+            )
+    return stopped

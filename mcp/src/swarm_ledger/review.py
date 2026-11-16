@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Literal
 
-from . import graph, notify, rubric, settle, testrun, versions
+from . import graph, notify, rekey, rubric, settle, testrun, versions
 from .agreements import test_run_passed, work_scope
 from .db import NOW, dict_rows, in_clause, ledger_path, open_readonly, row_dict, write_tx
 from .drive import findings_named, open_findings
@@ -375,8 +375,9 @@ class ReviewMixin(LedgerHost):
             f"UPDATE file_waits SET closed_at = {NOW} WHERE agent_id = ? AND closed_at IS NULL",
             (target_agent_id,),
         )
-        if row["bg_id"] and row["role"] != "oracle":
-            self._pending_stops.append((target_agent_id, row["bg_id"]))
+        earlier = rekey.prior_ids(row["prior_session_ids"])
+        if (row["bg_id"] or earlier) and row["role"] != "oracle":
+            self._pending_stops.append((target_agent_id, row["bg_id"], earlier))
 
     # -- Tests --------------------------------------------------------------
 

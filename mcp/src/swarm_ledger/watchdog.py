@@ -1340,6 +1340,7 @@ class Watchdog:
         self._log = log
         self._activity_seen = activity()
         self._idle_since: datetime | None = None
+        self._orphans_seen: set[str] = set()
 
     def _channels(self, event: str) -> list[str]:
         return channels_for(event, self.notify_channels, self.notify_events)
@@ -1527,6 +1528,7 @@ class Watchdog:
                 lambda: ledger.park_idle_parents(listing, freed_by_coders[0]),
             ),
             ("release finished parked parents", lambda: ledger.release_finished_parked(now)),
+            ("stop orphaned sessions", lambda: self._stop_orphaned_sessions(ledger, listing)),
         ]
         for label, step in steps:
             try:
@@ -1543,6 +1545,15 @@ class Watchdog:
             return sessions.list_sessions()
         except LedgerError:
             return listing
+
+    def _stop_orphaned_sessions(self, ledger: Ledger, listing: list[dict]) -> list[str]:
+        found = ledger.orphaned_sessions(listing)
+        ripe = {bg_id: found[bg_id] for bg_id in found.keys() & self._orphans_seen}
+        stopped, failed = ledger.stop_orphaned_sessions(ripe)
+        self._orphans_seen = set(found) - set(stopped)
+        for line in failed:
+            self._log(f"could not stop {line}")
+        return stopped
 
     def run_forever(self, stop: threading.Event) -> None:
         while not stop.wait(self.settings.interval_seconds):
@@ -1660,7 +1671,9 @@ class Watchdog:
         if new_id is None:
             return agent["agent_id"]
         with write_tx(self.conn) as conn:
-            rekey.adopt(conn, agent["agent_id"], new_id)
+            rekeyed = rekey.adopt(conn, agent["agent_id"], new_id)
+        if rekeyed:
+            rekey.stop_earlier_sessions(self.conn, new_id)
         return new_id
 
     def _oracle_options(self, model: str | None) -> list[str]:

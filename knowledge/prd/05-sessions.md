@@ -455,7 +455,9 @@ fails as ambiguous, or goes to the offline entry and waits there for good. See
   to resume. The watchdog then reports `crashed` with the step "release it and brief a
   replacement from its brief"; see [08-watchdog.md](08-watchdog.md).
 - Release sets the row `released` and stops the session with `claude stop <bg_id>`,
-  which frees its memory. The Oracle's session is never stopped this way.
+  which frees its memory. It also stops the background entry of each earlier session id of
+  a re-keyed agent that `claude agents --json` still lists (`agents.prior_session_ids`; see
+  "Re-keying a resumed session"). The Oracle's session is never stopped this way.
 - Release also stops the processes the session's tools started, which `claude stop`
   leaves running. Before the stop, the ledger reads the machine's process table
   (`procs.snapshot`: `CreateToolhelp32Snapshot` on Windows, `ps -A` elsewhere) and takes
@@ -514,7 +516,10 @@ parent releases it. Its replacement takes over the children.
   live, one of another role, or one outside the run.
 - Each moved child gets an agent event that names the old and new parent. An ended
   child keeps its old parent.
-- The Oracle's own resume in `run_start` moves its children the same way.
+- The Oracle's own resume in `run_start` moves its children the same way. It also stops
+  the replaced Oracle's background entry, and the entries of its earlier session ids, when
+  the listing still holds them, whether or not they read as running. A listing entry
+  without a background id, an interactive session, is left alone.
 
 ### Re-keying a resumed session
 
@@ -552,6 +557,12 @@ than keep an alias.
   `mod_sessions.session_id`. It also sets `bg_id` to the new id's first 8 characters,
   points `transcript_path` at `<new id>.jsonl` in the same folder, clears
   `resume_started_at`, and logs a `rekeyed` agent event. The same id needs no re-key.
+- A re-key appends the old session id to `agents.prior_session_ids`, a JSON list of every
+  session id the agent held before, oldest first. Right after the re-key, the ledger stops
+  the background entry of each earlier id that `claude agents --json` still lists, running
+  or not, with `claude stop`. This runs after `agent_resume`, the wake-up resume, the
+  watchdog's Oracle resume, and the hook path that matches a resumed session. `claude rm`
+  is never used: a stopped session stays visible in agent view.
 - The resumed session's own hooks can arrive before the poll ends. Each hook from a
   session id the ledger does not know re-keys the agent whose `resume_started_at` is set
   and whose `bg_id` equals the id's first 8 characters. `session_start` and `pre_ledger`
@@ -616,6 +627,22 @@ than keep an alias.
   once when no conversation is left to resume, `crashed` tells its parent to release it
   and brief a replacement. See [08-watchdog.md](08-watchdog.md).
 
+### Orphaned sessions
+
+Each watchdog pass of an active run looks for listed background entries that no live agent
+owns, as the last memory step. An entry is orphaned when its session id is the id of a
+released or ended agent of the run, or sits in some agent's `prior_session_ids` and is not
+any live agent's current session id or background id. A stopped entry, an interactive
+session, and an entry of another run never count.
+
+- An entry the watchdog sees orphaned on two passes in a row is stopped with `claude stop`,
+  whether or not it reads as running. It logs an `orphan_stopped` agent event on the owner
+  and stops nothing else of that agent.
+- An entry seen on one pass only starts the count again. A stop that fails keeps the entry
+  for the next pass.
+- It covers a release or a re-key whose own stop failed, and a session left from before a
+  reboot. It never uses `claude rm`.
+
 ## What stops when
 
 | Event | What stops |
@@ -629,6 +656,7 @@ than keep an alias.
 | `drive_request` | An earlier Driver still live after its exploration ended |
 | `run_finish` | Every agent still live except the Oracle |
 | `file_accept_incomplete` | The file's Coder |
+| Two watchdog passes in a row that list a background entry of a released agent, or an earlier session id of a live one | That entry's session |
 | `run_close` | Every agent still live. Called by the Oracle, the server then stops the Oracle's background session and exits as after `run_finish`; from `ledger.py close`, it stops a background Oracle session at once, and the server exits after `idle_exit_minutes` |
 | About 3 seconds after `run_finish` | The server waits up to 5 minutes for the Oracle's last turn to end, stops the Oracle's background session, and exits. An interactive Oracle is the user's terminal and keeps running |
 | `idle_exit_minutes` with no active run, or a paused run, no session of the run running, and no ledger tool call | The ledger server |
