@@ -154,11 +154,10 @@ keeps free, each role's memory estimate, `spawn_slots` (how many more sessions o
 role fit now), the spawns waiting for memory, and the parked agents. Start at most
 `spawn_slots` children at once, the ones other work depends on first. When
 `agent_spawn` returns `queued: true`, the ledger starts that Manager itself once memory
-frees, oldest first: do not call `agent_spawn` for it again. A parked agent
-is still live: the ledger resumes it when a wake-up is owed to it.
-
-When `agent_spawn` refuses because the run is at its parallelism cap, end your turn.
-Start that Manager after a release frees a slot.
+frees or a release frees a session slot under a parallelism cap, oldest first: do not
+call `agent_spawn` for it again, and end your turn. A parked agent
+is still live: the ledger resumes it when a wake-up is owed to it. If the watchdog
+reports `brief_unstarted` for a brief of yours, call `agent_spawn` for that child name.
 
 ## Wake-ups you owe
 

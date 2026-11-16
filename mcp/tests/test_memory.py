@@ -186,6 +186,43 @@ def test_queued_spawns_start_oldest_first_when_memory_frees(
     assert [tuple(r) for r in queue] == [(first, "started"), (second, "queued")]
 
 
+def test_a_spawn_queued_at_the_cap_starts_once_a_release_frees_a_slot(
+    ledger: Ledger, claude: MovingClaude
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    _brief_second_lead(ledger, ctx)
+    other = ledger.agent_spawn(*ctx.manager, "lead-p1-module-2")
+    name = _brief_coder(ledger, ctx, "c1")
+    ledger.settings.parallelism_cap = 4
+
+    queued = ledger.agent_spawn(*ctx.lead, name)
+
+    assert queued["queued"] is True
+    assert "parallelism cap of 4 is reached" in queued["reason"]
+    assert ledger.start_queued_spawns(claude.listing) == []
+    ledger.agent_release(*ctx.manager, other["agent_id"])
+    started = ledger.start_queued_spawns(claude.listing)
+    assert [s["name"] for s in started] == [name]
+    assert _row(ledger, started[0]["agent_id"])["state"] == "registered"
+    assert ledger.conn.execute("SELECT state FROM spawn_queue").fetchone()["state"] == "started"
+
+
+def test_a_spawn_queued_at_the_cap_names_memory_once_only_memory_holds_it_back(
+    ledger: Ledger, claude: MovingClaude, free: dict
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    name = _brief_coder(ledger, ctx, "c1")
+    ledger.settings.parallelism_cap = 3
+    ledger.agent_spawn(*ctx.lead, name)
+    ledger.settings.parallelism_cap = None
+    free["mb"] = 1_000
+
+    assert ledger.start_queued_spawns(claude.listing) == []
+
+    reason = ledger.conn.execute("SELECT reason FROM spawn_queue").fetchone()["reason"]
+    assert "1000 MB free" in reason and "headroom" in reason
+
+
 def test_a_queued_spawn_whose_parent_ended_is_dropped(
     ledger: Ledger, claude: MovingClaude, free: dict
 ) -> None:
@@ -838,6 +875,7 @@ def test_a_spawn_queued_for_minutes_is_reported_on_its_parent(
     late = queued(utcnow() + timedelta(minutes=11))
     assert [f.name for f in late] == ["lead-p1-module-1"]
     assert f"its spawn of {name} (coder) has waited 11 minutes" in late[0].detail
+    assert "1000 MB free" in late[0].detail
     settings.queued_spawn_minutes = 0
     assert queued(utcnow() + timedelta(minutes=11)) == []
 

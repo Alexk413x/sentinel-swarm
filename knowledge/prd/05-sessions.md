@@ -5,9 +5,9 @@
 `agent_spawn(caller, child_name)` refuses unless the caller is the parent named in the
 child's unacknowledged brief. It also refuses a Manager before a `repo_check`, a child
 whose phase is paused, a child that is already registered, a session name
-a running session holds, and a start past `parallelism_cap` when the user set one. A
-start that would take free memory below `memory.headroom_mb` is queued, not refused;
-see "Memory" below. It then runs, in the repo root:
+a running session holds. A start past a parallelism cap, or one that would take free
+memory below `memory.headroom_mb`, is queued, not refused; see "Parallelism" and
+"Memory" below. It then runs, in the repo root:
 
 ```
 claude "You are <name>. Read your brief from the swarm ledger and follow it." --bg \
@@ -667,17 +667,19 @@ session, and an entry of another run never count.
 
 ## Parallelism
 
-- `agent_spawn` refuses at `parallelism_cap`, counting the run's live agents, the
+- `agent_spawn` queues the spawn at `parallelism_cap`, counting the run's live agents, the
   Oracle included, plus other swarms' live sessions on the machine: entries from
   `claude agents --json` that are running, whose name matches the swarm session-name
   shape (`<slug>-r<run_id>-<name>`, from `looks_like_swarm_session`), and that are not
-  one of this run's own session names. The parent tries again after a release.
+  one of this run's own session names. It returns the queued answer of "Memory" below,
+  with the cap as the reason. Each watchdog pass starts the queued spawn once a release
+  frees a slot, so the parent does not call `agent_spawn` again.
 - Left empty, `parallelism_cap` is set from total memory: half of it, at 600 MB a
   session, and at least 4 (27 on a 32 GB machine). Unknown total memory leaves no cap,
   and `0` turns the cap off. Setup prints the value and says that it counts other
   swarms' sessions.
 - `role_parallelism_cap.<role>` caps that role's own live agents in the run, on top of
-  `parallelism_cap`.
+  `parallelism_cap`. A spawn past it is queued the same way.
 - `drive_request` starts the Driver through the same `agent_spawn` path, so both caps
   apply to it exactly as to any other role; in practice a run has at most one live
   Driver, since `drive_request` refuses while an exploration is already open.
@@ -705,7 +707,8 @@ for the measured figures.
   `memory.headroom_mb` (1,500 by default; the daemon retires sessions at about 700 MB
   free). A spawn that does not fit, or that arrives while earlier spawns of the run
   wait, is queued in `spawn_queue` and returns `queued: true`, the reason, and a `next`
-  that says not to call `agent_spawn` for it again. A second `agent_spawn` of a queued
+  that names the reason and says not to call `agent_spawn` for it again. A spawn past a
+  parallelism cap is queued the same way, with the cap as its reason. A second `agent_spawn` of a queued
   child returns the same entry. Unknown free memory, or an empty `headroom_mb`, admits
   the spawn.
 - **Reserve.** Free memory does not show a session until it has started, about a
@@ -717,10 +720,12 @@ for the measured figures.
   not count: two runs that each held back for the other's queue would both wait.
 - **Start queued spawns.** Each watchdog pass starts queued spawns oldest first, while
   they fit. It skips one whose phase is paused, whose fix a Driver pattern stop pauses,
-  or that a parallelism cap holds back, and drops one whose brief was acknowledged, whose parent ended, whose start failed, or
+  or that a parallelism cap still holds back, and drops one whose brief was acknowledged, whose parent ended, whose start failed, or
   that is a Coder whose file has no live claim for it, with a ledger message to the
   parent that says why. The ledger tells the two apart by the refusal's type
-  (`SpawnDeferred`), not by its text, which names the child. A start that fails on an unreadable `~/.claude.json` stays
+  (`SpawnDeferred`), not by its text, which names the child. A pass rewrites the reason of
+  a spawn it leaves queued to what holds it back then, a cap or the memory shortfall. A
+  start that fails on an unreadable `~/.claude.json` stays
   queued; see "An unreadable ~/.claude.json" below. A parent cancels a queued spawn with
   `agent_release(<child name>)`, which keeps the brief and the claim; `release_file` on
   the queued Coder's path drops its spawn too. While a spawn is queued, the

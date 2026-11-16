@@ -158,8 +158,10 @@ def test_agent_spawn_cap_counts_other_swarms_on_the_machine(
     # A session from an unrelated repo's run, still running on this machine.
     claude.add("other-session-id", "other-repo-r9-coder-a")
     spawn_ledger.settings.parallelism_cap = 1
-    with pytest.raises(LedgerError, match="parallelism cap of 1 is reached"):
-        spawn_ledger.agent_spawn("oracle", ctx["oracle_id"], "mgr-p1-phase-1")
+    queued = spawn_ledger.agent_spawn("oracle", ctx["oracle_id"], "mgr-p1-phase-1")
+    assert queued["queued"] is True
+    assert "parallelism cap of 1 is reached" in queued["reason"]
+    assert "1 from other swarms on this machine" in queued["reason"]
 
 
 def test_agent_spawn_cap_ignores_a_non_swarm_session_name(
@@ -190,8 +192,10 @@ def test_agent_spawn_applies_a_per_role_cap(claude: FakeClaude, spawn_ledger: Le
         "Own it too.",
         phase_id=second["phase_id"],
     )
-    with pytest.raises(LedgerError, match="the manager parallelism cap of 1 is reached"):
-        spawn_ledger.agent_spawn("oracle", ctx["oracle_id"], "mgr-p2-phase-2")
+    queued = spawn_ledger.agent_spawn("oracle", ctx["oracle_id"], "mgr-p2-phase-2")
+    assert queued["queued"] is True
+    assert "the manager parallelism cap of 1 is reached" in queued["reason"]
+    assert "the manager parallelism cap of 1 is reached" in queued["next"]
 
 
 # == Item 16: per-role settings ===================================================================

@@ -64,8 +64,8 @@ its agent.
 1. The parent calls `brief_create` with the child's name, role, a model from that
    role's approved list, and the brief.
 2. The parent calls `agent_spawn(caller=<its name>, child_name=<the child's name>)`.
-   It checks the role, the model, the brief, and the parallelism cap when the user
-   set one, then starts the child's session with `claude --bg --agent swarm-<role>`
+   It checks the role, the model, and the brief, queues the start when a parallelism
+   cap or free memory leaves no room, then starts the child's session with `claude --bg --agent swarm-<role>`
    and the prompt:
 
    ```
@@ -149,8 +149,9 @@ keeps every gate.
 - Nothing works for a child before `brief_ack`: the `pre_ledger` hook denies a
   registered child every ledger tool but `brief_ack` and the tools that take no
   identity.
-- `agent_spawn` refuses a child without an unacknowledged brief from the caller, a
-  session name a live session already uses, and a start past the parallelism cap.
+- `agent_spawn` refuses a child without an unacknowledged brief from the caller and a
+  session name a live session already uses. A start past the parallelism cap is
+  queued, not refused.
 - `brief_create` refuses a model that is not on the child role's approved list, and
   refuses a name a live agent already holds. A Manager brief needs an unlocked phase of
   the run; a Lead brief a module of the Manager's own phase; a Coder brief a file the

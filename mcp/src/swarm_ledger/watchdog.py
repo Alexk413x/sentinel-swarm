@@ -149,6 +149,7 @@ def scan(
     findings += _landed_wait_findings(conn, run["run_id"], agents, by_session)
     findings += _unsent_findings(conn, run["run_id"], agents, by_session, now, settings)
     findings += _queued_findings(conn, run["run_id"], agents, now, settings)
+    findings += _unstarted_brief_findings(conn, run["run_id"], agents, by_session, now, settings)
     findings += _unmanaged_phase_findings(conn, run["run_id"], agents)
     findings += _unread_directive_findings(conn, run["run_id"], agents, now, settings)
     findings += _stray_process_findings(conn, run["run_id"], now)
@@ -480,9 +481,65 @@ def _queued_findings(
                 parent,
                 "spawn_queued",
                 f"its spawn of {row['child_name']} ({row['role']}) has waited "
-                f"{_minutes(now - queued)} minutes for free memory",
-                "Free memory on the machine, or lower memory.headroom_mb, or call run_pause "
-                "and tell the user the run waits on memory.",
+                f"{_minutes(now - queued)} minutes in the queue: {row['reason']}",
+                "Release a live agent that is done to free a slot, free memory on the machine, "
+                "lower memory.headroom_mb, or raise parallelism_cap, or call run_pause and tell "
+                "the user the run waits on capacity.",
+            )
+        )
+    return findings
+
+
+_UNACKED_BRIEF = "b.acked_at IS NULL"
+
+
+def _unstarted_brief_findings(
+    conn: sqlite3.Connection,
+    run_id: int,
+    agents: list[dict],
+    by_session: dict[str, dict],
+    now: datetime,
+    settings: WatchdogSettings,
+) -> list[Finding]:
+    by_id = {a["agent_id"]: a for a in agents}
+    after = timedelta(minutes=settings.stuck_minutes)
+    findings: list[Finding] = []
+    for brief in conn.execute(
+        "SELECT b.* FROM briefs b "
+        f"WHERE b.run_id = ? AND {_UNACKED_BRIEF} "
+        "AND NOT EXISTS (SELECT 1 FROM agents a WHERE a.name = b.child_name "
+        "AND a.ended_at IS NULL) "
+        "AND NOT EXISTS (SELECT 1 FROM spawn_queue q WHERE q.child_name = b.child_name "
+        "AND q.state = 'queued') "
+        "AND (b.child_role != 'coder' OR EXISTS (SELECT 1 FROM files f "
+        "WHERE f.file_id = b.file_id AND f.owner_agent_id = b.child_name "
+        "AND f.released_at IS NULL)) "
+        "AND NOT EXISTS (SELECT 1 FROM phases p WHERE p.phase_id = b.phase_id "
+        "AND p.paused_at IS NOT NULL) "
+        "ORDER BY b.brief_id",
+        (run_id,),
+    ):
+        parent = by_id.get(brief["parent_agent_id"])
+        created = parse_stamp(brief["created_at"])
+        if parent is None or created is None or now - created < after:
+            continue
+        child = json.dumps(brief["child_name"])
+        step = (
+            f"Call agent_spawn(child_name={child}) to start it."
+            if parent["role"] == "oracle"
+            else f"Wake {parent['name']} ({_wake_call(parent, by_session)}) to call "
+            f"agent_spawn(child_name={child})."
+        )
+        if "SendMessage(" in step:
+            step = f"{step} {wake.AMBIGUOUS_NAME_RULE}"
+        findings.append(
+            _finding(
+                parent,
+                "brief_unstarted",
+                f"its brief for {brief['child_name']} ({brief['child_role']}) has stood "
+                f"unacknowledged for {_minutes(now - created)} minutes: no agent runs under "
+                "that name and no spawn is queued for it",
+                step,
             )
         )
     return findings

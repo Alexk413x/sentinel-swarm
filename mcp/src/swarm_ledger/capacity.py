@@ -19,9 +19,8 @@ WAITING_FOR_MEMORY = "waiting for memory to resume it for a wake-up"
 # A resumed session that is gone sooner than this failed; one that runs this long settled.
 RESUME_SETTLE = timedelta(minutes=3)
 QUEUED_POINTER = (
-    "the ledger queued it: free memory, less what sessions starting on this machine will "
-    "take, minus its estimate is below the headroom. The ledger "
-    "starts it when memory frees, oldest first; do not call agent_spawn for it again"
+    "The ledger starts it once a session slot and free memory allow, oldest first; do not "
+    "call agent_spawn for it again"
 )
 PARK_PRESSURE = "the ledger stopped it under memory pressure while its children work"
 
@@ -63,7 +62,7 @@ class CapacityMixin(LedgerHost):
     def _queue_reason(self, brief: sqlite3.Row) -> str | None:
         ahead = len(self._queued(self.conn, brief["run_id"]))
         if ahead:
-            return f"{ahead} earlier spawn(s) wait for memory"
+            return f"{ahead} earlier spawn(s) wait in the queue"
         return self._reserve(brief["child_role"])
 
     def _queue_spawn(self, brief: sqlite3.Row, parent_id: str, reason: str) -> dict:
@@ -97,7 +96,10 @@ class CapacityMixin(LedgerHost):
             "role": entry["role"],
             "queued_at": entry["queued_at"],
             "reason": entry["reason"],
-            "next": f"{entry['child_name']} is not started yet: {QUEUED_POINTER}.",
+            "next": (
+                f"{entry['child_name']} is not started yet: the ledger queued it because "
+                f"{entry['reason']}. {QUEUED_POINTER}."
+            ),
         }
 
     def start_queued_spawns(self, listing: list[dict]) -> list[dict]:
@@ -120,13 +122,19 @@ class CapacityMixin(LedgerHost):
                 continue
             try:
                 self._require_spawnable(brief, entry["child_name"])
-                self._require_spawn_slot(brief, listing)
             except SpawnDeferred:
                 continue
             except LedgerError as exc:
                 self._drop_queued(entry, str(exc))
                 continue
-            if self._reserve(entry["role"]) is not None:
+            try:
+                self._require_spawn_slot(brief, listing)
+            except SpawnDeferred as exc:
+                self._set_queue_reason(entry, str(exc))
+                continue
+            short = self._reserve(entry["role"])
+            if short is not None:
+                self._set_queue_reason(entry, short)
                 break
             try:
                 spawned = self._start_child(
@@ -195,6 +203,15 @@ class CapacityMixin(LedgerHost):
                     conn, agent_id, None, "orphan_stopped", f"stopped session {bg_id}: {why}"
                 )
         return stopped, failed
+
+    def _set_queue_reason(self, entry: dict, reason: str) -> None:
+        if entry["reason"] == reason:
+            return
+        with write_tx(self.conn) as conn:
+            conn.execute(
+                "UPDATE spawn_queue SET reason = ? WHERE queue_id = ? AND state = 'queued'",
+                (reason, entry["queue_id"]),
+            )
 
     def _drop_queued(self, entry: dict, reason: str) -> None:
         with write_tx(self.conn) as conn:

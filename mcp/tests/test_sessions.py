@@ -423,10 +423,20 @@ def test_agent_spawn_applies_the_parallelism_cap_only_when_set(
     ctx = _bootstrap(ledger, claude)
     _brief_second_lead(ledger, ctx)
     ledger.settings.parallelism_cap = 3
-    with pytest.raises(LedgerError, match="parallelism cap of 3 is reached"):
-        ledger.agent_spawn(*ctx.manager, "lead-p1-module-2")
+    spawns = len([a for a, _ in claude.calls if "--bg" in a])
+
+    queued = ledger.agent_spawn(*ctx.manager, "lead-p1-module-2")
+
+    assert queued["queued"] is True
+    assert "parallelism cap of 3 is reached" in queued["reason"]
+    assert "parallelism cap of 3 is reached" in queued["next"]
+    assert "do not call agent_spawn for it again" in queued["next"]
+    assert len([a for a, _ in claude.calls if "--bg" in a]) == spawns
+    assert ledger.agent_spawn(*ctx.manager, "lead-p1-module-2")["queue_id"] == queued["queue_id"]
     ledger.settings.parallelism_cap = None
-    assert ledger.agent_spawn(*ctx.manager, "lead-p1-module-2")["state"] == "registered"
+    (started,) = ledger.start_queued_spawns(claude.listing)
+    assert started["name"] == "lead-p1-module-2"
+    assert started["state"] == "registered"
 
 
 def test_agent_spawn_names_setup_when_the_role_file_is_missing(

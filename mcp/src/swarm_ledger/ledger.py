@@ -1772,7 +1772,10 @@ class Ledger(
             raise self.pause_for_config(exc) from exc
         if session_name in sessions.live_names(listing):
             raise LedgerError(f"a running session already has the name {session_name!r}")
-        self._require_spawn_slot(brief, listing)
+        try:
+            self._require_spawn_slot(brief, listing)
+        except SpawnDeferred as exc:
+            return self._queue_spawn(brief, c.agent_id, str(exc))
         reason = self._queue_reason(brief)
         if reason is not None:
             return self._queue_spawn(brief, c.agent_id, reason)
@@ -1915,8 +1918,7 @@ class Ledger(
             if live >= cap:
                 raise SpawnDeferred(
                     f"the parallelism cap of {cap} is reached ({live} live sessions, "
-                    f"{other_swarms} from other swarms on this machine); call agent_spawn again "
-                    "after a release frees a slot"
+                    f"{other_swarms} from other swarms on this machine)"
                 )
         role_cap = self.settings.role_parallelism_cap.get(role)
         if role_cap is not None:
@@ -1928,7 +1930,7 @@ class Ledger(
             if live_role >= role_cap:
                 raise SpawnDeferred(
                     f"the {role} parallelism cap of {role_cap} is reached ({live_role} live "
-                    f"{role} sessions); call agent_spawn again after a release frees a slot"
+                    f"{role} sessions)"
                 )
 
     def session_name(self, run_id: int, child_name: str) -> str:

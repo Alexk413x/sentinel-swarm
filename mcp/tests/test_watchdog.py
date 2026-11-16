@@ -1906,6 +1906,178 @@ def test_a_parent_whose_child_is_parked_with_nothing_to_do_is_still_stuck(
     assert ("lead-1", "stuck") in _kinds(_scan(ledger, claude, now))
 
 
+def _brief_scenario(
+    ledger: Ledger,
+    claude: FakeClaude,
+    now: datetime,
+    *,
+    role: str = "lead",
+    age_minutes: int = 20,
+    claim: bool = True,
+) -> tuple[int, int]:
+    run_id = _run_id(ledger)
+    _oracle_running(claude)
+    _agent(ledger, "sess-mgr-1", "manager", "working", started=now, heartbeat=now)
+    claude.run("sess-mgr-1", status="idle")
+    child = "coder-9" if role == "coder" else "lead-9"
+    with write_tx(ledger.conn) as conn:
+        phase = conn.execute(
+            "INSERT INTO phases (run_id, name, ordinal, state) VALUES (?, 'p1-x', 1, 'working')",
+            (run_id,),
+        ).lastrowid
+        module = conn.execute(
+            "INSERT INTO modules (phase_id, name, state) VALUES (?, 'm', 'working')", (phase,)
+        ).lastrowid
+        file_id = conn.execute(
+            "INSERT INTO files (module_id, path, owner_agent_id, state, released_at) "
+            "VALUES (?, 'src/a.ts', ?, 'claimed', ?)",
+            (module, child, None if claim else watchdog.stamp(now)),
+        ).lastrowid
+        brief_id = conn.execute(
+            "INSERT INTO briefs (run_id, parent_agent_id, child_name, child_role, body, phase_id, "
+            "file_id, created_at) VALUES (?, 'sess-mgr-1', ?, ?, 'Do it.', ?, ?, ?)",
+            (
+                run_id,
+                child,
+                role,
+                phase,
+                file_id if role == "coder" else None,
+                watchdog.stamp(now - timedelta(minutes=age_minutes)),
+            ),
+        ).lastrowid
+    assert brief_id is not None and phase is not None
+    return brief_id, phase
+
+
+def _unstarted(ledger: Ledger, claude: FakeClaude, now: datetime) -> list[watchdog.Finding]:
+    return [f for f in _scan(ledger, claude, now) if f.kind == "brief_unstarted"]
+
+
+def test_a_brief_no_child_started_for_is_reported_on_its_parent(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _brief_scenario(ledger, claude, now)
+
+    (found,) = _unstarted(ledger, claude, now)
+
+    assert found.name == "mgr-1"
+    assert "lead-9" in found.detail and "20 minutes" in found.detail
+    assert "agent_spawn" in found.next_step and '"lead-9"' in found.next_step
+    assert found.next_step.startswith("Wake mgr-1")
+
+
+def test_the_brief_report_for_an_oracle_parent_says_to_call_agent_spawn_itself(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _brief_scenario(ledger, claude, now)
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE briefs SET parent_agent_id = ?", (ORACLE,))
+
+    (found,) = _unstarted(ledger, claude, now)
+
+    assert found.name == "oracle"
+    assert found.next_step.startswith("Call agent_spawn")
+
+
+def test_a_coder_brief_with_a_live_claim_is_reported(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _brief_scenario(ledger, claude, now, role="coder")
+
+    (found,) = _unstarted(ledger, claude, now)
+
+    assert "coder-9" in found.detail
+
+
+def test_a_brief_older_than_stuck_minutes_only_is_reported(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _brief_scenario(ledger, claude, now, age_minutes=14)
+
+    assert _unstarted(ledger, claude, now) == []
+    assert len(_unstarted(ledger, claude, now + timedelta(minutes=2))) == 1
+
+
+def test_a_brief_with_a_queued_spawn_is_not_reported(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    brief_id, _ = _brief_scenario(ledger, claude, now)
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "INSERT INTO spawn_queue (run_id, brief_id, child_name, role, parent_agent_id) "
+            "VALUES (1, ?, 'lead-9', 'lead', 'sess-mgr-1')",
+            (brief_id,),
+        )
+
+    assert _unstarted(ledger, claude, now) == []
+
+
+def test_a_brief_whose_spawn_was_dropped_from_the_queue_is_reported(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    brief_id, _ = _brief_scenario(ledger, claude, now)
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "INSERT INTO spawn_queue (run_id, brief_id, child_name, role, parent_agent_id, state) "
+            "VALUES (1, ?, 'lead-9', 'lead', 'sess-mgr-1', 'dropped')",
+            (brief_id,),
+        )
+
+    assert len(_unstarted(ledger, claude, now)) == 1
+
+
+def test_a_brief_whose_child_is_live_is_not_reported(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _brief_scenario(ledger, claude, now)
+    _agent(ledger, "sess-lead-9", "lead", "registered", started=now, parent="sess-mgr-1")
+
+    assert _unstarted(ledger, claude, now) == []
+
+
+def test_an_acknowledged_brief_is_not_reported(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _brief_scenario(ledger, claude, now)
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE briefs SET acked_at = ?", (watchdog.stamp(now),))
+
+    assert _unstarted(ledger, claude, now) == []
+
+
+def test_a_brief_whose_parent_ended_is_not_reported(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _brief_scenario(ledger, claude, now)
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET ended_at = ? WHERE agent_id = 'sess-mgr-1'", (watchdog.stamp(now),)
+        )
+
+    assert _unstarted(ledger, claude, now) == []
+
+
+def test_a_coder_brief_without_a_live_claim_is_not_reported(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _brief_scenario(ledger, claude, now, role="coder", claim=False)
+
+    assert _unstarted(ledger, claude, now) == []
+
+
+def test_a_brief_into_a_paused_phase_is_not_reported(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _, phase = _brief_scenario(ledger, claude, now)
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE phases SET paused_at = ?, pause_reason = 'blocked' WHERE phase_id = ?",
+            (watchdog.stamp(now), phase),
+        )
+
+    assert _unstarted(ledger, claude, now) == []
+
+
 def test_a_parent_holding_an_open_wait_for_is_not_stuck(
     ledger: Ledger, claude: FakeClaude, now: datetime
 ) -> None:

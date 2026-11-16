@@ -465,7 +465,7 @@ when" in [05-sessions.md](05-sessions.md).
   Driver's brief and starts its session the same way `brief_create` and `agent_spawn`
   do, under the name `driver-e<ordinal>`, and returns the loop's current status. When the
   brief or the start is refused, the request is abandoned, so it never blocks the next
-  `drive_request`. A start queued for memory leaves the request's `agent_id` empty until
+  `drive_request`. A queued start leaves the request's `agent_id` empty until
   the queued Driver makes its first exploration call, which links it.
 - Every finding has a fixed shape, filled as fully as possible: a fingerprint (the
   check, the location, and what it saw), a title, the steps to reproduce, the expected
