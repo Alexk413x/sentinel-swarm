@@ -9,6 +9,7 @@ TAIL_BYTES = 256 * 1024
 INPUT_CHARS = 400
 STEP_CHARS = 200
 RECENT_STEPS = 8
+TURN_TYPES = ("assistant", "user")
 
 
 def _tail(raw: object) -> list[dict]:
@@ -28,7 +29,11 @@ def _tail(raw: object) -> list[dict]:
             record = json.loads(line)
         except ValueError:
             continue
-        if isinstance(record, dict) and not record.get("isSidechain"):
+        if (
+            isinstance(record, dict)
+            and record.get("type") in TURN_TYPES
+            and not record.get("isSidechain")
+        ):
             records.append(record)
     return records
 
@@ -42,13 +47,17 @@ def _blocks(record: dict) -> list[dict]:
 
 
 def pending_use(raw: object) -> dict | None:
-    for record in reversed(_tail(raw)):
-        blocks = _blocks(record)
-        if any(b.get("type") == "tool_result" for b in blocks):
-            return None
-        uses = [b for b in blocks if b.get("type") == "tool_use"]
-        if uses:
-            return uses[-1]
+    records = _tail(raw)
+    answered = {
+        b.get("tool_use_id")
+        for record in records
+        for b in _blocks(record)
+        if b.get("type") == "tool_result"
+    }
+    for record in reversed(records):
+        for block in reversed(_blocks(record)):
+            if block.get("type") == "tool_use" and block.get("id") not in answered:
+                return block
     return None
 
 

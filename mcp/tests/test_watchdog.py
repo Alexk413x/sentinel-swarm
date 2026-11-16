@@ -341,9 +341,9 @@ def test_a_waiting_status_with_no_request_is_not_the_users(
 ) -> None:
     _run_id(ledger)
     _oracle_running(claude)
-    transcript = _records(
-        tmp_path / "coder.jsonl", _tool_use("Bash", {"command": "npm run lint"}), _TOOL_RESULT
-    )
+    use = _tool_use("Bash", {"command": "npm run lint"})
+    replay = {"type": "api-request-blob", "hash": "h1", "message": use["message"]}
+    transcript = _records(tmp_path / "coder.jsonl", use, _TOOL_RESULT, replay)
     _agent(
         ledger, "sess-ended", "coder", "working", started=now, heartbeat=now, transcript=transcript
     )

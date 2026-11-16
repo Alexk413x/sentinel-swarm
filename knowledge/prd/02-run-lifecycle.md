@@ -694,8 +694,8 @@ user" in [04-agreements.md](04-agreements.md).
   | `config_parses` | the config file `~/.claude.json` (under `CLAUDE_CONFIG_DIR` when set) parses as a JSON object |
   | `usage_limit@<reset time>` | 2 minutes have passed since the reset time. Only the watchdog sets it; `run_pause` takes `config_parses` alone |
 - **A usage-limit stop.** When the account hits its usage limit, every session stops at
-  once, and its transcript ends in an assistant record with `isApiErrorMessage` and
-  `error: "rate_limit"`, such as "You've hit your weekly limit · resets Nov 18, 6am
+  once, and the last `assistant` or `user` record of its transcript is an assistant record
+  with `isApiErrorMessage` and `error: "rate_limit"`, such as "You've hit your weekly limit · resets Nov 18, 6am
   (America/Los_Angeles)". Before each scan of an active run, the watchdog reads each live
   agent's transcript tail; when any ends in such a stop that is newer than the run's last
   resume, it pauses the whole run with the reason "the account hit its usage limit
