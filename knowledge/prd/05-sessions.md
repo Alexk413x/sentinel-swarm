@@ -184,7 +184,8 @@ wake-up the caller owes, and returns a `next` field with the exact call to make.
 
 The sender's mod delivers every owed wake-up. The sender's model delivers a wake-up the
 mod did not deliver: `SendMessage` to a running target, and `agent_resume` to a stopped
-one. The ledger pushes nothing into a session.
+one. The recipient's mod takes a wake-up that stays unsent for 60 seconds (see
+"Recipient-side delivery" below). The ledger pushes nothing into a session.
 
 ### Mod wake-up delivery
 
@@ -225,6 +226,9 @@ one. The ledger pushes nothing into a session.
   marks only the caller's own rows sent and releases a closed Driver, as `post_any`
   does. A wake-up whose send failed stays owed. `isDelivered` means the message is
   queued for the target, not read, as for a `SendMessage` call.
+- The sender's mod sends a wake-up after its own ledger tool calls and at `Stop`, and
+  does not retry a failed or missed send while the sender sits idle. A wake-up can stay
+  unsent for that reason; the next section covers it.
 - The mod's `Stop` hook waits for the sends still in flight from earlier calls, pays
   what is still owed, and only then posts `stop`. So the Stop hook names `SendMessage` or `agent_resume` only for a
   wake-up the mod did not deliver: that is the fallback, and `agent_resume` stays the
@@ -268,9 +272,29 @@ one. The ledger pushes nothing into a session.
   seconds. The ledger marks the self-owed wake-ups sent and answers their pointers as
   one text, with the time signal, and the count of the agent's runs still `running`.
   The mod submits the text with `$.prompt.submit`, which starts a turn once the session
-  is idle and never interrupts one, and stops polling when no run is left.
+  is idle and never interrupts one. It stops polling when the answer shows no run in
+  flight and no `poll: true`; see "Recipient-side delivery".
 - A session the daemon retired is parked like any other, and `resume_parked` resumes
   it with the pointer of the wake-up owed to it.
+
+### Recipient-side delivery
+
+- The `self_owed` poll also takes any unsent wake-up addressed to the polling session,
+  whoever owes it, once it has stayed unsent for 60 seconds. It marks the wake-up sent in
+  the same transaction and answers its pointer with the others. The sender's mod
+  normally delivers first, so a duplicate is rare. A Driver's final wake-up taken this
+  way releases the closed Driver, as the sender's `wake_sent` does.
+- The answer carries `poll: true` while the session is a live agent of an active or
+  paused run. The mod keeps polling every 15 seconds while a test run is in flight or
+  `poll` is true, so an idle session that never ran a test still takes a wake-up that
+  arrives later. It stops when the answer carries neither, and a ledger tool call
+  starts it again. The timer starts at session start.
+- A resumed run owes its Oracle a wake-up from itself, reason `run_resumed`: `user_resume`
+  (the `resume` command) and the watchdog's clear-check resume record it. Its pointer
+  reads "The run resumed. Arm the watchdog Monitor again with <the Monitor call>, then
+  read directive_inbox and act on what it holds." The directive the resume files reaches
+  the Oracle only through its Monitor listener, which the pause ended, so this wake-up
+  is what starts the Oracle again.
 
 ## Time signal
 

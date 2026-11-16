@@ -41,7 +41,7 @@ listing again for the scan. See "Parked agents" and "Memory" in
 | `driver_overdue` | The Driver's session runs, it is `working`, and its open exploration's last check-in (or its start, with none yet) is older than 30 minutes plus a 5-minute grace | Message it, or have the Oracle stop it and start a fix for whatever blocked it. |
 | `driver_unsent` | The Driver's exploration is closed, the ledger has not released it, its session runs but sits idle, and it has owed a live agent an unsent wake-up for more than 2 minutes. This is the Driver ignoring its Stop hook block twice: `stop_hook_active` lets the second stop through idle. Not also reported as `crashed`, which covers a dead session instead. | Read its result in the ledger, then `agent_release` it. |
 | `wait_landed` | A live Coder or Lead has an open `wait_for` row on a path whose latest claim is `approved` or `incomplete`. `approve` closes the waits in the same transaction, so this reports a race or a lost close | `agent_resume(target_name=...)`, or the `SendMessage` to its session when it runs |
-| `wake_unsent` | A wake-up a live agent owes a live Manager, Lead, Coder, or Driver has been unsent for `unsent_wakeup_minutes`. One finding per target, from its oldest such wake-up. Not reported for a Driver's debt, which `driver_unsent` covers, or for a test result an agent owes itself | The wake call (`SendMessage` or `agent_resume`) for the target. For a parked target: the ledger resumes it once memory allows, or wake it now with that call |
+| `wake_unsent` | A wake-up a live agent owes a live Manager, Lead, Coder, or Driver has been unsent for `unsent_wakeup_minutes`. One finding per target, from its oldest such wake-up. Not reported for a target parked waiting for memory, which the ledger resumes itself. Not reported for a Driver's debt, which `driver_unsent` covers, or for a test result an agent owes itself | The wake call (`SendMessage` or `agent_resume`) for the target. For a target the Oracle's `SendMessage` gate refuses (a working agent that is not the Oracle's child, unless the Oracle owes the wake-up): the call that wakes its nearest ancestor the gate allows, which then messages the target. For a target parked for another reason: the ledger resumes it once memory allows, or wake it now with that call |
 | `spawn_queued` | A spawn `agent_spawn` queued for memory has waited `queued_spawn_minutes`. Reported on the parent, one finding per queued spawn | Free memory on the machine, lower `memory.headroom_mb`, or `run_pause` and tell the user the run waits on memory |
 | `phase_unmanaged` | A phase is `unlocked` or `working`, not paused, has had a Manager, and has no live one: its Manager released itself or was released before the phase handed up. Reported on the Oracle, one finding for every such phase | Brief and spawn a new Manager for the phase, settle the file that blocks it with `file_accept_incomplete`, or `run_close` a run that cannot finish |
 | `directive_unread` | Run-level, filed on the Oracle's row. A directive from `user_chat`, `outside_session`, or `skill` has been open for `unsent_wakeup_minutes` with `seen_at` unset: the Oracle has not called `directive_inbox` since it arrived. One finding for every such directive. The watchdog directive it files reaches a busy Oracle through its Monitor line and wakes an Oracle whose session is not running, as for any finding. It clears when the Oracle reads the inbox. Does not notify the user | `directive_inbox()` now, then apply each directive, or acknowledge one the Oracle cannot apply at once with `directive_ack(directive_id, note)` |
@@ -144,9 +144,16 @@ listing again for the scan. See "Parked agents" and "Memory" in
 - `directive_inbox` marks the directives it returns as notified.
 - When a watchdog directive stays unnotified for one interval and the Oracle's session
   runs but is not `busy` (its armed Monitor keeps it `busy`), the listener is down or the
-  Oracle waits on the user, and a resume would start a second copy. The watchdog then
-  notifies the user once per oldest such directive (`oracle_unreachable:<directive_id>`,
-  level warning, OS notification only, type `oracle_unreachable`): "The swarm's Oracle session <name> waits on
+  Oracle waits on the user, and a resume would start a second copy. The watchdog first
+  owes the Oracle a wake-up from itself (reason `watchdog_directive`): "The watchdog
+  reported N finding(s). Arm the watchdog Monitor again with <the Monitor call>, then read
+  directive_inbox and act on what it holds." The Oracle's own mod delivers it from its
+  `self_owed` poll, within 15 seconds. It files one such wake-up per batch of directives:
+  none is filed while the latest is unsent or newer than the oldest waiting directive.
+  The watchdog notifies the user only when the directive is still unnotified one more
+  interval after that wake-up was filed. It notifies once per oldest such directive
+  (`oracle_unreachable:<directive_id>`, level warning, OS notification only, type
+  `oracle_unreachable`): "The swarm's Oracle session <name> waits on
   <what>, and N watchdog finding(s) wait for it. Open it in agent view." When it does
   not wait on the user, "waits on <what>" reads "sits idle with no watchdog listener".
 - When a watchdog directive stays unnotified for one interval and the Oracle's session

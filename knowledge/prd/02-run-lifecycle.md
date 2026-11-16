@@ -730,8 +730,12 @@ user" in [04-agreements.md](04-agreements.md).
   <root>]` resumes a paused run without the Oracle's `run_start`. It sets the run back to
   `active`, clears any clear-check, records the agent event "<sender> resumed the run"
   from `paused` to `active`, and files a `watchdog` directive that tells the Oracle to arm
-  its Monitor again, continue, and resolve it and any open pause directive. The
-  watchdog's wake path delivers that directive as it does the clear-check one. Because the
+  its Monitor again, continue, and resolve it and any open pause directive. It also owes
+  the Oracle a wake-up from itself (`run_resumed`) that says the run resumed and names the
+  Monitor call, which the Oracle's mod delivers from its `self_owed` poll; a resume by a
+  passed clear-check owes the same one. See "Recipient-side delivery" in
+  [05-sessions.md](05-sessions.md). The watchdog's wake path also delivers the directive.
+  Because the
   server exits while a run stays paused, the command starts the ledger server (`ensure_server`)
   so the watchdog runs. It exits 1 when no run is live or the run is not paused. When the
   Oracle's session is gone, `/sentinel-swarm:resume` starts a new one instead.

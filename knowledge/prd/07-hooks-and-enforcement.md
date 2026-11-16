@@ -149,7 +149,9 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   [05-sessions.md](05-sessions.md).
 - **Owed wake-ups and the inbox.** The mod posts `owed` and `wake_sent` to pay the
   session's wake-ups, `self_owed` on a 15-second timer to deliver a recorded test
-  result to its own idle session with `$.prompt.submit`, and `inbox_take`, `inbox_ack`, and `inbox_release` to read the
+  result, or a wake-up unsent for 60 seconds, to its own idle session with
+  `$.prompt.submit` (the poll continues while the ledger answers `running` above 0 or
+  `poll: true`), and `inbox_take`, `inbox_ack`, and `inbox_release` to read the
   inbox inside a wake-up. See "Mod wake-up delivery" and "Messages" in
   [05-sessions.md](05-sessions.md).
 - **The mod check-in.** The mod's `SessionStart` post carries
@@ -341,8 +343,9 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
 - `owed`, `wake_sent`, `self_owed`, `inbox_take`, `inbox_ack`, `inbox_release`: posted
   by the mod only. `owed` resumes a stopped or parked target itself before it answers,
   except the Oracle, and leaves that target out of the answer. `self_owed` marks the
-  caller's self-owed wake-ups sent and answers their text and the count of its test runs
-  still `running`. See "Mod wake-up delivery" and "Messages" in
+  caller's self-owed wake-ups, and any wake-up to the caller unsent for 60 seconds, sent
+  and answers their text, the count of its test runs still `running`, and `poll`, true
+  while the caller is a live agent of an active or paused run. See "Mod wake-up delivery" and "Messages" in
   [05-sessions.md](05-sessions.md). Each ignores a caller the registry does not know.
 - `session_end`: records tokens and cost and the end reason. After a run finishes or
   closes, the Oracle's `session_end` refreshes the report.

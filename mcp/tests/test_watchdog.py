@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from helpers import ledger_for, make_host
 
-from swarm_ledger import notify, pauses, rekey, serve, sessions, wake, watch, watchdog
+from swarm_ledger import capacity, notify, pauses, rekey, serve, sessions, wake, watch, watchdog
 from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import HANDLERS as _HANDLERS
 from swarm_ledger.hooks import events
@@ -1038,15 +1038,17 @@ def test_no_wake_while_the_oracle_runs_or_after_the_listener_notified_it(
     dog.tick(now)
     dog.tick(now + timedelta(minutes=1))
     assert claude.resumed == []
+    assert [n for n in _notifications(ledger) if n["event_key"].startswith("oracle_")] == []
+    dog.tick(now + timedelta(minutes=2))
     unreachable = [n for n in _notifications(ledger) if n["event_key"].startswith("oracle_")]
     assert len(unreachable) == 1
     assert "sits idle with no watchdog listener" in unreachable[0]["message"]
-    dog.tick(now + timedelta(minutes=2))
+    dog.tick(now + timedelta(minutes=3))
     assert len([n for n in _notifications(ledger) if n["event_key"].startswith("oracle_")]) == 1
 
-    watch.poll(ledger.conn, now + timedelta(minutes=1))
+    watch.poll(ledger.conn, now + timedelta(minutes=3))
     oracle["status"] = "stopped"
-    dog.tick(now + timedelta(minutes=2))
+    dog.tick(now + timedelta(minutes=4))
     assert claude.resumed == []
 
 
@@ -1718,8 +1720,10 @@ def test_a_usage_limit_pause_resumes_after_the_reset_and_wakes_the_stopped(
         "SELECT from_agent_id, to_agent_id, reason FROM wakeups WHERE sent_at IS NULL "
         "ORDER BY wakeup_id"
     ).fetchall()
-    assert [(r[0], r[1]) for r in owed] == [(ORACLE, "sess-coder-1")]
-    assert owed[0][2] == pauses.USAGE_WAKE_REASON
+    assert [(r[0], r[1], r[2]) for r in owed] == [
+        (ORACLE, ORACLE, pauses.RESUMED_WAKE_REASON),
+        (ORACLE, "sess-coder-1", pauses.USAGE_WAKE_REASON),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -2190,6 +2194,186 @@ def test_a_digest_directive_stays_open_while_its_other_findings_are_open(
     ).fetchall()
     assert [(r[0], r[1] is None) for r in rows] == [("sess-coder-1", False), ("sess-coder-2", True)]
     assert {r[2] for r in rows} == {directive["directive_id"]}
+
+
+# -- wake-ups the Oracle's listener does not deliver ----------------------------------------------
+
+
+def _self_wakeups(ledger: Ledger) -> list[dict]:
+    return [
+        dict(r)
+        for r in ledger.conn.execute(
+            "SELECT * FROM wakeups WHERE from_agent_id = to_agent_id ORDER BY wakeup_id"
+        )
+    ]
+
+
+def _unreachable_notices(ledger: Ledger) -> list[dict]:
+    return [n for n in _notifications(ledger) if n["event_key"].startswith("oracle_")]
+
+
+def test_an_idle_oracle_with_no_listener_is_woken_before_the_user_is_notified(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _agent(ledger, "sess-coder-1", "coder", "working", started=now)
+    claude.run(ORACLE, status="idle")
+    dog = _dog(ledger, Exits())
+    dog.tick(now)
+
+    dog.tick(now + timedelta(minutes=1))
+
+    [owed] = _self_wakeups(ledger)
+    assert (owed["to_agent_id"], owed["sent_at"]) == (ORACLE, None)
+    assert "watchdog reported 1 finding(s)" in owed["pointer"]
+    assert "directive_inbox" in owed["pointer"] and watchdog.MONITOR_CALL in owed["pointer"]
+    assert _unreachable_notices(ledger) == []
+
+    dog.tick(now + timedelta(minutes=1, seconds=10))
+    assert len(_self_wakeups(ledger)) == 1
+    assert _unreachable_notices(ledger) == []
+
+    dog.tick(now + timedelta(minutes=2))
+    [notice] = _unreachable_notices(ledger)
+    assert "sits idle with no watchdog listener" in notice["message"]
+    assert len(_self_wakeups(ledger)) == 1
+    assert claude.resumed == []
+
+
+def test_a_delivered_wake_up_spares_the_user_the_notice(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _agent(ledger, "sess-coder-1", "coder", "working", started=now)
+    claude.run(ORACLE, status="idle")
+    dog = _dog(ledger, Exits())
+    dog.tick(now)
+    dog.tick(now + timedelta(minutes=1))
+
+    events.handle_self_owed(ledger, {"session_id": ORACLE})
+    ledger.directive_inbox("oracle", ORACLE)
+    dog.tick(now + timedelta(minutes=2))
+
+    assert _unreachable_notices(ledger) == []
+
+
+def test_a_directive_filed_after_the_last_wake_up_owes_a_new_one(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _agent(ledger, "sess-coder-1", "coder", "working", started=now)
+    claude.run(ORACLE, status="idle")
+    dog = _dog(ledger, Exits())
+    dog.tick(now)
+    dog.tick(now + timedelta(minutes=1))
+    events.handle_self_owed(ledger, {"session_id": ORACLE})
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE directives SET notified_at = ?", (watchdog.stamp(now),))
+    ledger.directive_submit("watchdog", "watchdog", "A later finding.")
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE directives SET created_at = ? WHERE notified_at IS NULL",
+            (watchdog.stamp(now + timedelta(minutes=3)),),
+        )
+
+    dog.tick(now + timedelta(minutes=4))
+
+    assert len(_self_wakeups(ledger)) == 2
+    assert _unreachable_notices(ledger) == []
+
+
+def _wake_row(
+    ledger: Ledger, from_id: str, to_id: str, to_name: str, session: str, at: datetime
+) -> None:
+    with write_tx(ledger.conn) as conn:
+        run_id = conn.execute("SELECT MAX(run_id) FROM runs").fetchone()[0]
+        conn.execute(
+            "INSERT INTO wakeups (run_id, from_agent_id, to_agent_id, to_name, to_session_name, "
+            "reason, pointer, created_at) VALUES (?, ?, ?, ?, ?, 'message', 'Read your inbox.', ?)",
+            (run_id, from_id, to_id, to_name, session, watchdog.stamp(at)),
+        )
+
+
+def _unsent(ledger: Ledger, claude: FakeClaude, now: datetime) -> list[watchdog.Finding]:
+    return [f for f in _scan(ledger, claude, now) if f.kind == "wake_unsent"]
+
+
+def test_an_unsent_wake_up_to_a_session_the_oracle_cannot_message_names_the_parents_call(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _oracle_running(claude)
+    _agent(ledger, "sess-lead-1", "lead", "working", started=now, heartbeat=now)
+    claude.run("sess-lead-1")
+    _agent(
+        ledger, "sess-coder-1", "coder", "working", started=now, heartbeat=now, parent="sess-lead-1"
+    )
+    claude.run("sess-coder-1")
+    _wake_row(ledger, "sess-lead-1", "sess-coder-1", "coder-1", "host-r1-coder-1", now)
+
+    [finding] = _unsent(ledger, claude, now + timedelta(minutes=10))
+
+    assert finding.name == "coder-1"
+    assert 'SendMessage(to="host-r1-lead-1"' in finding.next_step
+    assert 'SendMessage(to="host-r1-coder-1"' not in finding.next_step
+
+
+def test_an_unsent_wake_up_to_an_idle_session_still_names_the_direct_call(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _oracle_running(claude)
+    _agent(ledger, "sess-lead-1", "lead", "working", started=now, heartbeat=now)
+    claude.run("sess-lead-1")
+    _agent(
+        ledger, "sess-coder-1", "coder", "idle", started=now, heartbeat=now, parent="sess-lead-1"
+    )
+    claude.run("sess-coder-1", status="idle")
+    _wake_row(ledger, "sess-lead-1", "sess-coder-1", "coder-1", "host-r1-coder-1", now)
+
+    [finding] = _unsent(ledger, claude, now + timedelta(minutes=10))
+
+    assert finding.next_step.startswith('Wake it: SendMessage(to="host-r1-coder-1"')
+
+
+def test_an_unsent_wake_up_to_a_child_of_the_oracle_names_the_direct_call(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _oracle_running(claude)
+    _agent(ledger, "sess-lead-1", "lead", "working", started=now, heartbeat=now)
+    claude.run("sess-lead-1")
+    _wake_row(ledger, ORACLE, "sess-lead-1", "lead-1", "host-r1-lead-1", now)
+
+    [finding] = _unsent(ledger, claude, now + timedelta(minutes=10))
+
+    assert finding.next_step.startswith('Wake it: SendMessage(to="host-r1-lead-1"')
+
+
+def test_a_wake_up_unsent_to_a_session_parked_for_memory_is_not_reported(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _oracle_running(claude)
+    _agent(ledger, "sess-lead-1", "lead", "working", started=now, heartbeat=now)
+    claude.run("sess-lead-1")
+    _agent(
+        ledger, "sess-coder-1", "coder", "working", started=now, heartbeat=now, parent="sess-lead-1"
+    )
+    _wake_row(ledger, "sess-lead-1", "sess-coder-1", "coder-1", "host-r1-coder-1", now)
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET state = 'parked', state_before_park = 'working', parked_at = ?, "
+            "park_reason = ? WHERE agent_id = 'sess-coder-1'",
+            (watchdog.stamp(now), capacity.WAITING_FOR_MEMORY),
+        )
+    later = now + timedelta(minutes=10)
+
+    assert _unsent(ledger, claude, later) == []
+
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE agents SET park_reason = 'a pressure park'")
+    assert [f.name for f in _unsent(ledger, claude, later)] == ["coder-1"]
 
 
 def test_the_listener_prints_a_digest_directive_as_one_line(ledger: Ledger, now: datetime) -> None:
