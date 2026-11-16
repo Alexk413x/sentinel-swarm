@@ -132,6 +132,42 @@ def test_connect_adds_the_directive_acknowledgement_columns(tmp_path: Path) -> N
         conn.close()
 
 
+def _module_with_state(conn: sqlite3.Connection, phase_state: str, module_state: str) -> int:
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute(
+        "INSERT INTO runs (run_id, prd, state) VALUES (1, 'x', 'active') "
+        "ON CONFLICT (run_id) DO NOTHING"
+    )
+    phase_id = conn.execute(
+        "INSERT INTO phases (run_id, name, ordinal, state) "
+        "VALUES (1, ?, (SELECT COUNT(*) + 1 FROM phases), ?)",
+        (f"p-{phase_state}-{module_state}", phase_state),
+    ).lastrowid
+    module_id = conn.execute(
+        "INSERT INTO modules (phase_id, name, state) VALUES (?, 'm', ?)", (phase_id, module_state)
+    ).lastrowid
+    assert module_id is not None
+    return module_id
+
+
+def test_migrate_approves_the_returned_modules_of_an_approved_phase(tmp_path: Path) -> None:
+    db_path = tmp_path / "ledger.db"
+    conn = connect(db_path)
+    stale = _module_with_state(conn, "approved", "returned")
+    working = _module_with_state(conn, "working", "returned")
+    planned = _module_with_state(conn, "approved", "planned")
+    conn.execute("PRAGMA user_version = 0")
+    conn.close()
+
+    for _ in range(2):
+        conn = connect(db_path)
+        states = {row["module_id"]: row["state"] for row in conn.execute("SELECT * FROM modules")}
+        conn.execute("PRAGMA user_version = 0")
+        conn.close()
+
+        assert states == {stale: "approved", working: "returned", planned: "planned"}
+
+
 def test_new_ledger_has_the_session_columns(tmp_path: Path) -> None:
     conn = connect(tmp_path / "ledger.db")
     try:

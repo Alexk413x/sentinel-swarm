@@ -105,7 +105,10 @@ message. The Oracle then calls, in order:
 
 - A Manager adds modules to its own phase with `module_add`. A module name is a slug.
 - Module states: `planned`, `returned` (by `module_review` or a departure pushback), and
-  `approved` (set by `approve` when no file of the module is still pending).
+  `approved`. `approve` sets it when no file of the module is still pending,
+  `module_review(accepted)` sets it, and `phase_update(approved)` sets it on every module
+  of the phase not yet approved. `migrate` also sets a `returned` module of an approved
+  phase to `approved`, which repairs ledgers made before these rules.
 
 ## Briefs
 
@@ -329,6 +332,8 @@ Manager of the module's phase.
   Lead returns the module's latest review as `returned_review` (`review_id`, `outcome`,
   `notes`, `file_notes`, `created_at`) while that review is the latest and was returned;
   it is `null` otherwise.
+- `accepted` also sets the module to `approved`, so the run panel shows it done once its
+  files are.
 - After an accepted review, the Manager releases the Lead with `agent_release`.
 
 ## Phase hand-up

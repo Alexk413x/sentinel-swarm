@@ -392,6 +392,9 @@ class OversightMixin(LedgerHost):
             )
             notice = None
             if outcome == "accepted":
+                conn.execute(
+                    "UPDATE modules SET state = 'approved' WHERE module_id = ?", (module_id,)
+                )
                 notice = notify.record(
                     conn,
                     require_run(c, "manager"),

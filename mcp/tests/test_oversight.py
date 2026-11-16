@@ -277,6 +277,43 @@ def test_module_review_returned_owes_the_live_lead_a_wake_up(ledger: Ledger) -> 
     assert module_row["state"] == "returned"
 
 
+def _module_state(ledger: Ledger, module_id: int) -> str:
+    return ledger.conn.execute(
+        "SELECT state FROM modules WHERE module_id = ?", (module_id,)
+    ).fetchone()["state"]
+
+
+def test_an_accepted_module_review_approves_a_returned_module(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    _approve_file(ledger, ctx, "good", "pkg/good.py", "tests/test_good.py")
+    _release_lead(ledger, ctx)
+    manager = ("mgr-p1-phase-1", ctx["manager"]["agent_id"])
+    ledger.module_review(*manager, ctx["module_id"], "returned", "needs more work")
+    assert _module_state(ledger, ctx["module_id"]) == "returned"
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
+
+    ledger.module_review(*manager, ctx["module_id"], "accepted", "ok", scores=_review_scores())
+
+    assert _module_state(ledger, ctx["module_id"]) == "approved"
+
+
+def test_approving_a_phase_approves_every_module_of_it(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    _accept_module_and_hand_up(ledger, ctx)
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+    ledger.phase_review(
+        "oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok", scores=_review_scores()
+    )
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE modules SET state = 'returned' WHERE module_id = ?", (ctx["module_id"],)
+        )
+
+    ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
+
+    assert _module_state(ledger, ctx["module_id"]) == "approved"
+
+
 def test_module_review_returned_reports_when_the_lead_has_ended(ledger: Ledger) -> None:
     ctx = bootstrap_module(ledger)
     _release_lead(ledger, ctx)

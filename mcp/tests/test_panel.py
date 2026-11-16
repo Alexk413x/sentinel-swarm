@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 import pytest
-from helpers import bootstrap_module, spawn_coder
+from helpers import bootstrap_module, insert_passing_test_run, spawn_coder
 
 from swarm_ledger import panel
 from swarm_ledger.db import write_tx
@@ -124,6 +124,29 @@ def test_an_incomplete_file_is_a_problem_and_keeps_its_parents_in_progress(
         "module": "active",
         "file": "problem",
     }
+
+
+def test_an_accepted_module_review_shows_the_module_done(ledger: Ledger) -> None:
+    ctx = _build(ledger)
+    _set_state(ledger, "files", "file_id", ctx["file_id"], "approved")
+    _set_state(ledger, "modules", "module_id", ctx["module_id"], "returned")
+    manager = ("mgr-p1-phase-1", ctx["manager"]["agent_id"])
+    ledger.agent_release("lead-p1-module-1", ctx["lead"]["agent_id"], ctx["coder_id"])
+    ledger.agent_release(*manager, ctx["lead"]["agent_id"])
+    assert _statuses(_run_snapshot(ledger))["module"] == "active"
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
+
+    ledger.module_review(
+        *manager,
+        ctx["module_id"],
+        "accepted",
+        "ok",
+        scores=[
+            {"dimension": d, "value": 10} for d in ("completeness", "integration", "open_items")
+        ],
+    )
+
+    assert _statuses(_run_snapshot(ledger))["module"] == "done"
 
 
 def test_a_released_file_is_a_problem(ledger: Ledger) -> None:

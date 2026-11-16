@@ -1119,6 +1119,10 @@ class Ledger(
             f"UPDATE phases SET state = 'approved', ended_at = {NOW} WHERE phase_id = ?",
             (phase_id,),
         )
+        conn.execute(
+            "UPDATE modules SET state = 'approved' WHERE phase_id = ? AND state != 'approved'",
+            (phase_id,),
+        )
         for row in conn.execute(
             "SELECT agent_id FROM agents WHERE ended_at IS NULL AND ("
             "phase_id = ? OR module_id IN (SELECT module_id FROM modules "
