@@ -144,6 +144,26 @@ def test_a_profile_set_in_one_worker_reaches_tests_run_in_another(
     assert ran["passed"] == 3
 
 
+def test_a_test_command_by_path_set_in_one_worker_reaches_tests_run_in_another(
+    host: Path, workers: Pool
+) -> None:
+    _seed_manager()
+    other = _pool(host, 1)
+    mapping = {"pkg": "echo 5 passed {target}"}
+    try:
+        _use(host, workers)
+        call(
+            "profile_set",
+            {**ORACLE, "test_command": "echo 3 passed", "test_command_by_path": mapping},
+        )
+        _use(host, other)
+        ran = call("tests_run", {**MANAGER, "scope": "phase", "target": "pkg/x"})
+    finally:
+        other.close()
+    assert ran["command"].startswith("echo 5 passed")
+    assert ran["passed"] == 5
+
+
 READS: list[tuple[str, dict[str, Any]]] = [
     ("run_status", ORACLE),
     ("status_tree", ORACLE),

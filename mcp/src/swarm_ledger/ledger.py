@@ -57,7 +57,7 @@ from .queries import LIVE_RUN_STATES, UNPARK_SET, latest_live_oracle
 from .repo import RepoMixin
 from .report import ReportMixin
 from .review import ReviewMixin, live_agents, run_summary
-from .settings import Settings, load_settings
+from .settings import Settings, load_settings, normalize_path_commands
 from .waits import WaitsMixin, open_file_waits
 
 _RESUME_POINTER = "Re-read your brief and your inbox in the ledger."
@@ -814,7 +814,16 @@ class Ledger(
         test_command: str | None = None,
         build_command: str | None = None,
         lint_command: str | None = None,
+        test_command_by_path: dict[str, str] | None = None,
     ) -> dict:
+        path_commands = None
+        if test_command_by_path is not None:
+            path_commands = normalize_path_commands(test_command_by_path)
+            if len(path_commands) != len(test_command_by_path):
+                raise LedgerError(
+                    "test_command_by_path needs, for each entry, a repo-relative folder with no "
+                    "'..' and no repeat once normalized, and a non-empty command"
+                )
         word = server_word(build_command) if build_command is not None else None
         if word is not None:
             raise LedgerError(
@@ -833,6 +842,8 @@ class Ledger(
                 self.settings.build_command = build_command
             if lint_command is not None:
                 self.settings.lint_command = lint_command
+            if path_commands is not None:
+                self.settings.test_command_by_path = path_commands
 
             conn.execute(
                 "UPDATE runs SET settings_json = ? WHERE run_id = ?",
@@ -843,6 +854,7 @@ class Ledger(
             "test_command": self.settings.test_command,
             "build_command": self.settings.build_command,
             "lint_command": self.settings.lint_command,
+            "test_command_by_path": self.settings.test_command_by_path,
         }
 
     def guidelines_set(self, caller: str, agent_id: str, body: str) -> dict:

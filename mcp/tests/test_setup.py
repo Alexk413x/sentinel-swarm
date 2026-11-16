@@ -903,3 +903,100 @@ def test_setup_warns_about_an_unknown_notify_events_key(repo: Path):
 
     assert line.startswith("warning:")
     assert "run_finnished" in line
+
+
+def _package(repo: Path, folder: str, scripts: dict[str, str] | None = None) -> None:
+    path = repo / folder
+    path.mkdir(parents=True, exist_ok=True)
+    data = {"name": folder.replace("/", "-"), "scripts": scripts or {"test": "vitest run"}}
+    (path / "package.json").write_text(json.dumps(data), encoding="utf-8")
+
+
+def _path_lines(report: setup.SetupReport) -> list[str]:
+    return [
+        line for line in report.lines if "test_command_by_path" in line and "warning" not in line
+    ]
+
+
+def test_setup_suggests_test_command_by_path_for_a_repo_with_several_test_packages(repo: Path):
+    _package(repo, "apps/web")
+    _package(repo, "packages/api")
+    _package(repo, "packages/docs", {"build": "vite build"})
+    path, text = _write_local_settings(repo, "notify: [os]\n")
+
+    [line] = _path_lines(setup.run_setup(repo))
+
+    assert ".claude/sentinel-swarm.local.md" in line
+    block = line.split("local.md:\n", 1)[1]
+    assert yaml.safe_load(block) == {
+        "test_command_by_path": {
+            "apps/web": "npm --prefix apps/web test -- {target}",
+            "packages/api": "npm --prefix packages/api test -- {target}",
+        }
+    }
+    assert path.read_text(encoding="utf-8") == text
+
+
+def test_setup_names_the_package_manager_the_lockfile_shows(repo: Path):
+    _package(repo, "apps/web")
+    _package(repo, "apps/api")
+    (repo / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+
+    [line] = _path_lines(setup.run_setup(repo))
+
+    assert "pnpm --dir apps/web test {target}" in line
+
+
+def test_setup_reads_the_package_folders_from_the_root_workspaces(repo: Path):
+    _package(repo, "services/auth")
+    _package(repo, "services/billing")
+    (repo / "package.json").write_text(
+        json.dumps({"name": "root", "workspaces": ["services/*"]}), encoding="utf-8"
+    )
+
+    [line] = _path_lines(setup.run_setup(repo))
+
+    assert "services/auth" in line and "services/billing" in line
+
+
+def test_setup_says_nothing_about_a_repo_with_one_test_package(repo: Path):
+    _package(repo, "apps/web")
+
+    assert _path_lines(setup.run_setup(repo)) == []
+
+
+def test_setup_reports_only_the_prefixes_test_command_by_path_lacks(repo: Path):
+    _package(repo, "apps/web")
+    _package(repo, "packages/api")
+    _write_local_settings(repo, "test_command_by_path:\n  apps/web: npx vitest run {target}\n")
+
+    [line] = _path_lines(setup.run_setup(repo))
+
+    assert "lacks packages/api" in line
+    assert "apps/web:" not in line
+
+
+def test_setup_is_quiet_when_test_command_by_path_names_every_package(repo: Path):
+    _package(repo, "apps/web")
+    _package(repo, "packages/api")
+    _write_local_settings(
+        repo,
+        "test_command_by_path:\n"
+        "  apps/web: npx vitest run {target}\n"
+        "  packages/api: jest {target}\n",
+    )
+
+    assert _path_lines(setup.run_setup(repo)) == []
+
+
+def test_setup_warns_about_a_shell_operator_in_a_path_command(repo: Path):
+    _write_local_settings(
+        repo, "test_command_by_path:\n  apps/web: cd apps/web && npx vitest run {target}\n"
+    )
+
+    report = setup.run_setup(repo)
+
+    [line] = [
+        line for line in report.lines if line.startswith("warning: test_command_by_path.apps/web")
+    ]
+    assert "shell operator" in line

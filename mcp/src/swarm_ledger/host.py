@@ -37,7 +37,14 @@ class LedgerHost:
     def adopt_run_profile(self, run_id: int | None) -> None: ...
 
     def test_command_for(
-        self, scope: str, target: str | None, include_slow: bool = False
+        self,
+        scope: str,
+        target: str | None,
+        include_slow: bool = False,
+        *,
+        run_id: int | None = None,
+        module_id: int | None = None,
+        phase_id: int | None = None,
     ) -> str: ...
 
     def pause_reason(self, run_id: int) -> str | None: ...

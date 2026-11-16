@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -660,3 +661,296 @@ def test_an_oracle_waiting_on_its_full_run_is_not_told_to_review(
     assert events._oracle_work_block(ledger, run, oracle) is not None
     ledger.tests_run("oracle", ctx["oracle_id"], "full")
     assert events._oracle_work_block(ledger, run, oracle) is None
+
+
+# -- one test command per path prefix -----------------------------------------------------
+
+_BY_PATH = {"apps/web": "W", "apps/web/e2e": "E", "packages/api": "A"}
+
+
+def _plan(scope: str, target: str | None, claimed: list[str], by_path=None):
+    return testing.plan_parts(_BY_PATH if by_path is None else by_path, scope, target, claimed)
+
+
+def test_test_command_by_path_loads_with_normalized_prefixes(tmp_path: Path) -> None:
+    root = make_host(
+        tmp_path / "host",
+        settings_text(
+            test_command="pytest -q {target}",
+            swaps=[
+                (
+                    "test_command_by_path:\n",
+                    "test_command_by_path:\n"
+                    "  apps/web: npx vitest run {target}\n"
+                    "  ./packages/api/: npm test {target}\n"
+                    "  ..: nope {target}\n"
+                    "  /abs: nope {target}\n"
+                    "  empty:\n",
+                )
+            ],
+        ),
+    )
+    settings = load_settings(root)
+    assert settings.test_command_by_path == {
+        "apps/web": "npx vitest run {target}",
+        "packages/api": "npm test {target}",
+    }
+
+
+def test_a_settings_snapshot_keeps_test_command_by_path() -> None:
+    from swarm_ledger.settings import Settings
+
+    settings = Settings(test_command_by_path={"apps/web": "vitest {target}"})
+    assert Settings.from_snapshot(settings.snapshot()).test_command_by_path == {
+        "apps/web": "vitest {target}"
+    }
+    adopted = Settings()
+    adopted.adopt_profile(settings.snapshot())
+    assert adopted.test_command_by_path == {"apps/web": "vitest {target}"}
+
+
+@pytest.mark.parametrize(
+    ("scope", "target", "claimed", "expected"),
+    [
+        ("file", "apps/web/src/a.ts", [], [("apps/web", "apps/web/src/a.ts")]),
+        ("file", "apps/web/e2e/a.ts", [], [("apps/web/e2e", "apps/web/e2e/a.ts")]),
+        ("file", "apps/webby/a.ts", [], [(None, "apps/webby/a.ts")]),
+        ("file", "lib/a.py", [], [(None, "lib/a.py")]),
+        ("module", None, ["apps/web/a.ts", "apps/web/b.ts"], [("apps/web", "apps/web")]),
+        (
+            "module",
+            None,
+            ["packages/api/x.ts", "apps/web/a.ts"],
+            [("apps/web", "apps/web"), ("packages/api", "packages/api")],
+        ),
+        ("module", None, ["apps/web/a.ts", "lib/a.py"], [(None, None), ("apps/web", "apps/web")]),
+        ("module", None, ["lib/a.py"], [(None, None)]),
+        ("module", None, [], [(None, None)]),
+        (
+            "module",
+            "apps/web/src",
+            ["apps/web/a.ts", "packages/api/x.ts"],
+            [("apps/web", "apps/web/src")],
+        ),
+        ("phase", "lib", ["lib/a.py", "apps/web/a.ts"], [(None, "lib"), ("apps/web", "apps/web")]),
+        (
+            "full",
+            "tests",
+            ["lib/a.py"],
+            [
+                (None, "tests"),
+                ("apps/web", "apps/web"),
+                ("apps/web/e2e", "apps/web/e2e"),
+                ("packages/api", "packages/api"),
+            ],
+        ),
+        (
+            "full",
+            None,
+            [],
+            [
+                ("apps/web", "apps/web"),
+                ("apps/web/e2e", "apps/web/e2e"),
+                ("packages/api", "packages/api"),
+            ],
+        ),
+        ("full", "packages/api", ["lib/a.py"], [("packages/api", "packages/api")]),
+    ],
+)
+def test_the_parts_a_scope_runs_follow_the_path_map(scope, target, claimed, expected) -> None:
+    assert _plan(scope, target, claimed) == expected
+
+
+@pytest.mark.parametrize("scope", ["file", "module", "phase", "full"])
+def test_with_no_path_map_every_scope_runs_the_one_default_command(scope: str) -> None:
+    assert _plan(scope, "tests", ["apps/web/a.ts"], by_path={}) == [(None, "tests")]
+
+
+def _by_path_host(tmp_path: Path, mapping: dict[str, str], full_target: str = "tests") -> Path:
+    block = "".join(f"  {prefix}: {command}\n" for prefix, command in mapping.items())
+    return _host(
+        tmp_path,
+        full_target=full_target,
+        swaps=[("test_command_by_path:\n", f"test_command_by_path:\n{block}")],
+    )
+
+
+def _says(text: str, summary: str) -> str:
+    return f"{_PYTHON} -c \"print('{summary}')\" {text} {{target}}"
+
+
+def test_a_file_run_uses_the_command_of_the_longest_matching_prefix(tmp_path: Path) -> None:
+    root = _by_path_host(tmp_path, {"pkg": _says("--pkg", "7 passed")})
+    ledger = _ledger(root)
+    _, coder = _coder(ledger)
+    mapped = ledger.tests_run(_CODER, coder["agent_id"], "file", "pkg/good.py")
+    assert mapped["command"].endswith("--pkg pkg/good.py")
+    assert (mapped["passed"], mapped["ok"]) == (7, True)
+    default = ledger.tests_run(_CODER, coder["agent_id"], "file", "tests/test_good.py")
+    assert (default["passed"], default["ok"]) == (3, True)
+
+
+def test_a_module_run_runs_the_prefixes_that_hold_its_files_and_the_default_for_the_rest(
+    tmp_path: Path,
+) -> None:
+    root = _by_path_host(
+        tmp_path, {"pkg": _says("--pkg", "7 passed"), "web": _says("--web", "4 passed")}
+    )
+    ledger = _ledger(root)
+    ctx, _ = _coder(ledger)
+    result = ledger.tests_run("lead-p1-module-1", ctx["lead"]["agent_id"], "module")
+    assert "--web" not in result["command"]
+    assert "--pkg pkg" in result["command"]
+    assert (result["passed"], result["ok"]) == (10, True)
+
+
+def test_a_full_run_sums_every_part_and_keeps_one_row_and_a_header_per_part(
+    tmp_path: Path,
+) -> None:
+    root = _by_path_host(
+        tmp_path, {"pkg": _says("--pkg", "7 passed"), "web": _says("--web", "4 passed")}
+    )
+    ledger = _ledger(root)
+    ctx, _ = _coder(ledger)
+    before = ledger.conn.execute("SELECT COUNT(*) FROM test_runs").fetchone()[0]
+    result = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    assert ledger.conn.execute("SELECT COUNT(*) FROM test_runs").fetchone()[0] == before + 1
+    assert (result["passed"], result["failed"], result["exit_code"], result["ok"]) == (
+        14,
+        0,
+        0,
+        True,
+    )
+    row = _row(ledger, result["test_run_id"])
+    parts = json.loads(row["command_parts_json"])
+    assert [part["prefix"] for part in parts] == [None, "pkg", "web"]
+    assert row["command"] == " ; ".join(part["command"] for part in parts)
+    for header in ("== default ==", "== pkg ==", "== web =="):
+        assert header in row["output"]
+    assert ledger._passing_full_test_after(ledger.conn, ctx["run_id"], None)
+
+
+def test_a_full_run_fails_when_one_part_fails_and_still_sums_the_others(tmp_path: Path) -> None:
+    failing = _py("import sys; print('1 failed, 2 passed'); sys.exit(1)") + " {target}"
+    root = _by_path_host(tmp_path, {"pkg": _says("--pkg", "7 passed"), "web": failing})
+    ledger = _ledger(root)
+    ctx, _ = _coder(ledger)
+    result = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    assert result["ok"] is False
+    assert (result["passed"], result["failed"], result["exit_code"]) == (12, 1, 1)
+    assert "web" in result["reason"]
+    assert not ledger._passing_full_test_after(ledger.conn, ctx["run_id"], None)
+
+
+def test_the_timeout_bounds_each_part_and_a_timed_out_part_fails_the_run(
+    tmp_path: Path,
+) -> None:
+    slow = _py("import time; time.sleep(30)") + " {target}"
+    root = _by_path_host(tmp_path, {"pkg": slow, "web": _says("--web", "4 passed")})
+    settings = root / ".claude" / "sentinel-swarm.local.md"
+    settings.write_text(
+        settings.read_text(encoding="utf-8").replace("test_timeout_s: 600", "test_timeout_s: 1"),
+        encoding="utf-8",
+    )
+    ledger = _ledger(root)
+    ctx, _ = _coder(ledger)
+    result = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    assert (result["ok"], result["exit_code"]) == (False, -1)
+    assert "timed out" in result["reason"]
+    assert result["passed"] >= 4
+
+
+def test_a_composite_run_may_outlive_one_timeout_before_the_sweep(tmp_path: Path) -> None:
+    ledger = _ledger(_host(tmp_path))
+    ctx, _ = _coder(ledger)
+    parts = [{"prefix": None, "command": "a"}, {"prefix": "pkg", "command": "b"}]
+    with write_tx(ledger.conn) as conn:
+        cur = conn.execute(
+            "INSERT INTO test_runs (run_id, agent_id, scope, command, state, timeout_s, "
+            "command_parts_json, runner_pid, created_at) "
+            "VALUES (?, ?, 'full', 'a ; b', 'running', 100, ?, ?, ?)",
+            (
+                ctx["run_id"],
+                ctx["oracle_id"],
+                json.dumps(parts),
+                os.getpid(),
+                stamp(utcnow() - timedelta(seconds=150)),
+            ),
+        )
+        test_run_id = int(cur.lastrowid or 0)
+    row = ledger.conn.execute(
+        "SELECT * FROM test_runs WHERE test_run_id = ?", (test_run_id,)
+    ).fetchone()
+    later = utcnow() + timedelta(seconds=100)
+    assert testrun._runner_gone(row, later) is False
+    assert testrun._runner_gone(row, utcnow() + timedelta(seconds=400)) is True
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE test_runs SET command_parts_json = NULL WHERE test_run_id = ?", (test_run_id,)
+        )
+    single = ledger.conn.execute(
+        "SELECT * FROM test_runs WHERE test_run_id = ?", (test_run_id,)
+    ).fetchone()
+    assert testrun._runner_gone(single, later) is True
+
+
+def test_a_second_identical_composite_call_reuses_the_first_run(tmp_path: Path) -> None:
+    root = _by_path_host(
+        tmp_path, {"pkg": _says("--pkg", "7 passed"), "web": _says("--web", "4 passed")}
+    )
+    ledger = _ledger(root)
+    ctx, _ = _coder(ledger)
+    first = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    second = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    assert first["reused"] is False
+    assert (second["reused"], second["reused_from"]) == (True, first["test_run_id"])
+    assert second["command"] == first["command"]
+
+
+def test_a_mapped_prefix_runs_without_a_default_command(tmp_path: Path) -> None:
+    text = settings_text(
+        swaps=[("test_command_by_path:\n", f"test_command_by_path:\n  pkg: {_PASS}\n")]
+    )
+    root = make_host(tmp_path / "host", text)
+    (root / "pkg").mkdir()
+    (root / "pkg" / "good.py").write_text("X = 1\n", encoding="utf-8")
+    (root / "tests").mkdir()
+    (root / "tests" / "test_good.py").write_text("", encoding="utf-8")
+    _git_repo(root)
+    ledger = _ledger(root)
+    ctx, _ = _coder(ledger)
+    result = ledger.tests_run("lead-p1-module-1", ctx["lead"]["agent_id"], "module", "pkg")
+    assert result["ok"] is True
+
+
+def test_profile_set_takes_test_command_by_path_and_tests_run_reads_it(tmp_path: Path) -> None:
+    ledger = _ledger(_host(tmp_path))
+    ctx, _ = _coder(ledger)
+    mapping = {"pkg": _says("--pkg", "6 passed")}
+    set_result = ledger.profile_set("oracle", ctx["oracle_id"], test_command_by_path=mapping)
+    assert set_result["test_command_by_path"] == mapping
+    other = _ledger(tmp_path / "host")
+    result = other.tests_run("lead-p1-module-1", ctx["lead"]["agent_id"], "module", "pkg/good.py")
+    assert (result["passed"], result["ok"]) == (6, True)
+    ledger.profile_set("oracle", ctx["oracle_id"], test_command_by_path={})
+    assert ledger.profile_set("oracle", ctx["oracle_id"])["test_command_by_path"] == {}
+
+
+def test_profile_set_refuses_a_path_entry_it_cannot_use(tmp_path: Path) -> None:
+    ledger = _ledger(_host(tmp_path))
+    ctx = bootstrap_module(ledger)
+    with pytest.raises(LedgerError, match="test_command_by_path"):
+        ledger.profile_set("oracle", ctx["oracle_id"], test_command_by_path={"../x": "t {target}"})
+    with pytest.raises(LedgerError, match="test_command_by_path"):
+        ledger.profile_set("oracle", ctx["oracle_id"], test_command_by_path={"pkg": " "})
+
+
+def test_a_part_that_ran_no_tests_fails_the_run_even_when_it_exits_zero(tmp_path: Path) -> None:
+    quiet = _py("print('no tests ran')") + " {target}"
+    root = _by_path_host(tmp_path, {"pkg": _says("--pkg", "7 passed"), "web": quiet})
+    ledger = _ledger(root)
+    ctx, _ = _coder(ledger)
+    result = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    assert result["ok"] is False
+    assert "web: no tests ran" in result["reason"]
+    assert not ledger._passing_full_test_after(ledger.conn, ctx["run_id"], None)

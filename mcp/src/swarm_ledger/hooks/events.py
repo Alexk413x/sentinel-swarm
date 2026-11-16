@@ -382,6 +382,7 @@ def _allowed_templates(ledger: Ledger, role: str) -> list[str]:
         return [t for t in (ledger.settings.build_command,) if t]
     templates = (
         ledger.settings.test_command,
+        *ledger.settings.test_command_by_path.values(),
         ledger.settings.build_command,
         ledger.settings.lint_command,
     )

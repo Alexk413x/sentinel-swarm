@@ -157,6 +157,8 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
   "swarm-<role> starts in <mode>: <source>". When policy sets
   `permissions.disableBypassPermissionsMode`, it also says that a role that would start
   in `bypassPermissions` starts in `acceptEdits`. See "Permission mode" below.
+- Prints a `test_command_by_path` suggestion for a repo with several test packages; see
+  "One test command per path prefix" in the settings section.
 - Checks the test command, through the same runner `tests_run` uses (`cmd.exe` with
   `shell=True` on Windows, so a path that only a POSIX shell accepts fails here first):
   - With no `test_command`, it reports that the command is not set.
@@ -335,6 +337,7 @@ descriptions stay out of every session's context.
 | `watchdog.*` | See "Watchdog" in [08-watchdog.md](08-watchdog.md) | Watchdog timing, thresholds, and server idle exit |
 | `test_command` | empty | Must contain `{target}`, for example `python -m pytest -q -p no:cacheprovider {target}` |
 | `test_command_by_scope.<scope>` | empty | A command for one scope (`file`, `module`, `phase`, or `full`) in place of `test_command`, for example a sharded full run, or an environment variable that only the full run needs. A scope with no entry uses `test_command`. Unknown scopes are dropped |
+| `test_command_by_path.<prefix>` | empty | A map of repo-relative folder prefixes to test commands, for a repo with more than one test runner, such as `apps/web: npm --prefix apps/web test -- {target}`. Each command follows the rules of `test_command`: it holds `{target}` and no shell operator. A key is a posix path with no leading `/` or `./`, no trailing `/`, and no `..`; an entry with another key or an empty command is dropped. The longest prefix that matches a path wins. See "One test command per path prefix" below. `profile_set` takes it too, and a run's snapshot keeps it |
 | `test_timeout_s` | 600 | Seconds a test run's process may take. The runner kills the process tree at the cap and records the run as `timed out`. It bounds the test process, not the tool call. A value that is not a positive whole number reads as 600 |
 | `full_target` | empty | What a full run puts in `{target}`, such as `tests`. A full run never runs with an empty target: when the full command contains `{target}` and this is empty, `tests_run(scope="full")` refuses, unless the call passes a target |
 | `allowed_skips` | `[]` | Texts that mark a skip as an environment skip the host expects. A skip whose pytest `-rs` line (`SKIPPED [n] <path>:<line>: <reason>`), or `-v` line, contains one of them counts as clean. Every other skip fails the run |
@@ -363,20 +366,55 @@ descriptions stay out of every session's context.
 
 `-p no:cacheprovider` keeps parallel pytest runs from contending on `.pytest_cache`.
 
-A Coder's shell gate allows only a command that starts with `test_command` or
-`build_command`, a `lint_command` as the table above describes, read-only git, and the
-host commands the settings name in `commands`; see `pre_shell` in
+A Coder's shell gate allows only a command that starts with `test_command`, with any
+`test_command_by_path` command, or with `build_command`, a `lint_command` as the table
+above describes, read-only git, and the host commands the settings name in
+`commands`; see `pre_shell` in
 [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md). Any other step the work
 needs, such as an export, edit, and build loop over data files, goes in `commands`
 under its own name, not behind `build_command`.
 
 The gate denies any command that holds a shell operator (`;`, `&`, `|`, `<`, `>`, a
 backtick, a newline, or `$(`), so a `test_command`, `test_command_by_scope` entry,
-`build_command`, or `lint_command` written as `cd apps/web && npm run lint` is refused
+`test_command_by_path` entry, `build_command`, or `lint_command` written as `cd apps/web && npm run lint` is refused
 to every Coder, and `tests_run` resolves a repo-relative `{target}` from the repo root,
 not from `apps/web`. Setup warns about each such template and shows the subdirectory
 form, which names the directory in the command: `npx --prefix apps/web vitest run --root
 apps/web {target}`, or `npm --prefix apps/web run lint`.
+
+### One test command per path prefix
+
+A repo with several test runners, such as a web app and an API package, sets
+`test_command_by_path`. A `tests_run` call picks its commands this way:
+
+- **File scope:** the longest prefix that matches the target decides. With no match, the
+  scope's usual command (`test_command_by_scope.file`, else `test_command`) runs.
+- **Module, phase, and full scope:** when the target lies under one prefix, only that
+  prefix's command runs. Otherwise the run collects the prefixes that hold a claimed,
+  non-superseded file or test file of the module, the phase, or the run; a full run takes
+  every prefix in the map. A claimed path outside every prefix also runs the scope's
+  usual command. A scope that reaches no prefix runs the usual command alone, as with no map.
+- **The target of each part:** the scope's usual target when it lies under the prefix,
+  otherwise the prefix itself. The usual command keeps the scope's usual target, and a full
+  run with no `full_target` still refuses when that command holds `{target}`.
+- **One row per call:** the call still records one `test_runs` row, so the handoff and
+  review gates read it as before. When more than one command applies, the runner runs the
+  parts one after another, parses each part's output on its own, and sums the counts. The
+  exit code is the first non-zero one. The run passes only when every part passes, and a
+  failing part's reason starts with the prefix, or `default` for the usual command. The
+  stored output has a `== <prefix> ==` header before each part, and the row's `command`
+  joins the commands with ` ; ` in a stable order (the usual command first, then the
+  prefixes in alphabetical order), so reuse and the fingerprint match keep working. The
+  row's `command_parts_json` lists the parts. `test_timeout_s` applies to each part.
+- **Lint and build stay single commands.** Lint and build commands by path
+  **(needs implementation)**: `lint_command` and `build_command` do not vary by path.
+
+Setup never edits the settings file. When the repo has more than one `package.json` with
+a `test` script under `apps/*` or `packages/*`, or in the folders a root `package.json`
+`workspaces` field names, it prints a `test_command_by_path` block to paste, with the
+package manager its lockfile shows (`pnpm-lock.yaml`, `yarn.lock`, else npm). With the
+setting present, it prints only the packages the map lacks. It warns about a shell
+operator in a path command, as for `test_command`.
 
 ## Plugin features
 

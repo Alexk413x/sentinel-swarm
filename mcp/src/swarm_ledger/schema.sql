@@ -262,6 +262,9 @@ CREATE TABLE IF NOT EXISTS test_runs (
     scope TEXT NOT NULL,
     target TEXT,
     command TEXT,
+    -- A run that applies more than one command (settings.test_command_by_path) lists
+    -- them as JSON [{prefix, command}], and command joins them.
+    command_parts_json TEXT,
     exit_code INTEGER,
     passed INTEGER,
     failed INTEGER,

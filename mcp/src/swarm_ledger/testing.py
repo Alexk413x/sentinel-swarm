@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -93,6 +93,52 @@ def _quote_target(target: str) -> str:
     if os.name == "nt":
         return f'"{target}"' if " " in target else target
     return shlex.quote(target)
+
+
+def _norm(path: str) -> str:
+    text = path.strip().replace("\\", "/")
+    while text.startswith("./"):
+        text = text[2:]
+    return text.rstrip("/")
+
+
+def _under(path: str, prefix: str) -> bool:
+    return path == prefix or path.startswith(prefix + "/")
+
+
+def path_prefix(by_path: Mapping[str, str], path: str) -> str | None:
+    text = _norm(path)
+    matches = [prefix for prefix in by_path if _under(text, prefix)]
+    return max(matches, key=len) if matches else None
+
+
+def plan_parts(
+    by_path: Mapping[str, str], scope: str, target: str | None, claimed: Sequence[str]
+) -> list[tuple[str | None, str | None]]:
+    """The (prefix, target) pairs a run executes; a prefix of None is the default command."""
+    if not by_path:
+        return [(None, target)]
+    if target is not None:
+        prefix = path_prefix(by_path, target)
+        if prefix is not None:
+            return [(prefix, target)]
+    if scope == "file":
+        return [(None, target)]
+    prefixes: set[str] = set()
+    outside = False
+    for path in claimed:
+        found = path_prefix(by_path, path)
+        if found is None:
+            outside = True
+        else:
+            prefixes.add(found)
+    if scope == "full":
+        prefixes = set(by_path)
+    parts: list[tuple[str | None, str | None]] = []
+    if outside or not prefixes:
+        parts.append((None, target))
+    parts.extend((prefix, prefix) for prefix in sorted(prefixes))
+    return parts
 
 
 def is_pytest(command: str) -> bool:
@@ -345,6 +391,31 @@ def result_of(command: str, executed: Executed, allowed_skips: Sequence[str] = (
         ok=ok,
         reason=reason,
         allowed_skipped=allowed,
+    )
+
+
+def combine_results(parts: Sequence[tuple[str, TestResult]]) -> TestResult:
+    share = _MAX_OUTPUT_CHARS // len(parts)
+    output = "\n".join(f"== {label} ==\n{result.output[-share:]}" for label, result in parts)
+    failing = [(label, result) for label, result in parts if not result.ok]
+    exits = [result.exit_code for _, result in parts if result.exit_code != 0]
+    exit_code = exits[0] if exits else (1 if failing else 0)
+    reason = None
+    if failing:
+        label, first = failing[0]
+        reason = f"{label}: {first.reason}"
+    return TestResult(
+        command=" ; ".join(result.command for _, result in parts),
+        exit_code=exit_code,
+        passed=sum(result.passed for _, result in parts),
+        failed=sum(result.failed for _, result in parts),
+        skipped=sum(result.skipped for _, result in parts),
+        errors=sum(result.errors for _, result in parts),
+        output=output,
+        duration_ms=sum(result.duration_ms for _, result in parts),
+        ok=not failing,
+        reason=reason,
+        allowed_skipped=sum(result.allowed_skipped for _, result in parts),
     )
 
 

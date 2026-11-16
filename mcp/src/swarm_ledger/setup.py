@@ -411,6 +411,91 @@ def report_notify_events(repo: Path, report: SetupReport) -> None:
         report.add(f"warning: notify_events in {shown} names unknown type(s): {', '.join(unknown)}")
 
 
+_PACKAGE_PARENTS = ("apps", "packages")
+
+
+def _has_test_script(package_json: Path) -> bool:
+    try:
+        data = json.loads(package_json.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    scripts = data.get("scripts") if isinstance(data, dict) else None
+    return isinstance(scripts, dict) and bool(scripts.get("test"))
+
+
+def _workspace_folders(repo: Path) -> list[Path]:
+    try:
+        data = json.loads((repo / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    declared = data.get("workspaces") if isinstance(data, dict) else None
+    if isinstance(declared, dict):
+        declared = declared.get("packages")
+    if not isinstance(declared, list):
+        return []
+    folders: list[Path] = []
+    for pattern in declared:
+        text = str(pattern).strip().replace("\\", "/").strip("/")
+        if text.endswith("/*") and "*" not in text[:-2]:
+            parent = repo / text[:-2]
+            if parent.is_dir():
+                folders.extend(sorted(child for child in parent.iterdir() if child.is_dir()))
+        elif text and "*" not in text:
+            folders.append(repo / text)
+    return folders
+
+
+def packages_with_tests(repo: Path) -> list[str]:
+    folders = [
+        child
+        for parent in _PACKAGE_PARENTS
+        if (repo / parent).is_dir()
+        for child in sorted((repo / parent).iterdir())
+        if child.is_dir()
+    ]
+    folders.extend(_workspace_folders(repo))
+    return sorted(
+        {
+            folder.relative_to(repo).as_posix()
+            for folder in folders
+            if _has_test_script(folder / "package.json")
+        }
+    )
+
+
+def _package_test_command(repo: Path, prefix: str) -> str:
+    if (repo / "pnpm-lock.yaml").is_file():
+        return f"pnpm --dir {prefix} test {{target}}"
+    if (repo / "yarn.lock").is_file():
+        return f"yarn --cwd {prefix} test {{target}}"
+    return f"npm --prefix {prefix} test -- {{target}}"
+
+
+def report_test_command_by_path(repo: Path, report: SetupReport) -> None:
+    packages = packages_with_tests(repo)
+    if len(packages) < 2:
+        return
+    given = load_settings(repo).test_command_by_path
+    missing = [prefix for prefix in packages if prefix not in given]
+    if not missing:
+        return
+    shown = SETTINGS_PATH.as_posix()
+    block = "".join(f"  {prefix}: {_package_test_command(repo, prefix)}\n" for prefix in missing)
+    if not given:
+        report.add(
+            f"{len(packages)} packages have a test script ({', '.join(packages)}), but "
+            "test_command runs one command for the whole repo. To give each package its own "
+            "command, check that each one below runs the right tests and paste this into the "
+            f"frontmatter of {shown}:\ntest_command_by_path:\n{block}"
+        )
+    else:
+        report.add(
+            f"test_command_by_path in {shown} lacks {', '.join(missing)}, which have a test "
+            "script. Check that each command below runs the right tests and paste these lines "
+            f"under test_command_by_path:\n{block}"
+        )
+
+
 def _path_key(raw: str) -> str:
     return os.path.normcase(os.path.normpath(raw))
 
@@ -603,6 +688,10 @@ def check_command_operators(repo: Path, report: SetupReport) -> None:
             (f"test_command_by_scope.{scope}", command)
             for scope, command in settings.test_command_by_scope.items()
         ),
+        *(
+            (f"test_command_by_path.{prefix}", command)
+            for prefix, command in settings.test_command_by_path.items()
+        ),
         ("build_command", settings.build_command),
         ("lint_command", settings.lint_command),
     ]
@@ -630,6 +719,7 @@ def run_setup(repo: Path, time_full_run: bool = False) -> SetupReport:
     propose_commands(repo, report)
     report_parallelism(repo, report)
     report_notify_events(repo, report)
+    report_test_command_by_path(repo, report)
     report.add(RELOAD_NOTE)
     report.trusted = is_trusted(repo)
     report.trust_note = f"{repo} is trusted" if report.trusted else trust_instructions(repo)

@@ -12,6 +12,7 @@ _GIT_EXCLUDE_LINE = ".sentinel-swarm/"
 _GITDIR_PREFIX = "gitdir:"
 ADDED_COLUMNS = (
     ("test_runs", "build_command", "TEXT"),
+    ("test_runs", "command_parts_json", "TEXT"),
     ("test_runs", "build_exit_code", "INTEGER"),
     ("test_runs", "build_output", "TEXT"),
     ("test_runs", "build_duration_ms", "INTEGER"),

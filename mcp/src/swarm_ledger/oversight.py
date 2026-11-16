@@ -170,7 +170,7 @@ class OversightMixin(LedgerHost):
         )
         self.adopt_run_profile(phase_row["run_id"])
         try:
-            need += f", of {self.test_command_for('full', None)!r}"
+            need += f", of {self.test_command_for('full', None, run_id=phase_row['run_id'])!r}"
         except LedgerError as exc:
             need += f"; {exc}"
         build_command = self.settings.build_command or None

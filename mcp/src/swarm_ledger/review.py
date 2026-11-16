@@ -24,7 +24,7 @@ from .identity import (
 from .queries import logical_state
 from .rubric import Rating
 from .settings import command_line
-from .testing import build_command, summarize_output, tree_fingerprint
+from .testing import build_command, plan_parts, summarize_output, tree_fingerprint
 
 _SCOPE_ROLE = {"file": "coder", "module": "lead", "phase": "manager", "full": "oracle"}
 _PARENT_ROLE = {"manager": "oracle", "lead": "manager", "coder": "lead"}
@@ -407,7 +407,20 @@ class ReviewMixin(LedgerHost):
         self.adopt_run_profile(c.run_id)
         if scope == "full" and target is None:
             target = self.settings.full_target
-        command = self.test_command_for(scope, target, include_slow)
+        parts = self.test_parts_for(
+            scope,
+            target,
+            include_slow,
+            run_id=c.run_id,
+            module_id=c.module_id,
+            phase_id=c.phase_id,
+        )
+        command = " ; ".join(part_command for _, part_command in parts)
+        parts_json = (
+            json.dumps([{"prefix": prefix, "command": text} for prefix, text in parts])
+            if len(parts) > 1
+            else None
+        )
         build = (self.settings.build_command or None) if scope == "full" else None
         testrun.sweep(self.conn)
         if file_row is not None:
@@ -431,15 +444,16 @@ class ReviewMixin(LedgerHost):
 
         with write_tx(self.conn) as conn:
             cur = conn.execute(
-                "INSERT INTO test_runs (run_id, agent_id, scope, target, command, fingerprint, "
-                "state, skip_patterns_json, claimed_json, timeout_s, build_command) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)",
+                "INSERT INTO test_runs (run_id, agent_id, scope, target, command, "
+                "command_parts_json, fingerprint, state, skip_patterns_json, claimed_json, "
+                "timeout_s, build_command) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)",
                 (
                     c.run_id,
                     c.agent_id,
                     scope,
                     target,
                     command,
+                    parts_json,
                     fingerprint,
                     json.dumps(self.settings.allowed_skips),
                     json.dumps(sorted(set(claimed))),
@@ -451,19 +465,72 @@ class ReviewMixin(LedgerHost):
         self._launch_run(test_run_id)
         return self._await_run(test_run_id)
 
-    def test_command_for(self, scope: str, target: str | None, include_slow: bool = False) -> str:
-        template = self.settings.test_template(scope)
-        if not template:
-            raise LedgerError("no test command in the profile")
+    def test_parts_for(
+        self,
+        scope: str,
+        target: str | None,
+        include_slow: bool = False,
+        *,
+        run_id: int | None = None,
+        module_id: int | None = None,
+        phase_id: int | None = None,
+    ) -> list[tuple[str | None, str]]:
+        by_path = self.settings.test_command_by_path
         if scope == "full" and target is None:
             target = self.settings.full_target
-            if target is None and "{target}" in template:
+        claimed: list[str] = []
+        if by_path and scope != "file":
+            claimed = self._scope_paths(scope, run_id, module_id, phase_id)
+        parts: list[tuple[str | None, str]] = []
+        for prefix, part_target in plan_parts(by_path, scope, target, claimed):
+            template = by_path[prefix] if prefix is not None else self.settings.test_template(scope)
+            if not template:
+                raise LedgerError("no test command in the profile")
+            if (
+                prefix is None
+                and scope == "full"
+                and part_target is None
+                and "{target}" in template
+            ):
                 raise LedgerError(
                     "a full run needs a target, and full_target is not set: set full_target in "
                     ".claude/sentinel-swarm.local.md to the folder that holds the tests, such "
                     "as tests, or pass target"
                 )
-        return build_command(template, target, self.settings.slow_tests, include_slow)
+            command = build_command(template, part_target, self.settings.slow_tests, include_slow)
+            parts.append((prefix, command))
+        return parts
+
+    def test_command_for(
+        self,
+        scope: str,
+        target: str | None,
+        include_slow: bool = False,
+        *,
+        run_id: int | None = None,
+        module_id: int | None = None,
+        phase_id: int | None = None,
+    ) -> str:
+        parts = self.test_parts_for(
+            scope, target, include_slow, run_id=run_id, module_id=module_id, phase_id=phase_id
+        )
+        return " ; ".join(command for _, command in parts)
+
+    def _scope_paths(
+        self, scope: str, run_id: int | None, module_id: int | None, phase_id: int | None
+    ) -> list[str]:
+        clause, value = {
+            "module": ("f.module_id = ?", module_id),
+            "phase": ("m.phase_id = ?", phase_id),
+            "full": ("p.run_id = ?", run_id),
+        }[scope]
+        rows = self.conn.execute(
+            "SELECT f.path, f.test_path FROM files f "
+            "JOIN modules m ON m.module_id = f.module_id "
+            f"JOIN phases p ON p.phase_id = m.phase_id WHERE {clause} AND f.state != 'superseded'",
+            (value,),
+        )
+        return [path for row in rows for path in (row["path"], row["test_path"]) if path]
 
     def _launch_run(self, test_run_id: int) -> None:
         try:
@@ -510,17 +577,20 @@ class ReviewMixin(LedgerHost):
     ) -> dict:
         with write_tx(self.conn) as conn:
             cur = conn.execute(
-                "INSERT INTO test_runs (run_id, agent_id, scope, target, command, exit_code, "
+                "INSERT INTO test_runs (run_id, agent_id, scope, target, command, "
+                "command_parts_json, exit_code, "
                 "passed, failed, skipped, errors, allowed_skipped, output, fingerprint, "
                 "reused_from, build_command, build_exit_code, build_output, build_duration_ms, "
                 "state, duration_ms, finished_at) "
-                f"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', 0, {NOW})",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                f"'done', 0, {NOW})",
                 (
                     c.run_id,
                     c.agent_id,
                     scope,
                     target,
                     earlier["command"],
+                    earlier["command_parts_json"],
                     earlier["exit_code"],
                     earlier["passed"],
                     earlier["failed"],

@@ -64,12 +64,14 @@ Call these in order. Nothing else works until `run_start` succeeds.
    in a headless session with nobody to ask, record your assumption with
    `guidelines_set` and proceed on the current branch. `agent_spawn` refuses to
    start a Manager until this call has run at least once.
-5. `profile_set(test_command=..., build_command=..., lint_command=...)`. Read
+5. `profile_set(test_command=..., build_command=..., lint_command=...,
+   test_command_by_path=...)`. Read
    `.claude/sentinel-swarm.local.md` first and use the values the `setup` skill
    detected. The test command must contain `{target}`, for example
    `python -m pytest -q -p no:cacheprovider {target}`. Every `tests_run` in the run
    uses this command, unless the settings' `test_command_by_scope` names one for the
-   scope, so a wrong value blocks every handoff. A full run puts the settings'
+   scope or `test_command_by_path` names one for the path, so a wrong value blocks
+   every handoff. Pass `test_command_by_path` only when the settings file sets it. A full run puts the settings'
    `full_target` in `{target}`. The build command is a
    one-shot build, such as `npm run build`: `profile_set` refuses one that serves or
    watches. The lint command should contain `{target}`, for example

@@ -250,7 +250,8 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   not show, a failed listing, and a non-swarm caller pass. No override rule covers it.
 - `pre_shell`: while a run is active or paused, denies the shell to every role but the
   Coder, the Manager, and the Driver. A Coder may run a command that starts with the
-  profile's test or build command, the lint command, `git rm` of its own claimed path, test path,
+  profile's test command (or a `test_command_by_path` command) or build command, the
+  lint command, `git rm` of its own claimed path, test path,
   or products, or a path its claim replaces (with `-q`, `--quiet`, or `--` only), or read-only git (`status`, `diff`,
   `log`, `show`, `ls-files`, `branch`). A lint command that holds `{target}` is allowed
   only exactly as written, with `{target}` replaced by one of the Coder's own claimed

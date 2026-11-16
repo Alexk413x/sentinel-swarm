@@ -44,8 +44,8 @@
   the database before any worker starts.
 - No worker keeps state another worker needs. Each worker gets the settings the front
   read at start, not the file, so an edit to the file after the start reaches no
-  worker. The test, build, and lint commands come from the run's settings snapshot,
-  which `profile_set` writes: `profile_set` and `tests_run` read the snapshot first, so
+  worker. The test, build, and lint commands and `test_command_by_path` come from the
+  run's settings snapshot, which `profile_set` writes: `profile_set` and `tests_run` read the snapshot first, so
   a command set in one worker reaches a test run in another.
 - `graph_upsert` holds `.sentinel-swarm/kg.lock`, an exclusive file lock
   (`lock.file_lock`), while codebase-kg writes the code graph, so two workers never
@@ -285,7 +285,10 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
 - `tests_run(scope, target, force, include_slow)` is role-bound: `file` to the Coder
   (its own path or test path only), `module` to the Lead, `phase` to the Manager, `full`
   to the Oracle. It builds the scope's command: `test_command_by_scope.<scope>`, else the
-  profile's `test_command`, with `{target}` replaced, or removed for no target. A full
+  profile's `test_command`, with `{target}` replaced, or removed for no target. When the
+  profile holds `test_command_by_path`, a call may run one command per path prefix and
+  record them as one row; see "One test command per path prefix" in
+  [11-setup-and-settings.md](11-setup-and-settings.md). A full
   run with no target takes `full_target`; when the command holds `{target}` and
   `full_target` is empty, the call refuses, so a full run never collects from the repo
   root. A pytest command gets `--deselect <id>` for each of `slow_tests` unless
@@ -312,7 +315,7 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
   `command`, `state` (`passed`, `failed`, `timed out`, `running`, or `not run`),
   `exit_code`, and, for a failed build, the last 2,000 characters of its output. A row
   with a build may run for twice `test_timeout_s` plus 120 seconds before the sweep marks
-  it `abandoned`. A reused run copies the build columns, so a reused run never builds
+  it `abandoned`; each command part adds one more `test_timeout_s`. A reused run copies the build columns, so a reused run never builds
   again, and a run reuses only an earlier run with the same `build_command`. With no
   `build_command`, a full run is unchanged.
 - `tests_run` waits up to 20 seconds for the run to end. A run that ends in time comes
