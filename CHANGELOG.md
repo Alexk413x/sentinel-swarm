@@ -2,6 +2,13 @@
 
 All notable changes to the `sentinel-swarm` plugin.
 
+## [0.8.3] — 2026-11-15 — the run panel marks only the file that stopped short
+
+### Changed
+
+- In the run panel, only a file that is incomplete or was released shows `!`. Its module, phase, and "all phases" show in progress instead, and return to done once a newer claim of the file is approved.
+- The in-progress mark `●` is steel blue (`#5f87af`) instead of yellow, so it no longer matches the Driver's colour or the warning colour.
+
 ## [0.8.2] — 2026-11-15 — choose where each notification goes
 
 ### Added
