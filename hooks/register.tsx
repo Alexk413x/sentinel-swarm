@@ -686,7 +686,7 @@ export const register: Register = on => {
             agents ● busy ○ idle ⏸ parked ✕ gone · ended <Text color={WAIT_COLOR}>{WAIT_GLYPH}</Text> waiting on you ✉ unread ↯ wake-up owed
           </Text>
           <Text dimColor wrap="truncate-end">
-            work ○ waiting <Text color="warning">●</Text> in progress <Text color="success">✓</Text> done <Text color="error">!</Text> incomplete
+            work ○ waiting <Text color={TASK_MARK.active[1]}>●</Text> in progress <Text color={TASK_MARK.done[1]}>✓</Text> done <Text color={TASK_MARK.problem[1]}>!</Text> incomplete
           </Text>
           <Text dimColor wrap="truncate-end">
             dimmed: ended or not started

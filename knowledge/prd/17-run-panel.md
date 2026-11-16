@@ -251,12 +251,15 @@ answers it. The hold is a mod hook, since the plugin has no command hooks.
   bold, italic, code), and its latest review. One task is open at a time. Clicking the
   open text, another task, or any control closes it.
 - Each task's status glyph:
-  - `!` red, **problem**: the item, or anything below it, is incomplete or was released
-    without finishing.
+  - `!` red, **problem**: the file itself is incomplete or was released without
+    finishing. Only a file shows it.
   - `✓` green, **done**: the item is approved and everything below it is done.
   - `○` grey, **waiting**: nothing has started.
-  - `●` yellow, **in progress**: anything else.
-- Status rolls up: file, then module, then phase, then the run. A superseded file
-  version counts as done and stops counting once a newer version exists, so a fix by a
-  new or resumed agent clears a problem all the way up. A module approved with an
-  accepted incomplete file stays a problem until the file is fixed.
+  - `●` steel blue (`#5f87af`), **in progress**: anything else. The colour matches no
+    role and no other status, so it never reads as the Driver or as a warning.
+- Status rolls up: file, then module, then phase, then the run. A problem file counts
+  as unfinished, so its module, phase, and the run show in progress, never `!`. A
+  superseded file version counts as done and stops counting once a newer version
+  exists, so a fix by a new or resumed agent clears the problem, and each parent shows
+  in progress until its remaining work is done. A module approved with an accepted
+  incomplete file stays in progress until the file is fixed.
