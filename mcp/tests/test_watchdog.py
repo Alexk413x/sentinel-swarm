@@ -2031,6 +2031,16 @@ def test_a_brief_whose_spawn_was_dropped_from_the_queue_is_reported(
     assert len(_unstarted(ledger, claude, now)) == 1
 
 
+def test_a_voided_brief_is_not_reported(ledger: Ledger, claude: FakeClaude, now: datetime) -> None:
+    brief_id, _ = _brief_scenario(ledger, claude, now)
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE briefs SET voided_at = ? WHERE brief_id = ?", (watchdog.stamp(now), brief_id)
+        )
+
+    assert _unstarted(ledger, claude, now) == []
+
+
 def test_a_brief_whose_child_is_live_is_not_reported(
     ledger: Ledger, claude: FakeClaude, now: datetime
 ) -> None:
