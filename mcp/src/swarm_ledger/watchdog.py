@@ -1131,11 +1131,66 @@ def _directive_open(conn: sqlite3.Connection, directive_id: int | None) -> bool:
     return row is not None and row["state"] == "open"
 
 
+def digest_body(findings: Sequence[Finding]) -> str:
+    lines = [f"Watchdog pass: {len(findings)} findings"]
+    for finding in findings:
+        session = finding.session_name or "none recorded"
+        step = " ".join(finding.next_step.split())
+        lines.append(
+            f"- {finding.kind}: {finding.name} (session {session}): "
+            f"{' '.join(finding.detail.split())}. Next: {step}"
+        )
+    lines.append(
+        "Then resolve this directive with directive_resolve once every finding above is handled."
+    )
+    return "\n".join(lines)
+
+
+def _needs_own_directive(conn: sqlite3.Connection, finding: Finding) -> bool:
+    if finding.kind in USER_KINDS or finding.kind == "driver_overdue":
+        return True
+    if finding.kind not in DRIVER_ERRORS:
+        return False
+    agent = conn.execute(
+        "SELECT role FROM agents WHERE agent_id = ?", (finding.agent_id,)
+    ).fetchone()
+    return agent is not None and agent["role"] == "driver"
+
+
+def _file_directives(
+    conn: sqlite3.Connection, run_id: int, due: list[tuple[Finding, int]], at: str
+) -> None:
+    shared: list[tuple[Finding, int]] = []
+    groups: list[list[tuple[Finding, int]]] = []
+    for item in due:
+        if _needs_own_directive(conn, item[0]):
+            groups.append([item])
+        else:
+            shared.append(item)
+    if shared:
+        groups.append(shared)
+    for group in groups:
+        body = (
+            directive_body(group[0][0])
+            if len(group) == 1
+            else digest_body([finding for finding, _ in group])
+        )
+        cur = conn.execute(
+            "INSERT INTO directives (run_id, source, sender_name, body, created_at) "
+            "VALUES (?, 'watchdog', 'watchdog', ?, ?)",
+            (run_id, body, at),
+        )
+        conn.executemany(
+            "UPDATE watchdog_findings SET reported_at = ?, directive_id = ? WHERE finding_id = ?",
+            [(at, cur.lastrowid, finding_id) for _, finding_id in group],
+        )
+
+
 def record(
     conn: sqlite3.Connection, run_id: int, findings: list[Finding], now: datetime
 ) -> list[dict]:
     at = stamp(now)
-    reported: list[dict] = []
+    due: list[tuple[Finding, int]] = []
     with write_tx(conn):
         live = {
             _identity(row["kind"], row["agent_id"], row["agent_name"]): dict(row)
@@ -1163,7 +1218,7 @@ def record(
                     "first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)",
                     (run_id, finding.agent_id, finding.kind, finding.detail, at, at),
                 )
-                finding_id = cur.lastrowid
+                finding_id = int(cur.lastrowid or 0)
                 if _needs_confirmation(finding.kind):
                     continue
             else:
@@ -1178,23 +1233,16 @@ def record(
                     not reopened or _directive_open(conn, row["directive_id"])
                 ):
                     continue
-            cur = conn.execute(
-                "INSERT INTO directives (run_id, source, sender_name, body, created_at) "
-                "VALUES (?, 'watchdog', 'watchdog', ?, ?)",
-                (run_id, directive_body(finding), at),
+            due.append((finding, finding_id))
+        _file_directives(conn, run_id, due, at)
+        reported = [
+            dict(
+                conn.execute(
+                    "SELECT * FROM watchdog_findings WHERE finding_id = ?", (finding_id,)
+                ).fetchone()
             )
-            conn.execute(
-                "UPDATE watchdog_findings SET reported_at = ?, directive_id = ? "
-                "WHERE finding_id = ?",
-                (at, cur.lastrowid, finding_id),
-            )
-            reported.append(
-                dict(
-                    conn.execute(
-                        "SELECT * FROM watchdog_findings WHERE finding_id = ?", (finding_id,)
-                    ).fetchone()
-                )
-            )
+            for _, finding_id in due
+        ]
         for key, row in live.items():
             if key not in seen:
                 conn.execute(

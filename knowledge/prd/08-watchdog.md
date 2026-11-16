@@ -87,9 +87,17 @@ listing again for the scan. See "Parked agents" and "Memory" in
   when the same agent name crashes again, and its detail updates with the count of failed
   resumes and the last failure. It files a new directive only when the directive it
   filed is no longer open.
-- Each new finding becomes a directive with source and sender `watchdog`. Its body names
-  the agent, its session, the kind, the detail, and the next step. The Oracle resolves
-  each one; open directives block `run_finish`.
+- The new findings of one pass share one directive with source and sender `watchdog`. A
+  pass with one such finding files the single-finding directive: its body names the agent,
+  its session, the kind, the detail, and the next step. A pass with several files a
+  digest: the first line reads "Watchdog pass: N findings", and one line follows for each
+  finding with its kind, agent, session, detail, and next step. Every finding row of the
+  digest carries the digest's directive id, so the Oracle reads and resolves one
+  directive. Nothing closes a directive when one of its findings clears; the Oracle
+  resolves it once it has handled every line. These kinds never join a digest, because
+  their user notification is keyed by their own directive id: `needs_user`,
+  `run_stalled`, `driver_overdue`, and `crashed` on a Driver. Each of those files its own
+  directive. Open directives block `run_finish`.
 - A new `crashed` or `driver_overdue` report on a Driver session also
   records a user notification, keyed by its directive id: "Driver crashed" at level
   error, or "Driver overdue" at level warning. The server shows it as an OS

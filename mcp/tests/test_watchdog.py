@@ -1715,7 +1715,8 @@ def test_a_usage_limit_pause_resumes_after_the_reset_and_wakes_the_stopped(
 
     assert ledger.conn.execute("SELECT state FROM runs").fetchone()[0] == "active"
     owed = ledger.conn.execute(
-        "SELECT from_agent_id, to_agent_id, reason FROM wakeups WHERE sent_at IS NULL"
+        "SELECT from_agent_id, to_agent_id, reason FROM wakeups WHERE sent_at IS NULL "
+        "ORDER BY wakeup_id"
     ).fetchall()
     assert [(r[0], r[1]) for r in owed] == [(ORACLE, "sess-coder-1")]
     assert owed[0][2] == pauses.USAGE_WAKE_REASON
@@ -2073,3 +2074,132 @@ def test_a_switched_off_driver_sends_nothing_from_the_watchdog(
 
     [notice] = watchdog.driver_notices(ledger.conn, run_id, reported, ["os", "push"], {})
     assert notice["channels"] == ["os", "push"]
+
+
+# -- one digest directive per pass ----------------------------------------------------------------
+
+
+def _finding(agent_id: str, kind: str, detail: str = "it is broken") -> watchdog.Finding:
+    name = agent_id.removeprefix("sess-")
+    return watchdog.Finding(agent_id, name, f"host-r1-{name}", kind, detail, f"Fix {name}.")
+
+
+def _two_coders(ledger: Ledger, now: datetime) -> int:
+    run_id = _run_id(ledger)
+    _agent(ledger, "sess-coder-1", "coder", "working", started=now)
+    _agent(ledger, "sess-coder-2", "coder", "working", started=now)
+    return run_id
+
+
+def test_findings_of_one_pass_share_one_digest_directive(ledger: Ledger, now: datetime) -> None:
+    run_id = _two_coders(ledger, now)
+    _agent(ledger, "sess-coder-3", "coder", "working", started=now)
+    findings = [
+        _finding("sess-coder-1", "crashed", "its session is gone"),
+        _finding("sess-coder-2", "stuck", "no activity for 20 minutes"),
+        _finding("sess-coder-3", "blocked", "it ended its turn"),
+    ]
+
+    reported = watchdog.record(ledger.conn, run_id, findings, now)
+
+    [directive] = _directives(ledger)
+    assert [r["directive_id"] for r in reported] == [directive["directive_id"]] * 3
+    lines = directive["body"].splitlines()
+    assert lines[0] == "Watchdog pass: 3 findings"
+    assert len(lines) == 5
+    assert lines[1] == (
+        "- crashed: coder-1 (session host-r1-coder-1): its session is gone. Next: Fix coder-1."
+    )
+    assert "stuck: coder-2" in lines[2] and "blocked: coder-3" in lines[3]
+    assert "directive_resolve" in lines[4]
+    rows = ledger.conn.execute("SELECT directive_id FROM watchdog_findings").fetchall()
+    assert {r[0] for r in rows} == {directive["directive_id"]}
+
+
+def test_a_pass_with_one_finding_keeps_the_single_finding_directive(
+    ledger: Ledger, now: datetime
+) -> None:
+    run_id = _two_coders(ledger, now)
+
+    watchdog.record(ledger.conn, run_id, [_finding("sess-coder-1", "stuck")], now)
+
+    [directive] = _directives(ledger)
+    assert directive["body"] == (
+        "Watchdog finding stuck: coder-1 (session host-r1-coder-1): it is broken. "
+        "Next: Fix coder-1. Then resolve this directive with directive_resolve."
+    )
+
+
+def test_user_and_driver_findings_keep_their_own_directives(ledger: Ledger, now: datetime) -> None:
+    run_id = _two_coders(ledger, now)
+    _agent(ledger, "sess-driver-1", "driver", "working", started=now)
+    findings = [
+        _finding("sess-coder-1", "needs_user"),
+        _finding("sess-coder-2", "stuck"),
+        _finding("sess-driver-1", "crashed"),
+        _finding("sess-driver-1", "driver_overdue"),
+        _finding(ORACLE, "run_stalled"),
+    ]
+
+    reported = watchdog.record(ledger.conn, run_id, findings, now)
+
+    assert len(reported) == 5
+    assert len(_directives(ledger)) == 5
+    assert len({r["directive_id"] for r in reported}) == 5
+    assert all("Watchdog pass" not in d["body"] for d in _directives(ledger))
+    notices = watchdog.user_notices(ledger.conn, run_id, reported, ["os"])
+    assert {n["event_key"] for n in notices} == {
+        f"directive:{r['directive_id']}" for r in reported if r["kind"] in watchdog.USER_KINDS
+    }
+
+
+def test_findings_beside_a_user_finding_share_a_digest_of_their_own(
+    ledger: Ledger, now: datetime
+) -> None:
+    run_id = _two_coders(ledger, now)
+    findings = [
+        _finding("sess-coder-1", "needs_user"),
+        _finding("sess-coder-1", "stuck"),
+        _finding("sess-coder-2", "blocked"),
+    ]
+
+    reported = watchdog.record(ledger.conn, run_id, findings, now)
+
+    bodies = [d["body"] for d in _directives(ledger)]
+    assert len(bodies) == 2
+    assert bodies[0].startswith("Watchdog finding needs_user")
+    assert bodies[1].startswith("Watchdog pass: 2 findings")
+    assert reported[0]["directive_id"] != reported[1]["directive_id"] == reported[2]["directive_id"]
+
+
+def test_a_digest_directive_stays_open_while_its_other_findings_are_open(
+    ledger: Ledger, now: datetime
+) -> None:
+    run_id = _two_coders(ledger, now)
+    both = [_finding("sess-coder-1", "stuck"), _finding("sess-coder-2", "blocked")]
+    watchdog.record(ledger.conn, run_id, both, now)
+    later = now + timedelta(minutes=1)
+
+    again = watchdog.record(ledger.conn, run_id, both[1:], later)
+
+    assert again == []
+    [directive] = _directives(ledger)
+    assert directive["state"] == "open"
+    rows = ledger.conn.execute(
+        "SELECT agent_id, cleared_at, directive_id FROM watchdog_findings ORDER BY finding_id"
+    ).fetchall()
+    assert [(r[0], r[1] is None) for r in rows] == [("sess-coder-1", False), ("sess-coder-2", True)]
+    assert {r[2] for r in rows} == {directive["directive_id"]}
+
+
+def test_the_listener_prints_a_digest_directive_as_one_line(ledger: Ledger, now: datetime) -> None:
+    run_id = _two_coders(ledger, now)
+    findings = [_finding("sess-coder-1", "stuck"), _finding("sess-coder-2", "blocked")]
+    watchdog.record(ledger.conn, run_id, findings, now)
+
+    keep, lines = watch.poll(ledger.conn, now)
+
+    assert keep is True
+    [line] = lines
+    assert line.startswith("Watchdog directive 1: Watchdog pass: 2 findings - stuck: coder-1")
+    assert "- blocked: coder-2" in line and "\n" not in line
