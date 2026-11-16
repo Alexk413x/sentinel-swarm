@@ -165,7 +165,11 @@ message. The Oracle then calls, in order:
 - A standalone test file is claimed with `test_path` equal to its own path. The refusal
   from `phase_review` names this and `no_test_reason` as the two ways out.
 - A re-claim of a released path in the same run supersedes the old claim. The old row
-  becomes `superseded`, and every gate treats it as settled.
+  becomes `superseded`, and every gate treats it as settled. The re-claim also carries
+  the old claim's links to the new file: an unacknowledged Coder brief for the new
+  claim's Coder name moves to the new `file_id`, and each dependent file that is not
+  settled now depends on the new file instead of the old one. A settled dependent keeps
+  its row as history. A change request moves too; see [04-agreements.md](04-agreements.md).
 - **A move is one claim with both paths.** `file_move(path, new_path, test_path=None)`
   points a live claim of the Lead's module at a new path, and at a new test path when
   given; the claim keeps its Coder, its `file_id`, and its dependencies. It refuses a
@@ -187,6 +191,12 @@ message. The Oracle then calls, in order:
   `who_owns(path)` names the live owner.
 - `agent_release(<child name>)` on a queued child cancels its spawn and keeps its brief
   and its claim.
+- `agent_release(<child name>)` on a child with no agent and no queued spawn voids the
+  child's unacknowledged brief, when the caller wrote it. The brief gets `voided_at`, and
+  every unacknowledged-brief check ignores it: `brief_create` accepts a new brief for the
+  name, `agent_spawn` and `brief_ack` find none, and `brief_get`, the contract check
+  for a dependent, the panel, and the fix list skip it. A voided Coder brief leaves the
+  file claim alone.
 - `agent_spawn`, and the queue when memory frees, refuse a Coder whose file has no live
   claim for it; the queue drops the spawn and tells the parent why.
 - Nothing else ends a claim early. Parking a parent under memory pressure, releasing

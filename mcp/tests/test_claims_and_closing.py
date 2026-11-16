@@ -114,6 +114,134 @@ def test_agent_release_cancels_a_queued_spawn_and_keeps_its_claim(
         ledger.agent_release(*ctx.manager, name)
 
 
+def _deps(ledger: Ledger, file_id: int) -> list[int]:
+    return [
+        row["depends_on_file_id"]
+        for row in ledger.conn.execute(
+            "SELECT depends_on_file_id FROM file_deps WHERE file_id = ? ORDER BY 1", (file_id,)
+        )
+    ]
+
+
+def test_a_re_claim_carries_the_unacked_brief_and_the_dependents_to_the_new_file(
+    ledger: Ledger, claude: MovingClaude, free: dict
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    name, old_id = _claim_coder(ledger, ctx, "queries")
+    ledger.brief_create(
+        *ctx.lead, name, "coder", "haiku", "Write queries.", file_id=old_id, contract="def q()"
+    )
+    view = "coder-p1-module-1-view"
+    view_id = ledger.claim_file(
+        *ctx.lead, "src/view.py", "tests/test_view.py", view, depends_on=[old_id]
+    )["file_id"]
+    free["mb"] = 1_000
+    assert ledger.agent_spawn(*ctx.lead, name)["queued"] is True
+    ledger.release_file(*ctx.lead, "src/queries.py")
+
+    new_id = ledger.claim_file(*ctx.lead, "src/queries.py", "tests/test_queries.py", name)[
+        "file_id"
+    ]
+
+    assert _deps(ledger, view_id) == [new_id]
+    free["mb"] = 64_000
+    started = ledger.agent_spawn(*ctx.lead, name)
+    assert started["file_id"] == new_id
+    ledger.brief_create(*ctx.lead, view, "coder", "haiku", "Write view.", file_id=view_id)
+
+
+def test_a_re_claim_leaves_a_settled_dependent_pointing_at_the_old_file(
+    ledger: Ledger, claude: MovingClaude
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    name, old_id = _claim_coder(ledger, ctx, "queries")
+    view = "coder-p1-module-1-view"
+    view_id = ledger.claim_file(
+        *ctx.lead, "src/view.py", "tests/test_view.py", view, depends_on=[old_id]
+    )["file_id"]
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE files SET state = 'approved' WHERE file_id = ?", (view_id,))
+    ledger.release_file(*ctx.lead, "src/queries.py")
+
+    ledger.claim_file(*ctx.lead, "src/queries.py", "tests/test_queries.py", name)
+
+    assert _deps(ledger, view_id) == [old_id]
+
+
+def test_a_re_claim_under_another_name_leaves_the_old_brief_alone(
+    ledger: Ledger, claude: MovingClaude
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    name, old_id = _claim_coder(ledger, ctx, "queries")
+    ledger.brief_create(*ctx.lead, name, "coder", "haiku", "Write queries.", file_id=old_id)
+    ledger.release_file(*ctx.lead, "src/queries.py")
+
+    ledger.claim_file(
+        *ctx.lead, "src/queries.py", "tests/test_queries.py", "coder-p1-module-1-other"
+    )
+
+    brief = ledger.conn.execute(
+        "SELECT file_id FROM briefs WHERE child_name = ?", (name,)
+    ).fetchone()
+    assert brief["file_id"] == old_id
+
+
+def test_a_parent_voids_an_unacked_brief_and_leaves_the_claim_alone(
+    ledger: Ledger, claude: MovingClaude
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    name = _brief_coder(ledger, ctx, "screen")
+
+    voided = ledger.agent_release(*ctx.lead, name)
+
+    assert voided["voided"] is True
+    brief = ledger.conn.execute("SELECT * FROM briefs WHERE child_name = ?", (name,)).fetchone()
+    assert brief["voided_at"] is not None
+    claim = _file(ledger, "src/screen.py")
+    assert (claim["state"], claim["released_at"]) == ("claimed", None)
+    with pytest.raises(LedgerError, match="no unacknowledged brief"):
+        ledger.agent_spawn(*ctx.lead, name)
+    with pytest.raises(LedgerError, match="no unacked brief"):
+        ledger.brief_ack(name, "some-session")
+    with pytest.raises(LedgerError, match="unknown agent_id"):
+        ledger.agent_release(*ctx.lead, name)
+
+    again = ledger.brief_create(
+        *ctx.lead, name, "coder", "haiku", "Write it again.", file_id=claim["file_id"]
+    )
+    assert again["voided_at"] is None
+    assert ledger.agent_spawn(*ctx.lead, name)["name"] == name
+
+
+def test_only_the_briefs_parent_can_void_it(ledger: Ledger, claude: MovingClaude) -> None:
+    ctx = _bootstrap(ledger, claude)
+    name = _brief_coder(ledger, ctx, "screen")
+
+    with pytest.raises(LedgerError, match="unknown agent_id"):
+        ledger.agent_release(*ctx.manager, name)
+
+    brief = ledger.conn.execute("SELECT * FROM briefs WHERE child_name = ?", (name,)).fetchone()
+    assert brief["voided_at"] is None
+
+
+def test_a_voided_brief_does_not_serve_as_a_dependencys_contract(
+    ledger: Ledger, claude: MovingClaude
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    name, old_id = _claim_coder(ledger, ctx, "queries")
+    ledger.brief_create(
+        *ctx.lead, name, "coder", "haiku", "Write queries.", file_id=old_id, contract="def q()"
+    )
+    view = "coder-p1-module-1-view"
+    view_id = ledger.claim_file(
+        *ctx.lead, "src/view.py", "tests/test_view.py", view, depends_on=[old_id]
+    )["file_id"]
+    ledger.agent_release(*ctx.lead, name)
+
+    with pytest.raises(LedgerError, match="has no contract"):
+        ledger.brief_create(*ctx.lead, view, "coder", "haiku", "Write view.", file_id=view_id)
+
+
 def test_release_file_refuses_while_the_owning_coder_is_live(
     ledger: Ledger, claude: MovingClaude
 ) -> None:

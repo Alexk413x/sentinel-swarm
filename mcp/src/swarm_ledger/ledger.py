@@ -19,6 +19,7 @@ from . import (
     rekey,
     repo,
     sessions,
+    settle,
     wake,
 )
 from .agreements import AgreementsMixin
@@ -1302,7 +1303,7 @@ class Ledger(
             if (
                 conn.execute(
                     "SELECT 1 FROM briefs WHERE child_name = ? AND acked_at IS NULL "
-                    "AND (? IS NULL OR run_id = ?)",
+                    "AND voided_at IS NULL AND (? IS NULL OR run_id = ?)",
                     (child_name, c.run_id, c.run_id),
                 ).fetchone()
                 is not None
@@ -1457,7 +1458,7 @@ class Ledger(
         for row in rows:
             latest = conn.execute(
                 f"SELECT contract FROM briefs WHERE {column} = ? AND child_role = ? "
-                "ORDER BY brief_id DESC LIMIT 1",
+                "AND voided_at IS NULL ORDER BY brief_id DESC LIMIT 1",
                 (row["id"], child_role),
             ).fetchone()
             contract = latest["contract"] if latest is not None else None
@@ -1475,7 +1476,7 @@ class Ledger(
     def brief_get(self, caller_name: str, child_name: str) -> dict:
         del caller_name
         row = self.conn.execute(
-            "SELECT * FROM briefs WHERE child_name = ? "
+            "SELECT * FROM briefs WHERE child_name = ? AND voided_at IS NULL "
             "ORDER BY created_at DESC, brief_id DESC LIMIT 1",
             (child_name,),
         ).fetchone()
@@ -1509,7 +1510,7 @@ class Ledger(
         with write_tx(self.conn) as conn:
             brief_row = conn.execute(
                 "SELECT * FROM briefs WHERE child_name = ? AND acked_at IS NULL "
-                "ORDER BY created_at DESC, brief_id DESC LIMIT 1",
+                "AND voided_at IS NULL ORDER BY created_at DESC, brief_id DESC LIMIT 1",
                 (caller,),
             ).fetchone()
             if brief_row is None:
@@ -1723,7 +1724,7 @@ class Ledger(
             (child_name, c.agent_id),
         ).fetchone()
         if queued is None:
-            raise LedgerError(f"unknown agent_id {child_name!r}")
+            return Ledger._void_unacked_brief(conn, c, child_name)
         conn.execute(
             "UPDATE spawn_queue SET state = 'dropped', reason = ? WHERE queue_id = ?",
             (f"agent_release by {c.name}", queued["queue_id"]),
@@ -1734,6 +1735,28 @@ class Ledger(
             "next": (
                 f"The queued spawn of {child_name} is cancelled. Its brief and file claim "
                 "stay; call agent_spawn to queue it again."
+            ),
+        }
+
+    @staticmethod
+    def _void_unacked_brief(conn: sqlite3.Connection, c: Caller, child_name: str) -> dict:
+        brief = conn.execute(
+            "SELECT brief_id FROM briefs WHERE child_name = ? AND parent_agent_id = ? "
+            "AND run_id IS ? AND acked_at IS NULL AND voided_at IS NULL "
+            "ORDER BY brief_id DESC LIMIT 1",
+            (child_name, c.agent_id, c.run_id),
+        ).fetchone()
+        if brief is None:
+            raise LedgerError(f"unknown agent_id {child_name!r}")
+        conn.execute(
+            f"UPDATE briefs SET voided_at = {NOW} WHERE brief_id = ?", (brief["brief_id"],)
+        )
+        return {
+            "child_name": child_name,
+            "voided": True,
+            "next": (
+                f"The unacknowledged brief for {child_name} is voided. Its file claim stays; "
+                "call brief_create to brief the name again, or release_file to drop the claim."
             ),
         }
 
@@ -1804,7 +1827,7 @@ class Ledger(
     def _spawn_brief(self, c: Caller, caller: str, child_name: str) -> sqlite3.Row:
         brief = self.conn.execute(
             "SELECT * FROM briefs WHERE child_name = ? AND acked_at IS NULL "
-            "ORDER BY created_at DESC, brief_id DESC LIMIT 1",
+            "AND voided_at IS NULL ORDER BY created_at DESC, brief_id DESC LIMIT 1",
             (child_name,),
         ).fetchone()
         if brief is None:
@@ -2435,6 +2458,7 @@ class Ledger(
                 (path, file_id, c.run_id),
             )
             self._carry_crs_to_file(conn, c.run_id, path, file_id)
+            self._carry_claim_links(conn, c.run_id, path, file_id, for_name, target_module)
             conn.executemany(
                 "INSERT OR IGNORE INTO file_deps (file_id, depends_on_file_id) VALUES (?, ?)",
                 [(file_id, dep_id) for dep_id in depends_on],
@@ -2449,6 +2473,51 @@ class Ledger(
         if replaced:
             claimed["moved_from"] = replaced
         return claimed
+
+    def _carry_claim_links(
+        self,
+        conn: sqlite3.Connection,
+        run_id: int | None,
+        path: str,
+        file_id: int | None,
+        owner: str,
+        module_id: int | None,
+    ) -> None:
+        old_ids = [
+            row["file_id"]
+            for row in conn.execute(
+                "SELECT f.file_id FROM files f JOIN modules m ON m.module_id = f.module_id "
+                "JOIN phases p ON p.phase_id = m.phase_id WHERE f.path = ? AND f.file_id != ? "
+                "AND f.state = 'superseded' AND p.run_id = ?",
+                (path, file_id, run_id),
+            )
+        ]
+        if not old_ids:
+            return
+        marks = in_clause(old_ids)
+        conn.execute(
+            "UPDATE briefs SET file_id = ?, module_id = ? WHERE child_role = 'coder' "
+            f"AND child_name = ? AND acked_at IS NULL AND voided_at IS NULL "
+            f"AND run_id IS ? AND file_id IN ({marks})",
+            (file_id, module_id, owner, run_id, *old_ids),
+        )
+        dependents = conn.execute(
+            "SELECT DISTINCT f.* FROM file_deps d JOIN files f ON f.file_id = d.file_id "
+            f"WHERE d.depends_on_file_id IN ({marks})",
+            old_ids,
+        ).fetchall()
+        for dependent in dependents:
+            if settle.file_settled(conn, self.repo_root, dependent):
+                continue
+            conn.execute(
+                "UPDATE OR IGNORE file_deps SET depends_on_file_id = ? WHERE file_id = ? "
+                f"AND depends_on_file_id IN ({marks})",
+                (file_id, dependent["file_id"], *old_ids),
+            )
+            conn.execute(
+                f"DELETE FROM file_deps WHERE file_id = ? AND depends_on_file_id IN ({marks})",
+                (dependent["file_id"], *old_ids),
+            )
 
     @staticmethod
     def _require_replaceable(

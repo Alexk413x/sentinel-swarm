@@ -251,7 +251,11 @@ The detail lives in the ledger, not in the message.
   Never release the old claim and claim the new path as a second file: that loses the
   old paths' deletion and graph anchors.
 - `agent_release(target_agent_id=<child name>)` on a queued child cancels its spawn
-  and keeps its brief and claim.
+  and keeps its brief and claim. Called again for a child that has no agent and no
+  queued spawn, it voids the unacknowledged brief and keeps the claim, so you can brief
+  the name again. When you release a claim and claim the path again for the same Coder
+  name, the ledger moves that Coder's unacknowledged brief, and the dependents that
+  are not settled, to the new file.
 - `claim_file(path, None, for_name=<the source's Coder>, product_of=<source
   file_id>)` claims a generated file, such as a build output, as a product of the
   file it is built from. The source's Coder writes it, and the source's handoff

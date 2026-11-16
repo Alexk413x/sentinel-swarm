@@ -23,6 +23,7 @@ ADDED_COLUMNS = (
     ("agents", "last_resume_detail", "TEXT"),
     ("agents", "resume_from_id", "TEXT"),
     ("files", "no_test_reason", "TEXT"),
+    ("briefs", "voided_at", "TEXT"),
 )
 
 

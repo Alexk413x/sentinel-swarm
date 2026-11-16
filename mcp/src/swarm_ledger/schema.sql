@@ -176,6 +176,9 @@ CREATE TABLE IF NOT EXISTS briefs (
     last_read_by_child_at TEXT,
     acked_by_agent_id TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
     acked_at TEXT,
+    -- Set when the parent cancels the brief before the child acks it (agent_release on the
+    -- child's name). A voided brief counts as no brief.
+    voided_at TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 

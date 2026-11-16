@@ -398,7 +398,9 @@ def agent_release(
     """Releases an agent it directly parented; any parent role calls this for its own child. The
     Oracle may also release an agent whose parent has ended. Takes the agent's id, or the name
     or session name of a live agent of the run. Passed a queued child's name, it cancels that
-    queued spawn and keeps its brief and claim."""
+    queued spawn and keeps its brief and claim. Passed the name of a child that has no agent and
+    no queued spawn, it voids the child's unacknowledged brief that the caller wrote, and keeps
+    the file claim."""
     ...
 
 

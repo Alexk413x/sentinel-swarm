@@ -112,7 +112,7 @@ def _task_lists(
     briefs = _latest_by_subject(
         conn,
         "SELECT phase_id, module_id, file_id, child_role, body FROM briefs "
-        "WHERE run_id = ? ORDER BY brief_id",
+        "WHERE run_id = ? AND voided_at IS NULL ORDER BY brief_id",
         run_id,
     )
     goals: dict[int, str] = (

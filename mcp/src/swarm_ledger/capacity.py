@@ -111,7 +111,12 @@ class CapacityMixin(LedgerHost):
             parent = self.conn.execute(
                 "SELECT ended_at FROM agents WHERE agent_id = ?", (entry["parent_agent_id"],)
             ).fetchone()
-            if brief is None or brief["acked_at"] is not None or parent is None:
+            if (
+                brief is None
+                or brief["acked_at"] is not None
+                or brief["voided_at"] is not None
+                or parent is None
+            ):
                 self._drop_queued(entry, "its brief or its parent is gone")
                 continue
             if parent["ended_at"] is not None:

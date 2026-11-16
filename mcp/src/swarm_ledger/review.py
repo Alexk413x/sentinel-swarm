@@ -146,7 +146,8 @@ def fix_briefs(conn: sqlite3.Connection, run_id: int) -> list[dict]:
         }
         for b in conn.execute(
             "SELECT brief_id, child_name, child_role, finding_ids_json FROM briefs "
-            "WHERE run_id = ? AND finding_ids_json IS NOT NULL ORDER BY brief_id",
+            "WHERE run_id = ? AND finding_ids_json IS NOT NULL AND voided_at IS NULL "
+            "ORDER BY brief_id",
             (run_id,),
         )
     ]
