@@ -2,6 +2,43 @@
 
 All notable changes to the `sentinel-swarm` plugin.
 
+## [0.8.4] — 2026-11-15 — fixes from the second live-run bug pass
+
+### Upgrading a live run
+
+- Pause the run (`ledger.py pause --reason <text>`), update the plugin, run
+  `/sentinel-swarm:setup` in the host repo, then launch again. The launch replaces a
+  ledger server left from the older version. While a run is active, a launch refuses a
+  server from another version and names both versions.
+
+### Added
+
+- `test_command_by_path` maps a path prefix to a test command, so a repo with more than one app tests each with its own command. One `tests_run` call runs each command its scope reaches and records one result. `profile_set` takes the map, and setup suggests one when it finds several packages with a test script. `lint_command` and `build_command` are still one command each.
+- `claim_file` takes `no_test_reason` for a file with no behaviour to test, such as types, constants, or fixtures. The Oracle reads the reason in `status_tree` and the report.
+- `agent_release` on a child name with no agent and no queued spawn voids your unacknowledged brief for it.
+- The watchdog's `brief_unstarted` finding reports a brief no child started for.
+- `server.json` and `/health` carry the server's version and plugin root, and `POST /shutdown` stops the server.
+
+### Changed
+
+- At a parallelism cap, `agent_spawn` queues the spawn instead of refusing it, and the ledger starts it once a slot frees.
+- The new findings of one watchdog pass share one digest directive. `needs_user`, `run_stalled`, and the Driver's findings keep their own.
+- Every live agent's mod keeps polling for wake-ups, and takes one addressed to its session that stayed unsent for 60 seconds.
+- The hook shim's fallback runs the install that started the ledger server.
+- A launch warns when the Oracle's role file model is not the first entry of `models.oracle`.
+
+### Fixed
+
+- The phase gate refused a settled file claimed with no `test_path` whenever the code graph anchored a symbol in it, and returned phases after green runs. It now passes a file whose path is gone, a file with a `no_test_reason`, and a test file claimed with its own path as `test_path`. `file_accept_incomplete` drops a deleted file's graph anchors.
+- A re-claimed file left its unacknowledged brief and its dependents bound to the superseded file, and no tool could clear them. A re-claim now carries both to the new file.
+- A module returned after its files settled stayed `returned`, so its approved phase never showed done in the run panel. An accepted module review and a phase approval now mark the module approved, and existing ledgers are repaired on upgrade.
+- Sessions the ledger released stayed listed and held memory. A re-key, a release, and a replaced Oracle now stop every earlier session of the agent, and the watchdog stops an orphaned session it sees on two passes.
+- A completed tool call read as a pending request, and raised a false `needs_user`, when Claude Code replayed the call in an `api-request-blob` transcript record.
+- `ledger.py resume` left an idle Oracle asleep when its watchdog Monitor was off. A resume now owes the Oracle a wake-up that its own mod delivers.
+- A launch after an upgrade reused the older version's ledger server, so hooks and the server ran different versions.
+- A parent whose child was parked under memory pressure read as stuck.
+- A wake-up to a session parked for memory, or one the Oracle may not message, raised a `wake_unsent` finding the Oracle could not act on.
+
 ## [0.8.3] — 2026-11-15 — the run panel marks only the file that stopped short
 
 ### Changed
