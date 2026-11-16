@@ -353,14 +353,14 @@ class CapacityMixin(LedgerHost):
                 self._log_event(conn, agent["agent_id"], None, "resume_stable", "stayed up")
             elif elapsed < RESUME_SETTLE:
                 seconds = max(0, int(elapsed.total_seconds()))
-                self._log_event(
-                    conn,
-                    agent["agent_id"],
-                    None,
-                    "resume_vanished",
+                reason = (
                     f"its resumed session was gone {seconds}s after the resume at "
-                    f"{agent['last_resume_at']}: {agent['last_resume_detail'] or 'no detail'}",
+                    f"{agent['last_resume_at']}: {agent['last_resume_detail'] or 'no detail'}"
                 )
+                retired = memory.retire_reason(agent["bg_id"])
+                if retired is not None:
+                    reason = f"{reason}; the daemon retired its session: {retired}"
+                self._log_event(conn, agent["agent_id"], None, "resume_vanished", reason)
 
     def _resuming(self, agent: dict) -> bool:
         row = self.conn.execute(

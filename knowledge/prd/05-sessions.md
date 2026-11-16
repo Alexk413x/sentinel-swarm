@@ -550,7 +550,9 @@ than keep an alias.
   registered. The watchdog compares them with the listing on each pass: a session gone
   less than 3 minutes after the resume logs a `resume_vanished` event, "its resumed
   session was gone <n>s after the resume at <time>: <detail>", and a session that
-  stays up 3 minutes logs `resume_stable`.
+  stays up 3 minutes logs `resume_stable`. When `daemon.log` holds a `bg retire` line for the
+  resumed session, the `resume_vanished` reason ends with "; the daemon retired its session:
+  <reason>".
 - When the entry's session id differs, one write transaction replaces the old id with
   the new one in every column that stores an agent id: `rekey.agent_id_columns` reads
   the schema for columns named `*agent_id`, columns that reference `agents`, and
@@ -616,7 +618,8 @@ than keep an alias.
   fits. No other condition lets a resume through, and a run whose every session is
   parked waits for memory like any other: the `stalled` finding reports it. The check runs
   in `resume_agent`, under the resume claim, so the watchdog's resume, the wake-up
-  resume, and `agent_resume` all follow it.
+  resume, and `agent_resume` all follow it. The watchdog's Oracle resume is exempt: it
+  wakes the Oracle whatever the free memory, so a report always reaches it.
 - `crashed` still reports a `working` or late `registered` agent whose session is gone,
   and the Oracle resumes it with `agent_resume`. A failed resume is logged as a
   `resume_failed` agent event, and the agent stays parked.
