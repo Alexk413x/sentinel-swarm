@@ -490,7 +490,7 @@ def _queued_findings(
     return findings
 
 
-_UNACKED_BRIEF = "b.acked_at IS NULL"
+_UNACKED_BRIEF = "b.acked_at IS NULL AND b.voided_at IS NULL"
 
 
 def _unstarted_brief_findings(
