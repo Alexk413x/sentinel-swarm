@@ -282,11 +282,17 @@ or the `/sentinel-swarm:run` skill.
   it names (`sessions.plugin_load_problem`). The ledger adds a second guard: it refuses
   `run_start` and `brief_ack` from a session the mod never checked in for; see "The
   mod" in [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md).
-- It starts the ledger server, or reuses one that answers, then the Oracle with its
-  agent file's model and the same flags as `agent_spawn`, including the ledger token
-  header. It stops with the reason when the URL in `server.json` or the token fails
-  `session_options`' checks; see [06-ledger-server.md](06-ledger-server.md). If the file has no `model`, it uses the first entry of the
-  Oracle's approved list.
+- It starts the ledger server, or reuses one that answers and runs this plugin's version
+  from this plugin root, then the Oracle with its agent file's model and the same flags
+  as `agent_spawn`, including the ledger token header. It stops with the reason when the
+  URL in `server.json` or the token fails `session_options`' checks; see
+  [06-ledger-server.md](06-ledger-server.md). If the file has no `model`, it uses the
+  first entry of the Oracle's approved list.
+- After a plugin upgrade, the server that answers still runs the older version. With no
+  active run, the launch replaces it. With an active run, the launch refuses and names
+  both versions: pause the run with `ledger.py pause --reason <text>`, then launch
+  again. Launch runs setup only when the shim or a core role file is missing, so run
+  `/sentinel-swarm:setup` after an upgrade to copy the new shim.
 - Interactive by default. `--bg` starts a background session. `--headless` runs
   `claude -p` with a stream-json transcript and the prompt on stdin. Nobody answers
   questions in a headless run, so the Oracle records each assumption in the guidelines.

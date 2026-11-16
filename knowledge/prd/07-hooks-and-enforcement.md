@@ -57,10 +57,12 @@ it as a command hook. It has these commands:
   back when there is no `server.json`, no token that matches `[A-Za-z0-9_-]{32,128}`,
   the connection is not accepted within 0.25 seconds, no answer comes
   within 10 seconds (40 for `stop` and `session_end`), or the answer is not a 200 that
-  carries the repo header. The fallback finds the sentinel-swarm install for this repo in
-  `~/.claude/plugins/installed_plugins.json`, from any marketplace (scope `local`, then
-  `project`, each with a matching `projectPath`, then `user`, then any other entry whose
-  `installPath` exists), and runs
+  carries the repo header. The fallback runs the install that `plugin_root` in
+  `server.json` names, when that folder holds `mcp/launch/ledger.py`, so it runs the
+  code the server runs after an upgrade. Otherwise it finds the sentinel-swarm install
+  for this repo in `~/.claude/plugins/installed_plugins.json`, from any marketplace
+  (scope `local`, then `project`, each with a matching `projectPath`, then `user`, then
+  any other entry whose `installPath` exists), and runs
   `<python> -I -S <installPath>/mcp/launch/ledger.py hooks <event>` on the base
   interpreter that runs the shim, with stdin and stdout passed through. Both paths print
   the same bytes. See "How the ledger runs" in
@@ -77,7 +79,9 @@ it as a command hook. It has these commands:
   server through that relay. See "Plugin servers" in
   [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
 - `watch` runs `mcp/launch/ledger.py watch` and passes each line through with no
-  timeout.
+  timeout. `watch`, and `mcp` for sentinel-swarm, choose the install the way the fallback
+  does: the `plugin_root` in `server.json` first, then the registry. `mcp` for another
+  plugin uses the registry only.
 
 When the server does not answer and then the registry, the install, Python, or the
 ledger hook fails, or the two paths together run longer than 50 seconds, a gating event (`pre_agent`, `pre_write`, `pre_shell`, `pre_monitor`,

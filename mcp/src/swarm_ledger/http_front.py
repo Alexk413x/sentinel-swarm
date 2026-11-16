@@ -9,6 +9,9 @@ carrying `MCP-Protocol-Version: 2026-07-28` gets the stateless protocol (`server
 `initialize`); any other request gets the handshake era (`initialize`, then calls). A
 notification gets 202. GET and DELETE get 405, since the server opens no stream.
 
+A POST to `/shutdown` stops the server when it has a shutdown callback and answers 404 when it
+has none.
+
 Every request passes `serve.refusal` first: a remote client, a foreign `Host` or `Origin`, or,
 on every route but `/health`, a missing or wrong bearer token gets 403.
 """
@@ -29,7 +32,7 @@ from . import __version__, catalog, front
 from .agentfiles import LEDGER_SERVER
 from .paths import same_path
 from .pool import CallError
-from .serve import HEALTH_PATH, HOOK_PATH, MCP_PATH, REPO_HEADER
+from .serve import HEALTH_PATH, HOOK_PATH, MCP_PATH, REPO_HEADER, SHUTDOWN_PATH
 
 MODERN_PROTOCOL = "2026-07-28"
 CLASSIC_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
@@ -158,6 +161,7 @@ class LedgerHttpServer(ThreadingHTTPServer):
         root: Path,
         refusal: Refusal,
         health: dict[str, Any],
+        on_shutdown: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(sock.getsockname(), Handler, bind_and_activate=False)
         self.socket.close()
@@ -167,6 +171,7 @@ class LedgerHttpServer(ThreadingHTTPServer):
         self.root = root
         self.refusal = refusal
         self.health = health
+        self.on_shutdown = on_shutdown
 
     def handle_error(self, request: Any, client_address: Any) -> None:
         if not isinstance(sys.exc_info()[1], OSError):
@@ -296,6 +301,11 @@ class Handler(BaseHTTPRequestHandler):
         if not self._gate():
             return
         path = self._path()
+        if path == SHUTDOWN_PATH and self.srv.on_shutdown is not None:
+            self._discard_body()
+            self.srv.on_shutdown()
+            self._send(200)
+            return
         if path != MCP_PATH and not path.startswith(HOOK_PREFIX):
             self._discard_body()
             self._text(404, "Not Found")

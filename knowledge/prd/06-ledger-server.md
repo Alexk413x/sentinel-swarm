@@ -52,15 +52,36 @@
   write it at once.
 - `mcp/launch/ledger.py serve [--repo <root>] [--detach]` binds the port saved in
   `.sentinel-swarm/server.port`, or a free port when that one is taken, and writes
-  `.sentinel-swarm/server.json` with `url`, `port`, `pid`, and `started_at`. A second
-  start finds the first one answering, prints its URL, and exits 0. `--detach` starts
+  `.sentinel-swarm/server.json` with `url`, `port`, `pid`, `started_at`, `version` (the
+  package version), and `plugin_root` (the plugin install the server runs from). It
+  logs one line with the version and the plugin root at start. A second start finds
+  the first one answering and current, prints its URL, and exits 0. `--detach` starts
   the server as a background process on the base interpreter, waits until it answers,
   and prints its URL. A server counts as
-  answering when `/health` returns the name `swarm-ledger` and this repo's root. The
-  saved port lets a resumed session reach the ledger at the URL it started with.
+  answering when `/health` returns the name `swarm-ledger` and this repo's root. It
+  counts as current when `/health` also returns this plugin's version and plugin root.
+  `/health` returns `name`, `repo_root`, `pid`, `version`, and `plugin_root`. The saved
+  port lets a resumed session reach the ledger at the URL it started with.
 - `serve.ensure_server(repo_root)` starts the server detached when it does not answer,
   waits until it answers, and returns its URL. On Windows it starts with a hidden
   console (`CREATE_NO_WINDOW`).
+- Reuse rule: `ensure_server` and `serve` without `--detach` reuse an answering server
+  only when it is current. A server that reports no `version` or no `plugin_root`, such
+  as one from an older release, is not current. A server that is not current is
+  replaced when no run is active, where a paused run or no run counts as not active
+  (read from the ledger database). `ensure_server` calls `POST /shutdown` with the
+  token and waits until the old server stops answering. When the old server has no
+  `/shutdown` route, it terminates the pid in `server.json` through `procs.terminate`,
+  after checking that the process started no later than `started_at`. It then starts the
+  new server on the saved port. While a run is active, it refuses with an error that
+  names both versions and both plugin roots and says to pause the run with
+  `ledger.py pause --reason <text>` and launch again. `ledger.py resume` is the one
+  caller that replaces a server for an active run, because the run was paused a moment
+  before it. `pause`, `directive`, and the panel read the database and never call
+  `ensure_server`, so a version mismatch never blocks them.
+- `POST /shutdown` stops the server a moment after it answers 200. It passes the same
+  `serve.refusal` checks as every route except `/health`, so it needs the token. A
+  server that has no shutdown callback answers 404.
 - Errors go to `.sentinel-swarm/server.log`.
 - Access: every request must come from `127.0.0.1` or `::1`, carry a `Host` header of
   `127.0.0.1:<port>` or `localhost:<port>` with the server's own port, and carry no
