@@ -97,6 +97,12 @@ _FILE_MOVE_TEST_PATH = Field(
     default=None,
     description="The test file's new path. Leave it unset when the test file does not move.",
 )
+_CLAIM_FILE_NO_TEST_REASON = Field(
+    default=None,
+    description="Why the file has no test file, for a file with no behaviour to test, such as "
+    "types, constants, or fixtures. Leave test_path unset with it. A standalone test file "
+    "instead takes test_path equal to its own path.",
+)
 _RUN_CLOSE_FILES = Field(
     default=None,
     description='Each unsettled file, as {"file_id": <id>, "reason": <why it stops short>}.',
@@ -422,6 +428,7 @@ def claim_file(
     module_id: int | None = _CLAIM_FILE_MODULE_ID,
     product_of: int | None = _CLAIM_FILE_PRODUCT_OF,
     moved_from: list[str] | None = _CLAIM_FILE_MOVED_FROM,
+    no_test_reason: str | None = _CLAIM_FILE_NO_TEST_REASON,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Claims a file path for a coder under the caller's module; a Lead calls this, or a

@@ -63,6 +63,9 @@ CREATE TABLE IF NOT EXISTS files (
     module_id INTEGER NOT NULL REFERENCES modules (module_id) ON DELETE RESTRICT,
     path TEXT NOT NULL,
     test_path TEXT,
+    -- Why a claimed file with code in the graph has no test file: the claim's own statement,
+    -- which the phase review gate accepts and the Oracle reads.
+    no_test_reason TEXT,
     -- No REFERENCES agents(agent_id): claim_file records the owner's name before
     -- the owner agent exists. brief_ack binds the name to an agent_id later.
     owner_agent_id TEXT,

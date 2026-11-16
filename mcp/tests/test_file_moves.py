@@ -11,6 +11,7 @@ from helpers import (
     all_applicable,
     bootstrap_module,
     ensure_graph_source_base,
+    insert_passing_test_run,
     make_host,
     settings_text,
     spawn_coder,
@@ -386,6 +387,72 @@ def test_a_deletion_handoff_drops_the_deleted_files_anchors(
     assert graph.anchored_paths(host, [_OLD]) == set()
     assert graph.node_anchors(host, "swarmtest_chrome") == []
     assert graph.node_anchors(host, "swarmtest_span") == [("pkg/other.py", "add")]
+
+
+@pytest.mark.integration
+def test_accepting_a_deleted_file_incomplete_drops_its_anchors(
+    ledger: Ledger, host: Path, kg_root: Path
+) -> None:
+    del kg_root
+    ctx, coder = _coder(ledger)
+    ledger.file_delete(_CODER, coder["agent_id"], _OLD)
+    ledger.file_delete(_CODER, coder["agent_id"], _OLD_TEST)
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+    evidence = ledger.conn.execute("SELECT MAX(test_run_id) AS n FROM test_runs").fetchone()["n"]
+
+    accepted = ledger.file_accept_incomplete(
+        "oracle", ctx["oracle_id"], coder["file_id"], "the file was removed", [evidence]
+    )
+
+    assert accepted["state"] == "incomplete"
+    assert accepted["graph_pruned"] == {
+        "deleted_nodes": ["swarmtest_chrome"],
+        "reanchored_nodes": ["swarmtest_span"],
+    }
+    assert graph.anchored_paths(host, [_OLD]) == set()
+    assert graph.node_anchors(host, "swarmtest_span") == [("pkg/other.py", "add")]
+
+
+def test_accepting_a_deleted_file_incomplete_asks_the_graph_to_drop_its_anchors(
+    ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dropped: list[list[str]] = []
+
+    def fake_drop(repo_root: Path, rel_paths: list[str]) -> dict:
+        del repo_root
+        dropped.append(rel_paths)
+        return {"deleted_nodes": [], "reanchored_nodes": []}
+
+    monkeypatch.setattr(graph_module, "drop_anchors", fake_drop)
+    ctx, coder = _coder(ledger)
+    ledger.file_delete(_CODER, coder["agent_id"], _OLD)
+    ledger.file_delete(_CODER, coder["agent_id"], _OLD_TEST)
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+    evidence = ledger.conn.execute("SELECT MAX(test_run_id) AS n FROM test_runs").fetchone()["n"]
+
+    accepted = ledger.file_accept_incomplete(
+        "oracle", ctx["oracle_id"], coder["file_id"], "the file was removed", [evidence]
+    )
+
+    assert dropped == [[_OLD]]
+    assert accepted["graph_pruned"] == {"deleted_nodes": [], "reanchored_nodes": []}
+
+
+def test_accepting_a_file_that_still_exists_incomplete_leaves_the_graph_alone(
+    ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        graph_module, "drop_anchors", lambda *a, **k: pytest.fail("pruned a live file")
+    )
+    ctx, coder = _coder(ledger)
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+    evidence = ledger.conn.execute("SELECT MAX(test_run_id) AS n FROM test_runs").fetchone()["n"]
+
+    accepted = ledger.file_accept_incomplete(
+        "oracle", ctx["oracle_id"], coder["file_id"], "verified another way", [evidence]
+    )
+
+    assert "graph_pruned" not in accepted
 
 
 @pytest.mark.integration

@@ -1928,6 +1928,7 @@ class ReviewMixin(LedgerHost):
                             # files.owner_agent_id holds the owner's agent name.
                             "owner": file_row["owner_agent_id"],
                             "state": file_row["state"],
+                            "no_test_reason": file_row["no_test_reason"],
                             "latest_handoff_state": (
                                 latest_handoff["state"] if latest_handoff is not None else None
                             ),

@@ -229,7 +229,10 @@ class ReportMixin(LedgerHost):
         if approved_handoff is not None and approved_handoff["floor_pass_json"]:
             dims = ", ".join(json.loads(approved_handoff["floor_pass_json"]))
             floor_note = f" -- floor pass: {dims} below target but at or above the floor"
-        return f"- {file_row['path']} -- {file_row['state']} -- {scores}{floor_note}"
+        reason_note = (
+            f" -- no test file: {file_row['no_test_reason']}" if file_row["no_test_reason"] else ""
+        )
+        return f"- {file_row['path']} -- {file_row['state']} -- {scores}{floor_note}{reason_note}"
 
     def _report_reviews(self, run_id: int) -> list[str]:
         lines = ["## Manager and Oracle reviews"]

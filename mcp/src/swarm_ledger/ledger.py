@@ -2340,10 +2340,23 @@ class Ledger(
         module_id: int | None = None,
         product_of: int | None = None,
         moved_from: list[str] | None = None,
+        no_test_reason: str | None = None,
     ) -> dict:
         depends_on = depends_on or []
         if test_path is not None and test_path.strip().lower() in ("", "none", "null"):
             test_path = None
+        if no_test_reason is not None:
+            if test_path is not None:
+                raise LedgerError(
+                    "no_test_reason says the file has no test file, so it cannot come with a "
+                    "test_path; leave one out"
+                )
+            no_test_reason = no_test_reason.strip()
+            if not no_test_reason:
+                raise LedgerError(
+                    "no_test_reason needs a non-empty reason, or leave it out: why the file has "
+                    "no behaviour to test"
+                )
         path = repo_path(self.repo_root, path)
         if test_path is not None:
             test_path = repo_path(self.repo_root, test_path)
@@ -2402,12 +2415,13 @@ class Ledger(
             self._require_replaceable(conn, replaced, {path, test_path}, None)
 
             cur = conn.execute(
-                "INSERT INTO files (module_id, path, test_path, owner_agent_id, state, "
-                f"claimed_at, source_file_id) VALUES (?, ?, ?, ?, ?, {NOW}, ?)",
+                "INSERT INTO files (module_id, path, test_path, no_test_reason, owner_agent_id, "
+                f"state, claimed_at, source_file_id) VALUES (?, ?, ?, ?, ?, ?, {NOW}, ?)",
                 (
                     target_module,
                     path,
                     test_path,
+                    no_test_reason,
                     for_name,
                     source["state"] if source is not None else "claimed",
                     product_of,

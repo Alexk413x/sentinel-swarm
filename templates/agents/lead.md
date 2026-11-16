@@ -55,9 +55,10 @@ when that text says more wait, or when a wake-up carries no messages.
 ## Plan the module
 
 Break the module into one task per source file. A task is a pair: the source file
-and its unit test file, owned by one Coder. Never claim a test file on its own, and
-never create a Coder for a test file; the test file is the `test_path` of the source
-file's claim. Order the files so helpers come before the files that use them, and
+and its unit test file, owned by one Coder. Never claim a test file on its own for a
+source file, and never create a Coder for one; the test file is the `test_path` of the
+source file's claim. A file that is only tests, such as an integration suite no source
+file owns, is the exception: claim it with `test_path` set to its own path. Order the files so helpers come before the files that use them, and
 declare each dependency with `claim_file(..., depends_on=[<helper file ids>])`. A
 helper's brief carries its public contract in `contract=`; the ledger refuses a
 dependent's brief until each helper's latest brief has one, and hands the contracts
@@ -72,9 +73,12 @@ Do these in order. The claim must exist before the brief.
    for_name="coder-p<phase ordinal>-<module>-<file slug>", depends_on=[...])`. The
    ledger refuses any other name form. Give every file with functions or
    classes a test file. A file with no code, such as a README or a config file, may
-   pass `test_path=None`; its handoff then runs no tests, and the Oracle's
-   `phase_review` refuses any file the code graph maps with functions or classes
-   but no test file. Keep the `file_id` it returns. The
+   pass `test_path=None`; its handoff then runs no tests. A file with code but no
+   behaviour to test, such as types, constants, or fixtures, passes `test_path=None`
+   and `no_test_reason=<why it has nothing to test>`; the Oracle reads the reason in
+   `status_tree` and the report. The Oracle's `phase_review` refuses any other file the
+   code graph maps with functions or classes but no test file. Keep the `file_id` it
+   returns. The
    claim is also the file lock: a second claim on a live path is refused, and the
    write hook allows the Coder only these two paths.
 2. `brief_create(child_name=<the claimed name>, child_role="coder",

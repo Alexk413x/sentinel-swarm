@@ -156,7 +156,14 @@ message. The Oracle then calls, in order:
   an empty package marker. Its handoff runs no tests, and the reviews judge it. The
   ledger reads the strings `""`, `"none"`, and `"null"` as no test file. The Oracle's
   `phase_review` refuses any such file that the code graph maps with a function or
-  class.
+  class, with two exceptions: a file whose path no longer exists, and a file claimed with
+  `no_test_reason`.
+- `claim_file(..., no_test_reason=<why>)` is for a file with code and no behaviour to
+  test, such as types, constants, or fixtures. The ledger stores the reason on the claim.
+  It refuses a reason together with a `test_path`, and an empty or whitespace reason.
+  `status_tree` and the run report show each file's reason, so the Oracle can judge it.
+- A standalone test file is claimed with `test_path` equal to its own path. The refusal
+  from `phase_review` names this and `no_test_reason` as the two ways out.
 - A re-claim of a released path in the same run supersedes the old claim. The old row
   becomes `superseded`, and every gate treats it as settled.
 - **A move is one claim with both paths.** `file_move(path, new_path, test_path=None)`
@@ -247,7 +254,8 @@ anchor is deleted, with its outbound edges and the edges that point at it. A nod
 anchors other files keeps those anchors, and keeps its baselines, because the write does
 not re-baseline. The handoff result lists the node ids as `graph_pruned`
 (`deleted_nodes`, `reanchored_nodes`). The Coder needs no `graph_upsert` for a deletion,
-and no Coder has a node-delete tool.
+and no Coder has a node-delete tool. `file_accept_incomplete` removes the anchors of a
+deleted file the same way and lists the node ids as `graph_pruned`.
 
 ## Lead review
 
@@ -334,7 +342,8 @@ for a phase in `handed_up`.
   and a failed build refuses with the build's command, exit code, and the last 2,000
   characters of its output. A full run made before `build_command` was set does not
   count; no approved or incomplete file of the phase lacks a test file while
-  the code graph anchors a function or class in it; `low_score_notes` holds a
+  the code graph anchors a function or class in it (a file whose path no longer exists,
+  and a file claimed with `no_test_reason`, are exempt); `low_score_notes` holds a
   non-empty note, keyed by `file_id`, for each file whose latest Lead review has a
   dimension below the target; and `scores` rates completeness, integration, and open
   items from 1 to 10, with a reason below 9.
