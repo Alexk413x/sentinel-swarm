@@ -21,7 +21,7 @@ class LedgerHost:
     repo_root: Path
     db_path: Path
     server_pid: int
-    _pending_stops: list[tuple[str, str]]
+    _pending_stops: list[tuple[str, str | None, list[str]]]
 
     def _log_event(
         self,

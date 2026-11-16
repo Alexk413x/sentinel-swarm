@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 from helpers import make_host, settings_text
-from test_memory import _reservations_on
+from test_memory import _daemon_log, _reservations_on
 from test_rekey import MovingClaude, claude
 from test_sessions import Ctx, _bootstrap, _brief_coder, _row, _spawn_coder, host
 
@@ -752,6 +752,23 @@ def test_a_resumed_session_that_registers_and_then_vanishes_is_recorded(
     assert "registered" in reason and "exit code 0" in reason
     assert "gone 4" in reason or "gone 5" in reason
     assert _row(ledger, new_id)["last_resume_at"] is None
+
+
+def test_a_vanished_resumed_session_names_the_daemons_retire_reason(
+    ledger: Ledger, claude: MovingClaude
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    claude.stop_session(ctx.manager[1])
+    ledger.agent_resume(*ctx.lead, "mgr-p1-phase-1")
+    new_id = claude.resumed[0]
+    _daemon_log(f"bg retire {new_id[:8]}: idle-prompt, idle 6m [low memory]\n")
+    _gone(claude, new_id)
+
+    ledger.mark_parked(claude.listing, utcnow() + timedelta(seconds=45), 120)
+
+    (reason,) = _events(ledger, new_id, "resume_vanished")
+    assert "exit code 0" in reason
+    assert reason.endswith("; the daemon retired its session: idle-prompt, idle 6m [low memory]")
 
 
 def test_a_resumed_session_that_runs_on_is_not_counted_as_vanished(

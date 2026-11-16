@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from contextlib import suppress
 from pathlib import Path
 
@@ -435,6 +435,48 @@ def wait_for_resumed(bg_id: str | None, name: str | None) -> str | None:
 
 def stop(bg_id: str) -> None:
     _run_retrying(["stop", bg_id])
+
+
+def is_stopped(entry: dict) -> bool:
+    return bool({str(entry.get(key) or "").lower() for key in ("status", "state")} & _DEAD)
+
+
+def stoppable(entry: dict) -> bool:
+    # No is_running filter: a dormant entry a reboot left has no pid and no status.
+    return (
+        bool(entry.get("id"))
+        and entry.get("kind", "background") == "background"
+        and not is_stopped(entry)
+    )
+
+
+def stop_listed(
+    session_ids: Collection[str],
+    *,
+    keep_bg_id: str | None = None,
+    listing: list[dict] | None = None,
+) -> list[str]:
+    if not session_ids:
+        return []
+    if listing is None:
+        try:
+            listing = list_sessions()
+        except LedgerError:
+            return []
+    wanted = set(session_ids)
+    outcomes: list[str] = []
+    for entry in listing:
+        if entry.get("sessionId") not in wanted or not stoppable(entry):
+            continue
+        bg_id = str(entry["id"])
+        if bg_id == keep_bg_id:
+            continue
+        try:
+            stop(bg_id)
+            outcomes.append(f"session {bg_id} stopped")
+        except LedgerError as exc:
+            outcomes.append(f"session {bg_id} was not stopped: {exc}")
+    return outcomes
 
 
 def resume(

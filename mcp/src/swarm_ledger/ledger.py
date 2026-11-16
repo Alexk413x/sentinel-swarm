@@ -261,7 +261,7 @@ class Ledger(
         self.settings = settings if settings is not None else load_settings(repo_root)
         self.db_path = db_path if db_path is not None else ledger_path(repo_root)
         self.conn = connect(self.db_path)
-        self._pending_stops: list[tuple[str, str]] = []
+        self._pending_stops: list[tuple[str, str | None, list[str]]] = []
         if (repo_root / ".git").exists():
             ensure_git_exclude(repo_root)
 
@@ -283,18 +283,22 @@ class Ledger(
 
     def _stop_released_sessions(self) -> None:
         pending, self._pending_stops = self._pending_stops, []
-        for agent_id, bg_id in pending:
+        for agent_id, bg_id, earlier in pending:
             table = procs.snapshot()
             root = self._session_process(agent_id, table)
             tree = procs.tool_tree(table, *root) if root is not None else []
-            try:
-                sessions.stop(bg_id)
-                outcome = f"session {bg_id} stopped"
-            except Exception as exc:
-                outcome = f"session {bg_id} was not stopped: {exc}"
+            outcomes = []
+            if bg_id:
+                try:
+                    sessions.stop(bg_id)
+                    outcomes.append(f"session {bg_id} stopped")
+                except Exception as exc:
+                    outcomes.append(f"session {bg_id} was not stopped: {exc}")
+            outcomes += sessions.stop_listed(earlier, keep_bg_id=bg_id)
             stopped = self._stop_tree(tree)
             if stopped:
-                outcome = f"{outcome}; {stopped} process(es) its tools left running stopped"
+                outcomes.append(f"{stopped} process(es) its tools left running stopped")
+            outcome = "; ".join(outcomes)
             with write_tx(self.conn) as conn:
                 self._record_released_processes(conn, agent_id, root, table, tree)
                 self._log_event(conn, agent_id, "released", "released", outcome)
@@ -410,13 +414,14 @@ class Ledger(
         session_name = str(own["name"]) if own is not None and own.get("name") else None
 
         resumed: dict | None = None
+        replaced: tuple[str, list[str]] | None = None
         run_id: int | None = None
         try:
             with write_tx(self.conn) as conn:
                 active = conn.execute(f"SELECT * FROM runs WHERE {LIVE_RUN_STATES}").fetchone()
                 if active is not None:
                     self._refuse_live_oracle(conn, active, session_id, listing, listing_error)
-                    resumed = self._run_resume(conn, active, session_id, session_name)
+                    resumed, replaced = self._run_resume(conn, active, session_id, session_name)
                 else:
                     run_id = self._open_run(conn, prd, session_id, oracle_name, session_name)
         except BaseException:
@@ -425,6 +430,8 @@ class Ledger(
                 lock.release_owned(self.repo_root, self.server_pid)
             raise
 
+        if replaced is not None and listing is not None:
+            self._stop_replaced_oracle(*replaced, listing)
         others = lock.live_swarms(self.server_pid)
         if resumed is not None:
             return resumed | {"oracle": self._agent_dict(session_id), "other_swarms": others}
@@ -502,7 +509,7 @@ class Ledger(
         run: sqlite3.Row,
         session_id: str,
         session_name: str | None,
-    ) -> dict:
+    ) -> tuple[dict, tuple[str, list[str]] | None]:
         oracle = conn.execute(
             "SELECT * FROM agents WHERE run_id = ? AND role = 'oracle' "
             "ORDER BY started_at DESC LIMIT 1",
@@ -511,6 +518,7 @@ class Ledger(
         if oracle is None:
             raise LedgerError("the active run has no Oracle row")
         old_id = oracle["agent_id"]
+        replaced = None
         if old_id == session_id:
             if session_name is not None:
                 conn.execute(
@@ -541,6 +549,7 @@ class Ledger(
             )
             self._repoint_children(conn, old_id, session_id)
             self._log_event(conn, session_id, oracle["state"], "working", f"resumed from {old_id}")
+            replaced = (old_id, [old_id, *rekey.prior_ids(oracle["prior_session_ids"])])
         if run["state"] == "paused":
             conn.execute(
                 "UPDATE runs SET state = 'active', pause_check = NULL, paused_at = NULL "
@@ -548,11 +557,22 @@ class Ledger(
                 (run["run_id"],),
             )
             self._log_event(conn, session_id, "paused", "active", "resumed from pause")
-        return {
+        resumed = {
             "run": row_dict(conn, "runs", "run_id", run["run_id"]),
             "oracle": self._agent_dict(session_id),
             "resumed": True,
         }
+        return resumed, replaced
+
+    def _stop_replaced_oracle(
+        self, old_id: str, session_ids: list[str], listing: list[dict]
+    ) -> None:
+        stopped = sessions.stop_listed(session_ids, listing=listing)
+        if stopped:
+            with write_tx(self.conn) as conn:
+                self._log_event(
+                    conn, old_id, "released", "earlier_session_stopped", "; ".join(stopped)
+                )
 
     def _repoint_children(self, conn: sqlite3.Connection, old_id: str, new_id: str) -> None:
         children = conn.execute(
@@ -1752,7 +1772,10 @@ class Ledger(
             raise self.pause_for_config(exc) from exc
         if session_name in sessions.live_names(listing):
             raise LedgerError(f"a running session already has the name {session_name!r}")
-        self._require_spawn_slot(brief, listing)
+        try:
+            self._require_spawn_slot(brief, listing)
+        except SpawnDeferred as exc:
+            return self._queue_spawn(brief, c.agent_id, str(exc))
         reason = self._queue_reason(brief)
         if reason is not None:
             return self._queue_spawn(brief, c.agent_id, reason)
@@ -1895,8 +1918,7 @@ class Ledger(
             if live >= cap:
                 raise SpawnDeferred(
                     f"the parallelism cap of {cap} is reached ({live} live sessions, "
-                    f"{other_swarms} from other swarms on this machine); call agent_spawn again "
-                    "after a release frees a slot"
+                    f"{other_swarms} from other swarms on this machine)"
                 )
         role_cap = self.settings.role_parallelism_cap.get(role)
         if role_cap is not None:
@@ -1908,7 +1930,7 @@ class Ledger(
             if live_role >= role_cap:
                 raise SpawnDeferred(
                     f"the {role} parallelism cap of {role_cap} is reached ({live_role} live "
-                    f"{role} sessions); call agent_spawn again after a release frees a slot"
+                    f"{role} sessions)"
                 )
 
     def session_name(self, run_id: int, child_name: str) -> str:
@@ -2170,7 +2192,9 @@ class Ledger(
 
     def adopt_resumed(self, old_id: str, new_id: str) -> str:
         with write_tx(self.conn) as conn:
-            rekey.adopt(conn, old_id, new_id)
+            rekeyed = rekey.adopt(conn, old_id, new_id)
+        if rekeyed:
+            rekey.stop_earlier_sessions(self.conn, new_id)
         return new_id
 
     def adopt_session(

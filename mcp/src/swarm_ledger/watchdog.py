@@ -149,6 +149,7 @@ def scan(
     findings += _landed_wait_findings(conn, run["run_id"], agents, by_session)
     findings += _unsent_findings(conn, run["run_id"], agents, by_session, now, settings)
     findings += _queued_findings(conn, run["run_id"], agents, now, settings)
+    findings += _unstarted_brief_findings(conn, run["run_id"], agents, by_session, now, settings)
     findings += _unmanaged_phase_findings(conn, run["run_id"], agents)
     findings += _unread_directive_findings(conn, run["run_id"], agents, now, settings)
     findings += _stray_process_findings(conn, run["run_id"], now)
@@ -219,11 +220,13 @@ def _classify_waits(
 
 def _waits_on_work(conn: sqlite3.Connection, run_id: int, agent_id: str) -> bool:
     # A parent that ended its turn while its children work is waiting, not stuck. A child in
-    # handed_up does not count: it waits on the parent's review.
+    # handed_up does not count: it waits on the parent's review. A parked child counts by the
+    # state it had before the park.
     return (
         conn.execute(
             "SELECT 1 FROM agents WHERE parent_agent_id = ? AND ended_at IS NULL "
-            "AND state IN ('registered', 'working') "
+            "AND (state IN ('registered', 'working') "
+            "OR (state = 'parked' AND state_before_park IN ('registered', 'working'))) "
             "UNION ALL SELECT 1 FROM spawn_queue WHERE run_id = ? AND parent_agent_id = ? "
             "AND state = 'queued' "
             "UNION ALL SELECT 1 FROM file_waits WHERE agent_id = ? AND closed_at IS NULL "
@@ -478,9 +481,65 @@ def _queued_findings(
                 parent,
                 "spawn_queued",
                 f"its spawn of {row['child_name']} ({row['role']}) has waited "
-                f"{_minutes(now - queued)} minutes for free memory",
-                "Free memory on the machine, or lower memory.headroom_mb, or call run_pause "
-                "and tell the user the run waits on memory.",
+                f"{_minutes(now - queued)} minutes in the queue: {row['reason']}",
+                "Release a live agent that is done to free a slot, free memory on the machine, "
+                "lower memory.headroom_mb, or raise parallelism_cap, or call run_pause and tell "
+                "the user the run waits on capacity.",
+            )
+        )
+    return findings
+
+
+_UNACKED_BRIEF = "b.acked_at IS NULL"
+
+
+def _unstarted_brief_findings(
+    conn: sqlite3.Connection,
+    run_id: int,
+    agents: list[dict],
+    by_session: dict[str, dict],
+    now: datetime,
+    settings: WatchdogSettings,
+) -> list[Finding]:
+    by_id = {a["agent_id"]: a for a in agents}
+    after = timedelta(minutes=settings.stuck_minutes)
+    findings: list[Finding] = []
+    for brief in conn.execute(
+        "SELECT b.* FROM briefs b "
+        f"WHERE b.run_id = ? AND {_UNACKED_BRIEF} "
+        "AND NOT EXISTS (SELECT 1 FROM agents a WHERE a.name = b.child_name "
+        "AND a.ended_at IS NULL) "
+        "AND NOT EXISTS (SELECT 1 FROM spawn_queue q WHERE q.child_name = b.child_name "
+        "AND q.state = 'queued') "
+        "AND (b.child_role != 'coder' OR EXISTS (SELECT 1 FROM files f "
+        "WHERE f.file_id = b.file_id AND f.owner_agent_id = b.child_name "
+        "AND f.released_at IS NULL)) "
+        "AND NOT EXISTS (SELECT 1 FROM phases p WHERE p.phase_id = b.phase_id "
+        "AND p.paused_at IS NOT NULL) "
+        "ORDER BY b.brief_id",
+        (run_id,),
+    ):
+        parent = by_id.get(brief["parent_agent_id"])
+        created = parse_stamp(brief["created_at"])
+        if parent is None or created is None or now - created < after:
+            continue
+        child = json.dumps(brief["child_name"])
+        step = (
+            f"Call agent_spawn(child_name={child}) to start it."
+            if parent["role"] == "oracle"
+            else f"Wake {parent['name']} ({_wake_call(parent, by_session)}) to call "
+            f"agent_spawn(child_name={child})."
+        )
+        if "SendMessage(" in step:
+            step = f"{step} {wake.AMBIGUOUS_NAME_RULE}"
+        findings.append(
+            _finding(
+                parent,
+                "brief_unstarted",
+                f"its brief for {brief['child_name']} ({brief['child_role']}) has stood "
+                f"unacknowledged for {_minutes(now - created)} minutes: no agent runs under "
+                "that name and no spawn is queued for it",
+                step,
             )
         )
     return findings
@@ -1340,6 +1399,7 @@ class Watchdog:
         self._log = log
         self._activity_seen = activity()
         self._idle_since: datetime | None = None
+        self._orphans_seen: set[str] = set()
 
     def _channels(self, event: str) -> list[str]:
         return channels_for(event, self.notify_channels, self.notify_events)
@@ -1527,6 +1587,7 @@ class Watchdog:
                 lambda: ledger.park_idle_parents(listing, freed_by_coders[0]),
             ),
             ("release finished parked parents", lambda: ledger.release_finished_parked(now)),
+            ("stop orphaned sessions", lambda: self._stop_orphaned_sessions(ledger, listing)),
         ]
         for label, step in steps:
             try:
@@ -1543,6 +1604,15 @@ class Watchdog:
             return sessions.list_sessions()
         except LedgerError:
             return listing
+
+    def _stop_orphaned_sessions(self, ledger: Ledger, listing: list[dict]) -> list[str]:
+        found = ledger.orphaned_sessions(listing)
+        ripe = {bg_id: found[bg_id] for bg_id in found.keys() & self._orphans_seen}
+        stopped, failed = ledger.stop_orphaned_sessions(ripe)
+        self._orphans_seen = set(found) - set(stopped)
+        for line in failed:
+            self._log(f"could not stop {line}")
+        return stopped
 
     def run_forever(self, stop: threading.Event) -> None:
         while not stop.wait(self.settings.interval_seconds):
@@ -1660,7 +1730,9 @@ class Watchdog:
         if new_id is None:
             return agent["agent_id"]
         with write_tx(self.conn) as conn:
-            rekey.adopt(conn, agent["agent_id"], new_id)
+            rekeyed = rekey.adopt(conn, agent["agent_id"], new_id)
+        if rekeyed:
+            rekey.stop_earlier_sessions(self.conn, new_id)
         return new_id
 
     def _oracle_options(self, model: str | None) -> list[str]:

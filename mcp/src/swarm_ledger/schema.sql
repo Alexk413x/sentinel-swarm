@@ -132,6 +132,9 @@ CREATE TABLE IF NOT EXISTS agents (
     -- dies before it writes a transcript leaves an id that `claude --resume` cannot open, so a
     -- resume starts from this id, never from the dead one.
     resume_from_id TEXT,
+    -- The session ids this agent held before each re-key, as a JSON list, oldest first. A
+    -- release and the watchdog stop the background entry of each one the listing still has.
+    prior_session_ids TEXT,
     -- Set while the agent is live but its session is not running: the daemon retired it, or
     -- the ledger stopped an idle parent under memory pressure. Parking sets state to 'parked'
     -- and keeps the state it had in state_before_park; unparking puts that state back.

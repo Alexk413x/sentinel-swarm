@@ -22,6 +22,7 @@ ADDED_COLUMNS = (
     ("agents", "last_resume_at", "TEXT"),
     ("agents", "last_resume_detail", "TEXT"),
     ("agents", "resume_from_id", "TEXT"),
+    ("agents", "prior_session_ids", "TEXT"),
 )
 
 

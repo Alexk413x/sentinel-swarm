@@ -5,9 +5,9 @@
 `agent_spawn(caller, child_name)` refuses unless the caller is the parent named in the
 child's unacknowledged brief. It also refuses a Manager before a `repo_check`, a child
 whose phase is paused, a child that is already registered, a session name
-a running session holds, and a start past `parallelism_cap` when the user set one. A
-start that would take free memory below `memory.headroom_mb` is queued, not refused;
-see "Memory" below. It then runs, in the repo root:
+a running session holds. A start past a parallelism cap, or one that would take free
+memory below `memory.headroom_mb`, is queued, not refused; see "Parallelism" and
+"Memory" below. It then runs, in the repo root:
 
 ```
 claude "You are <name>. Read your brief from the swarm ledger and follow it." --bg \
@@ -455,7 +455,9 @@ fails as ambiguous, or goes to the offline entry and waits there for good. See
   to resume. The watchdog then reports `crashed` with the step "release it and brief a
   replacement from its brief"; see [08-watchdog.md](08-watchdog.md).
 - Release sets the row `released` and stops the session with `claude stop <bg_id>`,
-  which frees its memory. The Oracle's session is never stopped this way.
+  which frees its memory. It also stops the background entry of each earlier session id of
+  a re-keyed agent that `claude agents --json` still lists (`agents.prior_session_ids`; see
+  "Re-keying a resumed session"). The Oracle's session is never stopped this way.
 - Release also stops the processes the session's tools started, which `claude stop`
   leaves running. Before the stop, the ledger reads the machine's process table
   (`procs.snapshot`: `CreateToolhelp32Snapshot` on Windows, `ps -A` elsewhere) and takes
@@ -514,7 +516,10 @@ parent releases it. Its replacement takes over the children.
   live, one of another role, or one outside the run.
 - Each moved child gets an agent event that names the old and new parent. An ended
   child keeps its old parent.
-- The Oracle's own resume in `run_start` moves its children the same way.
+- The Oracle's own resume in `run_start` moves its children the same way. It also stops
+  the replaced Oracle's background entry, and the entries of its earlier session ids, when
+  the listing still holds them, whether or not they read as running. A listing entry
+  without a background id, an interactive session, is left alone.
 
 ### Re-keying a resumed session
 
@@ -545,13 +550,21 @@ than keep an alias.
   registered. The watchdog compares them with the listing on each pass: a session gone
   less than 3 minutes after the resume logs a `resume_vanished` event, "its resumed
   session was gone <n>s after the resume at <time>: <detail>", and a session that
-  stays up 3 minutes logs `resume_stable`.
+  stays up 3 minutes logs `resume_stable`. When `daemon.log` holds a `bg retire` line for the
+  resumed session, the `resume_vanished` reason ends with "; the daemon retired its session:
+  <reason>".
 - When the entry's session id differs, one write transaction replaces the old id with
   the new one in every column that stores an agent id: `rekey.agent_id_columns` reads
   the schema for columns named `*agent_id`, columns that reference `agents`, and
   `mod_sessions.session_id`. It also sets `bg_id` to the new id's first 8 characters,
   points `transcript_path` at `<new id>.jsonl` in the same folder, clears
   `resume_started_at`, and logs a `rekeyed` agent event. The same id needs no re-key.
+- A re-key appends the old session id to `agents.prior_session_ids`, a JSON list of every
+  session id the agent held before, oldest first. Right after the re-key, the ledger stops
+  the background entry of each earlier id that `claude agents --json` still lists, running
+  or not, with `claude stop`. This runs after `agent_resume`, the wake-up resume, the
+  watchdog's Oracle resume, and the hook path that matches a resumed session. `claude rm`
+  is never used: a stopped session stays visible in agent view.
 - The resumed session's own hooks can arrive before the poll ends. Each hook from a
   session id the ledger does not know re-keys the agent whose `resume_started_at` is set
   and whose `bg_id` equals the id's first 8 characters. `session_start` and `pre_ledger`
@@ -605,7 +618,8 @@ than keep an alias.
   fits. No other condition lets a resume through, and a run whose every session is
   parked waits for memory like any other: the `stalled` finding reports it. The check runs
   in `resume_agent`, under the resume claim, so the watchdog's resume, the wake-up
-  resume, and `agent_resume` all follow it.
+  resume, and `agent_resume` all follow it. The watchdog's Oracle resume is exempt: it
+  wakes the Oracle whatever the free memory, so a report always reaches it.
 - `crashed` still reports a `working` or late `registered` agent whose session is gone,
   and the Oracle resumes it with `agent_resume`. A failed resume is logged as a
   `resume_failed` agent event, and the agent stays parked.
@@ -615,6 +629,22 @@ than keep an alias.
   `resume_vanished` events since its last `resume_stable`) and a quiet heartbeat, or at
   once when no conversation is left to resume, `crashed` tells its parent to release it
   and brief a replacement. See [08-watchdog.md](08-watchdog.md).
+
+### Orphaned sessions
+
+Each watchdog pass of an active run looks for listed background entries that no live agent
+owns, as the last memory step. An entry is orphaned when its session id is the id of a
+released or ended agent of the run, or sits in some agent's `prior_session_ids` and is not
+any live agent's current session id or background id. A stopped entry, an interactive
+session, and an entry of another run never count.
+
+- An entry the watchdog sees orphaned on two passes in a row is stopped with `claude stop`,
+  whether or not it reads as running. It logs an `orphan_stopped` agent event on the owner
+  and stops nothing else of that agent.
+- An entry seen on one pass only starts the count again. A stop that fails keeps the entry
+  for the next pass.
+- It covers a release or a re-key whose own stop failed, and a session left from before a
+  reboot. It never uses `claude rm`.
 
 ## What stops when
 
@@ -629,6 +659,7 @@ than keep an alias.
 | `drive_request` | An earlier Driver still live after its exploration ended |
 | `run_finish` | Every agent still live except the Oracle |
 | `file_accept_incomplete` | The file's Coder |
+| Two watchdog passes in a row that list a background entry of a released agent, or an earlier session id of a live one | That entry's session |
 | `run_close` | Every agent still live. Called by the Oracle, the server then stops the Oracle's background session and exits as after `run_finish`; from `ledger.py close`, it stops a background Oracle session at once, and the server exits after `idle_exit_minutes` |
 | About 3 seconds after `run_finish` | The server waits up to 5 minutes for the Oracle's last turn to end, stops the Oracle's background session, and exits. An interactive Oracle is the user's terminal and keeps running |
 | `idle_exit_minutes` with no active run, or a paused run, no session of the run running, and no ledger tool call | The ledger server |
@@ -636,17 +667,19 @@ than keep an alias.
 
 ## Parallelism
 
-- `agent_spawn` refuses at `parallelism_cap`, counting the run's live agents, the
+- `agent_spawn` queues the spawn at `parallelism_cap`, counting the run's live agents, the
   Oracle included, plus other swarms' live sessions on the machine: entries from
   `claude agents --json` that are running, whose name matches the swarm session-name
   shape (`<slug>-r<run_id>-<name>`, from `looks_like_swarm_session`), and that are not
-  one of this run's own session names. The parent tries again after a release.
+  one of this run's own session names. It returns the queued answer of "Memory" below,
+  with the cap as the reason. Each watchdog pass starts the queued spawn once a release
+  frees a slot, so the parent does not call `agent_spawn` again.
 - Left empty, `parallelism_cap` is set from total memory: half of it, at 600 MB a
   session, and at least 4 (27 on a 32 GB machine). Unknown total memory leaves no cap,
   and `0` turns the cap off. Setup prints the value and says that it counts other
   swarms' sessions.
 - `role_parallelism_cap.<role>` caps that role's own live agents in the run, on top of
-  `parallelism_cap`.
+  `parallelism_cap`. A spawn past it is queued the same way.
 - `drive_request` starts the Driver through the same `agent_spawn` path, so both caps
   apply to it exactly as to any other role; in practice a run has at most one live
   Driver, since `drive_request` refuses while an exploration is already open.
@@ -674,7 +707,8 @@ for the measured figures.
   `memory.headroom_mb` (1,500 by default; the daemon retires sessions at about 700 MB
   free). A spawn that does not fit, or that arrives while earlier spawns of the run
   wait, is queued in `spawn_queue` and returns `queued: true`, the reason, and a `next`
-  that says not to call `agent_spawn` for it again. A second `agent_spawn` of a queued
+  that names the reason and says not to call `agent_spawn` for it again. A spawn past a
+  parallelism cap is queued the same way, with the cap as its reason. A second `agent_spawn` of a queued
   child returns the same entry. Unknown free memory, or an empty `headroom_mb`, admits
   the spawn.
 - **Reserve.** Free memory does not show a session until it has started, about a
@@ -686,10 +720,12 @@ for the measured figures.
   not count: two runs that each held back for the other's queue would both wait.
 - **Start queued spawns.** Each watchdog pass starts queued spawns oldest first, while
   they fit. It skips one whose phase is paused, whose fix a Driver pattern stop pauses,
-  or that a parallelism cap holds back, and drops one whose brief was acknowledged, whose parent ended, whose start failed, or
+  or that a parallelism cap still holds back, and drops one whose brief was acknowledged, whose parent ended, whose start failed, or
   that is a Coder whose file has no live claim for it, with a ledger message to the
   parent that says why. The ledger tells the two apart by the refusal's type
-  (`SpawnDeferred`), not by its text, which names the child. A start that fails on an unreadable `~/.claude.json` stays
+  (`SpawnDeferred`), not by its text, which names the child. A pass rewrites the reason of
+  a spawn it leaves queued to what holds it back then, a cap or the memory shortfall. A
+  start that fails on an unreadable `~/.claude.json` stays
   queued; see "An unreadable ~/.claude.json" below. A parent cancels a queued spawn with
   `agent_release(<child name>)`, which keeps the brief and the claim; `release_file` on
   the queued Coder's path drops its spawn too. While a spawn is queued, the
