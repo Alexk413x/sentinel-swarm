@@ -1870,6 +1870,42 @@ def test_a_parent_waiting_on_a_working_child_is_neither_stuck_nor_blocked(
     assert ("lead-1", "stuck") not in kinds and ("lead-1", "blocked") not in kinds
 
 
+def _park(ledger: Ledger, agent_id: str, before: str) -> None:
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET state = 'parked', state_before_park = ?, parked_at = ?, "
+            "park_reason = 'retired' WHERE agent_id = ?",
+            (before, watchdog.stamp(watchdog.utcnow()), agent_id),
+        )
+
+
+@pytest.mark.parametrize("session", [{"status": "idle"}, {"status": "idle", "state": "blocked"}])
+@pytest.mark.parametrize("before", ["registered", "working"])
+def test_a_parent_whose_child_is_parked_mid_work_is_neither_stuck_nor_blocked(
+    ledger: Ledger, claude: FakeClaude, now: datetime, session: dict, before: str
+) -> None:
+    _parent_and_child(ledger, now, "working")
+    _park(ledger, "sess-coder-1", before)
+    _oracle_running(claude)
+    claude.run("sess-lead-1", **session)
+
+    kinds = _kinds(_scan(ledger, claude, now))
+
+    assert ("lead-1", "stuck") not in kinds and ("lead-1", "blocked") not in kinds
+
+
+@pytest.mark.parametrize("before", ["idle", "handed_up"])
+def test_a_parent_whose_child_is_parked_with_nothing_to_do_is_still_stuck(
+    ledger: Ledger, claude: FakeClaude, now: datetime, before: str
+) -> None:
+    _parent_and_child(ledger, now, "working")
+    _park(ledger, "sess-coder-1", before)
+    _oracle_running(claude)
+    claude.run("sess-lead-1", status="idle")
+
+    assert ("lead-1", "stuck") in _kinds(_scan(ledger, claude, now))
+
+
 def test_a_parent_holding_an_open_wait_for_is_not_stuck(
     ledger: Ledger, claude: FakeClaude, now: datetime
 ) -> None:

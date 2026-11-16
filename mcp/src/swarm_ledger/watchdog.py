@@ -219,11 +219,13 @@ def _classify_waits(
 
 def _waits_on_work(conn: sqlite3.Connection, run_id: int, agent_id: str) -> bool:
     # A parent that ended its turn while its children work is waiting, not stuck. A child in
-    # handed_up does not count: it waits on the parent's review.
+    # handed_up does not count: it waits on the parent's review. A parked child counts by the
+    # state it had before the park.
     return (
         conn.execute(
             "SELECT 1 FROM agents WHERE parent_agent_id = ? AND ended_at IS NULL "
-            "AND state IN ('registered', 'working') "
+            "AND (state IN ('registered', 'working') "
+            "OR (state = 'parked' AND state_before_park IN ('registered', 'working'))) "
             "UNION ALL SELECT 1 FROM spawn_queue WHERE run_id = ? AND parent_agent_id = ? "
             "AND state = 'queued' "
             "UNION ALL SELECT 1 FROM file_waits WHERE agent_id = ? AND closed_at IS NULL "
