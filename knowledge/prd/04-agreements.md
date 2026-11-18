@@ -187,7 +187,14 @@ The responsible level:
   open directive; see "Explorations" in [02-run-lifecycle.md](02-run-lifecycle.md).
   `directive_submit` accepts only these spellings. It needs no identity, so an ordinary
   session can call it.
-- A directive does not interrupt the agents. The Oracle reads `directive_inbox()` at
+- A directive does not interrupt the agents. A directive from `user_chat`,
+  `outside_session`, or `skill` owes the live Oracle a wake-up from itself (reason
+  `user_directive`, one at a time) that points it at `directive_inbox()`; the Oracle's
+  mod delivers it from the self-wake poll, so an Oracle that stopped to wait for an
+  answer, or sits idle, starts a turn within seconds instead of at the watchdog's
+  `directive_unread` finding. `directive_inbox`, `directive_ack`, and `directive_resolve`
+  settle that wake-up once no open user directive is unread. The Oracle reads
+  `directive_inbox()` at
   safe points and turns each directive into a plan change, a guideline change, a brief,
   or a message. It never forwards a directive's text down the tree.
 - `directive_inbox()` sets `seen_at` on each open directive it returns the first time.

@@ -955,3 +955,239 @@ def test_a_part_that_ran_no_tests_fails_the_run_even_when_it_exits_zero(tmp_path
     assert result["ok"] is False
     assert "web: no tests ran" in result["reason"]
     assert not ledger._passing_full_test_after(ledger.conn, ctx["run_id"], None)
+
+
+# -- lint and build commands per path prefix ----------------------------------------------
+
+
+def test_lint_and_build_command_by_path_load_with_normalized_prefixes(tmp_path: Path) -> None:
+    root = make_host(
+        tmp_path / "host",
+        settings_text(
+            test_command="pytest -q {target}",
+            swaps=[
+                (
+                    "lint_command_by_path:\n",
+                    "lint_command_by_path:\n  ./apps/web/: npm --prefix apps/web run lint\n"
+                    "  ..: nope\n",
+                ),
+                (
+                    "build_command_by_path:\n",
+                    "build_command_by_path:\n  packages/api: npm --prefix packages/api run build\n"
+                    "  empty:\n",
+                ),
+            ],
+        ),
+    )
+    settings = load_settings(root)
+    assert settings.lint_command_by_path == {"apps/web": "npm --prefix apps/web run lint"}
+    assert settings.build_command_by_path == {"packages/api": "npm --prefix packages/api run build"}
+
+
+def test_a_settings_snapshot_keeps_lint_and_build_command_by_path() -> None:
+    from swarm_ledger.settings import Settings
+
+    settings = Settings(
+        lint_command_by_path={"apps/web": "lint-web"}, build_command_by_path={"apps/web": "b"}
+    )
+    adopted = Settings()
+    adopted.adopt_profile(settings.snapshot())
+    assert adopted.lint_command_by_path == {"apps/web": "lint-web"}
+    assert adopted.build_command_by_path == {"apps/web": "b"}
+    assert Settings.from_snapshot(settings.snapshot()).build_command_by_path == {"apps/web": "b"}
+
+
+def test_a_full_build_takes_the_default_command_first_then_each_prefix_in_order() -> None:
+    from swarm_ledger.settings import Settings
+
+    settings = Settings(build_command_by_path={"web": "bw", "api": "ba"})
+    assert settings.full_build_parts() == [("api", "ba"), ("web", "bw")]
+    settings.build_command = "root"
+    assert settings.full_build_parts() == [(None, "root"), ("api", "ba"), ("web", "bw")]
+    assert settings.full_build_text() == "root ; ba ; bw"
+    assert Settings().full_build_text() is None
+
+
+def _build_by_path(
+    ledger: Ledger, ctx: dict, mapping: dict[str, str], build_command: str | None = None
+) -> None:
+    ledger.profile_set(
+        "oracle", ctx["oracle_id"], build_command=build_command, build_command_by_path=mapping
+    )
+
+
+def test_a_full_run_builds_every_prefix_and_keeps_one_row_with_a_header_per_part(
+    tmp_path: Path,
+) -> None:
+    ledger = _ledger(_host(tmp_path, full_target="tests"))
+    ctx = bootstrap_module(ledger)
+    _build_by_path(
+        ledger,
+        ctx,
+        {"web": _py("print('web built')"), "api": _py("print('api built')")},
+        build_command=_py("print('root built')"),
+    )
+    before = ledger.conn.execute("SELECT COUNT(*) FROM test_runs").fetchone()[0]
+    result = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    assert ledger.conn.execute("SELECT COUNT(*) FROM test_runs").fetchone()[0] == before + 1
+    assert result["ok"] is True
+    assert (result["build"]["state"], result["build"]["exit_code"]) == ("passed", 0)
+    row = _row(ledger, result["test_run_id"])
+    parts = json.loads(row["build_parts_json"])
+    assert [part["prefix"] for part in parts] == [None, "api", "web"]
+    assert row["build_command"] == " ; ".join(part["command"] for part in parts)
+    for header in ("== default ==", "== api ==", "== web =="):
+        assert header in row["build_output"]
+    for built in ("root built", "api built", "web built"):
+        assert built in row["build_output"]
+    assert ledger._passing_full_test_after(ledger.conn, ctx["run_id"], None)
+
+
+def test_a_full_run_with_one_build_part_stores_no_parts_list(tmp_path: Path) -> None:
+    ledger = _ledger(_host(tmp_path, full_target="tests"))
+    ctx = bootstrap_module(ledger)
+    _build_by_path(ledger, ctx, {"web": _py("print('web built')")})
+    result = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    assert result["ok"] is True
+    row = _row(ledger, result["test_run_id"])
+    assert row["build_parts_json"] is None
+    assert row["build_command"] == _py("print('web built')")
+    assert "== " not in row["build_output"]
+
+
+def test_a_failing_build_part_fails_the_run_and_the_others_still_run(tmp_path: Path) -> None:
+    ledger = _ledger(_host(tmp_path, full_target="tests"))
+    ctx = bootstrap_module(ledger)
+    _build_by_path(
+        ledger,
+        ctx,
+        {
+            "api": _py("import sys; print('api broke'); sys.exit(4)"),
+            "web": _py("print('web built')"),
+        },
+    )
+    result = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    assert result["ok"] is False
+    assert result["reason"].startswith("api: build failed")
+    assert (result["build"]["state"], result["build"]["exit_code"]) == ("failed", 4)
+    assert "api broke" in result["build"]["output"]
+    assert "web built" in result["build"]["output"]
+    assert not ledger._passing_full_test_after(ledger.conn, ctx["run_id"], None)
+
+
+def test_a_timed_out_build_part_fails_the_run(tmp_path: Path) -> None:
+    root = _host(tmp_path, full_target="tests")
+    settings = root / ".claude" / "sentinel-swarm.local.md"
+    settings.write_text(
+        settings.read_text(encoding="utf-8").replace("test_timeout_s: 600", "test_timeout_s: 1"),
+        encoding="utf-8",
+    )
+    ledger = _ledger(root)
+    ctx = bootstrap_module(ledger)
+    _build_by_path(
+        ledger,
+        ctx,
+        {"slow": _py("import time; time.sleep(30)"), "web": _py("print('web built')")},
+    )
+    result = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    assert (result["ok"], result["build"]["state"], result["build"]["exit_code"]) == (
+        False,
+        "timed out",
+        -1,
+    )
+    assert "slow: build timed out" in result["reason"]
+
+
+def test_a_reused_full_run_does_not_rebuild_the_prefixes(tmp_path: Path) -> None:
+    counter = (tmp_path / "builds.txt").as_posix()
+    ledger = _ledger(_host(tmp_path, full_target="tests"))
+    ctx = bootstrap_module(ledger)
+    _build_by_path(
+        ledger,
+        ctx,
+        {
+            "a": _py(f"open('{counter}', 'a').write('a')"),
+            "b": _py(f"open('{counter}', 'a').write('b')"),
+        },
+    )
+    first = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    again = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    assert first["ok"] and again["ok"]
+    assert again["reused"] is True
+    assert again["build"]["state"] == "passed"
+    assert (tmp_path / "builds.txt").read_text(encoding="utf-8") == "ab"
+    assert (
+        _row(ledger, again["test_run_id"])["build_parts_json"]
+        == (_row(ledger, first["test_run_id"])["build_parts_json"])
+    )
+
+
+def test_a_full_run_made_before_a_build_prefix_was_added_does_not_count(tmp_path: Path) -> None:
+    ledger = _ledger(_host(tmp_path, full_target="tests"))
+    ctx = bootstrap_module(ledger)
+    ledger.profile_set("oracle", ctx["oracle_id"], build_command=_py("print('built')"))
+    first = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    assert ledger._passing_full_test_after(ledger.conn, ctx["run_id"], None)
+    _build_by_path(ledger, ctx, {"web": _py("print('web built')")})
+    assert not ledger._passing_full_test_after(ledger.conn, ctx["run_id"], None)
+    phase = ledger.conn.execute("SELECT * FROM phases").fetchone()
+    message = ledger._full_run_needed(ledger.conn, phase)
+    assert repr(ledger.settings.full_build_text()) in message
+    assert "ran with a different build_command" in message
+    second = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    assert second["test_run_id"] != first["test_run_id"]
+    assert second["reused"] is False
+    assert ledger._passing_full_test_after(ledger.conn, ctx["run_id"], None)
+
+
+def test_the_sweep_allows_limit_for_each_build_part(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _hold_runs(monkeypatch)
+    ledger = _ledger(_host(tmp_path, full_target="tests"))
+    ctx = bootstrap_module(ledger)
+    _build_by_path(ledger, ctx, {"a": _py("print(1)"), "b": _py("print(2)"), "c": _py("print(3)")})
+    running = ledger.tests_run("oracle", ctx["oracle_id"], "full")
+    limit = 4 * 600 + testrun.OVERRUN_GRACE_S
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE test_runs SET created_at = ? WHERE test_run_id = ?",
+            (stamp(utcnow() - timedelta(seconds=limit - 60)), running["test_run_id"]),
+        )
+    assert testrun.sweep(ledger.conn) == []
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE test_runs SET created_at = ? WHERE test_run_id = ?",
+            (stamp(utcnow() - timedelta(seconds=limit + 60)), running["test_run_id"]),
+        )
+    assert testrun.sweep(ledger.conn) == [running["test_run_id"]]
+
+
+def test_profile_set_takes_lint_and_build_command_by_path_and_clears_them(tmp_path: Path) -> None:
+    ledger = _ledger(_host(tmp_path))
+    ctx = bootstrap_module(ledger)
+    lint = {"apps/web": "npm --prefix apps/web run lint"}
+    build = {"apps/web": "npm --prefix apps/web run build"}
+    result = ledger.profile_set(
+        "oracle", ctx["oracle_id"], lint_command_by_path=lint, build_command_by_path=build
+    )
+    assert (result["lint_command_by_path"], result["build_command_by_path"]) == (lint, build)
+    other = _ledger(tmp_path / "host")
+    other.adopt_run_profile(ctx["run_id"])
+    assert other.settings.lint_command_by_path == lint
+    assert other.settings.build_command_by_path == build
+    cleared = ledger.profile_set(
+        "oracle", ctx["oracle_id"], lint_command_by_path={}, build_command_by_path={}
+    )
+    assert (cleared["lint_command_by_path"], cleared["build_command_by_path"]) == ({}, {})
+
+
+def test_profile_set_refuses_a_lint_or_build_path_entry_it_cannot_use(tmp_path: Path) -> None:
+    ledger = _ledger(_host(tmp_path))
+    ctx = bootstrap_module(ledger)
+    with pytest.raises(LedgerError, match="lint_command_by_path"):
+        ledger.profile_set("oracle", ctx["oracle_id"], lint_command_by_path={"../x": "lint"})
+    with pytest.raises(LedgerError, match="build_command_by_path"):
+        ledger.profile_set("oracle", ctx["oracle_id"], build_command_by_path={"pkg": " "})
+    with pytest.raises(LedgerError, match="starts a server or a watcher"):
+        ledger.profile_set("oracle", ctx["oracle_id"], build_command_by_path={"web": "npm run dev"})

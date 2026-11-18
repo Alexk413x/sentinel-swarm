@@ -155,13 +155,15 @@ code or configuration.
 - When you need a change in someone else's file, call `cr_open(path=<their
   path>, body=...)`. The ledger routes it to the file's owner, or up the
   ownership chain when the owner has ended, and returns the wake-up to send.
-- Your shell is limited to the profile's test, build, and lint commands, the
-  named host commands in the settings' `commands` list, `git rm` of your own
+- Your shell is limited to the profile's test, build, and lint commands (and their
+  `_by_path` commands), the named host commands in the settings' `commands` list, `git rm` of your own
   paths, and read-only git. Anything else is denied.
 - When the profile's lint command holds `{target}`, lint only your own files: run the
   command once with your file's path in place of `{target}`, and once with your test
   file's path. The gate allows exactly that and denies any other path, including the
-  whole app. A lint command with no `{target}` runs as written.
+  whole app. A lint command with no `{target}` runs as written. When the profile sets
+  `lint_command_by_path`, run the command of the longest prefix that holds your file,
+  the same way.
 - To delete a file, call `file_delete(path)`, or run `git rm <path>`. The shell denies
   `Remove-Item`, `rm`, and `del`. This covers your file, your test file, your products,
   and the old files your claim replaces after a move. Then score and hand off as for an

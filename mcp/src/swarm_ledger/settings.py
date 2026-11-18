@@ -45,7 +45,8 @@ DEFAULT_MAX_WORKERS = 8
 DEFAULT_HEADROOM_MB = 1500
 DEFAULT_PARK_BLOCKED_MINUTES = 10
 _FALSE_WORDS = frozenset({"false", "no", "off", "0"})
-PROFILE_KEYS = ("test_command", "build_command", "lint_command", "test_command_by_path")
+PATH_COMMAND_KEYS = ("test_command_by_path", "lint_command_by_path", "build_command_by_path")
+PROFILE_KEYS = ("test_command", "build_command", "lint_command", *PATH_COMMAND_KEYS)
 SHELL_OPERATORS = re.compile(r"[;&|<>`\n]|\$\(")
 TEST_SCOPES = ("file", "module", "phase", "full")
 DEFAULT_TEST_TIMEOUT_S = 600
@@ -316,6 +317,9 @@ class Settings:
     # Repo-relative path prefix to a test command template: a file under the prefix, or a
     # module, phase, or full run that reaches it, runs that command.
     test_command_by_path: dict[str, str] = field(default_factory=dict)
+    # Same shape for lint (a file under the prefix) and build (a full run builds every prefix).
+    lint_command_by_path: dict[str, str] = field(default_factory=dict)
+    build_command_by_path: dict[str, str] = field(default_factory=dict)
     test_timeout_s: int = DEFAULT_TEST_TIMEOUT_S
     full_target: str | None = None
     allowed_skips: list[str] = field(default_factory=list)
@@ -333,8 +337,8 @@ class Settings:
     # Per-role promptCacheTtl ("5m" or "1h") for agent_spawn; a role with no entry keeps the
     # Claude Code default.
     prompt_cache_ttl: dict[str, str] = field(default_factory=dict)
-    # Per-role --permission-mode for every launch; a role with no entry starts in
-    # bypassPermissions (see permissions.start_mode).
+    # Per-role --permission-mode; a role with no entry gets no flag, so Claude Code applies the
+    # user's own permissions.defaultMode.
     permission_mode: dict[str, str] = field(default_factory=dict)
     # Per-role cap on that role's own live sessions in the run, on top of parallelism_cap.
     role_parallelism_cap: dict[str, int] = field(default_factory=dict)
@@ -374,6 +378,17 @@ class Settings:
     def test_template(self, scope: str) -> str | None:
         return self.test_command_by_scope.get(scope) or self.test_command
 
+    def full_build_parts(self) -> list[tuple[str | None, str]]:
+        parts: list[tuple[str | None, str]] = []
+        if self.build_command:
+            parts.append((None, self.build_command))
+        parts.extend(sorted(self.build_command_by_path.items()))
+        return parts
+
+    def full_build_text(self) -> str | None:
+        parts = self.full_build_parts()
+        return " ; ".join(command for _, command in parts) if parts else None
+
     def adopt_profile(self, snapshot: str | None) -> None:
         try:
             data = json.loads(snapshot or "{}")
@@ -386,7 +401,7 @@ class Settings:
                     setattr(
                         self,
                         key,
-                        normalize_path_commands(value) if key == "test_command_by_path" else value,
+                        normalize_path_commands(value) if key in PATH_COMMAND_KEYS else value,
                     )
 
 
@@ -457,6 +472,8 @@ def load_settings(repo_root: Path) -> Settings:
         lint_command=data.get("lint_command") or defaults.lint_command,
         test_command_by_scope=normalize_scope_commands(data.get("test_command_by_scope")),
         test_command_by_path=normalize_path_commands(data.get("test_command_by_path")),
+        lint_command_by_path=normalize_path_commands(data.get("lint_command_by_path")),
+        build_command_by_path=normalize_path_commands(data.get("build_command_by_path")),
         test_timeout_s=normalize_test_timeout(data.get("test_timeout_s")),
         full_target=str(data["full_target"]).strip() or None
         if data.get("full_target") is not None

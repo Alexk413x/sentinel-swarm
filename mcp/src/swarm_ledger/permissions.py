@@ -17,20 +17,15 @@ PERMISSION_MODES = (
     "bypassPermissions",
     "manual",
 )
-BYPASS = "bypassPermissions"
-# A role starts in this mode when neither permission_mode.<role> nor the user's own
-# permissions.defaultMode names one: a background session that prompts stalls until a person
-# answers, and the mod's gates hold in every mode.
-DEFAULT_MODE = BYPASS
-DEFAULT_SOURCE = "the swarm's default: no settings file sets permissions.defaultMode"
-FALLBACK = "acceptEdits"
+DEFAULT_MODE = "default"
+DEFAULT_SOURCE = "Claude Code's default: no settings file sets permissions.defaultMode"
 SETTINGS_FILE = "sentinel-swarm.local.md"
 
 
 @dataclass(frozen=True)
 class StartMode:
     mode: str
-    flag: str
+    flag: str | None
     source: str
 
 
@@ -70,24 +65,14 @@ def inherited_mode(repo_root: Path) -> tuple[str, str] | None:
     return None
 
 
-def bypass_disabled(repo_root: Path) -> bool:
-    return any(
-        _permissions(path).get("disableBypassPermissionsMode") == "disable"
-        for _, path in _sources(repo_root)
-    )
-
-
 def start_mode(repo_root: Path, role: str, configured: str | None) -> StartMode:
-    """The mode a role's session starts in; the launch always passes it as `--permission-mode`.
-    Only `permission_mode.<role>` raises a role above the user's own `permissions.defaultMode`."""
-    inherited = inherited_mode(repo_root)
+    """The mode a role's session starts in. Only `permission_mode.<role>` becomes a
+    `--permission-mode` flag; otherwise Claude Code applies the user's own settings, and the
+    mode here only reports which one."""
     if configured in PERMISSION_MODES:
-        mode, source = str(configured), f"permission_mode.{role} in {SETTINGS_FILE}"
-    elif inherited is not None:
-        mode, source = inherited
-    else:
-        mode, source = DEFAULT_MODE, DEFAULT_SOURCE
-    if mode == BYPASS and bypass_disabled(repo_root):
-        mode = FALLBACK
-        source = f"{source}; policy sets permissions.disableBypassPermissionsMode"
-    return StartMode(mode=mode, flag=mode, source=source)
+        mode = str(configured)
+        return StartMode(mode, mode, f"permission_mode.{role} in {SETTINGS_FILE}")
+    inherited = inherited_mode(repo_root)
+    if inherited is not None:
+        return StartMode(inherited[0], None, inherited[1])
+    return StartMode(DEFAULT_MODE, None, DEFAULT_SOURCE)

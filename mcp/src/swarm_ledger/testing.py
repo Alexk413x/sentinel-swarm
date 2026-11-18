@@ -434,6 +434,22 @@ def build_result(executed: Executed) -> BuildResult:
     )
 
 
+def combine_builds(parts: Sequence[tuple[str, BuildResult]]) -> BuildResult:
+    share = _MAX_OUTPUT_CHARS // len(parts)
+    output = "\n".join(f"== {label} ==\n{result.output[-share:]}" for label, result in parts)
+    failing = [(label, result) for label, result in parts if result.exit_code != 0]
+    reason = None
+    if failing:
+        label, first = failing[0]
+        reason = f"{label}: {first.reason}"
+    return BuildResult(
+        exit_code=failing[0][1].exit_code if failing else 0,
+        output=output,
+        duration_ms=sum(result.duration_ms for _, result in parts),
+        reason=reason,
+    )
+
+
 def run_tests(
     command_template: str,
     target: str | None,

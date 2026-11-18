@@ -2,6 +2,29 @@
 
 All notable changes to the `sentinel-swarm` plugin.
 
+## [0.8.5] — 2026-11-18 — the user's permission mode, lint and build by path, panel fixes
+
+### Upgrading a live run
+
+- Pause the run (`ledger.py pause --reason <text>`), update the plugin, run
+  `/sentinel-swarm:setup` in the host repo, then launch again. The launch replaces a
+  ledger server left from the older version.
+
+### Added
+
+- `lint_command_by_path` and `build_command_by_path` map a path prefix to a lint or build command, with the same key and longest-prefix rules as `test_command_by_path`. The Coder's shell gate allows every lint entry. A full run builds with `build_command`, then every build entry in prefix order, and records one result with a header per part. `profile_set` takes both maps, and setup reports them.
+- The run panel reads its snapshot over `GET /panel` on the ledger server, behind the bearer token, with the launcher as the fallback. It fetches a task's brief only when its row opens.
+
+### Changed
+
+- A role session starts in the permission mode the user has set. When `permission_mode.<role>` names a mode, the launch passes it as `--permission-mode`. Otherwise the launch passes no flag, and Claude Code applies `permissions.defaultMode` from `.claude/settings.local.json`, then `.claude/settings.json`, then the user's `settings.json`. The swarm no longer starts a role in `bypassPermissions` by default. Setup reports each role's mode and the file it comes from.
+- Native Copilot workers and the device-queue broker are listed as future features. The read-only Copilot status companion stays.
+
+### Fixed
+
+- An answer typed in the panel's Waiting on you box owes the Oracle a wake-up, so an idle Oracle reads it at once instead of at its next poll.
+- Every agent name in the panel opens its detail card. A failed panel action shows its reason, an empty answer says it was not sent, and the answer field takes focus.
+
 ## [0.8.4] — 2026-11-15 — fixes from the second live-run bug pass
 
 ### Upgrading a live run

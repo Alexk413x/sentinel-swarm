@@ -110,7 +110,7 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   loop's id for a subagent's call, and with `session_id` still the parent session's. A
   subagent is gated as its parent session's agent: for a Write, shell, or Skill call,
   the ledger resolves an unknown `agent_id` through `session_id`, so a Driver's
-  subagents write no project file, run only `build_command`, and cannot call
+  subagents write no project file, run only the build commands, and cannot call
   `map-explore` before `map-test`. `pre_ledger` does not do this and stamps the
   subagent's own id, so a subagent is never stamped as its parent. A `deny` answer becomes `{ deny }`; an
   `updatedInput` answer rewrites the call's arguments, which is how `pre_ledger`
@@ -252,10 +252,11 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   not show, a failed listing, and a non-swarm caller pass. No override rule covers it.
 - `pre_shell`: while a run is active or paused, denies the shell to every role but the
   Coder, the Manager, and the Driver. A Coder may run a command that starts with the
-  profile's test command (or a `test_command_by_path` command) or build command, the
-  lint command, `git rm` of its own claimed path, test path,
+  profile's test command (or a `test_command_by_path` command), build command (or a
+  `build_command_by_path` command), or lint command (or a `lint_command_by_path`
+  command), `git rm` of its own claimed path, test path,
   or products, or a path its claim replaces (with `-q`, `--quiet`, or `--` only), or read-only git (`status`, `diff`,
-  `log`, `show`, `ls-files`, `branch`). A lint command that holds `{target}` is allowed
+  `log`, `show`, `ls-files`, `branch`). A lint command or `lint_command_by_path` command that holds `{target}` is allowed
   only exactly as written, with `{target}` replaced by one of the Coder's own claimed
   paths (its file, test file, or products); a lint command without `{target}` is a
   prefix like the test and build commands. An allowed `git rm` marks the file stale, so the
@@ -266,7 +267,8 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   command in the settings' `commands` list, exactly as
   `cd <cwd> && <interpreter> <run>`, or `<interpreter> <run>` when `cwd` is `.`, with
   whitespace folded; the Manager may run nothing else. A Driver may run only a command
-  that starts with the profile's `build_command`. Apart from a named host command, a
+  that starts with the profile's `build_command` or a `build_command_by_path` command.
+  Apart from a named host command, a
   command with `;`, `&`, `|`, `<`, `>`, a backtick, a newline, or `$(` is denied. An
   override of rule `shell` lets one command through. Like `pre_write`, it denies a
   command from a session whose `agent_type` is `swarm-<role>` but that is not a live
@@ -392,7 +394,7 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
 | A handoff needs passing tests and a current graph | `handoff_submit` |
 | A test run outlives the tool call and no Claude Code shell runs it | `tests_run` starts the detached runner (`testrun.py`); the watchdog and server start sweep runs whose runner is gone to `abandoned` |
 | A full run never collects from the repo root, and only declared skips count as clean | `tests_run` refuses a full run with `{target}` and no `full_target`; `test_run_passed` and `_CLEAN_TEST_RUN` need `skipped = allowed_skipped` |
-| A phase is approved only when its build passes | the detached runner runs `build_command` after a full run's tests; `test_run_passed` and `_CLEAN_TEST_RUN` need `build_exit_code = 0` on a row with a `build_command`, and `phase_review(accepted)` reads only a full run with the profile's current `build_command` |
+| A phase is approved only when its build passes | the detached runner runs `build_command` and every `build_command_by_path` command after a full run's tests; `test_run_passed` and `_CLEAN_TEST_RUN` need `build_exit_code = 0` on a row with a `build_command`, and `phase_review(accepted)` reads only a full run with the profile's current build commands |
 | No approval without a handoff and two sets of scores | `approve` |
 | The Lead scores before it sees the Coder's scores | `score_record` refuses a Lead review after `review_compare` |
 | A rule gives way only to the Oracle | `override_grant`, consumed by `pre_write` and `pre_shell` |
@@ -408,7 +410,7 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
 | Work is accepted as incomplete only for a reported reason, after a blind review | `accept_incomplete` refuses an empty reason, a handoff without `review_compare`, and work with no open issue |
 | A deferral is decided at its responsible level, and a PRD change by the user | `deferral_propose(kind)`; `agreement_decide` checks the kind's level and, for `prd`, a later `user_chat` directive |
 | A dispute is decided by the closest shared ancestor of its parties | `deferral_propose(parties)` records the arbiter and owes it a wake-up; `agreement_decide` accepts only the arbiter |
-| The Driver tests a build, not a server that reloads | `profile_set` refuses a build command that serves or watches; `pre_shell` limits the Driver to `build_command` |
+| The Driver tests a build, not a server that reloads | `profile_set` refuses a build command that serves or watches; `pre_shell` limits the Driver to `build_command` and `build_command_by_path` commands |
 | The Driver runs `map-test` before `map-explore` | `pre_skill` |
 | A role's fallback search is recorded | `post_activity` writes a `graph_gaps` row for each `Grep` and `Glob`; the report lists them |
 | A Coder re-reads its brief after a return | `pre_ledger` records the read; `handoff_submit` refuses without one since the last return |

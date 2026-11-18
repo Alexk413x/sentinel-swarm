@@ -23,10 +23,20 @@ request.
 
 ## What it reads
 
-- While the pane is open, the mod refreshes it every 5 seconds by running
-  `mcp/launch/ledger.py panel --repo <repo>` from the plugin folder on the base
-  interpreter with `-I -S`. `panel.py` reads the ledger read-only and Claude Code's
-  session files for each session's state, and prints one JSON document.
+- While the pane is open, the mod refreshes it every 5 seconds. While the repo's
+  ledger server runs, it reads the document over the server's `GET /panel` route; the
+  request carries the bearer token and the `X-Sentinel-Swarm-Repo` header, as the hook
+  route does (see "The panel route" in [06-ledger-server.md](06-ledger-server.md)).
+  With no server, or when the route answers anything but a 200 for this repo, the mod
+  runs `mcp/launch/ledger.py panel --repo <repo>` from the plugin folder on the base
+  interpreter with `-I -S`. Both run `panel.py`, which reads the ledger read-only and
+  Claude Code's session files for each session's state, and return one JSON document.
+  The route and the launcher take the same inputs: `waiting` (a session id or name,
+  repeatable), `detail` (an agent id), and `brief` (a task id).
+- The document carries no brief body. Each task has `has_brief` (a brief or goal
+  exists) and its one-sentence `summary`; `brief` is `null`, except on the one task the
+  `brief` input names. This keeps a refresh small: every brief used to ride along, about
+  240 KB for a run of 100 agents.
 - The document lists every run, newest first. Each run carries its state, outcome,
   branch, elapsed time, agent counts, the agent tree (Oracle, Managers, Leads, Coders,
   and the Driver), and what waits on the user: the open `needs_user` directives, the
@@ -101,12 +111,21 @@ request.
     lists carries `Button`.
   - A `needs_user` directive's box has an answer field. The panel keeps the typed text
     as a draft in `$.state` (`panelAnswers`, keyed by the item), so a refresh redraws
-    the field with it. Enter sends the text through `mcp/launch/ledger.py directive
+    the field with it. Pressing the question's title or text moves the focus to the
+    field (`$.ui.focus`), and the field asks for the focus when the pane takes the
+    keyboard, so a person who clicks the question and types reaches the field. A
+    refusal of the focus shows as an error line (below). Enter sends the text through `mcp/launch/ledger.py directive
     --source user_chat --sender "run panel" --reply-to <id>`, which resolves the
-    directive. The box shows "Sending..." at once, then "Sent at <time>. The Oracle
-    reads it at its next step." and clears the draft, or "Not sent: <reason>" and keeps
-    the draft. A toast says the same. A surface with no `Input` element says to send
+    directive and owes the Oracle a wake-up (see "Directives" in
+    [04-agreements.md](04-agreements.md)), so an Oracle that stopped to wait for the
+    answer starts a turn at its next self-wake poll, within 15 seconds. The box shows
+    "Sending..." at once, then "Sent at <time>. The Oracle reads it at its next step."
+    and clears the draft, or "Not sent: <reason>" and keeps the draft. An empty answer
+    shows "Not sent: the answer is empty." A toast says the same. A surface with no `Input` element says to send
     the reply with the directive command from `/sentinel-swarm:run` instead.
+- Every press, answer, and refresh has a visible result. A failure shows as a toast and
+  as a red line under the controls, which stays until the next action; a failed
+  read of the ledger shows its reason in the same place. No handler swallows an error.
 - A stall or a pause belongs to no agent row, so the top box shows its detail and what
   to do: check the run with `/sentinel-swarm:status` and message the Oracle, or fix the
   cause and message the Oracle or run `/sentinel-swarm:resume`.
@@ -216,6 +235,8 @@ answers it. The hold is a mod hook, since the plugin has no command hooks.
   - how to talk to it: run `claude agents` and open its session. A mod can switch the
     main view only to the session's own agents (`$.ui.view`), not to another
     background session, so the card cannot open the swarm session itself.
+    The mod API has no call that opens or attaches another session; the card is the
+    detail view that stands in for it.
 - Tree lines take the colour of the parent they come from. Oracle and Manager lines
   reach the bottom of their expanded sections.
 - A row is dimmed when its agent has ended or has not started:
@@ -245,11 +266,14 @@ answers it. The hold is a mod hook, since the plugin has no command hooks.
 - Work that no agent owns yet appears under the agent it belongs to, in ledger order.
   Work a queued child will own sits on that child's row.
 - A phase with no Manager brief yet shows the goal `phase_add` recorded as its brief,
-  and its summary is the goal's first sentence. With neither, the detail says "No brief
-  recorded."
+  and its summary is the goal's first sentence. With neither, `has_brief` is false and
+  the detail says "No brief recorded."
 - Clicking a task opens its brief below it, with simple Markdown (headings, lists,
   bold, italic, code), and its latest review. One task is open at a time. Clicking the
-  open text, another task, or any control closes it.
+  open text, another task, or any control closes it. The click starts a refresh that
+  passes the task's id as `brief`, so only the open task's brief is read; the row shows
+  "Reading the brief..." until it arrives, and the next refreshes keep passing the id
+  while the task stays open.
 - Each task's status glyph:
   - `!` red, **problem**: the file itself is incomplete or was released without
     finishing. Only a file shows it.

@@ -98,8 +98,9 @@ lands after the agent's Stop hook does not set the agent working again.
 The Driver is the one role whose `swarm-driver.md` carries `Agent` in its `tools`:
 `pre_agent` allows only its calls to cartographer's `map-driver` and `map-reviewer`
 subagents and denies every other `subagent_type`. `pre_shell` allows the Driver only a
-command that starts with the profile's `build_command`, and a Coder only a command that
-starts with the profile's test, build, or lint command or read-only git. No other role's
+command that starts with the profile's `build_command` or a `build_command_by_path`
+command, and a Coder only a command that starts with the profile's test, build, or lint
+command, a `*_command_by_path` command, or read-only git. No other role's
 file has a shell, and none has an `Agent` tool, so `pre_agent` and `pre_shell` deny them
 unconditionally.
 

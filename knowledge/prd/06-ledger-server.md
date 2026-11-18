@@ -44,7 +44,7 @@
   the database before any worker starts.
 - No worker keeps state another worker needs. Each worker gets the settings the front
   read at start, not the file, so an edit to the file after the start reaches no
-  worker. The test, build, and lint commands and `test_command_by_path` come from the
+  worker. The test, build, and lint commands and their `_by_path` maps come from the
   run's settings snapshot, which `profile_set` writes: `profile_set` and `tests_run` read the snapshot first, so
   a command set in one worker reaches a test run in another.
 - `graph_upsert` holds `.sentinel-swarm/kg.lock`, an exclusive file lock
@@ -151,6 +151,13 @@
   unknown event and 409 unless the `X-Sentinel-Swarm-Repo` header names this server's
   repo root. A 200 answer carries the header back. See "The shim" in
   [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md).
+- The panel route: `GET /panel` returns the document `mcp/launch/ledger.py panel`
+  prints, as JSON, on the request's own thread. The query carries `waiting` (repeatable),
+  `detail`, `brief`, and `run`, the inputs of the launcher's `--waiting`, `--detail`,
+  `--brief`, and `--run`. It passes the access checks above, answers 409 unless the
+  `X-Sentinel-Swarm-Repo` header names this server's repo root, and answers 200 with
+  that header. The run panel reads its snapshot here while the server runs and falls
+  back to the launcher otherwise; see [17-run-panel.md](17-run-panel.md).
 - `permission_wait`, the run panel's long poll, runs in the front on the request's own
   thread and connection, never on a hook worker, so a session held for up to 25 seconds
   per poll does not hold up other sessions' gates. See "Answering a permission prompt
@@ -287,7 +294,7 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
   to the Oracle. It builds the scope's command: `test_command_by_scope.<scope>`, else the
   profile's `test_command`, with `{target}` replaced, or removed for no target. When the
   profile holds `test_command_by_path`, a call may run one command per path prefix and
-  record them as one row; see "One test command per path prefix" in
+  record them as one row; see "One command per path prefix" in
   [11-setup-and-settings.md](11-setup-and-settings.md). A full
   run with no target takes `full_target`; when the command holds `{target}` and
   `full_target` is empty, the call refuses, so a full run never collects from the repo
@@ -304,10 +311,16 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
   `test_timeout_s` (default 600), parses the result, records it on the row, and deletes
   the log. The run survives the tool call, the worker that took it, and a restart of the
   ledger server.
-- **A full run also builds.** When the profile's `build_command` is set, `tests_run(scope="full")`
-  stores it on the row (`build_command`). The same detached runner runs it once, in the
-  repo root, after the tests pass and the tree check shows no change, under the same
-  `test_timeout_s`. A build never runs for another scope, after failing tests, or on the
+- **A full run also builds.** When the profile's `build_command` or `build_command_by_path`
+  is set, `tests_run(scope="full")` stores the build on the row (`build_command`). The
+  same detached runner runs it once, in the repo root, after the tests pass and the tree
+  check shows no change, under the same `test_timeout_s`. With `build_command_by_path`,
+  the runner builds with `build_command` (when set) and then with each entry in
+  alphabetical order of its prefix, runs every part even when one fails, and records one
+  row: `build_command` joins the commands with ` ; `, `build_parts_json` lists them, the
+  output has a `== <prefix> ==` header per part, and `build_exit_code` is the first
+  non-zero exit code of a part. See "One command per path prefix" in
+  [11-setup-and-settings.md](11-setup-and-settings.md). A build never runs for another scope, after failing tests, or on the
   request thread: the runner records `build_exit_code` (`-1` when it timed out),
   `build_output` (the last 20,000 characters), and `build_duration_ms` on the same row.
   A build that fails or times out sets the row's `reason` (`build failed: exit code N` or
@@ -315,9 +328,10 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
   `command`, `state` (`passed`, `failed`, `timed out`, `running`, or `not run`),
   `exit_code`, and, for a failed build, the last 2,000 characters of its output. A row
   with a build may run for twice `test_timeout_s` plus 120 seconds before the sweep marks
-  it `abandoned`; each command part adds one more `test_timeout_s`. A reused run copies the build columns, so a reused run never builds
-  again, and a run reuses only an earlier run with the same `build_command`. With no
-  `build_command`, a full run is unchanged.
+  it `abandoned`; each test command part and each build command part adds one more
+  `test_timeout_s`. A reused run copies the build columns, so a reused run never builds
+  again, and a run reuses only an earlier run with the same `build_command` text. With no
+  `build_command` and no `build_command_by_path`, a full run is unchanged.
 - `tests_run` waits up to 20 seconds for the run to end. A run that ends in time comes
   back as its result. A longer one returns `state: "running"` with its `test_run_id`
   and a `next` that says to end the turn. When the runner records the result, it owes

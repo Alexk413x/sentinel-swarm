@@ -117,7 +117,7 @@ def test_status_connection_rejects_writes_and_closes_after_read(
 ) -> None:
     connections: list[sqlite3.Connection] = []
 
-    def snapshot(conn: sqlite3.Connection, sessions: dict, run_id: int | None):
+    def snapshot(conn: sqlite3.Connection, sessions: dict, run_id: int | None, brief: str | None):
         connections.append(conn)
         with pytest.raises(sqlite3.OperationalError, match="readonly"):
             conn.execute("DELETE FROM runs")

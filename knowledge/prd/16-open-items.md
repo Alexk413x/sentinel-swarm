@@ -92,9 +92,11 @@
   `node_modules/@anthropic-ai/claude-code/bin/claude.exe` beside a `claude.cmd` shim. No
   npm install has been checked for that layout; the plain-text rewrite covers the case
   where it is absent.
-- **Bypass on a fresh config.** With no `permissions.defaultMode` set, every role starts
-  with `--permission-mode bypassPermissions`. No run has shown a background session accept it on a machine that
-  has never accepted bypass mode.
+- **The user's own mode, live.** A launch with no `permission_mode.<role>` passes no
+  `--permission-mode`. No run has shown a `--bg` role session pick up
+  `permissions.defaultMode` from `.claude/settings.local.json`.
+- **Bypass on a fresh config.** A user who sets `bypassPermissions` on a machine that
+  has never accepted bypass mode: no run has shown a background session accept it.
 - **Closing a run, live.** `run_close`, `ledger.py close`, `file_accept_incomplete`,
   `file_delete`, product claims, and the `commands` shell rule are built and
   unit-tested against a faked CLI. No live run has used them. A live run should show
@@ -122,15 +124,6 @@
 
 Each item below is marked **(needs implementation)** in its document.
 
-- **Native Copilot workers** ([11-setup-and-settings.md](11-setup-and-settings.md#host-support)).
-  Requires a worker host, trusted identity and tool-schema adapters, fail-closed
-  enforcement, session lifecycle and watchdog integration, and isolated parity tests.
-  Official SDK hooks and session APIs are candidate mechanisms, not support in this
-  plugin. Choose native workers versus an explicit Claude-worker bridge before
-  implementing a replacement. No UI port is required for read-only ledger status.
-- **The device-queue broker** ([05-sessions.md](05-sessions.md)). Needs a new plan on
-  the mod's delivery path.
-- **Run panel payload.** The panel reads every brief on each 5-second refresh, about 240 KB for a run of 100 agents. Fetch a brief only when its task opens, and read the snapshot over the ledger server's HTTP route while it runs.
 - **Waiting sessions, live.** The `needs_user` finding, its transcript request text, its
   notification, and its reminders are unit-tested against a faked `claude agents --json`.
   A live run should show a role session at a permission prompt and a background Oracle at
@@ -144,12 +137,26 @@ Each item below is marked **(needs implementation)** in its document.
 - **`pre_ask`, live.** It reads `kind: "background"` from `claude agents --json`. A live
   background Oracle should be denied `AskUserQuestion` and call `user_ask`; an
   interactive Oracle should still be allowed the dialog.
-- **Lint and build commands by path** ([11-setup-and-settings.md](11-setup-and-settings.md)).
-  `test_command_by_path` maps a path prefix to a test command. `lint_command` and
-  `build_command` are still one command for the whole repo.
+- **A panel answer wakes the Oracle, live.** A typed answer in the run panel owes the
+  Oracle a self wake-up, which its mod's 15-second poll submits. Unit-tested; no live run
+  has shown an idle Oracle wake on a panel answer, or the answer field take focus.
 - **An idle Oracle's wake-up, live.** For a running, idle Oracle with no listener, the
   watchdog owes it a self wake-up, which its mod's `self_owed` poll submits. Built and
   unit-tested; no live run has shown the poll start a turn in an idle Oracle.
 - **Clear-check resume, live.** `config_parses` is unit-tested. A live run should show a
   run paused on a corrupt `~/.claude.json` resume by itself within one watchdog interval
   of the file parsing again, and the Oracle continue from the watchdog directive.
+
+## Future features
+
+Not started and not planned for now. Claude Code support comes first; each of these
+needs its own plugin support and test harness before work starts.
+
+- **Other CLI agents as workers, starting with Copilot** ([11-setup-and-settings.md](11-setup-and-settings.md#host-support)).
+  Requires a worker host, trusted identity and tool-schema adapters, fail-closed
+  enforcement, session lifecycle and watchdog integration, and isolated parity tests.
+  Official SDK hooks and session APIs are candidate mechanisms, not support in this
+  plugin. Choose native workers versus an explicit Claude-worker bridge before
+  implementing a replacement. No UI port is required for read-only ledger status.
+- **The device-queue broker** ([05-sessions.md](05-sessions.md)). Needs a new plan on
+  the mod's delivery path.

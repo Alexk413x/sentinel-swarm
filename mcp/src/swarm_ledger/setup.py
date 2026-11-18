@@ -18,7 +18,7 @@ from .frontmatter import FrontmatterError
 from .frontmatter import parse as parse_frontmatter
 from .frontmatter import split_document as _split_document
 from .paths import claude_json_path, python_command
-from .permissions import bypass_disabled, start_mode
+from .permissions import start_mode
 from .settings import (
     NOTIFY_EVENT_DEFAULTS,
     SETTINGS_PATH,
@@ -261,11 +261,6 @@ def report_permission_modes(repo: Path, report: SetupReport) -> None:
             continue
         start = start_mode(repo, role, configured.get(role))
         report.add(f"swarm-{role} starts in {start.mode}: {start.source}")
-    if bypass_disabled(repo):
-        report.add(
-            "policy sets permissions.disableBypassPermissionsMode, so a role that would start "
-            "in bypassPermissions starts in acceptEdits"
-        )
 
 
 def write_shim(repo: Path, report: SetupReport) -> None:
@@ -414,13 +409,13 @@ def report_notify_events(repo: Path, report: SetupReport) -> None:
 _PACKAGE_PARENTS = ("apps", "packages")
 
 
-def _has_test_script(package_json: Path) -> bool:
+def _has_script(package_json: Path, script: str) -> bool:
     try:
         data = json.loads(package_json.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
     scripts = data.get("scripts") if isinstance(data, dict) else None
-    return isinstance(scripts, dict) and bool(scripts.get("test"))
+    return isinstance(scripts, dict) and bool(scripts.get(script))
 
 
 def _workspace_folders(repo: Path) -> list[Path]:
@@ -445,7 +440,7 @@ def _workspace_folders(repo: Path) -> list[Path]:
     return folders
 
 
-def packages_with_tests(repo: Path) -> list[str]:
+def packages_with_script(repo: Path, script: str) -> list[str]:
     folders = [
         child
         for parent in _PACKAGE_PARENTS
@@ -458,42 +453,59 @@ def packages_with_tests(repo: Path) -> list[str]:
         {
             folder.relative_to(repo).as_posix()
             for folder in folders
-            if _has_test_script(folder / "package.json")
+            if _has_script(folder / "package.json", script)
         }
     )
 
 
-def _package_test_command(repo: Path, prefix: str) -> str:
+def _package_command(repo: Path, prefix: str, script: str) -> str:
+    if script == "test":
+        if (repo / "pnpm-lock.yaml").is_file():
+            return f"pnpm --dir {prefix} test {{target}}"
+        if (repo / "yarn.lock").is_file():
+            return f"yarn --cwd {prefix} test {{target}}"
+        return f"npm --prefix {prefix} test -- {{target}}"
     if (repo / "pnpm-lock.yaml").is_file():
-        return f"pnpm --dir {prefix} test {{target}}"
+        return f"pnpm --dir {prefix} run {script}"
     if (repo / "yarn.lock").is_file():
-        return f"yarn --cwd {prefix} test {{target}}"
-    return f"npm --prefix {prefix} test -- {{target}}"
+        return f"yarn --cwd {prefix} run {script}"
+    return f"npm --prefix {prefix} run {script}"
 
 
-def report_test_command_by_path(repo: Path, report: SetupReport) -> None:
-    packages = packages_with_tests(repo)
-    if len(packages) < 2:
-        return
-    given = load_settings(repo).test_command_by_path
-    missing = [prefix for prefix in packages if prefix not in given]
-    if not missing:
-        return
+_PATH_SUGGESTIONS = (
+    ("test", "test_command", "test_command_by_path", "runs the right tests"),
+    ("lint", "lint_command", "lint_command_by_path", "runs the right linter"),
+    ("build", "build_command", "build_command_by_path", "builds the right package"),
+)
+
+
+def report_command_by_path(repo: Path, report: SetupReport) -> None:
+    settings = load_settings(repo)
     shown = SETTINGS_PATH.as_posix()
-    block = "".join(f"  {prefix}: {_package_test_command(repo, prefix)}\n" for prefix in missing)
-    if not given:
-        report.add(
-            f"{len(packages)} packages have a test script ({', '.join(packages)}), but "
-            "test_command runs one command for the whole repo. To give each package its own "
-            "command, check that each one below runs the right tests and paste this into the "
-            f"frontmatter of {shown}:\ntest_command_by_path:\n{block}"
+    for script, single, key, check in _PATH_SUGGESTIONS:
+        packages = packages_with_script(repo, script)
+        if len(packages) < 2:
+            continue
+        given = getattr(settings, key)
+        missing = [prefix for prefix in packages if prefix not in given]
+        if not missing:
+            continue
+        block = "".join(
+            f"  {prefix}: {_package_command(repo, prefix, script)}\n" for prefix in missing
         )
-    else:
-        report.add(
-            f"test_command_by_path in {shown} lacks {', '.join(missing)}, which have a test "
-            "script. Check that each command below runs the right tests and paste these lines "
-            f"under test_command_by_path:\n{block}"
-        )
+        if not given:
+            report.add(
+                f"{len(packages)} packages have a {script} script ({', '.join(packages)}), but "
+                f"{single} runs one command for the whole repo. To give each package its own "
+                f"command, check that each one below {check} and paste this into the "
+                f"frontmatter of {shown}:\n{key}:\n{block}"
+            )
+        else:
+            report.add(
+                f"{key} in {shown} lacks {', '.join(missing)}, which have a {script} "
+                f"script. Check that each command below {check} and paste these lines "
+                f"under {key}:\n{block}"
+            )
 
 
 def _path_key(raw: str) -> str:
@@ -693,7 +705,15 @@ def check_command_operators(repo: Path, report: SetupReport) -> None:
             for prefix, command in settings.test_command_by_path.items()
         ),
         ("build_command", settings.build_command),
+        *(
+            (f"build_command_by_path.{prefix}", command)
+            for prefix, command in settings.build_command_by_path.items()
+        ),
         ("lint_command", settings.lint_command),
+        *(
+            (f"lint_command_by_path.{prefix}", command)
+            for prefix, command in settings.lint_command_by_path.items()
+        ),
     ]
     for key, command in templates:
         if command and SHELL_OPERATORS.search(command):
@@ -719,7 +739,7 @@ def run_setup(repo: Path, time_full_run: bool = False) -> SetupReport:
     propose_commands(repo, report)
     report_parallelism(repo, report)
     report_notify_events(repo, report)
-    report_test_command_by_path(repo, report)
+    report_command_by_path(repo, report)
     report.add(RELOAD_NOTE)
     report.trusted = is_trusted(repo)
     report.trust_note = f"{repo} is trusted" if report.trusted else trust_instructions(repo)

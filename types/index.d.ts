@@ -48,6 +48,7 @@ export type PanelTask = {
   status: 'done' | 'active' | 'waiting' | 'problem'
   owners: string[]
   summary: string | null
+  has_brief: boolean
   brief: string | null
   review: PanelReview | null
 }
@@ -126,6 +127,8 @@ declare module 'claude-code' {
       panelOpen: Shaped<Record<string, boolean>>
       panelOpenTask: Shaped<string>
       panelOpenAgent: Shaped<string>
+      panelOpenBrief: Shaped<string>
+      panelNotice: Shaped<string>
       panelAnswers: Shaped<Record<string, PanelAnswer>>
     }
   }
