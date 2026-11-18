@@ -119,6 +119,27 @@ def test_a_driver_subagent_runs_only_the_build_command(ledger: Ledger) -> None:
     assert "npm run build" in _reason(denied)
 
 
+def test_the_shell_gate_allows_every_test_command_by_path(tmp_path: Path) -> None:
+    mapped = (
+        "test_command_by_path:\n"
+        "  apps/web: npx vitest run --root apps/web {target}\n"
+        "  packages/api: npm --prefix packages/api test -- {target}\n"
+    )
+    settings = settings_text(
+        test_command="pytest -q {target}", swaps=[("test_command_by_path:\n", mapped)]
+    )
+    ledger = Ledger(make_host(tmp_path / "mapped", settings))
+    coder = {"role": "coder", "agent_id": "c-1"}
+    for command in (
+        "pytest -q tests/a.py",
+        "npx vitest run --root apps/web apps/web/src/a.test.ts",
+        "npm --prefix packages/api test -- packages/api/a.test.ts",
+    ):
+        assert events._command_allowed(ledger, command, coder), command
+    assert not events._command_allowed(ledger, "npx vitest run --root apps/other x", coder)
+    assert events._allowed_templates(ledger, "driver") == []
+
+
 def test_a_driver_subagent_writes_no_project_file(ledger: Ledger) -> None:
     ctx = bootstrap_module(ledger)
     driver = _driver(ledger, ctx)

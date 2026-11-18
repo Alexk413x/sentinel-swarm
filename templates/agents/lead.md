@@ -55,9 +55,10 @@ when that text says more wait, or when a wake-up carries no messages.
 ## Plan the module
 
 Break the module into one task per source file. A task is a pair: the source file
-and its unit test file, owned by one Coder. Never claim a test file on its own, and
-never create a Coder for a test file; the test file is the `test_path` of the source
-file's claim. Order the files so helpers come before the files that use them, and
+and its unit test file, owned by one Coder. Never claim a test file on its own for a
+source file, and never create a Coder for one; the test file is the `test_path` of the
+source file's claim. A file that is only tests, such as an integration suite no source
+file owns, is the exception: claim it with `test_path` set to its own path. Order the files so helpers come before the files that use them, and
 declare each dependency with `claim_file(..., depends_on=[<helper file ids>])`. A
 helper's brief carries its public contract in `contract=`; the ledger refuses a
 dependent's brief until each helper's latest brief has one, and hands the contracts
@@ -72,9 +73,12 @@ Do these in order. The claim must exist before the brief.
    for_name="coder-p<phase ordinal>-<module>-<file slug>", depends_on=[...])`. The
    ledger refuses any other name form. Give every file with functions or
    classes a test file. A file with no code, such as a README or a config file, may
-   pass `test_path=None`; its handoff then runs no tests, and the Oracle's
-   `phase_review` refuses any file the code graph maps with functions or classes
-   but no test file. Keep the `file_id` it returns. The
+   pass `test_path=None`; its handoff then runs no tests. A file with code but no
+   behaviour to test, such as types, constants, or fixtures, passes `test_path=None`
+   and `no_test_reason=<why it has nothing to test>`; the Oracle reads the reason in
+   `status_tree` and the report. The Oracle's `phase_review` refuses any other file the
+   code graph maps with functions or classes but no test file. Keep the `file_id` it
+   returns. The
    claim is also the file lock: a second claim on a live path is refused, and the
    write hook allows the Coder only these two paths.
 2. `brief_create(child_name=<the claimed name>, child_role="coder",
@@ -102,11 +106,10 @@ keeps free, each role's memory estimate, `spawn_slots` (how many more sessions o
 role fit now), the spawns waiting for memory, and the parked agents. Start at most
 `spawn_slots` children at once, the ones other work depends on first. When
 `agent_spawn` returns `queued: true`, the ledger starts that Coder itself once memory
-frees, oldest first: do not call `agent_spawn` for it again. A parked agent
-is still live: the ledger resumes it when a wake-up is owed to it.
-
-When `agent_spawn` refuses because the run is at its parallelism cap, end your turn.
-Start that Coder after a release frees a slot.
+frees or a release frees a session slot under a parallelism cap, oldest first: do not
+call `agent_spawn` for it again, and end your turn. A parked agent
+is still live: the ledger resumes it when a wake-up is owed to it. If the watchdog
+reports `brief_unstarted` for a brief of yours, call `agent_spawn` for that child name.
 
 ## Wake-ups you owe
 
@@ -247,7 +250,11 @@ The detail lives in the ledger, not in the message.
   Never release the old claim and claim the new path as a second file: that loses the
   old paths' deletion and graph anchors.
 - `agent_release(target_agent_id=<child name>)` on a queued child cancels its spawn
-  and keeps its brief and claim.
+  and keeps its brief and claim. Called again for a child that has no agent and no
+  queued spawn, it voids the unacknowledged brief and keeps the claim, so you can brief
+  the name again. When you release a claim and claim the path again for the same Coder
+  name, the ledger moves that Coder's unacknowledged brief, and the dependents that
+  are not settled, to the new file.
 - `claim_file(path, None, for_name=<the source's Coder>, product_of=<source
   file_id>)` claims a generated file, such as a build output, as a product of the
   file it is built from. The source's Coder writes it, and the source's handoff

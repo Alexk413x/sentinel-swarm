@@ -345,7 +345,7 @@
   {
    "name": "profile_set",
    "title": "Profile Set",
-   "description": "Sets the run's test, build, and lint commands; the Oracle calls this. Refuses a build\ncommand that serves or watches (--watch, serve, dev-server, npm run dev, npm start).",
+   "description": "Sets the run's test, build, and lint commands; the Oracle calls this. Refuses a build\ncommand that serves or watches (--watch, serve, dev-server, npm run dev, npm start).\ntest_command_by_path maps a repo-relative path prefix to the test command for files under\nit and replaces the whole map; pass {} to clear it.",
    "inputSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -380,6 +380,20 @@
       "anyOf": [
        {
         "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "test_command_by_path": {
+      "anyOf": [
+       {
+        "additionalProperties": {
+         "type": "string"
+        },
+        "type": "object"
        },
        {
         "type": "null"
@@ -848,7 +862,7 @@
   {
    "name": "agent_release",
    "title": "Agent Release",
-   "description": "Releases an agent it directly parented; any parent role calls this for its own child. The\nOracle may also release an agent whose parent has ended. Takes the agent's id, or the name\nor session name of a live agent of the run. Passed a queued child's name, it cancels that\nqueued spawn and keeps its brief and claim.",
+   "description": "Releases an agent it directly parented; any parent role calls this for its own child. The\nOracle may also release an agent whose parent has ended. Takes the agent's id, or the name\nor session name of a live agent of the run. Passed a queued child's name, it cancels that\nqueued spawn and keeps its brief and claim. Passed the name of a child that has no agent and\nno queued spawn, it voids the child's unacknowledged brief that the caller wrote, and keeps\nthe file claim.",
    "inputSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -1019,6 +1033,18 @@
       ],
       "default": null,
       "description": "For a file that replaces others, the old file and old test file it moves: paths no live claim holds. The Coder deletes them with file_delete and re-anchors their graph nodes with graph_upsert."
+     },
+     "no_test_reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "Why the file has no test file, for a file with no behaviour to test, such as types, constants, or fixtures. Leave test_path unset with it. A standalone test file instead takes test_path equal to its own path."
      }
     },
     "required": [

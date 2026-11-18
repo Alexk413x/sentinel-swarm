@@ -44,23 +44,44 @@
   the database before any worker starts.
 - No worker keeps state another worker needs. Each worker gets the settings the front
   read at start, not the file, so an edit to the file after the start reaches no
-  worker. The test, build, and lint commands come from the run's settings snapshot,
-  which `profile_set` writes: `profile_set` and `tests_run` read the snapshot first, so
+  worker. The test, build, and lint commands and `test_command_by_path` come from the
+  run's settings snapshot, which `profile_set` writes: `profile_set` and `tests_run` read the snapshot first, so
   a command set in one worker reaches a test run in another.
 - `graph_upsert` holds `.sentinel-swarm/kg.lock`, an exclusive file lock
   (`lock.file_lock`), while codebase-kg writes the code graph, so two workers never
   write it at once.
 - `mcp/launch/ledger.py serve [--repo <root>] [--detach]` binds the port saved in
   `.sentinel-swarm/server.port`, or a free port when that one is taken, and writes
-  `.sentinel-swarm/server.json` with `url`, `port`, `pid`, and `started_at`. A second
-  start finds the first one answering, prints its URL, and exits 0. `--detach` starts
+  `.sentinel-swarm/server.json` with `url`, `port`, `pid`, `started_at`, `version` (the
+  package version), and `plugin_root` (the plugin install the server runs from). It
+  logs one line with the version and the plugin root at start. A second start finds
+  the first one answering and current, prints its URL, and exits 0. `--detach` starts
   the server as a background process on the base interpreter, waits until it answers,
   and prints its URL. A server counts as
-  answering when `/health` returns the name `swarm-ledger` and this repo's root. The
-  saved port lets a resumed session reach the ledger at the URL it started with.
+  answering when `/health` returns the name `swarm-ledger` and this repo's root. It
+  counts as current when `/health` also returns this plugin's version and plugin root.
+  `/health` returns `name`, `repo_root`, `pid`, `version`, and `plugin_root`. The saved
+  port lets a resumed session reach the ledger at the URL it started with.
 - `serve.ensure_server(repo_root)` starts the server detached when it does not answer,
   waits until it answers, and returns its URL. On Windows it starts with a hidden
   console (`CREATE_NO_WINDOW`).
+- Reuse rule: `ensure_server` and `serve` without `--detach` reuse an answering server
+  only when it is current. A server that reports no `version` or no `plugin_root`, such
+  as one from an older release, is not current. A server that is not current is
+  replaced when no run is active, where a paused run or no run counts as not active
+  (read from the ledger database). `ensure_server` calls `POST /shutdown` with the
+  token and waits until the old server stops answering. When the old server has no
+  `/shutdown` route, it terminates the pid in `server.json` through `procs.terminate`,
+  after checking that the process started no later than `started_at`. It then starts the
+  new server on the saved port. While a run is active, it refuses with an error that
+  names both versions and both plugin roots and says to pause the run with
+  `ledger.py pause --reason <text>` and launch again. `ledger.py resume` is the one
+  caller that replaces a server for an active run, because the run was paused a moment
+  before it. `pause`, `directive`, and the panel read the database and never call
+  `ensure_server`, so a version mismatch never blocks them.
+- `POST /shutdown` stops the server a moment after it answers 200. It passes the same
+  `serve.refusal` checks as every route except `/health`, so it needs the token. A
+  server that has no shutdown callback answers 404.
 - Errors go to `.sentinel-swarm/server.log`.
 - Access: every request must come from `127.0.0.1` or `::1`, carry a `Host` header of
   `127.0.0.1:<port>` or `localhost:<port>` with the server's own port, and carry no
@@ -264,7 +285,10 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
 - `tests_run(scope, target, force, include_slow)` is role-bound: `file` to the Coder
   (its own path or test path only), `module` to the Lead, `phase` to the Manager, `full`
   to the Oracle. It builds the scope's command: `test_command_by_scope.<scope>`, else the
-  profile's `test_command`, with `{target}` replaced, or removed for no target. A full
+  profile's `test_command`, with `{target}` replaced, or removed for no target. When the
+  profile holds `test_command_by_path`, a call may run one command per path prefix and
+  record them as one row; see "One test command per path prefix" in
+  [11-setup-and-settings.md](11-setup-and-settings.md). A full
   run with no target takes `full_target`; when the command holds `{target}` and
   `full_target` is empty, the call refuses, so a full run never collects from the repo
   root. A pytest command gets `--deselect <id>` for each of `slow_tests` unless
@@ -291,7 +315,7 @@ Before any tool runs, the server checks the stamped `agent_id`, for every client
   `command`, `state` (`passed`, `failed`, `timed out`, `running`, or `not run`),
   `exit_code`, and, for a failed build, the last 2,000 characters of its output. A row
   with a build may run for twice `test_timeout_s` plus 120 seconds before the sweep marks
-  it `abandoned`. A reused run copies the build columns, so a reused run never builds
+  it `abandoned`; each command part adds one more `test_timeout_s`. A reused run copies the build columns, so a reused run never builds
   again, and a run reuses only an earlier run with the same `build_command`. With no
   `build_command`, a full run is unchanged.
 - `tests_run` waits up to 20 seconds for the run to end. A run that ends in time comes

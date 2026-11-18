@@ -21,7 +21,7 @@ class LedgerHost:
     repo_root: Path
     db_path: Path
     server_pid: int
-    _pending_stops: list[tuple[str, str]]
+    _pending_stops: list[tuple[str, str | None, list[str]]]
 
     def _log_event(
         self,
@@ -37,7 +37,14 @@ class LedgerHost:
     def adopt_run_profile(self, run_id: int | None) -> None: ...
 
     def test_command_for(
-        self, scope: str, target: str | None, include_slow: bool = False
+        self,
+        scope: str,
+        target: str | None,
+        include_slow: bool = False,
+        *,
+        run_id: int | None = None,
+        module_id: int | None = None,
+        phase_id: int | None = None,
     ) -> str: ...
 
     def pause_reason(self, run_id: int) -> str | None: ...
@@ -128,3 +135,5 @@ class LedgerHost:
     def adopt_resumed(self, old_id: str, new_id: str) -> str: ...
 
     def write_report(self, run_id: int) -> dict: ...
+
+    def _drop_deleted_anchors(self, file_row: sqlite3.Row) -> dict[str, list[str]] | None: ...

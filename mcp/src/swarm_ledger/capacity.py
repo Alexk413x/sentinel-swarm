@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 
 from . import lock, memory, permission, procs, rekey, sessions, transcript
@@ -18,9 +19,8 @@ WAITING_FOR_MEMORY = "waiting for memory to resume it for a wake-up"
 # A resumed session that is gone sooner than this failed; one that runs this long settled.
 RESUME_SETTLE = timedelta(minutes=3)
 QUEUED_POINTER = (
-    "the ledger queued it: free memory, less what sessions starting on this machine will "
-    "take, minus its estimate is below the headroom. The ledger "
-    "starts it when memory frees, oldest first; do not call agent_spawn for it again"
+    "The ledger starts it once a session slot and free memory allow, oldest first; do not "
+    "call agent_spawn for it again"
 )
 PARK_PRESSURE = "the ledger stopped it under memory pressure while its children work"
 
@@ -62,7 +62,7 @@ class CapacityMixin(LedgerHost):
     def _queue_reason(self, brief: sqlite3.Row) -> str | None:
         ahead = len(self._queued(self.conn, brief["run_id"]))
         if ahead:
-            return f"{ahead} earlier spawn(s) wait for memory"
+            return f"{ahead} earlier spawn(s) wait in the queue"
         return self._reserve(brief["child_role"])
 
     def _queue_spawn(self, brief: sqlite3.Row, parent_id: str, reason: str) -> dict:
@@ -96,7 +96,10 @@ class CapacityMixin(LedgerHost):
             "role": entry["role"],
             "queued_at": entry["queued_at"],
             "reason": entry["reason"],
-            "next": f"{entry['child_name']} is not started yet: {QUEUED_POINTER}.",
+            "next": (
+                f"{entry['child_name']} is not started yet: the ledger queued it because "
+                f"{entry['reason']}. {QUEUED_POINTER}."
+            ),
         }
 
     def start_queued_spawns(self, listing: list[dict]) -> list[dict]:
@@ -111,7 +114,12 @@ class CapacityMixin(LedgerHost):
             parent = self.conn.execute(
                 "SELECT ended_at FROM agents WHERE agent_id = ?", (entry["parent_agent_id"],)
             ).fetchone()
-            if brief is None or brief["acked_at"] is not None or parent is None:
+            if (
+                brief is None
+                or brief["acked_at"] is not None
+                or brief["voided_at"] is not None
+                or parent is None
+            ):
                 self._drop_queued(entry, "its brief or its parent is gone")
                 continue
             if parent["ended_at"] is not None:
@@ -119,13 +127,19 @@ class CapacityMixin(LedgerHost):
                 continue
             try:
                 self._require_spawnable(brief, entry["child_name"])
-                self._require_spawn_slot(brief, listing)
             except SpawnDeferred:
                 continue
             except LedgerError as exc:
                 self._drop_queued(entry, str(exc))
                 continue
-            if self._reserve(entry["role"]) is not None:
+            try:
+                self._require_spawn_slot(brief, listing)
+            except SpawnDeferred as exc:
+                self._set_queue_reason(entry, str(exc))
+                continue
+            short = self._reserve(entry["role"])
+            if short is not None:
+                self._set_queue_reason(entry, short)
                 break
             try:
                 spawned = self._start_child(
@@ -146,6 +160,63 @@ class CapacityMixin(LedgerHost):
                 )
             started.append(spawned)
         return started
+
+    def orphaned_sessions(self, listing: list[dict]) -> dict[str, tuple[str, str]]:
+        run = self.conn.execute("SELECT run_id FROM runs WHERE state = 'active'").fetchone()
+        if run is None:
+            return {}
+        rows = dict_rows(
+            self.conn.execute(
+                "SELECT agent_id, name, bg_id, ended_at, prior_session_ids FROM agents "
+                "WHERE run_id = ?",
+                (run["run_id"],),
+            )
+        )
+        live_ids = {r["agent_id"] for r in rows if r["ended_at"] is None}
+        live_bg = {r["bg_id"] for r in rows if r["ended_at"] is None and r["bg_id"]}
+        owners: dict[str, tuple[str, str]] = {}
+        for row in rows:
+            for session_id in rekey.prior_ids(row["prior_session_ids"]):
+                owners.setdefault(
+                    session_id, (row["agent_id"], f"an earlier session of {row['name']}")
+                )
+            if row["ended_at"] is not None:
+                owners.setdefault(row["agent_id"], (row["agent_id"], f"{row['name']} is released"))
+        found: dict[str, tuple[str, str]] = {}
+        for entry in listing:
+            session_id = str(entry.get("sessionId") or "")
+            if session_id in live_ids or entry.get("id") in live_bg or session_id not in owners:
+                continue
+            if sessions.stoppable(entry):
+                found[str(entry["id"])] = owners[session_id]
+        return found
+
+    def stop_orphaned_sessions(
+        self, found: Mapping[str, tuple[str, str]]
+    ) -> tuple[list[str], list[str]]:
+        stopped: list[str] = []
+        failed: list[str] = []
+        for bg_id, (agent_id, why) in found.items():
+            try:
+                sessions.stop(bg_id)
+            except LedgerError as exc:
+                failed.append(f"session {bg_id} ({why}): {exc}")
+                continue
+            stopped.append(bg_id)
+            with write_tx(self.conn) as conn:
+                self._log_event(
+                    conn, agent_id, None, "orphan_stopped", f"stopped session {bg_id}: {why}"
+                )
+        return stopped, failed
+
+    def _set_queue_reason(self, entry: dict, reason: str) -> None:
+        if entry["reason"] == reason:
+            return
+        with write_tx(self.conn) as conn:
+            conn.execute(
+                "UPDATE spawn_queue SET reason = ? WHERE queue_id = ? AND state = 'queued'",
+                (reason, entry["queue_id"]),
+            )
 
     def _drop_queued(self, entry: dict, reason: str) -> None:
         with write_tx(self.conn) as conn:
@@ -304,14 +375,14 @@ class CapacityMixin(LedgerHost):
                 self._log_event(conn, agent["agent_id"], None, "resume_stable", "stayed up")
             elif elapsed < RESUME_SETTLE:
                 seconds = max(0, int(elapsed.total_seconds()))
-                self._log_event(
-                    conn,
-                    agent["agent_id"],
-                    None,
-                    "resume_vanished",
+                reason = (
                     f"its resumed session was gone {seconds}s after the resume at "
-                    f"{agent['last_resume_at']}: {agent['last_resume_detail'] or 'no detail'}",
+                    f"{agent['last_resume_at']}: {agent['last_resume_detail'] or 'no detail'}"
                 )
+                retired = memory.retire_reason(agent["bg_id"])
+                if retired is not None:
+                    reason = f"{reason}; the daemon retired its session: {retired}"
+                self._log_event(conn, agent["agent_id"], None, "resume_vanished", reason)
 
     def _resuming(self, agent: dict) -> bool:
         row = self.conn.execute(

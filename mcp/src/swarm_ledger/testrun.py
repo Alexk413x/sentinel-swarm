@@ -23,6 +23,7 @@ WAKE_REASON = "test_run"
 LAUNCH_GRACE_S = 60
 OVERRUN_GRACE_S = 120
 NO_RUNNER = "the test runner process ended without recording a result"
+DEFAULT_LABEL = "default"
 
 
 def log_path(db_path: Path, test_run_id: int) -> Path:
@@ -174,6 +175,28 @@ def _changed_tree(repo_root: Path, row: sqlite3.Row) -> str | None:
     )
 
 
+def parts_of(row: sqlite3.Row) -> list[dict]:
+    return json.loads(row["command_parts_json"] or "[]")
+
+
+def _execute_parts(
+    parts: list[dict], row: sqlite3.Row, repo_root: Path, log: Path
+) -> testing.TestResult:
+    patterns = json.loads(row["skip_patterns_json"] or "[]")
+    results = [
+        (
+            part["prefix"] or DEFAULT_LABEL,
+            testing.result_of(
+                part["command"],
+                testing.execute(part["command"], repo_root, row["timeout_s"], log),
+                patterns,
+            ),
+        )
+        for part in parts
+    ]
+    return testing.combine_results(results)
+
+
 def run(repo_root: Path, db_path: Path, test_run_id: int) -> None:
     conn = connect(db_path)
     try:
@@ -183,9 +206,13 @@ def run(repo_root: Path, db_path: Path, test_run_id: int) -> None:
         if row is None:
             return
         log = log_path(db_path, test_run_id)
-        executed = testing.execute(row["command"], repo_root, row["timeout_s"], log)
-        patterns = json.loads(row["skip_patterns_json"] or "[]")
-        result = testing.result_of(row["command"], executed, patterns)
+        parts = parts_of(row)
+        if parts:
+            result = _execute_parts(parts, row, repo_root, log)
+        else:
+            executed = testing.execute(row["command"], repo_root, row["timeout_s"], log)
+            patterns = json.loads(row["skip_patterns_json"] or "[]")
+            result = testing.result_of(row["command"], executed, patterns)
         stale = _changed_tree(repo_root, row)
         build = None
         if result.ok and stale is None and row["build_command"]:
@@ -201,7 +228,7 @@ def run(repo_root: Path, db_path: Path, test_run_id: int) -> None:
 def _runner_gone(row: sqlite3.Row, now: datetime) -> bool:
     created = parse_stamp(row["created_at"])
     age = (now - created).total_seconds() if created is not None else 0.0
-    runs = 2 if row["build_command"] else 1
+    runs = max(len(parts_of(row)), 1) + (1 if row["build_command"] else 0)
     if age > runs * (row["timeout_s"] or DEFAULT_TEST_TIMEOUT_S) + OVERRUN_GRACE_S:
         return True
     if row["runner_pid"] is None:

@@ -102,6 +102,10 @@
     launch without `--model` clears it: it is a one-time override. Without it, the
     Oracle starts on its role file's `model`, or on the first entry of `models.oracle`
     when the file has none. The launcher prints the model the Oracle starts on and why.
+    When the role file's model is not the first entry of `models.oracle` and you named no
+    model, it also prints one warning to stderr that names both, says the role file wins,
+    and gives the two ways out: `--model <name>` for one launch, or an edit to the role
+    file. The model does not change.
   - **Any other role:** the user names it in the PRD or a directive. The Oracle passes it
     with `brief_create(..., user_named=true)` and writes it into the brief, so a Manager
     and a Lead pass it on the same way. The brief records `model_named_by_user`. The flag

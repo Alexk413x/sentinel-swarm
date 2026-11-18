@@ -11,7 +11,9 @@ from helpers import bootstrap_module
 
 from swarm_ledger import env, pause, resume, serve, watch
 from swarm_ledger.clock import utcnow
+from swarm_ledger.hooks import events
 from swarm_ledger.ledger import Ledger
+from swarm_ledger.watchdog import MONITOR_CALL
 
 LAUNCHER = Path(__file__).resolve().parents[1] / "launch" / "ledger.py"
 
@@ -27,7 +29,8 @@ def _ledger_db(ledger: Ledger, monkeypatch: pytest.MonkeyPatch) -> None:
 def started_servers(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
     started: list[Path] = []
 
-    def fake_ensure(root: Path) -> str:
+    def fake_ensure(root: Path, **options: object) -> str:
+        assert options == {"replace_active": True}
         started.append(root)
         return "http://127.0.0.1:1234/mcp"
 
@@ -129,6 +132,18 @@ def test_pause_command_refuses_an_empty_reason(
     assert _run(ledger)["state"] == "active"
 
 
+def test_pause_command_never_starts_or_checks_the_ledger_server(
+    ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(*args: object, **kwargs: object) -> str:
+        raise AssertionError("pause touched the ledger server")
+
+    monkeypatch.setattr(serve, "ensure_server", refuse)
+    bootstrap_module(ledger)
+
+    assert _pause(ledger) == 0
+
+
 def test_resume_command_clears_the_pause_and_files_a_wake_directive(
     ledger: Ledger,
     capsys: pytest.CaptureFixture[str],
@@ -151,6 +166,17 @@ def test_resume_command_clears_the_pause_and_files_a_wake_directive(
     wake = ledger.conn.execute("SELECT * FROM directives WHERE source = 'watchdog'").fetchone()
     assert wake["state"] == "open"
     assert "Arm the watchdog Monitor again" in wake["body"]
+    owed = ledger.conn.execute("SELECT * FROM wakeups WHERE sent_at IS NULL").fetchall()
+    assert [(w["from_agent_id"], w["to_agent_id"]) for w in owed] == [
+        (ctx["oracle_id"], ctx["oracle_id"])
+    ]
+    answer = events.handle_self_owed(ledger, {"session_id": ctx["oracle_id"]})
+    assert answer is not None and answer["poll"] is True
+    assert "The run resumed" in answer["text"] and "directive_inbox" in answer["text"]
+    assert MONITOR_CALL in answer["text"]
+    assert (
+        ledger.conn.execute("SELECT COUNT(*) FROM wakeups WHERE sent_at IS NULL").fetchone()[0] == 0
+    )
     assert started_servers == [ledger.repo_root.resolve()]
     assert json.loads(capsys.readouterr().out)["state"] == "active"
     keep, lines = watch.poll(ledger.conn, utcnow() + timedelta(seconds=1))

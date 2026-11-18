@@ -19,6 +19,7 @@ from . import (
     rekey,
     repo,
     sessions,
+    settle,
     wake,
 )
 from .agreements import AgreementsMixin
@@ -57,10 +58,12 @@ from .queries import LIVE_RUN_STATES, UNPARK_SET, latest_live_oracle
 from .repo import RepoMixin
 from .report import ReportMixin
 from .review import ReviewMixin, live_agents, run_summary
-from .settings import Settings, load_settings
+from .settings import Settings, load_settings, normalize_path_commands
 from .waits import WaitsMixin, open_file_waits
 
 _RESUME_POINTER = "Re-read your brief and your inbox in the ledger."
+# The sender's mod delivers a wake-up first; the recipient takes one only after this long.
+RECIPIENT_TAKES_AFTER_S = 60
 _DEFERRED_RESUME = "resume_deferred"
 _PHASE_STATES = ("planned", "unlocked", "working", "handed_up", "approved")
 # The only moves phase_update makes. Approved is final. unlocked -> planned is the Oracle's
@@ -261,7 +264,7 @@ class Ledger(
         self.settings = settings if settings is not None else load_settings(repo_root)
         self.db_path = db_path if db_path is not None else ledger_path(repo_root)
         self.conn = connect(self.db_path)
-        self._pending_stops: list[tuple[str, str]] = []
+        self._pending_stops: list[tuple[str, str | None, list[str]]] = []
         if (repo_root / ".git").exists():
             ensure_git_exclude(repo_root)
 
@@ -283,18 +286,22 @@ class Ledger(
 
     def _stop_released_sessions(self) -> None:
         pending, self._pending_stops = self._pending_stops, []
-        for agent_id, bg_id in pending:
+        for agent_id, bg_id, earlier in pending:
             table = procs.snapshot()
             root = self._session_process(agent_id, table)
             tree = procs.tool_tree(table, *root) if root is not None else []
-            try:
-                sessions.stop(bg_id)
-                outcome = f"session {bg_id} stopped"
-            except Exception as exc:
-                outcome = f"session {bg_id} was not stopped: {exc}"
+            outcomes = []
+            if bg_id:
+                try:
+                    sessions.stop(bg_id)
+                    outcomes.append(f"session {bg_id} stopped")
+                except Exception as exc:
+                    outcomes.append(f"session {bg_id} was not stopped: {exc}")
+            outcomes += sessions.stop_listed(earlier, keep_bg_id=bg_id)
             stopped = self._stop_tree(tree)
             if stopped:
-                outcome = f"{outcome}; {stopped} process(es) its tools left running stopped"
+                outcomes.append(f"{stopped} process(es) its tools left running stopped")
+            outcome = "; ".join(outcomes)
             with write_tx(self.conn) as conn:
                 self._record_released_processes(conn, agent_id, root, table, tree)
                 self._log_event(conn, agent_id, "released", "released", outcome)
@@ -410,13 +417,14 @@ class Ledger(
         session_name = str(own["name"]) if own is not None and own.get("name") else None
 
         resumed: dict | None = None
+        replaced: tuple[str, list[str]] | None = None
         run_id: int | None = None
         try:
             with write_tx(self.conn) as conn:
                 active = conn.execute(f"SELECT * FROM runs WHERE {LIVE_RUN_STATES}").fetchone()
                 if active is not None:
                     self._refuse_live_oracle(conn, active, session_id, listing, listing_error)
-                    resumed = self._run_resume(conn, active, session_id, session_name)
+                    resumed, replaced = self._run_resume(conn, active, session_id, session_name)
                 else:
                     run_id = self._open_run(conn, prd, session_id, oracle_name, session_name)
         except BaseException:
@@ -425,6 +433,8 @@ class Ledger(
                 lock.release_owned(self.repo_root, self.server_pid)
             raise
 
+        if replaced is not None and listing is not None:
+            self._stop_replaced_oracle(*replaced, listing)
         others = lock.live_swarms(self.server_pid)
         if resumed is not None:
             return resumed | {"oracle": self._agent_dict(session_id), "other_swarms": others}
@@ -502,7 +512,7 @@ class Ledger(
         run: sqlite3.Row,
         session_id: str,
         session_name: str | None,
-    ) -> dict:
+    ) -> tuple[dict, tuple[str, list[str]] | None]:
         oracle = conn.execute(
             "SELECT * FROM agents WHERE run_id = ? AND role = 'oracle' "
             "ORDER BY started_at DESC LIMIT 1",
@@ -511,6 +521,7 @@ class Ledger(
         if oracle is None:
             raise LedgerError("the active run has no Oracle row")
         old_id = oracle["agent_id"]
+        replaced = None
         if old_id == session_id:
             if session_name is not None:
                 conn.execute(
@@ -541,6 +552,7 @@ class Ledger(
             )
             self._repoint_children(conn, old_id, session_id)
             self._log_event(conn, session_id, oracle["state"], "working", f"resumed from {old_id}")
+            replaced = (old_id, [old_id, *rekey.prior_ids(oracle["prior_session_ids"])])
         if run["state"] == "paused":
             conn.execute(
                 "UPDATE runs SET state = 'active', pause_check = NULL, paused_at = NULL "
@@ -548,11 +560,22 @@ class Ledger(
                 (run["run_id"],),
             )
             self._log_event(conn, session_id, "paused", "active", "resumed from pause")
-        return {
+        resumed = {
             "run": row_dict(conn, "runs", "run_id", run["run_id"]),
             "oracle": self._agent_dict(session_id),
             "resumed": True,
         }
+        return resumed, replaced
+
+    def _stop_replaced_oracle(
+        self, old_id: str, session_ids: list[str], listing: list[dict]
+    ) -> None:
+        stopped = sessions.stop_listed(session_ids, listing=listing)
+        if stopped:
+            with write_tx(self.conn) as conn:
+                self._log_event(
+                    conn, old_id, "released", "earlier_session_stopped", "; ".join(stopped)
+                )
 
     def _repoint_children(self, conn: sqlite3.Connection, old_id: str, new_id: str) -> None:
         children = conn.execute(
@@ -814,7 +837,16 @@ class Ledger(
         test_command: str | None = None,
         build_command: str | None = None,
         lint_command: str | None = None,
+        test_command_by_path: dict[str, str] | None = None,
     ) -> dict:
+        path_commands = None
+        if test_command_by_path is not None:
+            path_commands = normalize_path_commands(test_command_by_path)
+            if len(path_commands) != len(test_command_by_path):
+                raise LedgerError(
+                    "test_command_by_path needs, for each entry, a repo-relative folder with no "
+                    "'..' and no repeat once normalized, and a non-empty command"
+                )
         word = server_word(build_command) if build_command is not None else None
         if word is not None:
             raise LedgerError(
@@ -833,6 +865,8 @@ class Ledger(
                 self.settings.build_command = build_command
             if lint_command is not None:
                 self.settings.lint_command = lint_command
+            if path_commands is not None:
+                self.settings.test_command_by_path = path_commands
 
             conn.execute(
                 "UPDATE runs SET settings_json = ? WHERE run_id = ?",
@@ -843,6 +877,7 @@ class Ledger(
             "test_command": self.settings.test_command,
             "build_command": self.settings.build_command,
             "lint_command": self.settings.lint_command,
+            "test_command_by_path": self.settings.test_command_by_path,
         }
 
     def guidelines_set(self, caller: str, agent_id: str, body: str) -> dict:
@@ -1118,6 +1153,10 @@ class Ledger(
             f"UPDATE phases SET state = 'approved', ended_at = {NOW} WHERE phase_id = ?",
             (phase_id,),
         )
+        conn.execute(
+            "UPDATE modules SET state = 'approved' WHERE phase_id = ? AND state != 'approved'",
+            (phase_id,),
+        )
         for row in conn.execute(
             "SELECT agent_id FROM agents WHERE ended_at IS NULL AND ("
             "phase_id = ? OR module_id IN (SELECT module_id FROM modules "
@@ -1302,7 +1341,7 @@ class Ledger(
             if (
                 conn.execute(
                     "SELECT 1 FROM briefs WHERE child_name = ? AND acked_at IS NULL "
-                    "AND (? IS NULL OR run_id = ?)",
+                    "AND voided_at IS NULL AND (? IS NULL OR run_id = ?)",
                     (child_name, c.run_id, c.run_id),
                 ).fetchone()
                 is not None
@@ -1457,7 +1496,7 @@ class Ledger(
         for row in rows:
             latest = conn.execute(
                 f"SELECT contract FROM briefs WHERE {column} = ? AND child_role = ? "
-                "ORDER BY brief_id DESC LIMIT 1",
+                "AND voided_at IS NULL ORDER BY brief_id DESC LIMIT 1",
                 (row["id"], child_role),
             ).fetchone()
             contract = latest["contract"] if latest is not None else None
@@ -1475,7 +1514,7 @@ class Ledger(
     def brief_get(self, caller_name: str, child_name: str) -> dict:
         del caller_name
         row = self.conn.execute(
-            "SELECT * FROM briefs WHERE child_name = ? "
+            "SELECT * FROM briefs WHERE child_name = ? AND voided_at IS NULL "
             "ORDER BY created_at DESC, brief_id DESC LIMIT 1",
             (child_name,),
         ).fetchone()
@@ -1509,7 +1548,7 @@ class Ledger(
         with write_tx(self.conn) as conn:
             brief_row = conn.execute(
                 "SELECT * FROM briefs WHERE child_name = ? AND acked_at IS NULL "
-                "ORDER BY created_at DESC, brief_id DESC LIMIT 1",
+                "AND voided_at IS NULL ORDER BY created_at DESC, brief_id DESC LIMIT 1",
                 (caller,),
             ).fetchone()
             if brief_row is None:
@@ -1723,7 +1762,7 @@ class Ledger(
             (child_name, c.agent_id),
         ).fetchone()
         if queued is None:
-            raise LedgerError(f"unknown agent_id {child_name!r}")
+            return Ledger._void_unacked_brief(conn, c, child_name)
         conn.execute(
             "UPDATE spawn_queue SET state = 'dropped', reason = ? WHERE queue_id = ?",
             (f"agent_release by {c.name}", queued["queue_id"]),
@@ -1734,6 +1773,28 @@ class Ledger(
             "next": (
                 f"The queued spawn of {child_name} is cancelled. Its brief and file claim "
                 "stay; call agent_spawn to queue it again."
+            ),
+        }
+
+    @staticmethod
+    def _void_unacked_brief(conn: sqlite3.Connection, c: Caller, child_name: str) -> dict:
+        brief = conn.execute(
+            "SELECT brief_id FROM briefs WHERE child_name = ? AND parent_agent_id = ? "
+            "AND run_id IS ? AND acked_at IS NULL AND voided_at IS NULL "
+            "ORDER BY brief_id DESC LIMIT 1",
+            (child_name, c.agent_id, c.run_id),
+        ).fetchone()
+        if brief is None:
+            raise LedgerError(f"unknown agent_id {child_name!r}")
+        conn.execute(
+            f"UPDATE briefs SET voided_at = {NOW} WHERE brief_id = ?", (brief["brief_id"],)
+        )
+        return {
+            "child_name": child_name,
+            "voided": True,
+            "next": (
+                f"The unacknowledged brief for {child_name} is voided. Its file claim stays; "
+                "call brief_create to brief the name again, or release_file to drop the claim."
             ),
         }
 
@@ -1752,7 +1813,10 @@ class Ledger(
             raise self.pause_for_config(exc) from exc
         if session_name in sessions.live_names(listing):
             raise LedgerError(f"a running session already has the name {session_name!r}")
-        self._require_spawn_slot(brief, listing)
+        try:
+            self._require_spawn_slot(brief, listing)
+        except SpawnDeferred as exc:
+            return self._queue_spawn(brief, c.agent_id, str(exc))
         reason = self._queue_reason(brief)
         if reason is not None:
             return self._queue_spawn(brief, c.agent_id, reason)
@@ -1804,7 +1868,7 @@ class Ledger(
     def _spawn_brief(self, c: Caller, caller: str, child_name: str) -> sqlite3.Row:
         brief = self.conn.execute(
             "SELECT * FROM briefs WHERE child_name = ? AND acked_at IS NULL "
-            "ORDER BY created_at DESC, brief_id DESC LIMIT 1",
+            "AND voided_at IS NULL ORDER BY created_at DESC, brief_id DESC LIMIT 1",
             (child_name,),
         ).fetchone()
         if brief is None:
@@ -1895,8 +1959,7 @@ class Ledger(
             if live >= cap:
                 raise SpawnDeferred(
                     f"the parallelism cap of {cap} is reached ({live} live sessions, "
-                    f"{other_swarms} from other swarms on this machine); call agent_spawn again "
-                    "after a release frees a slot"
+                    f"{other_swarms} from other swarms on this machine)"
                 )
         role_cap = self.settings.role_parallelism_cap.get(role)
         if role_cap is not None:
@@ -1908,7 +1971,7 @@ class Ledger(
             if live_role >= role_cap:
                 raise SpawnDeferred(
                     f"the {role} parallelism cap of {role_cap} is reached ({live_role} live "
-                    f"{role} sessions); call agent_spawn again after a release frees a slot"
+                    f"{role} sessions)"
                 )
 
     def session_name(self, run_id: int, child_name: str) -> str:
@@ -2170,7 +2233,9 @@ class Ledger(
 
     def adopt_resumed(self, old_id: str, new_id: str) -> str:
         with write_tx(self.conn) as conn:
-            rekey.adopt(conn, old_id, new_id)
+            rekeyed = rekey.adopt(conn, old_id, new_id)
+        if rekeyed:
+            rekey.stop_earlier_sessions(self.conn, new_id)
         return new_id
 
     def adopt_session(
@@ -2286,9 +2351,11 @@ class Ledger(
         with write_tx(self.conn) as conn:
             owed = dict_rows(
                 conn.execute(
-                    "SELECT * FROM wakeups WHERE from_agent_id = ? AND to_agent_id = ? "
-                    "AND sent_at IS NULL ORDER BY wakeup_id",
-                    (agent_id, agent_id),
+                    "SELECT * FROM wakeups WHERE to_agent_id = ? AND sent_at IS NULL "
+                    "AND (from_agent_id = to_agent_id OR created_at <= "
+                    f"strftime('%Y-%m-%dT%H:%M:%fZ','now','-{RECIPIENT_TAKES_AFTER_S} seconds')) "
+                    "ORDER BY wakeup_id",
+                    (agent_id,),
                 )
             )
             if owed:
@@ -2297,7 +2364,17 @@ class Ledger(
                     f"UPDATE wakeups SET sent_at = {NOW} WHERE wakeup_id IN ({in_clause(ids)})",
                     ids,
                 )
+        for sender in {w["from_agent_id"] for w in owed if w["from_agent_id"] != agent_id}:
+            self.release_closed_driver(sender)
         return owed
+
+    def polls_self_wakeups(self, agent_id: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM agents a JOIN runs r ON r.run_id = a.run_id "
+            "WHERE a.agent_id = ? AND a.ended_at IS NULL AND r.state IN ('active', 'paused')",
+            (agent_id,),
+        ).fetchone()
+        return row is not None
 
     def running_test_runs(self, agent_id: str) -> int:
         return self.conn.execute(
@@ -2340,10 +2417,23 @@ class Ledger(
         module_id: int | None = None,
         product_of: int | None = None,
         moved_from: list[str] | None = None,
+        no_test_reason: str | None = None,
     ) -> dict:
         depends_on = depends_on or []
         if test_path is not None and test_path.strip().lower() in ("", "none", "null"):
             test_path = None
+        if no_test_reason is not None:
+            if test_path is not None:
+                raise LedgerError(
+                    "no_test_reason says the file has no test file, so it cannot come with a "
+                    "test_path; leave one out"
+                )
+            no_test_reason = no_test_reason.strip()
+            if not no_test_reason:
+                raise LedgerError(
+                    "no_test_reason needs a non-empty reason, or leave it out: why the file has "
+                    "no behaviour to test"
+                )
         path = repo_path(self.repo_root, path)
         if test_path is not None:
             test_path = repo_path(self.repo_root, test_path)
@@ -2402,12 +2492,13 @@ class Ledger(
             self._require_replaceable(conn, replaced, {path, test_path}, None)
 
             cur = conn.execute(
-                "INSERT INTO files (module_id, path, test_path, owner_agent_id, state, "
-                f"claimed_at, source_file_id) VALUES (?, ?, ?, ?, ?, {NOW}, ?)",
+                "INSERT INTO files (module_id, path, test_path, no_test_reason, owner_agent_id, "
+                f"state, claimed_at, source_file_id) VALUES (?, ?, ?, ?, ?, ?, {NOW}, ?)",
                 (
                     target_module,
                     path,
                     test_path,
+                    no_test_reason,
                     for_name,
                     source["state"] if source is not None else "claimed",
                     product_of,
@@ -2421,6 +2512,7 @@ class Ledger(
                 (path, file_id, c.run_id),
             )
             self._carry_crs_to_file(conn, c.run_id, path, file_id)
+            self._carry_claim_links(conn, c.run_id, path, file_id, for_name, target_module)
             conn.executemany(
                 "INSERT OR IGNORE INTO file_deps (file_id, depends_on_file_id) VALUES (?, ?)",
                 [(file_id, dep_id) for dep_id in depends_on],
@@ -2435,6 +2527,51 @@ class Ledger(
         if replaced:
             claimed["moved_from"] = replaced
         return claimed
+
+    def _carry_claim_links(
+        self,
+        conn: sqlite3.Connection,
+        run_id: int | None,
+        path: str,
+        file_id: int | None,
+        owner: str,
+        module_id: int | None,
+    ) -> None:
+        old_ids = [
+            row["file_id"]
+            for row in conn.execute(
+                "SELECT f.file_id FROM files f JOIN modules m ON m.module_id = f.module_id "
+                "JOIN phases p ON p.phase_id = m.phase_id WHERE f.path = ? AND f.file_id != ? "
+                "AND f.state = 'superseded' AND p.run_id = ?",
+                (path, file_id, run_id),
+            )
+        ]
+        if not old_ids:
+            return
+        marks = in_clause(old_ids)
+        conn.execute(
+            "UPDATE briefs SET file_id = ?, module_id = ? WHERE child_role = 'coder' "
+            f"AND child_name = ? AND acked_at IS NULL AND voided_at IS NULL "
+            f"AND run_id IS ? AND file_id IN ({marks})",
+            (file_id, module_id, owner, run_id, *old_ids),
+        )
+        dependents = conn.execute(
+            "SELECT DISTINCT f.* FROM file_deps d JOIN files f ON f.file_id = d.file_id "
+            f"WHERE d.depends_on_file_id IN ({marks})",
+            old_ids,
+        ).fetchall()
+        for dependent in dependents:
+            if settle.file_settled(conn, self.repo_root, dependent):
+                continue
+            conn.execute(
+                "UPDATE OR IGNORE file_deps SET depends_on_file_id = ? WHERE file_id = ? "
+                f"AND depends_on_file_id IN ({marks})",
+                (file_id, dependent["file_id"], *old_ids),
+            )
+            conn.execute(
+                f"DELETE FROM file_deps WHERE file_id = ? AND depends_on_file_id IN ({marks})",
+                (dependent["file_id"], *old_ids),
+            )
 
     @staticmethod
     def _require_replaceable(

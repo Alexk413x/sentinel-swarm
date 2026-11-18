@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from helpers import make_host, settings_text
-from test_rekey import MovingClaude, claude
+from test_rekey import MovingClaude, _dormant, _stops, claude
 from test_sessions import (
     Ctx,
     _bootstrap,
@@ -184,6 +184,43 @@ def test_queued_spawns_start_oldest_first_when_memory_frees(
     assert _row(ledger, started[0]["agent_id"])["state"] == "registered"
     queue = ledger.conn.execute("SELECT child_name, state FROM spawn_queue ORDER BY queue_id")
     assert [tuple(r) for r in queue] == [(first, "started"), (second, "queued")]
+
+
+def test_a_spawn_queued_at_the_cap_starts_once_a_release_frees_a_slot(
+    ledger: Ledger, claude: MovingClaude
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    _brief_second_lead(ledger, ctx)
+    other = ledger.agent_spawn(*ctx.manager, "lead-p1-module-2")
+    name = _brief_coder(ledger, ctx, "c1")
+    ledger.settings.parallelism_cap = 4
+
+    queued = ledger.agent_spawn(*ctx.lead, name)
+
+    assert queued["queued"] is True
+    assert "parallelism cap of 4 is reached" in queued["reason"]
+    assert ledger.start_queued_spawns(claude.listing) == []
+    ledger.agent_release(*ctx.manager, other["agent_id"])
+    started = ledger.start_queued_spawns(claude.listing)
+    assert [s["name"] for s in started] == [name]
+    assert _row(ledger, started[0]["agent_id"])["state"] == "registered"
+    assert ledger.conn.execute("SELECT state FROM spawn_queue").fetchone()["state"] == "started"
+
+
+def test_a_spawn_queued_at_the_cap_names_memory_once_only_memory_holds_it_back(
+    ledger: Ledger, claude: MovingClaude, free: dict
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    name = _brief_coder(ledger, ctx, "c1")
+    ledger.settings.parallelism_cap = 3
+    ledger.agent_spawn(*ctx.lead, name)
+    ledger.settings.parallelism_cap = None
+    free["mb"] = 1_000
+
+    assert ledger.start_queued_spawns(claude.listing) == []
+
+    reason = ledger.conn.execute("SELECT reason FROM spawn_queue").fetchone()["reason"]
+    assert "1000 MB free" in reason and "headroom" in reason
 
 
 def test_a_queued_spawn_whose_parent_ended_is_dropped(
@@ -730,6 +767,78 @@ def test_the_watchdog_parks_a_blocked_coder_for_a_queued_spawn(
     assert _row(ledger, coder[1])["parked_at"] is not None
 
 
+def _watchdog(host: Path, ledger: Ledger) -> watchdog.Watchdog:
+    return watchdog.Watchdog(
+        host, ledger.conn, ledger.settings.watchdog, exit_server=lambda: None, ledger=ledger
+    )
+
+
+def test_the_watchdog_stops_a_listed_entry_of_a_released_agent_once_two_passes_see_it(
+    ledger: Ledger, claude: MovingClaude, free: dict, host: Path
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    coder = _spawn_coder(ledger, ctx)
+    ledger.agent_release(*ctx.lead, coder[1])
+    _dormant(claude, coder[1])
+    claude.calls.clear()
+    dog = _watchdog(host, ledger)
+
+    dog.tick(utcnow())
+    assert _stops(claude) == []
+    dog.tick(utcnow())
+    assert _stops(claude) == [coder[1][:8]]
+    dog.tick(utcnow())
+    assert _stops(claude) == [coder[1][:8]]
+    (event,) = [
+        r["reason"]
+        for r in ledger.conn.execute(
+            "SELECT reason FROM agent_events WHERE agent_id = ? AND to_state = 'orphan_stopped'",
+            (coder[1],),
+        )
+    ]
+    assert f"stopped session {coder[1][:8]}" in event
+
+
+def test_an_entry_that_one_pass_saw_and_the_next_did_not_starts_the_count_again(
+    ledger: Ledger, claude: MovingClaude, free: dict, host: Path
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    coder = _spawn_coder(ledger, ctx)
+    ledger.agent_release(*ctx.lead, coder[1])
+    _dormant(claude, coder[1])
+    claude.calls.clear()
+    dog = _watchdog(host, ledger)
+
+    dog.tick(utcnow())
+    entry = claude.entry(coder[1])
+    assert entry is not None
+    entry["status"] = "stopped"
+    dog.tick(utcnow())
+    _dormant(claude, coder[1])
+    dog.tick(utcnow())
+
+    assert _stops(claude) == []
+
+
+def test_the_watchdog_stops_an_earlier_session_of_a_live_agent_but_not_its_current_one(
+    ledger: Ledger, claude: MovingClaude, free: dict, host: Path
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    old_id = ctx.manager[1]
+    _dormant(claude, old_id)
+    ledger.agent_resume(*ctx.lead, "mgr-p1-phase-1")
+    new_id = claude.resumed[0]
+    _dormant(claude, old_id)
+    _dormant(claude, new_id)
+    claude.calls.clear()
+    dog = _watchdog(host, ledger)
+
+    for _ in range(3):
+        dog.tick(utcnow())
+
+    assert _stops(claude) == [old_id[:8]]
+
+
 # -- the watchdog --------------------------------------------------------------------------------
 
 
@@ -766,6 +875,7 @@ def test_a_spawn_queued_for_minutes_is_reported_on_its_parent(
     late = queued(utcnow() + timedelta(minutes=11))
     assert [f.name for f in late] == ["lead-p1-module-1"]
     assert f"its spawn of {name} (coder) has waited 11 minutes" in late[0].detail
+    assert "1000 MB free" in late[0].detail
     settings.queued_spawn_minutes = 0
     assert queued(utcnow() + timedelta(minutes=11)) == []
 

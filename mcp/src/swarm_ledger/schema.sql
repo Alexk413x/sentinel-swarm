@@ -63,6 +63,9 @@ CREATE TABLE IF NOT EXISTS files (
     module_id INTEGER NOT NULL REFERENCES modules (module_id) ON DELETE RESTRICT,
     path TEXT NOT NULL,
     test_path TEXT,
+    -- Why a claimed file with code in the graph has no test file: the claim's own statement,
+    -- which the phase review gate accepts and the Oracle reads.
+    no_test_reason TEXT,
     -- No REFERENCES agents(agent_id): claim_file records the owner's name before
     -- the owner agent exists. brief_ack binds the name to an agent_id later.
     owner_agent_id TEXT,
@@ -132,6 +135,9 @@ CREATE TABLE IF NOT EXISTS agents (
     -- dies before it writes a transcript leaves an id that `claude --resume` cannot open, so a
     -- resume starts from this id, never from the dead one.
     resume_from_id TEXT,
+    -- The session ids this agent held before each re-key, as a JSON list, oldest first. A
+    -- release and the watchdog stop the background entry of each one the listing still has.
+    prior_session_ids TEXT,
     -- Set while the agent is live but its session is not running: the daemon retired it, or
     -- the ledger stopped an idle parent under memory pressure. Parking sets state to 'parked'
     -- and keeps the state it had in state_before_park; unparking puts that state back.
@@ -173,6 +179,9 @@ CREATE TABLE IF NOT EXISTS briefs (
     last_read_by_child_at TEXT,
     acked_by_agent_id TEXT REFERENCES agents (agent_id) ON DELETE RESTRICT,
     acked_at TEXT,
+    -- Set when the parent cancels the brief before the child acks it (agent_release on the
+    -- child's name). A voided brief counts as no brief.
+    voided_at TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -262,6 +271,9 @@ CREATE TABLE IF NOT EXISTS test_runs (
     scope TEXT NOT NULL,
     target TEXT,
     command TEXT,
+    -- A run that applies more than one command (settings.test_command_by_path) lists
+    -- them as JSON [{prefix, command}], and command joins them.
+    command_parts_json TEXT,
     exit_code INTEGER,
     passed INTEGER,
     failed INTEGER,

@@ -144,11 +144,12 @@ Each item below is marked **(needs implementation)** in its document.
 - **`pre_ask`, live.** It reads `kind: "background"` from `claude agents --json`. A live
   background Oracle should be denied `AskUserQuestion` and call `user_ask`; an
   interactive Oracle should still be allowed the dialog.
-- **A running Oracle with no listener.** When the Oracle's session runs but is not
-  `busy`, the watchdog cannot deliver a finding to it: `claude --resume` would start a
-  second copy, and the CLI has no command that sends input. It notifies the user
-  instead. A live run should show how often this happens and whether a mod-side
-  delivery can wake the Oracle.
+- **Lint and build commands by path** ([11-setup-and-settings.md](11-setup-and-settings.md)).
+  `test_command_by_path` maps a path prefix to a test command. `lint_command` and
+  `build_command` are still one command for the whole repo.
+- **An idle Oracle's wake-up, live.** For a running, idle Oracle with no listener, the
+  watchdog owes it a self wake-up, which its mod's `self_owed` poll submits. Built and
+  unit-tested; no live run has shown the poll start a turn in an idle Oracle.
 - **Clear-check resume, live.** `config_parses` is unit-tested. A live run should show a
   run paused on a corrupt `~/.claude.json` resume by itself within one watchdog interval
   of the file parsing again, and the Oracle continue from the watchdog directive.

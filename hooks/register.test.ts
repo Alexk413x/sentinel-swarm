@@ -582,6 +582,27 @@ describe('a test run that ends while the session waits', () => {
     expect(w.events().filter(event => event === 'self_owed').length).toBe(3)
     expect(prompts).toEqual([])
   })
+
+  test('an idle session the ledger asks to poll keeps polling with no test run, and delivers a wake-up that arrives later', async ($, on) => {
+    const answers: Record<string, unknown> = { self_owed: { text: null, running: 0, poll: true } }
+    const w = world(on, { answers })
+    const prompts: string[] = []
+    on('prompt.submit', (_$, e) => {
+      prompts.push(e.text)
+      return { text: e.text }
+    })
+    await start($)
+    await w.clock.advance(15_000)
+    await w.clock.advance(15_000)
+    expect(w.events().filter(event => event === 'self_owed').length).toBe(2)
+    answers.self_owed = { text: 'The run resumed. Read directive_inbox.', running: 0, poll: true }
+    await w.clock.advance(15_000)
+    expect(prompts).toEqual(['The run resumed. Read directive_inbox.'])
+    answers.self_owed = { text: null, running: 0, poll: false }
+    await w.clock.advance(15_000)
+    await w.clock.advance(15_000)
+    expect(w.events().filter(event => event === 'self_owed').length).toBe(4)
+  })
 })
 
 describe("a model's SendMessage", () => {

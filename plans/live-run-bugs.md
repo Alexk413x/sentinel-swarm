@@ -33,6 +33,15 @@ its run is live.
 | 26 | `models.oracle` is ignored when the Oracle's role file names a model | Fixed in 0.8.1 |
 | 27 | A parked agent dies on each resume and re-keys to dead ids | Fixed in 0.8.1 |
 | 28 | A parent waiting on working children is reported stuck or blocked | Fixed in 0.8.1 |
+| 17b | The phase gate refuses a settled file claimed with no `test_path` | Fixed in 0.8.4 |
+| 30 | Released sessions keep running | Fixed in 0.8.4 |
+| 31 | One test command for the whole repo | Fixed in 0.8.4 for tests; lint and build by path are open |
+| 32 | Findings swamp the Oracle; false `needs_user`; unsent wake-ups | Fixed in 0.8.4 (the parked-resume TypeError in 0.8.1) |
+| 33 | `ledger.py resume` does not wake an idle Oracle | Fixed in 0.8.4 |
+| 34 | A brief or `file_deps` row stays bound to a superseded file | Fixed in 0.8.4 |
+| 35 | Approved phases never show done in the panel | Fixed in 0.8.4 for `returned` modules; an incomplete file keeps its phase in progress by decision |
+| 36 | `launch` reuses an older version's ledger server | Fixed in 0.8.4 |
+| 37 | A briefed Coder never starts at the session cap | Fixed in 0.8.4 |
 
 Suggested grouping for later sessions: panel work (5, 16, 17); file moves and
 deletions (11, 13, 12); process and memory hygiene (6, 14, 9); run control (7, 15);

@@ -17,7 +17,10 @@ message. The Oracle then calls, in order:
 3. `run_start(prd, session_id)`. It opens the run and registers the Oracle.
 4. `repo_check(fetch)`, then `repo_branch_create(name)` or a question to the user. See
    "Git in the host repo".
-5. `profile_set(test_command, build_command, lint_command)`. It refuses a build command
+5. `profile_set(test_command, build_command, lint_command, test_command_by_path)`.
+   `test_command_by_path` replaces the run's whole map of path prefixes to test
+   commands, and `{}` clears it; the call refuses an entry whose key is not a
+   repo-relative folder or whose command is empty. It refuses a build command
    that serves or watches, because the Driver tests one build made at the start of an
    exploration: one whose words include `--watch`, `serve`, or `dev-server`, or a
    `dev` or `start` script run through `npm`, `yarn`, or `pnpm` (`npm run dev`,
@@ -105,7 +108,10 @@ message. The Oracle then calls, in order:
 
 - A Manager adds modules to its own phase with `module_add`. A module name is a slug.
 - Module states: `planned`, `returned` (by `module_review` or a departure pushback), and
-  `approved` (set by `approve` when no file of the module is still pending).
+  `approved`. `approve` sets it when no file of the module is still pending,
+  `module_review(accepted)` sets it, and `phase_update(approved)` sets it on every module
+  of the phase not yet approved. `migrate` also sets a `returned` module of an approved
+  phase to `approved`, which repairs ledgers made before these rules.
 
 ## Briefs
 
@@ -156,9 +162,20 @@ message. The Oracle then calls, in order:
   an empty package marker. Its handoff runs no tests, and the reviews judge it. The
   ledger reads the strings `""`, `"none"`, and `"null"` as no test file. The Oracle's
   `phase_review` refuses any such file that the code graph maps with a function or
-  class.
+  class, with two exceptions: a file whose path no longer exists, and a file claimed with
+  `no_test_reason`.
+- `claim_file(..., no_test_reason=<why>)` is for a file with code and no behaviour to
+  test, such as types, constants, or fixtures. The ledger stores the reason on the claim.
+  It refuses a reason together with a `test_path`, and an empty or whitespace reason.
+  `status_tree` and the run report show each file's reason, so the Oracle can judge it.
+- A standalone test file is claimed with `test_path` equal to its own path. The refusal
+  from `phase_review` names this and `no_test_reason` as the two ways out.
 - A re-claim of a released path in the same run supersedes the old claim. The old row
-  becomes `superseded`, and every gate treats it as settled.
+  becomes `superseded`, and every gate treats it as settled. The re-claim also carries
+  the old claim's links to the new file: an unacknowledged Coder brief for the new
+  claim's Coder name moves to the new `file_id`, and each dependent file that is not
+  settled now depends on the new file instead of the old one. A settled dependent keeps
+  its row as history. A change request moves too; see [04-agreements.md](04-agreements.md).
 - **A move is one claim with both paths.** `file_move(path, new_path, test_path=None)`
   points a live claim of the Lead's module at a new path, and at a new test path when
   given; the claim keeps its Coder, its `file_id`, and its dependencies. It refuses a
@@ -180,6 +197,12 @@ message. The Oracle then calls, in order:
   `who_owns(path)` names the live owner.
 - `agent_release(<child name>)` on a queued child cancels its spawn and keeps its brief
   and its claim.
+- `agent_release(<child name>)` on a child with no agent and no queued spawn voids the
+  child's unacknowledged brief, when the caller wrote it. The brief gets `voided_at`, and
+  every unacknowledged-brief check ignores it: `brief_create` accepts a new brief for the
+  name, `agent_spawn` and `brief_ack` find none, and `brief_get`, the contract check
+  for a dependent, the panel, and the fix list skip it. A voided Coder brief leaves the
+  file claim alone.
 - `agent_spawn`, and the queue when memory frees, refuse a Coder whose file has no live
   claim for it; the queue drops the spawn and tells the parent why.
 - Nothing else ends a claim early. Parking a parent under memory pressure, releasing
@@ -247,7 +270,8 @@ anchor is deleted, with its outbound edges and the edges that point at it. A nod
 anchors other files keeps those anchors, and keeps its baselines, because the write does
 not re-baseline. The handoff result lists the node ids as `graph_pruned`
 (`deleted_nodes`, `reanchored_nodes`). The Coder needs no `graph_upsert` for a deletion,
-and no Coder has a node-delete tool.
+and no Coder has a node-delete tool. `file_accept_incomplete` removes the anchors of a
+deleted file the same way and lists the node ids as `graph_pruned`.
 
 ## Lead review
 
@@ -311,6 +335,8 @@ Manager of the module's phase.
   Lead returns the module's latest review as `returned_review` (`review_id`, `outcome`,
   `notes`, `file_notes`, `created_at`) while that review is the latest and was returned;
   it is `null` otherwise.
+- `accepted` also sets the module to `approved`, so the run panel shows it done once its
+  files are.
 - After an accepted review, the Manager releases the Lead with `agent_release`.
 
 ## Phase hand-up
@@ -334,7 +360,8 @@ for a phase in `handed_up`.
   and a failed build refuses with the build's command, exit code, and the last 2,000
   characters of its output. A full run made before `build_command` was set does not
   count; no approved or incomplete file of the phase lacks a test file while
-  the code graph anchors a function or class in it; `low_score_notes` holds a
+  the code graph anchors a function or class in it (a file whose path no longer exists,
+  and a file claimed with `no_test_reason`, are exempt); `low_score_notes` holds a
   non-empty note, keyed by `file_id`, for each file whose latest Lead review has a
   dimension below the target; and `scores` rates completeness, integration, and open
   items from 1 to 10, with a reason below 9.
@@ -465,7 +492,7 @@ when" in [05-sessions.md](05-sessions.md).
   Driver's brief and starts its session the same way `brief_create` and `agent_spawn`
   do, under the name `driver-e<ordinal>`, and returns the loop's current status. When the
   brief or the start is refused, the request is abandoned, so it never blocks the next
-  `drive_request`. A start queued for memory leaves the request's `agent_id` empty until
+  `drive_request`. A queued start leaves the request's `agent_id` empty until
   the queued Driver makes its first exploration call, which links it.
 - Every finding has a fixed shape, filled as fully as possible: a fingerprint (the
   check, the location, and what it saw), a title, the steps to reproduce, the expected
@@ -694,8 +721,8 @@ user" in [04-agreements.md](04-agreements.md).
   | `config_parses` | the config file `~/.claude.json` (under `CLAUDE_CONFIG_DIR` when set) parses as a JSON object |
   | `usage_limit@<reset time>` | 2 minutes have passed since the reset time. Only the watchdog sets it; `run_pause` takes `config_parses` alone |
 - **A usage-limit stop.** When the account hits its usage limit, every session stops at
-  once, and its transcript ends in an assistant record with `isApiErrorMessage` and
-  `error: "rate_limit"`, such as "You've hit your weekly limit · resets Nov 18, 6am
+  once, and the last `assistant` or `user` record of its transcript is an assistant record
+  with `isApiErrorMessage` and `error: "rate_limit"`, such as "You've hit your weekly limit · resets Nov 18, 6am
   (America/Los_Angeles)". Before each scan of an active run, the watchdog reads each live
   agent's transcript tail; when any ends in such a stop that is newer than the run's last
   resume, it pauses the whole run with the reason "the account hit its usage limit
@@ -730,8 +757,12 @@ user" in [04-agreements.md](04-agreements.md).
   <root>]` resumes a paused run without the Oracle's `run_start`. It sets the run back to
   `active`, clears any clear-check, records the agent event "<sender> resumed the run"
   from `paused` to `active`, and files a `watchdog` directive that tells the Oracle to arm
-  its Monitor again, continue, and resolve it and any open pause directive. The
-  watchdog's wake path delivers that directive as it does the clear-check one. Because the
+  its Monitor again, continue, and resolve it and any open pause directive. It also owes
+  the Oracle a wake-up from itself (`run_resumed`) that says the run resumed and names the
+  Monitor call, which the Oracle's mod delivers from its `self_owed` poll; a resume by a
+  passed clear-check owes the same one. See "Recipient-side delivery" in
+  [05-sessions.md](05-sessions.md). The watchdog's wake path also delivers the directive.
+  Because the
   server exits while a run stays paused, the command starts the ledger server (`ensure_server`)
   so the watchdog runs. It exits 1 when no run is live or the run is not paused. When the
   Oracle's session is gone, `/sentinel-swarm:resume` starts a new one instead.

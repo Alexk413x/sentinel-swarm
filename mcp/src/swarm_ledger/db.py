@@ -12,6 +12,7 @@ _GIT_EXCLUDE_LINE = ".sentinel-swarm/"
 _GITDIR_PREFIX = "gitdir:"
 ADDED_COLUMNS = (
     ("test_runs", "build_command", "TEXT"),
+    ("test_runs", "command_parts_json", "TEXT"),
     ("test_runs", "build_exit_code", "INTEGER"),
     ("test_runs", "build_output", "TEXT"),
     ("test_runs", "build_duration_ms", "INTEGER"),
@@ -22,6 +23,9 @@ ADDED_COLUMNS = (
     ("agents", "last_resume_at", "TEXT"),
     ("agents", "last_resume_detail", "TEXT"),
     ("agents", "resume_from_id", "TEXT"),
+    ("agents", "prior_session_ids", "TEXT"),
+    ("files", "no_test_reason", "TEXT"),
+    ("briefs", "voided_at", "TEXT"),
 )
 
 
@@ -143,6 +147,10 @@ def migrate(conn: sqlite3.Connection) -> None:
                 # Another process migrating the same ledger added it first.
                 if "duplicate column" not in str(exc):
                     raise
+    conn.execute(
+        "UPDATE modules SET state = 'approved' WHERE state = 'returned' "
+        "AND phase_id IN (SELECT phase_id FROM phases WHERE state = 'approved')"
+    )
     conn.execute("INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 1)")
     conn.execute(f"PRAGMA user_version = {stamp}")
 

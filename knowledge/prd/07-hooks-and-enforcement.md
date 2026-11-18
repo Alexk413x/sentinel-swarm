@@ -57,10 +57,12 @@ it as a command hook. It has these commands:
   back when there is no `server.json`, no token that matches `[A-Za-z0-9_-]{32,128}`,
   the connection is not accepted within 0.25 seconds, no answer comes
   within 10 seconds (40 for `stop` and `session_end`), or the answer is not a 200 that
-  carries the repo header. The fallback finds the sentinel-swarm install for this repo in
-  `~/.claude/plugins/installed_plugins.json`, from any marketplace (scope `local`, then
-  `project`, each with a matching `projectPath`, then `user`, then any other entry whose
-  `installPath` exists), and runs
+  carries the repo header. The fallback runs the install that `plugin_root` in
+  `server.json` names, when that folder holds `mcp/launch/ledger.py`, so it runs the
+  code the server runs after an upgrade. Otherwise it finds the sentinel-swarm install
+  for this repo in `~/.claude/plugins/installed_plugins.json`, from any marketplace
+  (scope `local`, then `project`, each with a matching `projectPath`, then `user`, then
+  any other entry whose `installPath` exists), and runs
   `<python> -I -S <installPath>/mcp/launch/ledger.py hooks <event>` on the base
   interpreter that runs the shim, with stdin and stdout passed through. Both paths print
   the same bytes. See "How the ledger runs" in
@@ -77,7 +79,9 @@ it as a command hook. It has these commands:
   server through that relay. See "Plugin servers" in
   [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
 - `watch` runs `mcp/launch/ledger.py watch` and passes each line through with no
-  timeout.
+  timeout. `watch`, and `mcp` for sentinel-swarm, choose the install the way the fallback
+  does: the `plugin_root` in `server.json` first, then the registry. `mcp` for another
+  plugin uses the registry only.
 
 When the server does not answer and then the registry, the install, Python, or the
 ledger hook fails, or the two paths together run longer than 50 seconds, a gating event (`pre_agent`, `pre_write`, `pre_shell`, `pre_monitor`,
@@ -149,7 +153,9 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   [05-sessions.md](05-sessions.md).
 - **Owed wake-ups and the inbox.** The mod posts `owed` and `wake_sent` to pay the
   session's wake-ups, `self_owed` on a 15-second timer to deliver a recorded test
-  result to its own idle session with `$.prompt.submit`, and `inbox_take`, `inbox_ack`, and `inbox_release` to read the
+  result, or a wake-up unsent for 60 seconds, to its own idle session with
+  `$.prompt.submit` (the poll continues while the ledger answers `running` above 0 or
+  `poll: true`), and `inbox_take`, `inbox_ack`, and `inbox_release` to read the
   inbox inside a wake-up. See "Mod wake-up delivery" and "Messages" in
   [05-sessions.md](05-sessions.md).
 - **The mod check-in.** The mod's `SessionStart` post carries
@@ -246,7 +252,8 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   not show, a failed listing, and a non-swarm caller pass. No override rule covers it.
 - `pre_shell`: while a run is active or paused, denies the shell to every role but the
   Coder, the Manager, and the Driver. A Coder may run a command that starts with the
-  profile's test or build command, the lint command, `git rm` of its own claimed path, test path,
+  profile's test command (or a `test_command_by_path` command) or build command, the
+  lint command, `git rm` of its own claimed path, test path,
   or products, or a path its claim replaces (with `-q`, `--quiet`, or `--` only), or read-only git (`status`, `diff`,
   `log`, `show`, `ls-files`, `branch`). A lint command that holds `{target}` is allowed
   only exactly as written, with `{target}` replaced by one of the Coder's own claimed
@@ -341,8 +348,9 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
 - `owed`, `wake_sent`, `self_owed`, `inbox_take`, `inbox_ack`, `inbox_release`: posted
   by the mod only. `owed` resumes a stopped or parked target itself before it answers,
   except the Oracle, and leaves that target out of the answer. `self_owed` marks the
-  caller's self-owed wake-ups sent and answers their text and the count of its test runs
-  still `running`. See "Mod wake-up delivery" and "Messages" in
+  caller's self-owed wake-ups, and any wake-up to the caller unsent for 60 seconds, sent
+  and answers their text, the count of its test runs still `running`, and `poll`, true
+  while the caller is a live agent of an active or paused run. See "Mod wake-up delivery" and "Messages" in
   [05-sessions.md](05-sessions.md). Each ignores a caller the registry does not know.
 - `session_end`: records tokens and cost and the end reason. After a run finishes or
   closes, the Oracle's `session_end` refreshes the report.

@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from helpers import ledger_for, make_host
 
-from swarm_ledger import notify, pauses, rekey, serve, sessions, wake, watch, watchdog
+from swarm_ledger import capacity, notify, pauses, rekey, serve, sessions, wake, watch, watchdog
 from swarm_ledger.db import write_tx
 from swarm_ledger.hooks import HANDLERS as _HANDLERS
 from swarm_ledger.hooks import events
@@ -341,9 +341,9 @@ def test_a_waiting_status_with_no_request_is_not_the_users(
 ) -> None:
     _run_id(ledger)
     _oracle_running(claude)
-    transcript = _records(
-        tmp_path / "coder.jsonl", _tool_use("Bash", {"command": "npm run lint"}), _TOOL_RESULT
-    )
+    use = _tool_use("Bash", {"command": "npm run lint"})
+    replay = {"type": "api-request-blob", "hash": "h1", "message": use["message"]}
+    transcript = _records(tmp_path / "coder.jsonl", use, _TOOL_RESULT, replay)
     _agent(
         ledger, "sess-ended", "coder", "working", started=now, heartbeat=now, transcript=transcript
     )
@@ -1038,15 +1038,17 @@ def test_no_wake_while_the_oracle_runs_or_after_the_listener_notified_it(
     dog.tick(now)
     dog.tick(now + timedelta(minutes=1))
     assert claude.resumed == []
+    assert [n for n in _notifications(ledger) if n["event_key"].startswith("oracle_")] == []
+    dog.tick(now + timedelta(minutes=2))
     unreachable = [n for n in _notifications(ledger) if n["event_key"].startswith("oracle_")]
     assert len(unreachable) == 1
     assert "sits idle with no watchdog listener" in unreachable[0]["message"]
-    dog.tick(now + timedelta(minutes=2))
+    dog.tick(now + timedelta(minutes=3))
     assert len([n for n in _notifications(ledger) if n["event_key"].startswith("oracle_")]) == 1
 
-    watch.poll(ledger.conn, now + timedelta(minutes=1))
+    watch.poll(ledger.conn, now + timedelta(minutes=3))
     oracle["status"] = "stopped"
-    dog.tick(now + timedelta(minutes=2))
+    dog.tick(now + timedelta(minutes=4))
     assert claude.resumed == []
 
 
@@ -1715,10 +1717,13 @@ def test_a_usage_limit_pause_resumes_after_the_reset_and_wakes_the_stopped(
 
     assert ledger.conn.execute("SELECT state FROM runs").fetchone()[0] == "active"
     owed = ledger.conn.execute(
-        "SELECT from_agent_id, to_agent_id, reason FROM wakeups WHERE sent_at IS NULL"
+        "SELECT from_agent_id, to_agent_id, reason FROM wakeups WHERE sent_at IS NULL "
+        "ORDER BY wakeup_id"
     ).fetchall()
-    assert [(r[0], r[1]) for r in owed] == [(ORACLE, "sess-coder-1")]
-    assert owed[0][2] == pauses.USAGE_WAKE_REASON
+    assert [(r[0], r[1], r[2]) for r in owed] == [
+        (ORACLE, ORACLE, pauses.RESUMED_WAKE_REASON),
+        (ORACLE, "sess-coder-1", pauses.USAGE_WAKE_REASON),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1868,6 +1873,224 @@ def test_a_parent_waiting_on_a_working_child_is_neither_stuck_nor_blocked(
     kinds = _kinds(_scan(ledger, claude, now))
 
     assert ("lead-1", "stuck") not in kinds and ("lead-1", "blocked") not in kinds
+
+
+def _park(ledger: Ledger, agent_id: str, before: str) -> None:
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET state = 'parked', state_before_park = ?, parked_at = ?, "
+            "park_reason = 'retired' WHERE agent_id = ?",
+            (before, watchdog.stamp(watchdog.utcnow()), agent_id),
+        )
+
+
+@pytest.mark.parametrize("session", [{"status": "idle"}, {"status": "idle", "state": "blocked"}])
+@pytest.mark.parametrize("before", ["registered", "working"])
+def test_a_parent_whose_child_is_parked_mid_work_is_neither_stuck_nor_blocked(
+    ledger: Ledger, claude: FakeClaude, now: datetime, session: dict, before: str
+) -> None:
+    _parent_and_child(ledger, now, "working")
+    _park(ledger, "sess-coder-1", before)
+    _oracle_running(claude)
+    claude.run("sess-lead-1", **session)
+
+    kinds = _kinds(_scan(ledger, claude, now))
+
+    assert ("lead-1", "stuck") not in kinds and ("lead-1", "blocked") not in kinds
+
+
+@pytest.mark.parametrize("before", ["idle", "handed_up"])
+def test_a_parent_whose_child_is_parked_with_nothing_to_do_is_still_stuck(
+    ledger: Ledger, claude: FakeClaude, now: datetime, before: str
+) -> None:
+    _parent_and_child(ledger, now, "working")
+    _park(ledger, "sess-coder-1", before)
+    _oracle_running(claude)
+    claude.run("sess-lead-1", status="idle")
+
+    assert ("lead-1", "stuck") in _kinds(_scan(ledger, claude, now))
+
+
+def _brief_scenario(
+    ledger: Ledger,
+    claude: FakeClaude,
+    now: datetime,
+    *,
+    role: str = "lead",
+    age_minutes: int = 20,
+    claim: bool = True,
+) -> tuple[int, int]:
+    run_id = _run_id(ledger)
+    _oracle_running(claude)
+    _agent(ledger, "sess-mgr-1", "manager", "working", started=now, heartbeat=now)
+    claude.run("sess-mgr-1", status="idle")
+    child = "coder-9" if role == "coder" else "lead-9"
+    with write_tx(ledger.conn) as conn:
+        phase = conn.execute(
+            "INSERT INTO phases (run_id, name, ordinal, state) VALUES (?, 'p1-x', 1, 'working')",
+            (run_id,),
+        ).lastrowid
+        module = conn.execute(
+            "INSERT INTO modules (phase_id, name, state) VALUES (?, 'm', 'working')", (phase,)
+        ).lastrowid
+        file_id = conn.execute(
+            "INSERT INTO files (module_id, path, owner_agent_id, state, released_at) "
+            "VALUES (?, 'src/a.ts', ?, 'claimed', ?)",
+            (module, child, None if claim else watchdog.stamp(now)),
+        ).lastrowid
+        brief_id = conn.execute(
+            "INSERT INTO briefs (run_id, parent_agent_id, child_name, child_role, body, phase_id, "
+            "file_id, created_at) VALUES (?, 'sess-mgr-1', ?, ?, 'Do it.', ?, ?, ?)",
+            (
+                run_id,
+                child,
+                role,
+                phase,
+                file_id if role == "coder" else None,
+                watchdog.stamp(now - timedelta(minutes=age_minutes)),
+            ),
+        ).lastrowid
+    assert brief_id is not None and phase is not None
+    return brief_id, phase
+
+
+def _unstarted(ledger: Ledger, claude: FakeClaude, now: datetime) -> list[watchdog.Finding]:
+    return [f for f in _scan(ledger, claude, now) if f.kind == "brief_unstarted"]
+
+
+def test_a_brief_no_child_started_for_is_reported_on_its_parent(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _brief_scenario(ledger, claude, now)
+
+    (found,) = _unstarted(ledger, claude, now)
+
+    assert found.name == "mgr-1"
+    assert "lead-9" in found.detail and "20 minutes" in found.detail
+    assert "agent_spawn" in found.next_step and '"lead-9"' in found.next_step
+    assert found.next_step.startswith("Wake mgr-1")
+
+
+def test_the_brief_report_for_an_oracle_parent_says_to_call_agent_spawn_itself(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _brief_scenario(ledger, claude, now)
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE briefs SET parent_agent_id = ?", (ORACLE,))
+
+    (found,) = _unstarted(ledger, claude, now)
+
+    assert found.name == "oracle"
+    assert found.next_step.startswith("Call agent_spawn")
+
+
+def test_a_coder_brief_with_a_live_claim_is_reported(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _brief_scenario(ledger, claude, now, role="coder")
+
+    (found,) = _unstarted(ledger, claude, now)
+
+    assert "coder-9" in found.detail
+
+
+def test_a_brief_older_than_stuck_minutes_only_is_reported(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _brief_scenario(ledger, claude, now, age_minutes=14)
+
+    assert _unstarted(ledger, claude, now) == []
+    assert len(_unstarted(ledger, claude, now + timedelta(minutes=2))) == 1
+
+
+def test_a_brief_with_a_queued_spawn_is_not_reported(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    brief_id, _ = _brief_scenario(ledger, claude, now)
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "INSERT INTO spawn_queue (run_id, brief_id, child_name, role, parent_agent_id) "
+            "VALUES (1, ?, 'lead-9', 'lead', 'sess-mgr-1')",
+            (brief_id,),
+        )
+
+    assert _unstarted(ledger, claude, now) == []
+
+
+def test_a_brief_whose_spawn_was_dropped_from_the_queue_is_reported(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    brief_id, _ = _brief_scenario(ledger, claude, now)
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "INSERT INTO spawn_queue (run_id, brief_id, child_name, role, parent_agent_id, state) "
+            "VALUES (1, ?, 'lead-9', 'lead', 'sess-mgr-1', 'dropped')",
+            (brief_id,),
+        )
+
+    assert len(_unstarted(ledger, claude, now)) == 1
+
+
+def test_a_voided_brief_is_not_reported(ledger: Ledger, claude: FakeClaude, now: datetime) -> None:
+    brief_id, _ = _brief_scenario(ledger, claude, now)
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE briefs SET voided_at = ? WHERE brief_id = ?", (watchdog.stamp(now), brief_id)
+        )
+
+    assert _unstarted(ledger, claude, now) == []
+
+
+def test_a_brief_whose_child_is_live_is_not_reported(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _brief_scenario(ledger, claude, now)
+    _agent(ledger, "sess-lead-9", "lead", "registered", started=now, parent="sess-mgr-1")
+
+    assert _unstarted(ledger, claude, now) == []
+
+
+def test_an_acknowledged_brief_is_not_reported(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _brief_scenario(ledger, claude, now)
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE briefs SET acked_at = ?", (watchdog.stamp(now),))
+
+    assert _unstarted(ledger, claude, now) == []
+
+
+def test_a_brief_whose_parent_ended_is_not_reported(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _brief_scenario(ledger, claude, now)
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET ended_at = ? WHERE agent_id = 'sess-mgr-1'", (watchdog.stamp(now),)
+        )
+
+    assert _unstarted(ledger, claude, now) == []
+
+
+def test_a_coder_brief_without_a_live_claim_is_not_reported(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _brief_scenario(ledger, claude, now, role="coder", claim=False)
+
+    assert _unstarted(ledger, claude, now) == []
+
+
+def test_a_brief_into_a_paused_phase_is_not_reported(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _, phase = _brief_scenario(ledger, claude, now)
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE phases SET paused_at = ?, pause_reason = 'blocked' WHERE phase_id = ?",
+            (watchdog.stamp(now), phase),
+        )
+
+    assert _unstarted(ledger, claude, now) == []
 
 
 def test_a_parent_holding_an_open_wait_for_is_not_stuck(
@@ -2073,3 +2296,312 @@ def test_a_switched_off_driver_sends_nothing_from_the_watchdog(
 
     [notice] = watchdog.driver_notices(ledger.conn, run_id, reported, ["os", "push"], {})
     assert notice["channels"] == ["os", "push"]
+
+
+# -- one digest directive per pass ----------------------------------------------------------------
+
+
+def _finding(agent_id: str, kind: str, detail: str = "it is broken") -> watchdog.Finding:
+    name = agent_id.removeprefix("sess-")
+    return watchdog.Finding(agent_id, name, f"host-r1-{name}", kind, detail, f"Fix {name}.")
+
+
+def _two_coders(ledger: Ledger, now: datetime) -> int:
+    run_id = _run_id(ledger)
+    _agent(ledger, "sess-coder-1", "coder", "working", started=now)
+    _agent(ledger, "sess-coder-2", "coder", "working", started=now)
+    return run_id
+
+
+def test_findings_of_one_pass_share_one_digest_directive(ledger: Ledger, now: datetime) -> None:
+    run_id = _two_coders(ledger, now)
+    _agent(ledger, "sess-coder-3", "coder", "working", started=now)
+    findings = [
+        _finding("sess-coder-1", "crashed", "its session is gone"),
+        _finding("sess-coder-2", "stuck", "no activity for 20 minutes"),
+        _finding("sess-coder-3", "blocked", "it ended its turn"),
+    ]
+
+    reported = watchdog.record(ledger.conn, run_id, findings, now)
+
+    [directive] = _directives(ledger)
+    assert [r["directive_id"] for r in reported] == [directive["directive_id"]] * 3
+    lines = directive["body"].splitlines()
+    assert lines[0] == "Watchdog pass: 3 findings"
+    assert len(lines) == 5
+    assert lines[1] == (
+        "- crashed: coder-1 (session host-r1-coder-1): its session is gone. Next: Fix coder-1."
+    )
+    assert "stuck: coder-2" in lines[2] and "blocked: coder-3" in lines[3]
+    assert "directive_resolve" in lines[4]
+    rows = ledger.conn.execute("SELECT directive_id FROM watchdog_findings").fetchall()
+    assert {r[0] for r in rows} == {directive["directive_id"]}
+
+
+def test_a_pass_with_one_finding_keeps_the_single_finding_directive(
+    ledger: Ledger, now: datetime
+) -> None:
+    run_id = _two_coders(ledger, now)
+
+    watchdog.record(ledger.conn, run_id, [_finding("sess-coder-1", "stuck")], now)
+
+    [directive] = _directives(ledger)
+    assert directive["body"] == (
+        "Watchdog finding stuck: coder-1 (session host-r1-coder-1): it is broken. "
+        "Next: Fix coder-1. Then resolve this directive with directive_resolve."
+    )
+
+
+def test_user_and_driver_findings_keep_their_own_directives(ledger: Ledger, now: datetime) -> None:
+    run_id = _two_coders(ledger, now)
+    _agent(ledger, "sess-driver-1", "driver", "working", started=now)
+    findings = [
+        _finding("sess-coder-1", "needs_user"),
+        _finding("sess-coder-2", "stuck"),
+        _finding("sess-driver-1", "crashed"),
+        _finding("sess-driver-1", "driver_overdue"),
+        _finding(ORACLE, "run_stalled"),
+    ]
+
+    reported = watchdog.record(ledger.conn, run_id, findings, now)
+
+    assert len(reported) == 5
+    assert len(_directives(ledger)) == 5
+    assert len({r["directive_id"] for r in reported}) == 5
+    assert all("Watchdog pass" not in d["body"] for d in _directives(ledger))
+    notices = watchdog.user_notices(ledger.conn, run_id, reported, ["os"])
+    assert {n["event_key"] for n in notices} == {
+        f"directive:{r['directive_id']}" for r in reported if r["kind"] in watchdog.USER_KINDS
+    }
+
+
+def test_findings_beside_a_user_finding_share_a_digest_of_their_own(
+    ledger: Ledger, now: datetime
+) -> None:
+    run_id = _two_coders(ledger, now)
+    findings = [
+        _finding("sess-coder-1", "needs_user"),
+        _finding("sess-coder-1", "stuck"),
+        _finding("sess-coder-2", "blocked"),
+    ]
+
+    reported = watchdog.record(ledger.conn, run_id, findings, now)
+
+    bodies = [d["body"] for d in _directives(ledger)]
+    assert len(bodies) == 2
+    assert bodies[0].startswith("Watchdog finding needs_user")
+    assert bodies[1].startswith("Watchdog pass: 2 findings")
+    assert reported[0]["directive_id"] != reported[1]["directive_id"] == reported[2]["directive_id"]
+
+
+def test_a_digest_directive_stays_open_while_its_other_findings_are_open(
+    ledger: Ledger, now: datetime
+) -> None:
+    run_id = _two_coders(ledger, now)
+    both = [_finding("sess-coder-1", "stuck"), _finding("sess-coder-2", "blocked")]
+    watchdog.record(ledger.conn, run_id, both, now)
+    later = now + timedelta(minutes=1)
+
+    again = watchdog.record(ledger.conn, run_id, both[1:], later)
+
+    assert again == []
+    [directive] = _directives(ledger)
+    assert directive["state"] == "open"
+    rows = ledger.conn.execute(
+        "SELECT agent_id, cleared_at, directive_id FROM watchdog_findings ORDER BY finding_id"
+    ).fetchall()
+    assert [(r[0], r[1] is None) for r in rows] == [("sess-coder-1", False), ("sess-coder-2", True)]
+    assert {r[2] for r in rows} == {directive["directive_id"]}
+
+
+# -- wake-ups the Oracle's listener does not deliver ----------------------------------------------
+
+
+def _self_wakeups(ledger: Ledger) -> list[dict]:
+    return [
+        dict(r)
+        for r in ledger.conn.execute(
+            "SELECT * FROM wakeups WHERE from_agent_id = to_agent_id ORDER BY wakeup_id"
+        )
+    ]
+
+
+def _unreachable_notices(ledger: Ledger) -> list[dict]:
+    return [n for n in _notifications(ledger) if n["event_key"].startswith("oracle_")]
+
+
+def test_an_idle_oracle_with_no_listener_is_woken_before_the_user_is_notified(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _agent(ledger, "sess-coder-1", "coder", "working", started=now)
+    claude.run(ORACLE, status="idle")
+    dog = _dog(ledger, Exits())
+    dog.tick(now)
+
+    dog.tick(now + timedelta(minutes=1))
+
+    [owed] = _self_wakeups(ledger)
+    assert (owed["to_agent_id"], owed["sent_at"]) == (ORACLE, None)
+    assert "watchdog reported 1 finding(s)" in owed["pointer"]
+    assert "directive_inbox" in owed["pointer"] and watchdog.MONITOR_CALL in owed["pointer"]
+    assert _unreachable_notices(ledger) == []
+
+    dog.tick(now + timedelta(minutes=1, seconds=10))
+    assert len(_self_wakeups(ledger)) == 1
+    assert _unreachable_notices(ledger) == []
+
+    dog.tick(now + timedelta(minutes=2))
+    [notice] = _unreachable_notices(ledger)
+    assert "sits idle with no watchdog listener" in notice["message"]
+    assert len(_self_wakeups(ledger)) == 1
+    assert claude.resumed == []
+
+
+def test_a_delivered_wake_up_spares_the_user_the_notice(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _agent(ledger, "sess-coder-1", "coder", "working", started=now)
+    claude.run(ORACLE, status="idle")
+    dog = _dog(ledger, Exits())
+    dog.tick(now)
+    dog.tick(now + timedelta(minutes=1))
+
+    events.handle_self_owed(ledger, {"session_id": ORACLE})
+    ledger.directive_inbox("oracle", ORACLE)
+    dog.tick(now + timedelta(minutes=2))
+
+    assert _unreachable_notices(ledger) == []
+
+
+def test_a_directive_filed_after_the_last_wake_up_owes_a_new_one(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _agent(ledger, "sess-coder-1", "coder", "working", started=now)
+    claude.run(ORACLE, status="idle")
+    dog = _dog(ledger, Exits())
+    dog.tick(now)
+    dog.tick(now + timedelta(minutes=1))
+    events.handle_self_owed(ledger, {"session_id": ORACLE})
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE directives SET notified_at = ?", (watchdog.stamp(now),))
+    ledger.directive_submit("watchdog", "watchdog", "A later finding.")
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE directives SET created_at = ? WHERE notified_at IS NULL",
+            (watchdog.stamp(now + timedelta(minutes=3)),),
+        )
+
+    dog.tick(now + timedelta(minutes=4))
+
+    assert len(_self_wakeups(ledger)) == 2
+    assert _unreachable_notices(ledger) == []
+
+
+def _wake_row(
+    ledger: Ledger, from_id: str, to_id: str, to_name: str, session: str, at: datetime
+) -> None:
+    with write_tx(ledger.conn) as conn:
+        run_id = conn.execute("SELECT MAX(run_id) FROM runs").fetchone()[0]
+        conn.execute(
+            "INSERT INTO wakeups (run_id, from_agent_id, to_agent_id, to_name, to_session_name, "
+            "reason, pointer, created_at) VALUES (?, ?, ?, ?, ?, 'message', 'Read your inbox.', ?)",
+            (run_id, from_id, to_id, to_name, session, watchdog.stamp(at)),
+        )
+
+
+def _unsent(ledger: Ledger, claude: FakeClaude, now: datetime) -> list[watchdog.Finding]:
+    return [f for f in _scan(ledger, claude, now) if f.kind == "wake_unsent"]
+
+
+def test_an_unsent_wake_up_to_a_session_the_oracle_cannot_message_names_the_parents_call(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _oracle_running(claude)
+    _agent(ledger, "sess-lead-1", "lead", "working", started=now, heartbeat=now)
+    claude.run("sess-lead-1")
+    _agent(
+        ledger, "sess-coder-1", "coder", "working", started=now, heartbeat=now, parent="sess-lead-1"
+    )
+    claude.run("sess-coder-1")
+    _wake_row(ledger, "sess-lead-1", "sess-coder-1", "coder-1", "host-r1-coder-1", now)
+
+    [finding] = _unsent(ledger, claude, now + timedelta(minutes=10))
+
+    assert finding.name == "coder-1"
+    assert 'SendMessage(to="host-r1-lead-1"' in finding.next_step
+    assert 'SendMessage(to="host-r1-coder-1"' not in finding.next_step
+
+
+def test_an_unsent_wake_up_to_an_idle_session_still_names_the_direct_call(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _oracle_running(claude)
+    _agent(ledger, "sess-lead-1", "lead", "working", started=now, heartbeat=now)
+    claude.run("sess-lead-1")
+    _agent(
+        ledger, "sess-coder-1", "coder", "idle", started=now, heartbeat=now, parent="sess-lead-1"
+    )
+    claude.run("sess-coder-1", status="idle")
+    _wake_row(ledger, "sess-lead-1", "sess-coder-1", "coder-1", "host-r1-coder-1", now)
+
+    [finding] = _unsent(ledger, claude, now + timedelta(minutes=10))
+
+    assert finding.next_step.startswith('Wake it: SendMessage(to="host-r1-coder-1"')
+
+
+def test_an_unsent_wake_up_to_a_child_of_the_oracle_names_the_direct_call(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _oracle_running(claude)
+    _agent(ledger, "sess-lead-1", "lead", "working", started=now, heartbeat=now)
+    claude.run("sess-lead-1")
+    _wake_row(ledger, ORACLE, "sess-lead-1", "lead-1", "host-r1-lead-1", now)
+
+    [finding] = _unsent(ledger, claude, now + timedelta(minutes=10))
+
+    assert finding.next_step.startswith('Wake it: SendMessage(to="host-r1-lead-1"')
+
+
+def test_a_wake_up_unsent_to_a_session_parked_for_memory_is_not_reported(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _oracle_running(claude)
+    _agent(ledger, "sess-lead-1", "lead", "working", started=now, heartbeat=now)
+    claude.run("sess-lead-1")
+    _agent(
+        ledger, "sess-coder-1", "coder", "working", started=now, heartbeat=now, parent="sess-lead-1"
+    )
+    _wake_row(ledger, "sess-lead-1", "sess-coder-1", "coder-1", "host-r1-coder-1", now)
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE agents SET state = 'parked', state_before_park = 'working', parked_at = ?, "
+            "park_reason = ? WHERE agent_id = 'sess-coder-1'",
+            (watchdog.stamp(now), capacity.WAITING_FOR_MEMORY),
+        )
+    later = now + timedelta(minutes=10)
+
+    assert _unsent(ledger, claude, later) == []
+
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE agents SET park_reason = 'a pressure park'")
+    assert [f.name for f in _unsent(ledger, claude, later)] == ["coder-1"]
+
+
+def test_the_listener_prints_a_digest_directive_as_one_line(ledger: Ledger, now: datetime) -> None:
+    run_id = _two_coders(ledger, now)
+    findings = [_finding("sess-coder-1", "stuck"), _finding("sess-coder-2", "blocked")]
+    watchdog.record(ledger.conn, run_id, findings, now)
+
+    keep, lines = watch.poll(ledger.conn, now)
+
+    assert keep is True
+    [line] = lines
+    assert line.startswith("Watchdog directive 1: Watchdog pass: 2 findings - stuck: coder-1")
+    assert "- blocked: coder-2" in line and "\n" not in line

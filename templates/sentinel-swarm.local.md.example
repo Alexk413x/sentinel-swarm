@@ -100,6 +100,12 @@ test_command_by_scope:
   module:
   phase:
   full:
+# A test command per path prefix, for a repo with more than one test runner: each key is a
+# repo-relative folder, such as apps/web, and its value a command with {target}, such as
+# npm --prefix apps/web test -- {target}. A file under a key runs that command; a module,
+# phase, or full run runs the command of every key it reaches, and the default command for
+# files outside every key. Left empty, every run uses test_command.
+test_command_by_path:
 # Seconds one test run's process may take; the ledger kills it at the cap. A full run that
 # takes more than half of it needs sharding (pytest -n auto) or a higher cap.
 test_timeout_s: 600

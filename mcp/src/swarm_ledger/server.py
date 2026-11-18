@@ -97,6 +97,12 @@ _FILE_MOVE_TEST_PATH = Field(
     default=None,
     description="The test file's new path. Leave it unset when the test file does not move.",
 )
+_CLAIM_FILE_NO_TEST_REASON = Field(
+    default=None,
+    description="Why the file has no test file, for a file with no behaviour to test, such as "
+    "types, constants, or fixtures. Leave test_path unset with it. A standalone test file "
+    "instead takes test_path equal to its own path.",
+)
 _RUN_CLOSE_FILES = Field(
     default=None,
     description='Each unsettled file, as {"file_id": <id>, "reason": <why it stops short>}.',
@@ -277,10 +283,13 @@ def profile_set(
     test_command: str | None = None,
     build_command: str | None = None,
     lint_command: str | None = None,
+    test_command_by_path: dict[str, str] | None = None,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Sets the run's test, build, and lint commands; the Oracle calls this. Refuses a build
-    command that serves or watches (--watch, serve, dev-server, npm run dev, npm start)."""
+    command that serves or watches (--watch, serve, dev-server, npm run dev, npm start).
+    test_command_by_path maps a repo-relative path prefix to the test command for files under
+    it and replaces the whole map; pass {} to clear it."""
     ...
 
 
@@ -392,7 +401,9 @@ def agent_release(
     """Releases an agent it directly parented; any parent role calls this for its own child. The
     Oracle may also release an agent whose parent has ended. Takes the agent's id, or the name
     or session name of a live agent of the run. Passed a queued child's name, it cancels that
-    queued spawn and keeps its brief and claim."""
+    queued spawn and keeps its brief and claim. Passed the name of a child that has no agent and
+    no queued spawn, it voids the child's unacknowledged brief that the caller wrote, and keeps
+    the file claim."""
     ...
 
 
@@ -422,6 +433,7 @@ def claim_file(
     module_id: int | None = _CLAIM_FILE_MODULE_ID,
     product_of: int | None = _CLAIM_FILE_PRODUCT_OF,
     moved_from: list[str] | None = _CLAIM_FILE_MOVED_FROM,
+    no_test_reason: str | None = _CLAIM_FILE_NO_TEST_REASON,
     agent_id: str | None = _STAMPED_AGENT_ID,
 ) -> dict[str, Any]:
     """Claims a file path for a coder under the caller's module; a Lead calls this, or a

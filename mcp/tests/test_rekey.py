@@ -429,3 +429,67 @@ def test_a_cli_that_finds_no_conversation_makes_the_agent_one_to_replace(
     (crashed,) = [f for f in findings if f.kind == "crashed" and f.name == "mgr-p1-phase-1"]
     assert "found no conversation" in crashed.detail
     assert "agent_release" in crashed.next_step and "agent_resume" not in crashed.next_step
+
+
+def _dormant(claude: MovingClaude, session_id: str) -> None:
+    entry = claude.entry(session_id)
+    assert entry is not None
+    entry.pop("pid", None)
+    entry.pop("status", None)
+    entry["state"] = "blocked"
+
+
+def _stops(claude: MovingClaude) -> list[str]:
+    return [args[1] for args in claude.commands("stop")]
+
+
+def test_a_re_key_records_the_old_session_id_and_stops_its_listed_entry(
+    ledger: Ledger, claude: MovingClaude
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    old_id = ctx.manager[1]
+    _dormant(claude, old_id)
+
+    ledger.agent_resume(*ctx.lead, "mgr-p1-phase-1")
+
+    new_id = claude.resumed[0]
+    assert json.loads(_row(ledger, new_id)["prior_session_ids"]) == [old_id]
+    assert _stops(claude) == [old_id[:8]]
+
+
+def test_a_re_key_with_the_old_entry_gone_stops_nothing(
+    ledger: Ledger, claude: MovingClaude
+) -> None:
+    ctx = _stopped_manager(ledger, claude)
+    claude.listing[:] = [e for e in claude.listing if e["sessionId"] != ctx.manager[1]]
+
+    ledger.agent_resume(*ctx.lead, "mgr-p1-phase-1")
+
+    assert _stops(claude) == []
+    assert json.loads(_row(ledger, claude.resumed[0])["prior_session_ids"]) == [ctx.manager[1]]
+
+
+def test_releasing_a_re_keyed_agent_stops_every_session_id_of_its_chain(
+    ledger: Ledger, claude: MovingClaude
+) -> None:
+    ctx = _bootstrap(ledger, claude)
+    old_id = ctx.manager[1]
+    _dormant(claude, old_id)
+    ledger.agent_resume(*ctx.lead, "mgr-p1-phase-1")
+    new_id = claude.resumed[0]
+    _dormant(claude, old_id)
+    claude.calls.clear()
+
+    ledger.agent_release(*ctx.oracle, new_id)
+
+    assert sorted(_stops(claude)) == sorted([new_id[:8], old_id[:8]])
+    (released,) = [
+        r["reason"]
+        for r in ledger.conn.execute(
+            "SELECT reason FROM agent_events WHERE agent_id = ? AND to_state = 'released' "
+            "AND reason LIKE 'session %'",
+            (new_id,),
+        )
+    ]
+    assert f"session {new_id[:8]} stopped" in released
+    assert f"session {old_id[:8]} stopped" in released

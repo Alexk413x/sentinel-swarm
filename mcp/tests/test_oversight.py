@@ -80,8 +80,17 @@ def _review_scores() -> list[dict]:
     ]
 
 
-def _spawn_coder(ledger: Ledger, ctx: dict, slug: str, path: str, test_path: str | None) -> dict:
-    return spawn_coder(ledger, ctx, f"coder-p1-module-1-{slug}", path, test_path)
+def _spawn_coder(
+    ledger: Ledger,
+    ctx: dict,
+    slug: str,
+    path: str,
+    test_path: str | None,
+    no_test_reason: str | None = None,
+) -> dict:
+    return spawn_coder(
+        ledger, ctx, f"coder-p1-module-1-{slug}", path, test_path, no_test_reason=no_test_reason
+    )
 
 
 def _approve_file(
@@ -91,8 +100,9 @@ def _approve_file(
     path: str,
     test_path: str | None,
     lead_overrides: dict[str, int] | None = None,
+    no_test_reason: str | None = None,
 ) -> int:
-    coder = _spawn_coder(ledger, ctx, slug, path, test_path)
+    coder = _spawn_coder(ledger, ctx, slug, path, test_path, no_test_reason)
     coder_name = coder["name"]
     file_id = file_id_for(ledger, path)
     ledger.score_record(
@@ -265,6 +275,43 @@ def test_module_review_returned_owes_the_live_lead_a_wake_up(ledger: Ledger) -> 
         "SELECT state FROM modules WHERE module_id = ?", (ctx["module_id"],)
     ).fetchone()
     assert module_row["state"] == "returned"
+
+
+def _module_state(ledger: Ledger, module_id: int) -> str:
+    return ledger.conn.execute(
+        "SELECT state FROM modules WHERE module_id = ?", (module_id,)
+    ).fetchone()["state"]
+
+
+def test_an_accepted_module_review_approves_a_returned_module(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    _approve_file(ledger, ctx, "good", "pkg/good.py", "tests/test_good.py")
+    _release_lead(ledger, ctx)
+    manager = ("mgr-p1-phase-1", ctx["manager"]["agent_id"])
+    ledger.module_review(*manager, ctx["module_id"], "returned", "needs more work")
+    assert _module_state(ledger, ctx["module_id"]) == "returned"
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["manager"]["agent_id"], "phase")
+
+    ledger.module_review(*manager, ctx["module_id"], "accepted", "ok", scores=_review_scores())
+
+    assert _module_state(ledger, ctx["module_id"]) == "approved"
+
+
+def test_approving_a_phase_approves_every_module_of_it(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    _accept_module_and_hand_up(ledger, ctx)
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+    ledger.phase_review(
+        "oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok", scores=_review_scores()
+    )
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE modules SET state = 'returned' WHERE module_id = ?", (ctx["module_id"],)
+        )
+
+    ledger.phase_update("oracle", ctx["oracle_id"], ctx["phase_id"], "approved")
+
+    assert _module_state(ledger, ctx["module_id"]) == "approved"
 
 
 def test_module_review_returned_reports_when_the_lead_has_ended(ledger: Ledger) -> None:
@@ -452,6 +499,112 @@ def test_a_file_without_code_in_the_graph_needs_no_test_file(ledger: Ledger, hos
         "oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok", scores=_review_scores()
     )
     assert result["outcome"] == "accepted"
+
+
+def _accepted_phase_review(ledger: Ledger, ctx: dict) -> dict:
+    _accept_module_and_hand_up(ledger, ctx)
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+    return ledger.phase_review(
+        "oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok", scores=_review_scores()
+    )
+
+
+def test_phase_review_skips_an_untested_file_whose_path_no_longer_exists(
+    ledger: Ledger, host: Path
+) -> None:
+    ctx = bootstrap_module(ledger)
+    _approve_file(ledger, ctx, "good", "pkg/good.py", None)
+    (host / "pkg" / "good.py").unlink()
+
+    assert _accepted_phase_review(ledger, ctx)["outcome"] == "accepted"
+
+
+def test_phase_review_skips_a_file_claimed_with_a_no_test_reason(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    _approve_file(ledger, ctx, "good", "pkg/good.py", None, no_test_reason="constants only")
+
+    assert _accepted_phase_review(ledger, ctx)["outcome"] == "accepted"
+
+
+def test_phase_review_accepts_a_test_file_claimed_with_its_own_path_as_test_path(
+    ledger: Ledger, host: Path
+) -> None:
+    conn = sqlite3.connect(str(host / "knowledge" / "code_graph.db"))
+    try:
+        conn.execute("INSERT INTO node (id, kind, description) VALUES ('t_good', 'test', 'Tests.')")
+        conn.execute(
+            "INSERT INTO anchor (node_id, ord, path, base, symbol) "
+            "VALUES ('t_good', 0, 'tests/test_good.py', 'test_good.py', 'test_add')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    ctx = bootstrap_module(ledger)
+    _approve_file(ledger, ctx, "tgood", "tests/test_good.py", "tests/test_good.py")
+
+    assert _accepted_phase_review(ledger, ctx)["outcome"] == "accepted"
+
+
+def test_the_untested_refusal_names_both_ways_out(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    _approve_file(ledger, ctx, "good", "pkg/good.py", None)
+    _accept_module_and_hand_up(ledger, ctx)
+    insert_passing_test_run(ledger, ctx["run_id"], ctx["oracle_id"], "full")
+
+    with pytest.raises(LedgerError) as refused:
+        ledger.phase_review("oracle", ctx["oracle_id"], ctx["phase_id"], "accepted", "ok")
+
+    text = str(refused.value)
+    assert "test_path equal to its own path" in text
+    assert "no_test_reason" in text
+
+
+def test_claim_file_stores_a_no_test_reason_and_refuses_a_bad_one(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    lead = ("lead-p1-module-1", ctx["lead"]["agent_id"])
+
+    with pytest.raises(LedgerError, match="no_test_reason.*test_path"):
+        ledger.claim_file(
+            *lead, "pkg/good.py", "tests/test_good.py", "coder-p1-module-1-a", no_test_reason="x"
+        )
+    for blank in ("", "   "):
+        with pytest.raises(LedgerError, match="non-empty"):
+            ledger.claim_file(
+                *lead, "pkg/good.py", None, "coder-p1-module-1-a", no_test_reason=blank
+            )
+
+    claimed = ledger.claim_file(
+        *lead, "pkg/good.py", None, "coder-p1-module-1-a", no_test_reason="  constants only  "
+    )
+    assert claimed["no_test_reason"] == "constants only"
+    assert (
+        ledger.claim_file(*lead, "pkg/mul.py", None, "coder-p1-module-1-b")["no_test_reason"]
+        is None
+    )
+
+
+def test_status_tree_lists_a_files_no_test_reason(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    _spawn_coder(ledger, ctx, "good", "pkg/good.py", None, no_test_reason="constants only")
+    _spawn_coder(ledger, ctx, "low", "pkg/low.py", "tests/test_low.py")
+
+    files = {
+        f["path"]: f
+        for f in ledger.status_tree("oracle", ctx["oracle_id"])["phases"][0]["modules"][0]["files"]
+    }
+
+    assert files["pkg/good.py"]["no_test_reason"] == "constants only"
+    assert files["pkg/low.py"]["no_test_reason"] is None
+
+
+def test_the_report_lists_a_files_no_test_reason(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    _spawn_coder(ledger, ctx, "good", "pkg/good.py", None, no_test_reason="constants only")
+
+    text = ledger.report_build("oracle", ctx["oracle_id"])["text"]
+
+    assert "- pkg/good.py -- claimed" in text
+    assert "no test file: constants only" in text
 
 
 def test_phase_review_refuses_missing_low_score_notes(ledger: Ledger) -> None:

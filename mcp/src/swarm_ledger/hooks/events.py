@@ -382,6 +382,7 @@ def _allowed_templates(ledger: Ledger, role: str) -> list[str]:
         return [t for t in (ledger.settings.build_command,) if t]
     templates = (
         ledger.settings.test_command,
+        *ledger.settings.test_command_by_path.values(),
         ledger.settings.build_command,
         ledger.settings.lint_command,
     )
@@ -1367,6 +1368,7 @@ def handle_self_owed(ledger: Ledger, data: dict) -> dict | None:
     return {
         "text": _self_wakeup_text(ledger, caller["agent_id"]),
         "running": ledger.running_test_runs(caller["agent_id"]),
+        "poll": ledger.polls_self_wakeups(caller["agent_id"]),
     }
 
 

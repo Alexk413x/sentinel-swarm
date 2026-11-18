@@ -234,3 +234,73 @@ def test_the_shim_resolves_paths_like_the_package(
     assert shim.config_dir() == paths.config_dir() == Path.home() / ".claude"
     for raw in (str(tmp_path), str(tmp_path / "x" / ".."), "", None, 5):
         assert shim._same_path(raw, tmp_path) == paths.same_path(raw, tmp_path)
+
+
+def _install_with_launcher(root: Path) -> Path:
+    (root / "mcp" / "launch").mkdir(parents=True)
+    (root / "mcp" / "launch" / "ledger.py").write_text("", encoding="utf-8")
+    return root
+
+
+def _record_plugin_root(repo: Path, plugin_root: object) -> None:
+    info = {"url": "http://127.0.0.1:1/mcp", "port": 1, "pid": 1, "plugin_root": plugin_root}
+    (repo / ".sentinel-swarm" / "server.json").write_text(json.dumps(info), encoding="utf-8")
+
+
+def _registry_install(shim: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    registered = _install_with_launcher(tmp_path / "registered")
+    monkeypatch.setattr(shim, "find_install", lambda name, repo: registered)
+    return registered
+
+
+def test_the_fallback_runs_the_install_that_started_the_server(
+    shim: Any, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _registry_install(shim, tmp_path, monkeypatch)
+    started_by = _install_with_launcher(tmp_path / "started-by")
+    _record_plugin_root(repo, str(started_by))
+    command, env = shim.ledger_command(repo, "hooks", "stop")
+    assert command[3] == str(started_by / "mcp" / "launch" / "ledger.py")
+    assert env["CLAUDE_PLUGIN_ROOT"] == str(started_by)
+
+
+@pytest.mark.parametrize("recorded", ["missing", None, "", 5, "no-launcher"])
+def test_the_fallback_uses_the_registry_when_the_recorded_root_is_unusable(
+    shim: Any, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recorded: object
+) -> None:
+    registered = _registry_install(shim, tmp_path, monkeypatch)
+    if recorded == "missing":
+        recorded = str(tmp_path / "gone")
+    elif recorded == "no-launcher":
+        (tmp_path / "bare").mkdir()
+        recorded = str(tmp_path / "bare")
+    _record_plugin_root(repo, recorded)
+    command, _ = shim.ledger_command(repo, "hooks", "stop")
+    assert command[3] == str(registered / "mcp" / "launch" / "ledger.py")
+
+
+def test_the_fallback_uses_the_registry_when_the_server_record_has_no_plugin_root(
+    shim: Any, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registered = _registry_install(shim, tmp_path, monkeypatch)
+    info = {"url": "http://127.0.0.1:1/mcp", "port": 1, "pid": 1}
+    (repo / ".sentinel-swarm" / "server.json").write_text(json.dumps(info), encoding="utf-8")
+    command, _ = shim.ledger_command(repo, "hooks", "stop")
+    assert command[3] == str(registered / "mcp" / "launch" / "ledger.py")
+
+
+def test_the_mcp_command_prefers_the_recorded_root_for_this_plugin_only(
+    shim: Any, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registered = _registry_install(shim, tmp_path, monkeypatch)
+    started_by = tmp_path / "started-by"
+    started_by.mkdir()
+    entry = {"mcpServers": {"relay": {"command": sys.executable}}}
+    for root in (registered, started_by):
+        (root / ".mcp.json").write_text(json.dumps(entry), encoding="utf-8")
+    _install_with_launcher(started_by)
+    _record_plugin_root(repo, str(started_by))
+    _, own_env = shim.server_command(shim.PLUGIN_NAME, "relay")
+    _, other_env = shim.server_command("other", "relay")
+    assert own_env["CLAUDE_PLUGIN_ROOT"] == str(started_by)
+    assert other_env["CLAUDE_PLUGIN_ROOT"] == str(registered)

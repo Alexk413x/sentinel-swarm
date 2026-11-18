@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -1121,6 +1122,63 @@ def test_stop_blocks_a_member_until_it_sends_the_owed_wake_up(
     assert ledger.owed_wakeups("lead-agent") == []
     assert events.handle_stop(ledger, {"session_id": "lead-agent"}) is None
     assert _state(ledger, "lead-agent") == "idle"
+
+
+def _age_wakeups(ledger: Ledger, seconds: int) -> None:
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "UPDATE wakeups SET created_at = ?", (stamp(utcnow() - timedelta(seconds=seconds)),)
+        )
+
+
+def test_a_session_takes_a_wake_up_that_stayed_unsent_for_a_minute(ledger: Ledger) -> None:
+    _bootstrap(ledger)
+    as_session(ledger, "mgr-agent", "host-r1-manager-1")
+    posted = ledger.message_post(
+        "lead-p1-module-1", "lead-agent", "mgr-p1-phase-1", "module-1 is done"
+    )
+    pointer = f"Message {posted['message_id']} from lead-p1-module-1 is waiting in the ledger"
+    asked = {"session_id": "mgr-agent"}
+
+    _age_wakeups(ledger, 59)
+    early = events.handle_self_owed(ledger, asked)
+    assert early is not None and early["text"] is None
+    assert len(ledger.owed_wakeups("lead-agent")) == 1
+
+    _age_wakeups(ledger, 61)
+    taken = events.handle_self_owed(ledger, asked)
+    assert taken is not None and pointer in str(taken["text"])
+    assert ledger.owed_wakeups("lead-agent") == []
+    again = events.handle_self_owed(ledger, asked)
+    assert again is not None and again["text"] is None
+
+
+def test_a_session_does_not_take_a_wake_up_owed_to_another_session(ledger: Ledger) -> None:
+    _bootstrap(ledger)
+    as_session(ledger, "mgr-agent", "host-r1-manager-1")
+    ledger.message_post("lead-p1-module-1", "lead-agent", "mgr-p1-phase-1", "module-1 is done")
+    _age_wakeups(ledger, 120)
+
+    other = events.handle_self_owed(ledger, {"session_id": "lead-agent"})
+
+    assert other is not None and other["text"] is None
+    assert len(ledger.owed_wakeups("lead-agent")) == 1
+
+
+def test_the_poll_flag_is_set_for_a_live_agent_of_a_live_run(ledger: Ledger) -> None:
+    ctx = _bootstrap(ledger)
+
+    live = events.handle_self_owed(ledger, {"session_id": "lead-agent"})
+    assert live is not None and live["poll"] is True and live["running"] == 0
+
+    ledger.run_pause("oracle", ctx["oracle_id"], "waiting on the user")
+    paused = events.handle_self_owed(ledger, {"session_id": "lead-agent"})
+    assert paused is not None and paused["poll"] is True
+
+    with write_tx(ledger.conn) as conn:
+        conn.execute("UPDATE runs SET state = 'closed'")
+    closed = events.handle_self_owed(ledger, {"session_id": "lead-agent"})
+    assert closed is not None and closed["poll"] is False
 
 
 def test_stop_names_agent_resume_when_the_recipient_session_is_not_running(
