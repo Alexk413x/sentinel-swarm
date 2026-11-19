@@ -134,8 +134,6 @@ def test_session_options_builds_the_flags_from_the_role_file(tmp_path: Path) -> 
         "swarm-coder",
         "--model",
         "haiku",
-        "--permission-mode",
-        "bypassPermissions",
         "--strict-mcp-config",
         "--mcp-config",
         options[options.index("--mcp-config") + 1],
@@ -186,7 +184,7 @@ def test_session_options_leaves_out_what_the_file_does_not_set(tmp_path: Path) -
     _write(tmp_path, "lead", "---\nname: swarm-lead\n---\nbody\n")
     options = session_options(tmp_path, "lead", None, "http://127.0.0.1:1/mcp")
     assert "--model" not in options
-    assert options[options.index("--permission-mode") + 1] == "bypassPermissions"
+    assert "--permission-mode" not in options
     assert "--allowedTools" not in options
     assert options[:2] == ["--agent", "swarm-lead"]
 

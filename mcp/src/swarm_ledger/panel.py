@@ -23,6 +23,7 @@ STATUS_STATES = {
     "problem": ("incomplete", "released"),
 }
 ATTENTION_FINDINGS = ("needs_user", "run_stalled")
+ALL_BRIEFS = "*"
 
 
 def live_sessions(sessions_dir: Path | None = None) -> dict[str, dict]:
@@ -86,7 +87,7 @@ def _combine(statuses: list[str]) -> str:
 
 
 def _task_lists(
-    conn: sqlite3.Connection, run: sqlite3.Row, agents: list[dict]
+    conn: sqlite3.Connection, run: sqlite3.Row, agents: list[dict], brief: str | None
 ) -> Callable[[dict], tuple[dict | None, list[dict]]]:
     run_id = run["run_id"]
     phases = conn.execute(
@@ -156,10 +157,13 @@ def _task_lists(
     }
     status_of = {"phase_id": phase_status, "module_id": module_status, "file_id": file_status}
 
+    def shows(task_id: str) -> bool:
+        return brief in (ALL_BRIEFS, task_id)
+
     def item(column: str, key: int, name: str, state: str, path: str | None = None) -> dict:
-        brief = briefs.get((column, key))
+        found = briefs.get((column, key))
         review = reviews.get((column, key))
-        body = brief["body"] if brief is not None else None
+        body = found["body"] if found is not None else None
         if body is None and column == "phase_id":
             body = goals.get(key)
         return {
@@ -170,7 +174,8 @@ def _task_lists(
             "status": status_of[column][key],
             "owners": owners.get((column, key), []),
             "summary": _summary(body),
-            "brief": body,
+            "has_brief": bool(body),
+            "brief": body if shows(f"{column}:{key}") else None,
             "review": None
             if review is None
             else {"kind": review["kind"], "outcome": review["outcome"], "notes": review["notes"]},
@@ -208,7 +213,8 @@ def _task_lists(
         "status": _combine(list(phase_status.values())) if phase_status else "waiting",
         "owners": [],
         "summary": None,
-        "brief": run["outcome"] or run["prd"],
+        "has_brief": bool(run["outcome"] or run["prd"]),
+        "brief": (run["outcome"] or run["prd"]) if shows(f"run:{run['run_id']}") else None,
         "review": None,
     }
 
@@ -278,12 +284,13 @@ def snapshot(
     run_id: int | None = None,
     waiting: frozenset[str] = frozenset(),
     detail: str | None = None,
+    brief: str | None = None,
 ) -> dict:
     rows = conn.execute(
         "SELECT * FROM runs WHERE ? IS NULL OR run_id = ? ORDER BY run_id DESC",
         (run_id, run_id),
     ).fetchall()
-    return {"runs": [_run_snapshot(conn, sessions, run, waiting, detail) for run in rows]}
+    return {"runs": [_run_snapshot(conn, sessions, run, waiting, detail, brief) for run in rows]}
 
 
 def _run_snapshot(
@@ -292,6 +299,7 @@ def _run_snapshot(
     run: sqlite3.Row,
     waiting: frozenset[str],
     detail: str | None,
+    brief: str | None,
 ) -> dict:
     run_id = run["run_id"]
     started = parse_stamp(run["started_at"])
@@ -322,7 +330,7 @@ def _run_snapshot(
     nodes: dict[str, dict] = {}
     rows = [dict(row) for row in conn.execute("SELECT * FROM agents WHERE run_id = ?", (run_id,))]
     queued = _queued_children(conn, run_id, {a["name"] for a in rows if a["ended_at"] is None})
-    tasks = _task_lists(conn, run, rows + queued)
+    tasks = _task_lists(conn, run, rows + queued, brief)
     for agent in rows + queued:
         own_task, unowned = tasks(agent)
         is_queued = agent["state"] == "queued"
@@ -508,6 +516,7 @@ def document(
     sessions_dir: Path | None = None,
     waiting: frozenset[str] = frozenset(),
     detail: str | None = None,
+    brief: str | None = None,
 ) -> dict:
     path = ledger_path(repo_root)
     base = {"repo": str(repo_root), "generated_at": stamp(utcnow())}
@@ -522,7 +531,7 @@ def document(
             error = str(exc)
             continue
         try:
-            return {**base, **snapshot(conn, sessions, run_id, waiting, detail)}
+            return {**base, **snapshot(conn, sessions, run_id, waiting, detail, brief)}
         except sqlite3.Error as exc:
             error = str(exc)
         finally:
@@ -560,12 +569,18 @@ def main(argv: list[str] | None = None) -> int:
         help="a session id or name the listing shows waiting; its agent carries its request",
     )
     parser.add_argument("--detail", default=None, help="an agent id whose recent steps to read")
+    parser.add_argument(
+        "--brief",
+        default=None,
+        help="a task id (such as file_id:12) whose brief to carry; the others carry has_brief only",
+    )
     args = parser.parse_args(argv)
     doc = document(
         (args.repo or Path.cwd()).resolve(),
         args.run,
         waiting=frozenset(args.waiting),
         detail=args.detail,
+        brief=args.brief,
     )
     sys.stdout.write(json.dumps(doc))
     return 0

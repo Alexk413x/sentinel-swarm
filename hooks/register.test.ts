@@ -732,7 +732,7 @@ describe('the run panel', () => {
 })
 
 function task(overrides: Partial<PanelTask> = {}): PanelTask {
-  return { id: 'file_id:1', name: 'a.py', path: null, state: 'claimed', status: 'active', owners: [], summary: null, brief: null, review: null, ...overrides }
+  return { id: 'file_id:1', name: 'a.py', path: null, state: 'claimed', status: 'active', owners: [], summary: null, has_brief: false, brief: null, review: null, ...overrides }
 }
 
 function agent(overrides: Partial<PanelAgent> = {}): PanelAgent {
@@ -1188,4 +1188,167 @@ describe('the panel draws what waits on you', () => {
     expect(toasts[1]).toContain('not open')
     await ui.unmount()
   })
+
+  const TOKEN_FILE = `${CWD}/.sentinel-swarm/http-token`
+  const SERVER_FILE = `${CWD}/.sentinel-swarm/server.json`
+  const ROUTE = 'http://127.0.0.1:47999/panel'
+  const served = (text: string, headers: Record<string, string> = { 'x-sentinel-swarm-repo': encodeURIComponent(CWD) }) => ({
+    value: { status: 200, ok: true, headers, text },
+  })
+
+  type Launch = (argv: readonly string[]) => { exitCode: number; stdout: string }
+
+  function withServer(
+    on: On,
+    answer: (url: string) => ReturnType<typeof served> | { value: { status: number; ok: boolean; headers: Record<string, string>; text: string } },
+    launch: Launch = () => ({ exitCode: 1, stdout: '' }),
+  ) {
+    const urls: string[] = []
+    const headers: Record<string, string>[] = []
+    const launched: string[][] = []
+    const clock = mock.clock(on, { now: 1_000 })
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('ui.panes', () => ({ value: [] }))
+    on('ui.toast', () => ({ value: undefined }))
+    on('fs.read', (_$, e) => {
+      const path = e.path.replace(/\\/g, '/')
+      if (path === SERVER_FILE) return { value: JSON.stringify({ port: 47999 }) }
+      if (path === TOKEN_FILE) return { value: `${TOKEN}\n` }
+      throw new Error(`ENOENT: ${e.path}`)
+    })
+    on('http.fetch', (_$, e) => {
+      urls.push(e.url)
+      headers.push((e.init?.headers ?? {}) as Record<string, string>)
+      if (e.url.endsWith('/health')) return served(JSON.stringify({ name: 'swarm-ledger', repo_root: CWD }), {})
+      return answer(e.url)
+    })
+    on('process.run', (_$, e) => {
+      launched.push([...e.argv])
+      return { value: { ...RAN_OK, ...launch(e.argv) } }
+    })
+    return { clock, urls, headers, launched }
+  }
+
+  test('reads the snapshot over the ledger server route and keeps the launcher as the fallback', async ($, on) => {
+    const snapshot: PanelSnapshot = { repo: CWD, generated_at: '', runs: [runView()] }
+    let routeAnswers = true
+    const { clock, urls, headers, launched } = withServer(
+      on,
+      () => (routeAnswers ? served(JSON.stringify(snapshot)) : { value: { status: 404, ok: false, headers: {}, text: 'Not Found' } }),
+      argv => ({ exitCode: 0, stdout: argv[0] === 'claude' ? '[]' : JSON.stringify(snapshot) }),
+    )
+    await $.tool.call({ tool: 'mcp__sentinel-swarm__open_panel', repo: CWD } as never)
+    await clock.settle()
+
+    expect(urls).toContain(ROUTE)
+    expect(headers[urls.indexOf(ROUTE)]).toMatchObject({ Authorization: `Bearer ${TOKEN}`, 'X-Sentinel-Swarm-Repo': encodeURIComponent(CWD) })
+    expect(launched.some(argv => argv.includes('panel'))).toBe(false)
+
+    routeAnswers = false
+    const ui = await $.ui.mount({ plugin: 'sentinel-swarm', component: 'Pane', requestId: 'swarm-run', surface: 'terminal', props: PANE_PROPS } as never)
+    await ui.press({ key: 'refresh' })
+    await clock.settle()
+    expect(launched.some(argv => argv.includes('panel'))).toBe(true)
+    expect(await ui.find({ type: 'Text', text: /Run 3/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a task brief is fetched when its row opens, and only then', async ($, on) => {
+    const plain = runView()
+    const oracle = plain.agents[0] as PanelAgent
+    const withBrief = (brief: string | null) => ({
+      ...plain,
+      agents: [{ ...oracle, children: [agent({ task: task({ has_brief: true, brief }) })] }],
+    })
+    const { clock, urls } = withServer(on, url =>
+      served(JSON.stringify({ repo: CWD, generated_at: '', runs: [withBrief(url.includes('brief=file_id%3A1') ? 'Write the parser.' : null)] })),
+    )
+    await $.tool.call({ tool: 'mcp__sentinel-swarm__open_panel', repo: CWD } as never)
+    await clock.settle()
+    expect(urls.filter(url => url.startsWith(ROUTE)).every(url => !url.includes('brief='))).toBe(true)
+
+    const ui = await $.ui.mount({ plugin: 'sentinel-swarm', component: 'Pane', requestId: 'swarm-run', surface: 'terminal', props: PANE_PROPS } as never)
+    expect(await ui.find({ key: 'run:3/oracle/coder-a#task:0' })).toBeUndefined()
+    await ui.press({ key: 'run:3/oracle/coder-a#task' })
+    await clock.settle()
+    expect(urls.some(url => url.startsWith(ROUTE) && url.includes('brief=file_id%3A1'))).toBe(true)
+    expect((await ui.find({ key: 'run:3/oracle/coder-a#task:0' }))?.text.replace(/\s+/g, ' ')).toContain('Write the parser.')
+
+    await ui.press({ key: 'run:3/oracle/coder-a#task' })
+    await clock.settle()
+    const before = urls.length
+    await ui.press({ key: 'refresh' })
+    await clock.settle()
+    expect(urls.slice(before).filter(url => url.startsWith(ROUTE)).every(url => !url.includes('brief='))).toBe(true)
+    expect(await ui.find({ key: 'run:3/oracle/coder-a#task:0' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('a task whose brief has not arrived says so, and one with no brief says none', () => {
+    const said = (lines: ReturnType<typeof taskDetail>) => lines.map(line => line.map(span => span.text).join('')).join(' ').replace(/\s+/g, ' ')
+    expect(said(taskDetail(task({ has_brief: true, brief: null }), 40))).toContain('Reading the brief...')
+    expect(said(taskDetail(task({ has_brief: false, brief: null }), 40))).toContain('No brief recorded.')
+  })
+
+  const QUESTION = { questions: [{ directive_id: 7, question: 'Which branch?', asked_at: 'T' }], findings: [], paused: null, permissions: [] }
+
+  async function askedPanel($: Engine, on: On) {
+    const snapshot: PanelSnapshot = { repo: CWD, generated_at: '', runs: [runView({ waiting: QUESTION })] }
+    const toasts: string[] = []
+    const clock = mock.clock(on, { now: 1_000 })
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('ui.panes', () => ({ value: [] }))
+    on('ui.toast', (_$, e) => {
+      toasts.push(String((e as { text?: unknown }).text ?? ''))
+      return { value: undefined }
+    })
+    on('process.run', (_$, e) => ({ value: { ...RAN_OK, exitCode: 0, stdout: e.argv[0] === 'claude' ? '[]' : JSON.stringify(snapshot) } }))
+    await $.tool.call({ tool: 'mcp__sentinel-swarm__open_panel', repo: CWD } as never)
+    await clock.settle()
+    const ui = await $.ui.mount({ plugin: 'sentinel-swarm', component: 'Pane', requestId: 'swarm-run', surface: 'terminal', props: PANE_PROPS } as never)
+    return { ui, clock, toasts }
+  }
+
+  test('the answer field takes the focus first, and a press on the question asks for it', async ($, on) => {
+    const { ui, clock, toasts } = await askedPanel($, on)
+    expect((await ui.find({ key: 'answer:question:3:7' }))?.props.autoFocus).toBe(true)
+    expect((await ui.find({ key: 'ask:question:3:7:0' }))?.text).toContain('Which branch?')
+    await ui.press({ key: 'ask:question:3:7:0' })
+    await clock.settle()
+    expect(toasts).toHaveLength(1)
+    expect(toasts[0]).toContain('The answer field did not take focus: ')
+    await ui.unmount()
+  })
+
+  test('a focus the pane cannot take is shown in the panel, not dropped', async ($, on) => {
+    const { ui, clock } = await askedPanel($, on)
+    await ui.press({ key: 'ask:question:3:7' })
+    await clock.settle()
+    expect((await ui.find({ type: 'Text', text: /did not take focus/ }))?.props.color).toBe('error')
+    await ui.unmount()
+  })
+
+  test('an empty answer says it was not sent', async ($, on) => {
+    const { ui, clock } = await askedPanel($, on)
+    await (ui as unknown as { input: (target: { key: string; text: string }) => Promise<unknown> }).input({ key: 'answer:question:3:7', text: '   ' })
+    await clock.settle()
+    expect((await ui.find({ key: 'question:3:7' }))?.text).toContain('Not sent: the answer is empty.')
+    await ui.unmount()
+  })
+
+  test('a failed read shows its reason at the top of the panel', async ($, on) => {
+    const clock = mock.clock(on, { now: 1_000 })
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('ui.panes', () => ({ value: [] }))
+    on('fs.read', (_$, e) => {
+      throw new Error(`ENOENT: ${e.path}`)
+    })
+    on('process.run', () => ({ value: { ...RAN_OK, exitCode: 1, stdout: '', stderr: 'no ledger reader\n' } }))
+    await $.tool.call({ tool: 'mcp__sentinel-swarm__open_panel', repo: CWD } as never)
+    await clock.settle()
+    const ui = await $.ui.mount({ plugin: 'sentinel-swarm', component: 'Pane', requestId: 'swarm-run', surface: 'terminal', props: PANE_PROPS } as never)
+    expect((await ui.find({ type: 'Text', text: /no ledger reader/ }))?.props.color).toBe('error')
+    await ui.unmount()
+  })
 })
+

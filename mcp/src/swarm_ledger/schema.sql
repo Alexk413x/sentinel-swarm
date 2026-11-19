@@ -299,6 +299,9 @@ CREATE TABLE IF NOT EXISTS test_runs (
     -- A full run also runs the profile's build_command once its tests pass. build_command is
     -- set when the run starts; build_exit_code stays NULL until the build ends (-1: timed out).
     build_command TEXT,
+    -- A build of more than one command (settings.build_command_by_path) lists them as JSON
+    -- [{prefix, command}], and build_command joins them.
+    build_parts_json TEXT,
     build_exit_code INTEGER,
     build_output TEXT,
     build_duration_ms INTEGER

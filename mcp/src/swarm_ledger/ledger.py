@@ -838,14 +838,29 @@ class Ledger(
         build_command: str | None = None,
         lint_command: str | None = None,
         test_command_by_path: dict[str, str] | None = None,
+        lint_command_by_path: dict[str, str] | None = None,
+        build_command_by_path: dict[str, str] | None = None,
     ) -> dict:
-        path_commands = None
-        if test_command_by_path is not None:
-            path_commands = normalize_path_commands(test_command_by_path)
-            if len(path_commands) != len(test_command_by_path):
+        path_commands: dict[str, dict[str, str]] = {}
+        for key, given in (
+            ("test_command_by_path", test_command_by_path),
+            ("lint_command_by_path", lint_command_by_path),
+            ("build_command_by_path", build_command_by_path),
+        ):
+            if given is None:
+                continue
+            path_commands[key] = normalize_path_commands(given)
+            if len(path_commands[key]) != len(given):
                 raise LedgerError(
-                    "test_command_by_path needs, for each entry, a repo-relative folder with no "
+                    f"{key} needs, for each entry, a repo-relative folder with no "
                     "'..' and no repeat once normalized, and a non-empty command"
+                )
+        for prefix, command in (build_command_by_path or {}).items():
+            word = server_word(command)
+            if word is not None:
+                raise LedgerError(
+                    f"build_command_by_path entry {prefix!r} ({command!r}) starts a server or a "
+                    f"watcher ({word!r}). Name the one-shot build, such as 'npm run build'"
                 )
         word = server_word(build_command) if build_command is not None else None
         if word is not None:
@@ -865,8 +880,8 @@ class Ledger(
                 self.settings.build_command = build_command
             if lint_command is not None:
                 self.settings.lint_command = lint_command
-            if path_commands is not None:
-                self.settings.test_command_by_path = path_commands
+            for key, commands in path_commands.items():
+                setattr(self.settings, key, commands)
 
             conn.execute(
                 "UPDATE runs SET settings_json = ? WHERE run_id = ?",
@@ -878,6 +893,8 @@ class Ledger(
             "build_command": self.settings.build_command,
             "lint_command": self.settings.lint_command,
             "test_command_by_path": self.settings.test_command_by_path,
+            "lint_command_by_path": self.settings.lint_command_by_path,
+            "build_command_by_path": self.settings.build_command_by_path,
         }
 
     def guidelines_set(self, caller: str, agent_id: str, body: str) -> dict:

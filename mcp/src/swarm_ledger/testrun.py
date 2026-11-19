@@ -197,6 +197,29 @@ def _execute_parts(
     return testing.combine_results(results)
 
 
+def build_parts_of(row: sqlite3.Row) -> list[dict]:
+    return json.loads(row["build_parts_json"] or "[]")
+
+
+def _execute_builds(row: sqlite3.Row, repo_root: Path, log: Path) -> testing.BuildResult:
+    parts = build_parts_of(row)
+    if not parts:
+        return testing.build_result(
+            testing.execute(row["build_command"], repo_root, row["timeout_s"], log)
+        )
+    return testing.combine_builds(
+        [
+            (
+                part["prefix"] or DEFAULT_LABEL,
+                testing.build_result(
+                    testing.execute(part["command"], repo_root, row["timeout_s"], log)
+                ),
+            )
+            for part in parts
+        ]
+    )
+
+
 def run(repo_root: Path, db_path: Path, test_run_id: int) -> None:
     conn = connect(db_path)
     try:
@@ -216,9 +239,7 @@ def run(repo_root: Path, db_path: Path, test_run_id: int) -> None:
         stale = _changed_tree(repo_root, row)
         build = None
         if result.ok and stale is None and row["build_command"]:
-            build = testing.build_result(
-                testing.execute(row["build_command"], repo_root, row["timeout_s"], log)
-            )
+            build = _execute_builds(row, repo_root, log)
         record(conn, test_run_id, result, stale, build)
         log.unlink(missing_ok=True)
     finally:
@@ -228,7 +249,8 @@ def run(repo_root: Path, db_path: Path, test_run_id: int) -> None:
 def _runner_gone(row: sqlite3.Row, now: datetime) -> bool:
     created = parse_stamp(row["created_at"])
     age = (now - created).total_seconds() if created is not None else 0.0
-    runs = max(len(parts_of(row)), 1) + (1 if row["build_command"] else 0)
+    builds = max(len(build_parts_of(row)), 1) if row["build_command"] else 0
+    runs = max(len(parts_of(row)), 1) + builds
     if age > runs * (row["timeout_s"] or DEFAULT_TEST_TIMEOUT_S) + OVERRUN_GRACE_S:
         return True
     if row["runner_pid"] is None:

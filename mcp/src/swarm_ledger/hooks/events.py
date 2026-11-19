@@ -379,19 +379,23 @@ def _scratch_hint(claim: sqlite3.Row | None) -> str:
 
 def _allowed_templates(ledger: Ledger, role: str) -> list[str]:
     if role == "driver":
-        return [t for t in (ledger.settings.build_command,) if t]
+        return [t for _, t in ledger.settings.full_build_parts()]
     templates = (
         ledger.settings.test_command,
         *ledger.settings.test_command_by_path.values(),
         ledger.settings.build_command,
+        *ledger.settings.build_command_by_path.values(),
         ledger.settings.lint_command,
+        *ledger.settings.lint_command_by_path.values(),
     )
     return [t for t in templates if t]
 
 
-def _targeted_lint(ledger: Ledger, role: str) -> str | None:
-    template = ledger.settings.lint_command
-    return template if role != "driver" and template and "{target}" in template else None
+def _targeted_lints(ledger: Ledger, role: str) -> list[str]:
+    if role == "driver":
+        return []
+    templates = (ledger.settings.lint_command, *ledger.settings.lint_command_by_path.values())
+    return [t for t in templates if t and "{target}" in t]
 
 
 def _lint_own_file(ledger: Ledger, caller: dict, template: str, argv: list[str]) -> bool:
@@ -444,14 +448,14 @@ def _command_allowed(ledger: Ledger, command: str, caller: dict) -> bool:
         return False
     if not argv or role == "manager":
         return False
-    lint = _targeted_lint(ledger, role)
+    lints = _targeted_lints(ledger, role)
     for template in _allowed_templates(ledger, role):
-        if template == lint:
+        if template in lints:
             continue
         prefix = shlex.split(template.replace("{target}", ""), posix=_POSIX)
         if prefix and argv[: len(prefix)] == prefix:
             return True
-    if lint is not None and _lint_own_file(ledger, caller, lint, argv):
+    if any(_lint_own_file(ledger, caller, lint, argv) for lint in lints):
         return True
     if role != "coder":
         return False

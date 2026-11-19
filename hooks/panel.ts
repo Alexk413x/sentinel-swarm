@@ -47,6 +47,7 @@ export type Attention = {
   permissionId: number | null
 }
 export type PanelVerdict = { decision: 'allow' | 'deny'; reason: string }
+export type PanelQuery = { waiting: readonly string[]; detail: string; brief: string }
 export type HoldLedger = {
   open: () => Promise<Record<string, unknown> | null>
   wait: (requestId: number) => Promise<Record<string, unknown> | null>
@@ -56,6 +57,24 @@ export type HoldLedger = {
 export const PHASES_OPEN_MAX = 4
 export const ALLOWED_REASON = 'Allowed by the user in the run panel'
 export const DENIED_REASON = 'The user denied this in the run panel'
+export const READING_BRIEF = 'Reading the brief...'
+
+export function panelArgs(query: PanelQuery): string[] {
+  return [
+    ...query.waiting.map(wait => `--waiting=${wait}`),
+    ...(query.detail !== '' ? [`--detail=${query.detail}`] : []),
+    ...(query.brief !== '' ? [`--brief=${query.brief}`] : []),
+  ]
+}
+
+export function panelUrl(port: number, query: PanelQuery): string {
+  const pairs = [
+    ...query.waiting.map(wait => `waiting=${encodeURIComponent(wait)}`),
+    ...(query.detail !== '' ? [`detail=${encodeURIComponent(query.detail)}`] : []),
+    ...(query.brief !== '' ? [`brief=${encodeURIComponent(query.brief)}`] : []),
+  ]
+  return `http://127.0.0.1:${port}/panel${pairs.length > 0 ? `?${pairs.join('&')}` : ''}`
+}
 
 export function mark(agent: PanelAgent, waiting = false): [string, string | undefined] {
   if (agent.ended_at !== null) return ['·', undefined]
@@ -142,7 +161,8 @@ export function dimmed(agent: PanelAgent): boolean {
 
 export function taskDetail(task: PanelTask, room: number): Span[][] {
   const path = task.path === null ? [] : [...wrap([{ text: task.path, code: true }], room, ''), []]
-  const lines = [...path, ...markdown(task.brief ?? 'No brief recorded.', room, task.brief === null)]
+  const body = task.brief ?? (task.has_brief ? READING_BRIEF : 'No brief recorded.')
+  const lines = [...path, ...markdown(body, room, task.brief === null)]
   if (task.review !== null) {
     lines.push([])
     lines.push([{ text: `${task.review.kind} review: `, dim: true }, { text: task.review.outcome, bold: true }])

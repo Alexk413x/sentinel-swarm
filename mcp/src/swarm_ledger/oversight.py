@@ -90,7 +90,7 @@ class OversightMixin(LedgerHost):
             "SELECT 1 FROM test_runs t JOIN agents a ON a.agent_id = t.agent_id "
             f"WHERE t.run_id = ? AND t.scope = 'full' AND a.role = 'oracle' AND {_CLEAN_TEST_RUN} "
             "AND t.build_command IS ? AND (? IS NULL OR t.created_at >= ?) LIMIT 1",
-            (run_id, self.settings.build_command or None, after, after),
+            (run_id, self.settings.full_build_text(), after, after),
         ).fetchone()
         return row is not None
 
@@ -173,7 +173,7 @@ class OversightMixin(LedgerHost):
             need += f", of {self.test_command_for('full', None, run_id=phase_row['run_id'])!r}"
         except LedgerError as exc:
             need += f"; {exc}"
-        build_command = self.settings.build_command or None
+        build_command = self.settings.full_build_text()
         if build_command:
             need += f". The run also builds with {build_command!r}, and the build must pass"
         latest = conn.execute(

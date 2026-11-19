@@ -17,10 +17,11 @@ message. The Oracle then calls, in order:
 3. `run_start(prd, session_id)`. It opens the run and registers the Oracle.
 4. `repo_check(fetch)`, then `repo_branch_create(name)` or a question to the user. See
    "Git in the host repo".
-5. `profile_set(test_command, build_command, lint_command, test_command_by_path)`.
-   `test_command_by_path` replaces the run's whole map of path prefixes to test
-   commands, and `{}` clears it; the call refuses an entry whose key is not a
-   repo-relative folder or whose command is empty. It refuses a build command
+5. `profile_set(test_command, build_command, lint_command, test_command_by_path,
+   lint_command_by_path, build_command_by_path)`. Each `_by_path` argument replaces
+   the run's whole map of path prefixes to that kind of command, and `{}` clears it; the
+   call refuses an entry whose key is not a repo-relative folder or whose command is
+   empty. It refuses a build command, or a `build_command_by_path` entry,
    that serves or watches, because the Driver tests one build made at the start of an
    exploration: one whose words include `--watch`, `serve`, or `dev-server`, or a
    `dev` or `start` script run through `npm`, `yarn`, or `pnpm` (`npm run dev`,
@@ -355,10 +356,10 @@ for a phase in `handed_up`.
 - `accepted` refuses unless the Oracle recorded a clean `tests_run(scope="full")`
   after the hand-up. The refusal names the scope and the command it needs, and the
   latest full run since the hand-up: still running, or not clean with its reason. When
-  the profile sets `build_command`, the clean full run must also have built with that
-  command (the full run runs it after its tests; see [06-ledger-server.md](06-ledger-server.md)),
+  the profile sets `build_command` or `build_command_by_path`, the clean full run must
+  also have built with those commands (the full run runs them after its tests; see [06-ledger-server.md](06-ledger-server.md)),
   and a failed build refuses with the build's command, exit code, and the last 2,000
-  characters of its output. A full run made before `build_command` was set does not
+  characters of its output. A full run made before the build commands were set, or with other build commands, does not
   count; no approved or incomplete file of the phase lacks a test file while
   the code graph anchors a function or class in it (a file whose path no longer exists,
   and a file claimed with `no_test_reason`, are exempt); `low_score_notes` holds a
@@ -444,7 +445,7 @@ when" in [05-sessions.md](05-sessions.md).
     module claimed for that name.
   - The Driver tests the app it built at the start of the exploration, never a dev
     server that reloads on edits. `pre_shell` limits the Driver's shell to
-    `build_command`, and `profile_set` refuses a build command that serves or watches.
+    the build commands, and `profile_set` refuses a build command that serves or watches.
     Not checked: the URL a driver plugin opens. web-driver navigates to any URL the
     Driver passes, so a dev server someone left running passes every check, and a web
     build that must be served over HTTP has no allowed server to run.

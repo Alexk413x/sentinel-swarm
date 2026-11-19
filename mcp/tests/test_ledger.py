@@ -740,6 +740,56 @@ def test_directive_round_trip(ledger: Ledger) -> None:
     assert directive["directive_id"] not in {d["directive_id"] for d in inbox_after}
 
 
+def _owed_to_oracle(ledger: Ledger, ctx: dict) -> list[dict]:
+    return [
+        dict(row)
+        for row in ledger.conn.execute(
+            "SELECT * FROM wakeups WHERE to_agent_id = ? AND from_agent_id = to_agent_id "
+            "AND reason = 'user_directive' AND sent_at IS NULL",
+            (ctx["oracle_id"],),
+        )
+    ]
+
+
+def test_a_user_directive_owes_the_oracle_a_wake_up_from_itself(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    ledger.directive_submit("user_chat", "run panel", "SQLite.")
+    ledger.directive_submit("outside_session", "alex", "Also add a CLI.")
+
+    owed = _owed_to_oracle(ledger, ctx)
+    assert len(owed) == 1
+    assert "directive_inbox()" in owed[0]["pointer"]
+    taken = ledger.take_self_wakeups(ctx["oracle_id"])
+    assert [w["reason"] for w in taken] == ["user_directive"]
+
+
+def test_reading_the_inbox_settles_the_directive_wake_up(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    ledger.directive_submit("user_chat", "run panel", "SQLite.")
+
+    ledger.directive_inbox("oracle", ctx["oracle_id"])
+
+    assert _owed_to_oracle(ledger, ctx) == []
+
+
+def test_an_unread_directive_keeps_the_wake_up_when_another_is_resolved(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    first = ledger.directive_submit("user_chat", "alex", "One.")
+    ledger.directive_submit("user_chat", "alex", "Two.")
+
+    ledger.directive_resolve("oracle", ctx["oracle_id"], first["directive_id"], "applied", "ok")
+
+    assert len(_owed_to_oracle(ledger, ctx)) == 1
+
+
+@pytest.mark.parametrize("source", ["watchdog", "driver"])
+def test_a_directive_from_the_ledger_itself_owes_no_wake_up(ledger: Ledger, source: str) -> None:
+    ctx = bootstrap_module(ledger)
+    ledger.directive_submit(source, source, "Stop rule.")
+
+    assert _owed_to_oracle(ledger, ctx) == []
+
+
 def test_directive_submit_refuses_an_unknown_source(ledger: Ledger) -> None:
     bootstrap_module(ledger)
     with pytest.raises(LedgerError):

@@ -3,14 +3,22 @@ from __future__ import annotations
 import secrets
 import sqlite3
 
-from . import notify
+from . import notify, pauses
+from .clock import utcnow
 from .db import NOW, dict_rows, in_clause, row_dict, write_tx
 from .host import LedgerHost
 from .identity import Caller, LedgerError, require_role, require_run, resolve
-from .queries import DIRECTIVES_RESOLVED_SHOWN, recent_directives
+from .queries import (
+    DIRECTIVES_RESOLVED_SHOWN,
+    USER_DIRECTIVE_SOURCES,
+    latest_live_oracle,
+    recent_directives,
+)
 
 _DIRECTIVE_SOURCES = ("user_chat", "outside_session", "skill", "watchdog", "driver")
 _DIRECTIVE_OUTCOMES = ("applied", "scheduled", "declined", "needs_user")
+DIRECTIVE_WAKE_REASON = "user_directive"
+DIRECTIVE_WAKE_POINTER = "The user sent a directive. Call directive_inbox() and act on it."
 MESSAGE_BODY_MAX = 32_000
 INBOX_BODY_BUDGET = 40_000
 INBOX_CLAIM_SECONDS = 120
@@ -183,6 +191,17 @@ class MessagesMixin(LedgerHost):
                 (run["run_id"], source, sender_name, body, reply_to),
             )
             directive_id = cur.lastrowid
+            oracle = latest_live_oracle(conn, run["run_id"])
+            if oracle is not None and source in USER_DIRECTIVE_SOURCES:
+                # An idle Oracle reads no inbox; its own mod delivers this from the self-wake poll.
+                pauses.owe_oracle_wakeup(
+                    conn,
+                    run["run_id"],
+                    oracle["agent_id"],
+                    DIRECTIVE_WAKE_REASON,
+                    DIRECTIVE_WAKE_POINTER,
+                    utcnow(),
+                )
 
         return row_dict(self.conn, "directives", "directive_id", directive_id)
 
@@ -200,6 +219,7 @@ class MessagesMixin(LedgerHost):
                 "AND state = 'open' AND seen_at IS NULL",
                 (c.run_id,),
             )
+            self._settle_directive_wakeups(conn, c.run_id)
             return dict_rows(
                 conn.execute(
                     "SELECT * FROM directives WHERE run_id = ? AND state = 'open' "
@@ -231,6 +251,7 @@ class MessagesMixin(LedgerHost):
                 f"seen_at = COALESCE(seen_at, {NOW}) WHERE directive_id = ?",
                 (note, directive_id),
             )
+            self._settle_directive_wakeups(conn, c.run_id)
         return row_dict(self.conn, "directives", "directive_id", directive_id)
 
     def directive_status(self, limit: int = DIRECTIVES_RESOLVED_SHOWN) -> list[dict]:
@@ -284,9 +305,19 @@ class MessagesMixin(LedgerHost):
                     f"resolved_at = {NOW} WHERE directive_id = ?",
                     (outcome, resolution, directive_id),
                 )
+            self._settle_directive_wakeups(conn, c.run_id)
         notify.deliver(notice)
 
         return row_dict(self.conn, "directives", "directive_id", directive_id)
+
+    def _settle_directive_wakeups(self, conn: sqlite3.Connection, run_id: int | None) -> None:
+        marks = ", ".join("?" for _ in USER_DIRECTIVE_SOURCES)
+        conn.execute(
+            f"UPDATE wakeups SET sent_at = {NOW} WHERE run_id = ? AND reason = ? "
+            "AND sent_at IS NULL AND NOT EXISTS (SELECT 1 FROM directives WHERE run_id = ? "
+            f"AND state = 'open' AND seen_at IS NULL AND outcome IS NULL AND source IN ({marks}))",
+            (run_id, DIRECTIVE_WAKE_REASON, run_id, *USER_DIRECTIVE_SOURCES),
+        )
 
     def user_ask(self, caller: str, agent_id: str, question: str) -> dict:
         if not question.strip():

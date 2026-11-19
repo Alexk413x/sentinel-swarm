@@ -25,6 +25,8 @@ import {
   mark,
   markdown,
   openHint,
+  panelArgs,
+  panelUrl,
   parseWaiting,
   samePath,
   sectionKeys,
@@ -34,7 +36,7 @@ import {
   visible,
   wrap,
 } from './panel'
-import type { AgentRow, Attention, GroupRow, HoldLedger, IsOpen, Row, Segment, Span, TaskRow } from './panel'
+import type { AgentRow, Attention, GroupRow, HoldLedger, IsOpen, PanelQuery, Row, Segment, Span, TaskRow } from './panel'
 import type { PanelAgent, PanelAnswer, PanelFetch, PanelSessionWait, PanelSnapshot, PanelTask, PanelRunView, SentinelSwarmSession } from '../types'
 
 type Answer = Record<string, unknown> | null
@@ -112,6 +114,7 @@ const LEDGER_SERVER = 'swarm-ledger'
 const REFRESH_MS = 5_000
 const RUN_MS = 30_000
 const HEALTH_MS = 2_000
+const PANEL_HTTP_MS = 10_000
 const LAUNCH_PYTHONS: readonly (readonly string[])[] = [['py', '-3'], ['python3'], ['python']]
 const REPO_INPUT = {
   type: 'object',
@@ -128,11 +131,14 @@ const chosenRepo = atom({ plugin: 'sentinel-swarm', key: 'panelRepo' } as const,
 const opened = atom({ plugin: 'sentinel-swarm', key: 'panelOpen' } as const, {} as Record<string, boolean>, { shape: 'open-1' })
 const openTask = atom({ plugin: 'sentinel-swarm', key: 'panelOpenTask' } as const, '', { shape: 'open-task-1' })
 const openAgent = atom({ plugin: 'sentinel-swarm', key: 'panelOpenAgent' } as const, '', { shape: 'open-agent-1' })
+const openBrief = atom({ plugin: 'sentinel-swarm', key: 'panelOpenBrief' } as const, '', { shape: 'open-brief-1' })
+const notice = atom({ plugin: 'sentinel-swarm', key: 'panelNotice' } as const, '', { shape: 'notice-1' })
 const answers = atom({ plugin: 'sentinel-swarm', key: 'panelAnswers' } as const, {} as Record<string, PanelAnswer>, { shape: 'answers-1' })
 const QUEUED_KEY = 'queued:'
 const NOT_SENT = 'Not sent'
 
 let refreshing = false
+let refreshAgain = false
 
 export const register: Register = on => {
   on('classic.SessionStart', async ($, e, next) => {
@@ -260,7 +266,7 @@ export const register: Register = on => {
     })
     if (!panelTimer) {
       panelTimer = true
-      $.clock.every(REFRESH_MS, () => void refreshIfOpen($))
+      $.clock.every(REFRESH_MS, () => void refreshIfOpen($).catch(() => undefined))
     }
     if ((await active($)) !== null) keepSelfWake($)
     return next(e)
@@ -288,34 +294,50 @@ export const register: Register = on => {
     const asksOf = (name: string, index: number) => (asks[index] ?? []).filter(item => item.agent === name)
     const shownTask = await read($, openTask)
     const shownAgent = await read($, openAgent)
+    const failure = await read($, notice)
     const drafts = await read($, answers)
     const now = at === null ? Date.now() : Date.parse(at)
     const agentKey = (agent: PanelAgent) => agent.agent_id ?? `${QUEUED_KEY}${agent.name}`
-    const toggleAgent = (agent: PanelAgent) => {
-      closeTask()
-      const key = agentKey(agent)
-      void update($, openAgent, current => (current === key ? '' : key)).then(() => refresh($))
-    }
+    const toggleAgent = (agent: PanelAgent) =>
+      void act($, 'The agent card did not open', async () => {
+        await closeTask()
+        const key = agentKey(agent)
+        await update($, openAgent, current => (current === key ? '' : key))
+        await refresh($, true)
+      })
     const isOpen: IsOpen = (key, fallback) => (key.includes('#') ? key === shownTask : (open[key] ?? fallback))
-    const closeTask = () => void update($, openTask, () => '')
-    const toggleTask = (key: string) => void update($, openTask, current => (current === key ? '' : key))
-    const toggle = (key: string, fallback: boolean) => {
-      closeTask()
-      void update($, opened, held => ({ ...held, [key]: !(held[key] ?? fallback) }))
+    const closeTask = async () => {
+      await update($, openTask, () => '')
+      await update($, openBrief, () => '')
     }
-    const setAll = (value: boolean) => {
-      closeTask()
-      void update($, opened, () => Object.fromEntries(sectionKeys(runs).map(key => [key, value])))
-    }
+    const toggleTask = (key: string, task: PanelTask) =>
+      void act($, 'The task did not open', async () => {
+        const closing = shownTask === key
+        await update($, openTask, () => (closing ? '' : key))
+        await update($, openBrief, () => (closing || !task.has_brief ? '' : task.id))
+        if (!closing && task.has_brief) await refresh($, true)
+      })
+    const toggle = (key: string, fallback: boolean) =>
+      void act($, 'The section did not change', async () => {
+        await closeTask()
+        await update($, opened, held => ({ ...held, [key]: !(held[key] ?? fallback) }))
+      })
+    const setAll = (value: boolean) =>
+      void act($, 'The sections did not change', async () => {
+        await closeTask()
+        await update($, opened, () => Object.fromEntries(sectionKeys(runs).map(key => [key, value])))
+      })
 
     const controls = (
       <Box flexDirection="row" gap={1}>
         <Button
           key="ended"
-          onPress={() => {
-            closeTask()
-            void update($, showEnded, shown => !shown)
-          }}
+          onPress={() =>
+            void act($, 'The list did not change', async () => {
+              await closeTask()
+              await update($, showEnded, shown => !shown)
+            })
+          }
         >
           {withEnded ? 'hide ended' : 'show ended'}
         </Button>
@@ -327,16 +349,34 @@ export const register: Register = on => {
         </Button>
         <Button
           key="refresh"
-          onPress={() => {
-            closeTask()
-            void refresh($)
-          }}
+          onPress={() =>
+            void act($, 'The panel did not refresh', async () => {
+              await closeTask()
+              await refresh($, true)
+            })
+          }
         >
           refresh
         </Button>
         {at !== null && <Text dimColor>updated {new Date(at).toLocaleTimeString()}</Text>}
       </Box>
     )
+    const alerts = [
+      ...(failure !== ''
+        ? [
+            <Text color="error" key="notice">
+              {failure}
+            </Text>,
+          ]
+        : []),
+      ...(problem !== null
+        ? [
+            <Text color="error" key="problem">
+              {problem}
+            </Text>,
+          ]
+        : []),
+    ]
 
     const hint = at === null ? [] : startHint(runs, running)
     const howToStart = hint.length > 0 && (
@@ -355,6 +395,7 @@ export const register: Register = on => {
       return (
         <Box flexDirection="column">
           {controls}
+          {alerts}
           {howToStart}
           {note !== undefined && <Text dimColor>{note}</Text>}
         </Box>
@@ -374,7 +415,7 @@ export const register: Register = on => {
       return (
         <Box flexShrink={1} minWidth={4} flexDirection="row" marginLeft={2}>
           <Box flexShrink={1} minWidth={1}>
-            <Button key={key} plain onPress={() => toggleTask(key)}>
+            <Button key={key} plain onPress={() => toggleTask(key, task)}>
               <Text dimColor={waiting} wrap="truncate-start">
                 {task.name}
               </Text>
@@ -400,7 +441,7 @@ export const register: Register = on => {
               {'  '}
             </Text>
           </Box>
-          <Button key={`${key}:${i}`} plain onPress={closeTask}>
+          <Button key={`${key}:${i}`} plain onPress={() => void act($, 'The task did not close', closeTask)}>
             {spans.length === 0 || spans.every(span => span.text === '') ? (
               <Text> </Text>
             ) : (
@@ -435,6 +476,18 @@ export const register: Register = on => {
         item.directiveId === null || Input !== undefined
           ? item.where
           : `Answer it with the directive command in /sentinel-swarm:run, with --reply-to ${item.directiveId}.`
+      const answerKey = `answer:${item.key}`
+      const answerable = item.directiveId !== null && Input !== undefined
+      const focusAnswer = () =>
+        void act($, 'The answer field did not take focus', async () => {
+          const moved = await $.ui.focus({ requestId: PANE, key: answerKey })
+          if (moved.deny !== undefined) throw new Error(moved.deny)
+        })
+      const heading = (
+        <Text bold color={WAIT_COLOR}>
+          {WAIT_GLYPH} {item.title}
+        </Text>
+      )
       return (
         <Box
           key={item.key}
@@ -444,32 +497,43 @@ export const register: Register = on => {
           borderColor={ASK_COLOR}
           paddingX={1}
         >
-          <Text bold color={WAIT_COLOR}>
-            {WAIT_GLYPH} {item.title}
-          </Text>
-          {item.lines.map((text, i) => (
-            <Text key={String(i)}>{text === '' ? ' ' : text}</Text>
-          ))}
+          {answerable ? (
+            <Button key={`ask:${item.key}`} plain onPress={focusAnswer}>
+              {heading}
+            </Button>
+          ) : (
+            heading
+          )}
+          {item.lines.map((text, i) =>
+            answerable ? (
+              <Button key={`ask:${item.key}:${i}`} plain onPress={focusAnswer}>
+                <Text>{text === '' ? ' ' : text}</Text>
+              </Button>
+            ) : (
+              <Text key={String(i)}>{text === '' ? ' ' : text}</Text>
+            ),
+          )}
           <Text dimColor>{where}</Text>
           {item.permissionId !== null && (
             <Box flexDirection="row" gap={1}>
-              <Button key={`allow:${item.key}`} onPress={() => void answerPermission($, item.permissionId ?? 0, true)}>
+              <Button key={`allow:${item.key}`} onPress={() => void act($, 'The permission request was not answered', () => answerPermission($, item.permissionId ?? 0, true))}>
                 Allow
               </Button>
-              <Button key={`deny:${item.key}`} onPress={() => void answerPermission($, item.permissionId ?? 0, false)}>
+              <Button key={`deny:${item.key}`} onPress={() => void act($, 'The permission request was not answered', () => answerPermission($, item.permissionId ?? 0, false))}>
                 Deny
               </Button>
             </Box>
           )}
           {item.directiveId !== null && Input !== undefined && (
             <Input
-              key={`answer:${item.key}`}
+              key={answerKey}
+              autoFocus
               label="answer: "
               placeholder="type the answer"
               submitLabel="send"
               value={answer?.draft ?? ''}
-              onInput={value => void keepDraft($, item.key, value)}
-              onSubmit={value => void replyTo($, item.key, item.directiveId ?? 0, value)}
+              onInput={value => void act($, 'Your typing was not kept', () => keepDraft($, item.key, value))}
+              onSubmit={value => void act($, 'Your answer was not sent', () => replyTo($, item.key, item.directiveId ?? 0, value))}
             />
           )}
           {answer?.note && (
@@ -491,7 +555,7 @@ export const register: Register = on => {
               {agent.name}
             </Text>
             <Box flexGrow={1} />
-            <Button key={`${key}:card-close`} plain onPress={() => void update($, openAgent, () => '')}>
+            <Button key={`${key}:card-close`} plain onPress={() => void act($, 'The card did not close', () => update($, openAgent, () => ''))}>
               <Text dimColor>close</Text>
             </Button>
           </Box>
@@ -680,13 +744,14 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         {controls}
+        {alerts}
         {waitingOnYou}
         <Box flexDirection="column" borderStyle="round" borderColor="inactive" paddingX={1}>
           <Text dimColor wrap="truncate-end">
             agents ● busy ○ idle ⏸ parked ✕ gone · ended <Text color={WAIT_COLOR}>{WAIT_GLYPH}</Text> waiting on you ✉ unread ↯ wake-up owed
           </Text>
           <Text dimColor wrap="truncate-end">
-            work ○ waiting <Text color={TASK_MARK.active[1]}>●</Text> in progress <Text color={TASK_MARK.done[1]}>✓</Text> done <Text color={TASK_MARK.problem[1]}>!</Text> incomplete
+            work ○ waiting <Text color={TASK_MARK.active?.[1]}>●</Text> in progress <Text color={TASK_MARK.done?.[1]}>✓</Text> done <Text color={TASK_MARK.problem?.[1]}>!</Text> incomplete
           </Text>
           <Text dimColor wrap="truncate-end">
             dimmed: ended or not started
@@ -694,11 +759,6 @@ export const register: Register = on => {
         </Box>
         {howToStart}
         {runs.map(section)}
-        {problem !== null && (
-          <Text color="error" wrap="truncate-end">
-            {problem}
-          </Text>
-        )}
       </Box>
     )
   })
@@ -1034,8 +1094,22 @@ async function refreshIfOpen($: EngineInterface): Promise<void> {
   if (panes.some(pane => pane.id === PANE)) await refresh($)
 }
 
-async function refresh($: EngineInterface): Promise<void> {
-  if (refreshing) return
+async function act($: EngineInterface, failure: string, work: () => Promise<unknown>): Promise<void> {
+  try {
+    await update($, notice, () => '')
+    await work()
+  } catch (err) {
+    const text = `${failure}: ${errorText(err)}`
+    $.ui.toast(text)
+    await update($, notice, () => text).catch(() => undefined)
+  }
+}
+
+async function refresh($: EngineInterface, requested = false): Promise<void> {
+  if (refreshing) {
+    refreshAgain ||= requested
+    return
+  }
   refreshing = true
   try {
     const repo = await repoOf($)
@@ -1043,25 +1117,48 @@ async function refresh($: EngineInterface): Promise<void> {
     const live = held.snapshot === null || liveAgents(held.snapshot.runs).length > 0
     const sessions = live ? await waitingSessions($).catch(() => []) : []
     const detail = await read($, openAgent)
-    const args = [
-      ...sessions.flatMap(wait => [`--waiting=${wait.sessionId}`, ...(wait.name ? [`--waiting=${wait.name}`] : [])]),
-      ...(detail !== '' && !detail.startsWith(QUEUED_KEY) ? [`--detail=${detail}`] : []),
-    ]
+    const query: PanelQuery = {
+      waiting: sessions.flatMap(wait => [wait.sessionId, ...(wait.name ? [wait.name] : [])]),
+      detail: detail.startsWith(QUEUED_KEY) ? '' : detail,
+      brief: await read($, openBrief),
+    }
     const [snapshot, running] = await Promise.all([
-      fetchSnapshot($, `${$.plugin.root}/mcp/launch/ledger.py`, repo, args).catch((err: unknown) => (err instanceof Error ? err : new Error(String(err)))),
+      fetchSnapshot($, repo, query).catch((err: unknown) => (err instanceof Error ? err : new Error(String(err)))),
       isRunning($, repo),
     ])
     const at = new Date().toISOString()
     await update($, fetched, held =>
       snapshot instanceof Error ? { ...held, running, problem: snapshot.message, at } : { snapshot, sessions, running, problem: null, at },
     ).catch(() => undefined)
+  } catch (err) {
+    const at = new Date().toISOString()
+    await update($, fetched, held => ({ ...held, problem: errorText(err), at })).catch(() => undefined)
   } finally {
     refreshing = false
   }
+  if (refreshAgain) {
+    refreshAgain = false
+    await refresh($)
+  }
 }
 
-async function fetchSnapshot($: EngineInterface, launcher: string, repo: string, args: readonly string[]): Promise<PanelSnapshot> {
-  return JSON.parse(await launch($, launcher, ['panel', '--repo', repo, ...args])) as PanelSnapshot
+async function fetchSnapshot($: EngineInterface, repo: string, query: PanelQuery): Promise<PanelSnapshot> {
+  const served = await snapshotFromServer($, repo, query).catch(() => null)
+  if (served !== null) return served
+  const launcher = `${$.plugin.root}/mcp/launch/ledger.py`
+  return JSON.parse(await launch($, launcher, ['panel', '--repo', repo, ...panelArgs(query)])) as PanelSnapshot
+}
+
+async function snapshotFromServer($: EngineInterface, repo: string, query: PanelQuery): Promise<PanelSnapshot | null> {
+  const [port, token] = await Promise.all([serverPort($, repo), serverToken($, repo)])
+  const answer = await within(
+    $,
+    PANEL_HTTP_MS,
+    $.http.fetch(panelUrl(port, query), { headers: { Authorization: `Bearer ${token}`, [REPO_HEADER]: encodeURIComponent(repo) } }),
+  )
+  if (answer.status !== 200 || !(REPO_HEADER.toLowerCase() in answer.headers)) return null
+  const document: unknown = JSON.parse(answer.text)
+  return isRecord(document) && Array.isArray(document.runs) ? (document as PanelSnapshot) : null
 }
 
 async function launch($: EngineInterface, launcher: string, args: readonly string[]): Promise<string> {
@@ -1091,9 +1188,12 @@ async function keepDraft($: EngineInterface, key: string, draft: string): Promis
 }
 
 async function replyTo($: EngineInterface, key: string, directiveId: number, text: string): Promise<void> {
-  if (text.trim() === '') return
   const note = (draft: string, line: string, sent: boolean) => update($, answers, held => ({ ...held, [key]: { draft, note: line, sent } }))
-  await note(text, 'Sending...', false)
+  if (text.trim() === '') {
+    await act($, 'Your answer was not sent', () => note(text, `${NOT_SENT}: the answer is empty.`, false))
+    return
+  }
+  await act($, 'Your answer was not sent', () => note(text, 'Sending...', false))
   const repo = await repoOf($)
   const args = ['directive', '--repo', repo, '--source', 'user_chat', '--sender', 'run panel', '--reply-to', String(directiveId), '--', text]
   try {

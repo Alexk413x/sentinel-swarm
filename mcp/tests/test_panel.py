@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import http.client
 import json
 import os
+import threading
+import urllib.parse
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from helpers import bootstrap_module, insert_passing_test_run, spawn_coder
 
-from swarm_ledger import panel
+from swarm_ledger import auth, copilot, front, panel, serve
 from swarm_ledger.db import write_tx
+from swarm_ledger.http_front import LedgerHttpServer
 from swarm_ledger.ledger import Ledger
 
 pytestmark = pytest.mark.usefixtures("claude_sessions")
@@ -23,6 +28,16 @@ def _run_snapshot(ledger: Ledger) -> dict:
     runs = panel.snapshot(ledger.conn, {})["runs"]
     assert len(runs) == 1
     return runs[0]
+
+
+def _snapshot_with_brief(ledger: Ledger, task_id: str) -> dict:
+    runs = panel.snapshot(ledger.conn, {}, brief=task_id)["runs"]
+    assert len(runs) == 1
+    return runs[0]
+
+
+def _brief_of(ledger: Ledger, role: str, task_id: str) -> str | None:
+    return _node(_snapshot_with_brief(ledger, task_id), role)["task"]["brief"]
 
 
 def _node(run: dict, role: str) -> dict:
@@ -315,7 +330,9 @@ def test_summary_is_the_first_sentence_of_the_brief(ledger: Ledger) -> None:
 
     task = _node(_run_snapshot(ledger), "manager")["task"]
     assert task["summary"] == "Build the parser"
-    assert task["brief"].startswith("# Heading")
+    assert task["has_brief"] is True
+    shown = _node(_snapshot_with_brief(ledger, task["id"]), "manager")["task"]
+    assert shown["brief"].startswith("# Heading")
 
 
 def test_summary_is_none_for_a_missing_brief(ledger: Ledger) -> None:
@@ -325,6 +342,7 @@ def test_summary_is_none_for_a_missing_brief(ledger: Ledger) -> None:
 
     task = _node(_run_snapshot(ledger), "manager")["task"]
     assert task["summary"] is None
+    assert task["has_brief"] is False
     assert task["brief"] is None
 
 
@@ -421,11 +439,13 @@ def test_agent_session_state_follows_the_session_listing(ledger: Ledger) -> None
 
 def test_the_oracle_task_shows_the_prd_until_the_run_has_an_outcome(ledger: Ledger) -> None:
     _build(ledger)
-    assert _node(_run_snapshot(ledger), "oracle")["task"]["brief"] == "Build X"
+    run_task = _node(_run_snapshot(ledger), "oracle")["task"]
+    assert run_task["has_brief"] is True
+    assert _brief_of(ledger, "oracle", run_task["id"]) == "Build X"
 
     with write_tx(ledger.conn) as conn:
         conn.execute("UPDATE runs SET outcome = 'success: built'")
-    assert _node(_run_snapshot(ledger), "oracle")["task"]["brief"] == "success: built"
+    assert _brief_of(ledger, "oracle", run_task["id"]) == "success: built"
 
 
 def test_only_a_file_task_carries_a_path(ledger: Ledger) -> None:
@@ -646,16 +666,129 @@ def test_a_planned_phase_shows_its_goal_until_its_manager_is_briefed(ledger: Led
         "oracle", ctx["oracle_id"], "people", goal="Members and roles.\nAdmins approve."
     )
 
-    run = _run_snapshot(ledger)
-    waiting = {t["id"]: t for t in run["agents"][0]["tasks"]}
+    task_id = f"phase_id:{later['phase_id']}"
+    waiting = {t["id"]: t for t in _run_snapshot(ledger)["agents"][0]["tasks"]}
+    opened = _snapshot_with_brief(ledger, task_id)
+    shown = {t["id"]: t for t in opened["agents"][0]["tasks"]}
 
     assert later["goal"] == "Members and roles.\nAdmins approve."
-    assert (
-        waiting[f"phase_id:{later['phase_id']}"]["brief"] == "Members and roles.\nAdmins approve."
-    )
-    assert waiting[f"phase_id:{later['phase_id']}"]["summary"] == "Members and roles"
+    assert waiting[task_id]["has_brief"] is True
+    assert shown[task_id]["brief"] == "Members and roles.\nAdmins approve."
+    assert waiting[task_id]["summary"] == "Members and roles"
 
 
 def test_phase_add_without_a_goal_stores_none(ledger: Ledger) -> None:
     ctx = _build(ledger)
     assert ledger.phase_add("oracle", ctx["oracle_id"], "later")["goal"] is None
+
+
+def _every_brief(run: dict) -> list[str | None]:
+    found: list[str | None] = []
+
+    def walk(nodes: list[dict]) -> None:
+        for node in nodes:
+            for task in [node["task"], *node["tasks"]]:
+                if task is not None:
+                    found.append(task["brief"])
+            walk(node["children"])
+
+    walk(run["agents"])
+    return found
+
+
+def test_the_snapshot_carries_no_brief_body_until_a_task_is_named(ledger: Ledger) -> None:
+    ctx = _build(ledger)
+
+    run = _run_snapshot(ledger)
+    assert set(_every_brief(run)) == {None}
+    assert _node(run, "coder")["task"]["has_brief"] is True
+
+    task_id = f"file_id:{ctx['file_id']}"
+    opened = _snapshot_with_brief(ledger, task_id)
+    carried = [brief for brief in _every_brief(opened) if brief is not None]
+    assert carried == [_node(opened, "coder")["task"]["brief"]]
+    assert _node(opened, "coder")["task"]["id"] == task_id
+
+
+def test_the_document_passes_the_brief_id_through(ledger: Ledger, host: Path) -> None:
+    ctx = _build(ledger)
+    task_id = f"file_id:{ctx['file_id']}"
+
+    doc = panel.document(host, brief=task_id, sessions_dir=host / "none")
+    assert _node(doc["runs"][0], "coder")["task"]["brief"] is not None
+    plain = panel.document(host, sessions_dir=host / "none")
+    assert _node(plain["runs"][0], "coder")["task"]["brief"] is None
+
+
+def test_the_copilot_status_keeps_every_brief(ledger: Ledger, host: Path) -> None:
+    _build(ledger)
+
+    run = copilot.status(host)["runs"][0]
+    assert _node(run, "coder")["task"]["brief"] is not None
+    assert _node(run, "oracle")["task"]["brief"] == "Build X"
+
+
+@pytest.fixture
+def lean(host: Path) -> Iterator[int]:
+    token = auth.ensure_token(host)
+    sock = serve.bind_socket(host)
+    port = sock.getsockname()[1]
+    front.configure(host)
+    httpd = LedgerHttpServer(
+        sock,
+        host,
+        lambda client, headers, path: serve.refusal(client, headers, path, token, port),
+        {"name": "swarm-ledger", "repo_root": str(host), "pid": os.getpid()},
+    )
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield port
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def _get(
+    port: int, host: Path, query: str, *, token: bool = True, repo: Path | None = None
+) -> tuple[int, dict[str, str], str]:
+    headers = auth.auth_headers(host) if token else {}
+    headers[serve.REPO_HEADER] = urllib.parse.quote(str(repo or host))
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+    try:
+        conn.request("GET", f"{serve.PANEL_PATH}{query}", headers=headers)
+        response = conn.getresponse()
+        return response.status, dict(response.getheaders()), response.read().decode("utf-8")
+    finally:
+        conn.close()
+
+
+def test_the_panel_route_answers_the_launchers_document(
+    ledger: Ledger, host: Path, lean: int
+) -> None:
+    ctx = _build(ledger)
+    task_id = f"file_id:{ctx['file_id']}"
+
+    status, headers, body = _get(lean, host, "")
+    assert status == 200
+    assert serve.REPO_HEADER in headers
+    plain = json.loads(body)
+    assert plain["repo"] == str(host)
+    assert _node(plain["runs"][0], "coder")["task"]["brief"] is None
+
+    status, _, body = _get(lean, host, f"?brief={urllib.parse.quote(task_id)}")
+    assert status == 200
+    assert _node(json.loads(body)["runs"][0], "coder")["task"]["brief"] is not None
+
+    status, _, body = _get(lean, host, "?detail=" + ctx["coder_id"])
+    assert status == 200
+    assert "recent" in _node(json.loads(body)["runs"][0], "coder")
+
+
+def test_the_panel_route_needs_the_token_and_this_repo(
+    ledger: Ledger, host: Path, lean: int, tmp_path: Path
+) -> None:
+    _build(ledger)
+
+    assert _get(lean, host, "", token=False)[0] == 403
+    assert _get(lean, host, "", repo=tmp_path / "elsewhere")[0] == 409

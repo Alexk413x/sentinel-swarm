@@ -423,7 +423,13 @@ class ReviewMixin(LedgerHost):
             if len(parts) > 1
             else None
         )
-        build = (self.settings.build_command or None) if scope == "full" else None
+        build_parts = self.settings.full_build_parts() if scope == "full" else []
+        build = " ; ".join(text for _, text in build_parts) or None
+        build_parts_json = (
+            json.dumps([{"prefix": prefix, "command": text} for prefix, text in build_parts])
+            if len(build_parts) > 1
+            else None
+        )
         testrun.sweep(self.conn)
         if file_row is not None:
             claimed = self._file_scope_paths(file_row)
@@ -448,7 +454,8 @@ class ReviewMixin(LedgerHost):
             cur = conn.execute(
                 "INSERT INTO test_runs (run_id, agent_id, scope, target, command, "
                 "command_parts_json, fingerprint, state, skip_patterns_json, claimed_json, "
-                "timeout_s, build_command) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)",
+                "timeout_s, build_command, build_parts_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)",
                 (
                     c.run_id,
                     c.agent_id,
@@ -461,6 +468,7 @@ class ReviewMixin(LedgerHost):
                     json.dumps(sorted(set(claimed))),
                     self.settings.test_timeout_s,
                     build,
+                    build_parts_json,
                 ),
             )
             test_run_id = int(cur.lastrowid or 0)
@@ -582,9 +590,9 @@ class ReviewMixin(LedgerHost):
                 "INSERT INTO test_runs (run_id, agent_id, scope, target, command, "
                 "command_parts_json, exit_code, "
                 "passed, failed, skipped, errors, allowed_skipped, output, fingerprint, "
-                "reused_from, build_command, build_exit_code, build_output, build_duration_ms, "
-                "state, duration_ms, finished_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                "reused_from, build_command, build_parts_json, build_exit_code, build_output, "
+                "build_duration_ms, state, duration_ms, finished_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
                 f"'done', 0, {NOW})",
                 (
                     c.run_id,
@@ -603,6 +611,7 @@ class ReviewMixin(LedgerHost):
                     earlier["fingerprint"],
                     earlier["test_run_id"],
                     earlier["build_command"],
+                    earlier["build_parts_json"],
                     earlier["build_exit_code"],
                     earlier["build_output"],
                     earlier["build_duration_ms"],

@@ -76,7 +76,7 @@ another host starts Claude workers. That choice uses Claude installation,
 authentication, hooks, and sessions and is not native Copilot support. The companion
 does not implement a bridge or silently select one.
 
-**Native Copilot workers (needs implementation).** The official Copilot SDK
+**Native Copilot workers (future feature).** The official Copilot SDK
 documents [tool and lifecycle hooks](https://github.com/github/copilot-sdk/blob/main/docs/hooks/hooks-overview.md)
 and [independent-root session management](https://github.com/github/copilot-sdk/blob/main/docs/session-management.md).
 These APIs establish a candidate non-UI path, not verified Sentinel compatibility.
@@ -154,11 +154,10 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
   and `.claude/sentinel-swarm.local.md` to `.git/info/exclude`, so the settings file the
   setup skill writes stays out of `git status`.
 - Reports the mode each role it wrote starts in, with where the mode comes from, as
-  "swarm-<role> starts in <mode>: <source>". When policy sets
-  `permissions.disableBypassPermissionsMode`, it also says that a role that would start
-  in `bypassPermissions` starts in `acceptEdits`. See "Permission mode" below.
-- Prints a `test_command_by_path` suggestion for a repo with several test packages; see
-  "One test command per path prefix" in the settings section.
+  "swarm-<role> starts in <mode>: <source>". See "Permission mode" below.
+- Prints a `test_command_by_path`, `lint_command_by_path`, or `build_command_by_path`
+  suggestion for a repo with several packages that have a `test`, `lint`, or `build`
+  script; see "One command per path prefix" in the settings section.
 - Checks the test command, through the same runner `tests_run` uses (`cmd.exe` with
   `shell=True` on Windows, so a path that only a POSIX shell accepts fails here first):
   - With no `test_command`, it reports that the command is not set.
@@ -210,25 +209,18 @@ its tools load. A session loads plugin tools when it starts, and setup cannot ru
 
 ## Permission mode
 
-A role session starts in `bypassPermissions` unless the settings file names another
-mode for its role or the user's own `permissions.defaultMode` names one. A background
-session that prompts waits until a person answers, so the swarm runs every role as
-autonomously as the user's settings allow. Only `permission_mode.<role>` raises a role
-above the user's own default mode. `permissions.start_mode`
-decides each launch's `--permission-mode`, for `agent_spawn`, `agent_resume`, the
-watchdog's Oracle resume, and the launcher, and every launch passes the flag:
+A role session starts in the mode the user has set. The swarm picks no mode of its own.
+`permissions.start_mode` decides each launch, for `agent_spawn`, `agent_resume`, the
+watchdog's Oracle resume, and the launcher:
 
 1. `permission_mode.<role>` in the settings file, when it names a mode Claude Code
    knows (`default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions`,
-   `manual`), is passed as the flag.
-2. Otherwise, when a settings file sets `permissions.defaultMode` to a mode Claude Code
-   knows, that mode is the flag. The files are read in Claude Code's order, and the
-   first that names a known mode decides: managed settings, `.claude/settings.local.json`,
-   `.claude/settings.json`, then the user's `settings.json`.
-3. Otherwise the flag is `bypassPermissions`, for every role.
-4. When managed settings, `.claude/settings.local.json`, `.claude/settings.json`, or the
-   user's `settings.json` sets `permissions.disableBypassPermissionsMode: "disable"`, a
-   role that would start in `bypassPermissions` gets `--permission-mode acceptEdits`.
+   `manual`), is passed as `--permission-mode`.
+2. Otherwise the launch passes no `--permission-mode`, and Claude Code applies the
+   user's own `permissions.defaultMode`: `.claude/settings.local.json`, then
+   `.claude/settings.json`, then the user's `settings.json`, with managed settings above
+   all three. With none set, the session starts in Claude Code's `default` mode, where
+   a background session waits for a person at each prompt.
 
 The role file's `permissionMode` is never read; setup removes it. The swarm's limits
 hold in every mode: the write, shell, `SendMessage`, and `AskUserQuestion` gates are
@@ -340,13 +332,15 @@ descriptions stay out of every session's context.
 | `watchdog.*` | See "Watchdog" in [08-watchdog.md](08-watchdog.md) | Watchdog timing, thresholds, and server idle exit |
 | `test_command` | empty | Must contain `{target}`, for example `python -m pytest -q -p no:cacheprovider {target}` |
 | `test_command_by_scope.<scope>` | empty | A command for one scope (`file`, `module`, `phase`, or `full`) in place of `test_command`, for example a sharded full run, or an environment variable that only the full run needs. A scope with no entry uses `test_command`. Unknown scopes are dropped |
-| `test_command_by_path.<prefix>` | empty | A map of repo-relative folder prefixes to test commands, for a repo with more than one test runner, such as `apps/web: npm --prefix apps/web test -- {target}`. Each command follows the rules of `test_command`: it holds `{target}` and no shell operator. A key is a posix path with no leading `/` or `./`, no trailing `/`, and no `..`; an entry with another key or an empty command is dropped. The longest prefix that matches a path wins. See "One test command per path prefix" below. `profile_set` takes it too, and a run's snapshot keeps it |
+| `test_command_by_path.<prefix>` | empty | A map of repo-relative folder prefixes to test commands, for a repo with more than one test runner, such as `apps/web: npm --prefix apps/web test -- {target}`. Each command follows the rules of `test_command`: it holds `{target}` and no shell operator. A key is a posix path with no leading `/` or `./`, no trailing `/`, and no `..`; an entry with another key or an empty command is dropped. The longest prefix that matches a path wins. See "One command per path prefix" below. `profile_set` takes it too, and a run's snapshot keeps it |
 | `test_timeout_s` | 600 | Seconds a test run's process may take. The runner kills the process tree at the cap and records the run as `timed out`. It bounds the test process, not the tool call. A value that is not a positive whole number reads as 600 |
 | `full_target` | empty | What a full run puts in `{target}`, such as `tests`. A full run never runs with an empty target: when the full command contains `{target}` and this is empty, `tests_run(scope="full")` refuses, unless the call passes a target |
 | `allowed_skips` | `[]` | Texts that mark a skip as an environment skip the host expects. A skip whose pytest `-rs` line (`SKIPPED [n] <path>:<line>: <reason>`), or `-v` line, contains one of them counts as clean. Every other skip fails the run |
 | `slow_tests` | `[]` | pytest node ids or path prefixes that run only when a brief asks: the ledger appends `--deselect <id>` for each to a pytest command, and `tests_run(include_slow=true)` leaves them in. Another stack runs them every time |
 | `build_command` | empty | Optional; the Coder's shell gate allows a command that starts with it, and the Driver's allows `build_command` only. A full test run also runs `build_command` once its tests pass, and `phase_review(accepted)` needs that build to pass |
+| `build_command_by_path.<prefix>` | empty | A map of repo-relative folder prefixes to build commands, for a repo with more than one package, such as `apps/web: npm --prefix apps/web run build`. A key follows the rules of `test_command_by_path`, and a command follows the rules of `build_command`: a one-shot build, with no shell operator, and `profile_set` refuses one that serves or watches. A full test run builds with `build_command` (when set) and then with every entry, and `phase_review(accepted)` needs every build to pass. The Driver's shell gate allows every entry. See "One command per path prefix" below. `profile_set` takes it too, and a run's snapshot keeps it |
 | `lint_command` | empty | Optional. Put `{target}` where the linter takes a path, for example `npx eslint {target}`, so each Coder lints only its own file. With `{target}`, the Coder's shell gate allows exactly the command with `{target}` replaced by one of the Coder's own claimed paths (its file, its test file, or a product), and every other token as written; it denies any other path and the whole app. Without `{target}`, the gate allows a command that starts with `lint_command`, as for `build_command`. The Driver's gate never allows it. Setup writes the per-file form |
+| `lint_command_by_path.<prefix>` | empty | A map of repo-relative folder prefixes to lint commands, for a repo with more than one package, such as `apps/web: npm --prefix apps/web run lint`. A key follows the rules of `test_command_by_path`, and a command follows the rules of `lint_command`, including `{target}`: with `{target}`, the Coder's shell gate allows exactly the command with `{target}` replaced by one of the Coder's own claimed paths, and without it, a command that starts with the entry. The gate allows every entry to every Coder, and never to the Driver. A Coder lints a file with the entry of the longest prefix that matches it; the ledger runs no lint itself. See "One command per path prefix" below. `profile_set` takes it too, and a run's snapshot keeps it |
 | `commands` | empty | Named host commands outside test, build, and lint, such as the rebuild of a derived file. Each entry has `name`, `run`, `cwd` (default `.`), and `interpreter`; an entry with no `name` or `run` is dropped. The Coder's and the Manager's shell gates allow each exactly as `cd <cwd> && <interpreter> <run>`, or `<interpreter> <run>` when `cwd` is `.`. A failing `tests_run` whose output names a command's `name` or `run` lists that command in its result's `commands`. See "pre_shell" in [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md) |
 | `memory.headroom_mb` | 1500 | Megabytes of free memory the ledger keeps. `agent_spawn` queues a session whose role's estimate would take free memory below it, the watchdog starts it once memory frees, and every resume of a parked agent follows the same rule: the watchdog's, the ledger's wake-up resume, and `agent_resume`. Empty admits every spawn. See "Memory" in [05-sessions.md](05-sessions.md) |
 | `memory.park_idle_parents` | `true` | Under memory pressure, the watchdog stops an idle Manager or Lead whose children still work and resumes it when a wake-up is owed to it. `false` leaves idle parents to the daemon |
@@ -360,7 +354,7 @@ descriptions stay out of every session's context.
 | `pricing.<family>` | unset | `input`, `output`, `cache_read`, `cache_write_5m`, `cache_write_1h` in USD per million tokens, over the built-in price table. See "Token counting and cost" in [10-report-and-costs.md](10-report-and-costs.md) |
 | `watchdog.context_windows.<family>` | unset | The context window in tokens for a model family, or `default` for every other model. See [08-watchdog.md](08-watchdog.md) |
 | `role_parallelism_cap.<role>` | empty | Cap on that role's own live sessions in the run |
-| `permission_mode.<role>` | empty for every role | `--permission-mode <mode>` for that role's sessions. Empty starts the role in `bypassPermissions`; an unknown value reads as empty. See "Permission mode" above |
+| `permission_mode.<role>` | empty for every role | `--permission-mode <mode>` for that role's sessions. Empty passes no flag, so the role starts in the user's own `permissions.defaultMode`; an unknown value reads as empty. See "Permission mode" above |
 | `permission_hold_seconds` | 300 | How long a role session holds a call Claude Code would ask the person about, so the user can allow or deny it in the run panel. Unanswered by then, the session shows Claude Code's own prompt, answered in agent view. `0` turns holding off; a negative value reads as `0`; a value that is not a whole number reads as 300. Each hold reads the settings file again. See "Answering a permission prompt in the panel" in [17-run-panel.md](17-run-panel.md) |
 | `notify` | `[os, push]` | The default channels for every notification type. `os`: the ledger server shows a desktop notification. `push`: the Oracle owes a `PushNotification` call. `[]` or `""` turns both off; a single value reads as a one-item list; unknown values are dropped; an unset key, or `notify:` with no value, keeps both. See "Notifications" in [02-run-lifecycle.md](02-run-lifecycle.md) |
 | `notify_events` | every type `true` except `module_approved: false` | One switch per notification type: `needs_user`, `run_stalled`, `run_paused`, `pause_reminder`, `run_resumed`, `oracle_unreachable`, `rubric_floor`, `driver`, `phase_approved`, `module_approved`, `run_finished`. `true` uses the `notify` channels, `false` sends nothing, and a channel list such as `[os]` uses only the listed channels (those the ledger knows: `os`, `push`), whatever `notify` says. A missing key uses its default, an unknown key is dropped, and a value that is neither a boolean, a list, nor a channel name uses the default. A type that is off, or whose list lacks `push`, owes no `PushNotification`. `ledger.py setup` reports the keys a host's file lacks with a block to paste; it never edits the file. See "Notifications" in [02-run-lifecycle.md](02-run-lifecycle.md) |
@@ -370,8 +364,9 @@ descriptions stay out of every session's context.
 `-p no:cacheprovider` keeps parallel pytest runs from contending on `.pytest_cache`.
 
 A Coder's shell gate allows only a command that starts with `test_command`, with any
-`test_command_by_path` command, or with `build_command`, a `lint_command` as the table
-above describes, read-only git, and the host commands the settings name in
+`test_command_by_path` command, with `build_command`, or with any
+`build_command_by_path` command, a `lint_command` or `lint_command_by_path` command as
+the table above describes, read-only git, and the host commands the settings name in
 `commands`; see `pre_shell` in
 [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md). Any other step the work
 needs, such as an export, edit, and build loop over data files, goes in `commands`
@@ -379,13 +374,14 @@ under its own name, not behind `build_command`.
 
 The gate denies any command that holds a shell operator (`;`, `&`, `|`, `<`, `>`, a
 backtick, a newline, or `$(`), so a `test_command`, `test_command_by_scope` entry,
-`test_command_by_path` entry, `build_command`, or `lint_command` written as `cd apps/web && npm run lint` is refused
+`test_command_by_path`, `lint_command_by_path`, or `build_command_by_path` entry,
+`build_command`, or `lint_command` written as `cd apps/web && npm run lint` is refused
 to every Coder, and `tests_run` resolves a repo-relative `{target}` from the repo root,
 not from `apps/web`. Setup warns about each such template and shows the subdirectory
 form, which names the directory in the command: `npx --prefix apps/web vitest run --root
 apps/web {target}`, or `npm --prefix apps/web run lint`.
 
-### One test command per path prefix
+### One command per path prefix
 
 A repo with several test runners, such as a web app and an API package, sets
 `test_command_by_path`. A `tests_run` call picks its commands this way:
@@ -409,15 +405,49 @@ A repo with several test runners, such as a web app and an API package, sets
   joins the commands with ` ; ` in a stable order (the usual command first, then the
   prefixes in alphabetical order), so reuse and the fingerprint match keep working. The
   row's `command_parts_json` lists the parts. `test_timeout_s` applies to each part.
-- **Lint and build stay single commands.** Lint and build commands by path
-  **(needs implementation)**: `lint_command` and `build_command` do not vary by path.
 
-Setup never edits the settings file. When the repo has more than one `package.json` with
-a `test` script under `apps/*` or `packages/*`, or in the folders a root `package.json`
-`workspaces` field names, it prints a `test_command_by_path` block to paste, with the
-package manager its lockfile shows (`pnpm-lock.yaml`, `yarn.lock`, else npm). With the
-setting present, it prints only the packages the map lacks. It warns about a shell
-operator in a path command, as for `test_command`.
+`lint_command_by_path` and `build_command_by_path` take the same keys and the same
+longest-prefix rule. Each has its own rules:
+
+- **Lint:** the ledger never runs a lint command; a Coder does, through its shell gate. A
+  Coder lints a file with the command of the longest prefix that matches the file's path,
+  and with `lint_command` when no prefix matches. The gate allows every `lint_command` and
+  `lint_command_by_path` command, each under the rules of `lint_command`: a command with
+  `{target}` is allowed only with `{target}` replaced by one of the Coder's own claimed
+  paths, and a command without it is allowed as a prefix. The gate does not check that the
+  Coder picked the longest prefix's command.
+- **Build:** a build runs only in a full test run, never for the file, module, or phase
+  scope. A full run builds with `build_command` when it is set, then with each
+  `build_command_by_path` command in alphabetical order of its prefix, whatever files the
+  run claims. A prefix never replaces `build_command`: a repo that builds only by package
+  leaves `build_command` empty. Every build command runs in the repo root, after the tests
+  pass and the tree check shows no change, and none has a `{target}`.
+- **One row per build:** the full run still records one `test_runs` row. The runner runs
+  the build parts one after another, and a failing part does not stop the next. The row's
+  `build_exit_code` is the first non-zero exit code of a part (`-1` when it timed out),
+  or `0`. A failing part's reason starts with its prefix, or `default` for `build_command`,
+  as in `api: build failed: exit code 4`. `build_output` has a `== <prefix> ==` header
+  before each part, and each part keeps an equal share of 20,000 characters.
+  `build_command` joins the commands with ` ; `, in the order above, so reuse and the
+  `phase_review` check that the run built with the profile's current build keep working.
+  The row's `build_parts_json` lists the parts when there is more than one.
+  `test_timeout_s` applies to each part. A change to `build_command` or
+  `build_command_by_path` makes an earlier full run not count.
+- **Entries `profile_set` refuses:** a `lint_command_by_path` or `build_command_by_path`
+  entry whose key is not a repo-relative folder or whose command is empty, as for the test
+  map, and a `build_command_by_path` command that serves or watches, as for
+  `build_command`.
+
+Setup never edits the settings file. For each of `test`, `lint`, and `build`, when the
+repo has more than one `package.json` with that script under `apps/*` or `packages/*`, or
+in the folders a root `package.json` `workspaces` field names, it prints a
+`test_command_by_path`, `lint_command_by_path`, or `build_command_by_path` block to paste,
+with the package manager its lockfile shows (`pnpm-lock.yaml`, `yarn.lock`, else npm).
+The test block is `npm --prefix <prefix> test -- {target}`; the lint and build blocks are
+`npm --prefix <prefix> run lint` and `npm --prefix <prefix> run build`, with no
+`{target}`, so a Coder lints the whole package. With the setting present, it prints only
+the packages the map lacks. It warns about a shell operator in a path command, as for
+`test_command`.
 
 ## Plugin features
 

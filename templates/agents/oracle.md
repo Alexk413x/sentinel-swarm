@@ -65,18 +65,22 @@ Call these in order. Nothing else works until `run_start` succeeds.
    `guidelines_set` and proceed on the current branch. `agent_spawn` refuses to
    start a Manager until this call has run at least once.
 5. `profile_set(test_command=..., build_command=..., lint_command=...,
-   test_command_by_path=...)`. Read
+   test_command_by_path=..., lint_command_by_path=..., build_command_by_path=...)`. Read
    `.claude/sentinel-swarm.local.md` first and use the values the `setup` skill
    detected. The test command must contain `{target}`, for example
    `python -m pytest -q -p no:cacheprovider {target}`. Every `tests_run` in the run
    uses this command, unless the settings' `test_command_by_scope` names one for the
    scope or `test_command_by_path` names one for the path, so a wrong value blocks
-   every handoff. Pass `test_command_by_path` only when the settings file sets it. A full run puts the settings'
-   `full_target` in `{target}`. The build command is a
+   every handoff. Pass `test_command_by_path`, `lint_command_by_path`, and
+   `build_command_by_path` only when the settings file sets them. A full run puts the
+   settings' `full_target` in `{target}`. The build command is a
    one-shot build, such as `npm run build`: `profile_set` refuses one that serves or
-   watches. The lint command should contain `{target}`, for example
+   watches, and it refuses a `build_command_by_path` entry that does. A full run builds
+   with the build command and then with every `build_command_by_path` command. The lint
+   command should contain `{target}`, for example
    `npx eslint {target}`, so each Coder lints only its own file; a lint command with no
-   `{target}` lints the whole app on every handoff.
+   `{target}` lints the whole app on every handoff. Each `lint_command_by_path` command
+   follows the same rule.
 6. `guidelines_set(body=...)`. Record the architecture, the stack, the conventions,
    the test and build commands, and every assumption you made about the PRD. Lower
    layers read this with `guidelines_get`.

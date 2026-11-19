@@ -18,11 +18,8 @@ claude "You are <name>. Read your brief from the swarm ledger and follow it." --
 
 - `--permission-mode` comes from the role's `permission_mode` setting, never from the
   role file. A role with no setting starts in the user's own
-  `permissions.defaultMode`, or in `bypassPermissions` when no settings file names
-  one, and a role that
-  would start in `bypassPermissions` while policy sets
-  `permissions.disableBypassPermissionsMode` gets `acceptEdits`. Every launch passes
-  the flag. See "Permission mode"
+  `permissions.defaultMode`: the launch passes no flag, and Claude Code reads the
+  local project, project, and user settings. See "Permission mode"
   in [11-setup-and-settings.md](11-setup-and-settings.md). The same rule applies to
   `agent_resume`, the watchdog's Oracle resume, and the launcher.
 - The prompt goes before the options, because `--allowedTools` takes a space-separated
@@ -246,7 +243,7 @@ one. The recipient's mod takes a wake-up that stays unsent for 60 seconds (see
   on Windows when it stops, and puts every printed line into the session's context. Only
   the Oracle's watchdog `Monitor` exists.
 - A device-queue broker that tells a session when a device frees up needs a new plan on
-  the mod's delivery path. **(needs implementation)**
+  the mod's delivery path. **(future feature)**
 - The Coder's Stop hook also blocks once, per Coder, when the Coder stops while working
   with no handoff, and names `handoff_submit`, a `message_post` to its Lead, or
   `wait_for`. It does not block a Coder with an open file wait or a test run still

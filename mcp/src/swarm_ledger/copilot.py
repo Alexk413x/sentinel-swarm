@@ -29,7 +29,10 @@ def status(repo: Path, run_id: int | None = None) -> dict:
         # Unlike the Claude panel, this entry point never retries with a writable open.
         with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
             conn.row_factory = sqlite3.Row
-            return {**base, **panel.snapshot(conn, panel.live_sessions(), run_id)}
+            return {
+                **base,
+                **panel.snapshot(conn, panel.live_sessions(), run_id, brief=panel.ALL_BRIEFS),
+            }
     except (OSError, sqlite3.Error) as exc:
         return {**base, "runs": [], "error": str(exc)}
 

@@ -1,4 +1,5 @@
-"""The ledger's lean HTTP front: MCP on `/mcp`, hooks on `/hook/<event>`, and `/health`.
+"""The ledger's lean HTTP front: MCP on `/mcp`, hooks on `/hook/<event>`, the run panel's
+snapshot on `GET /panel`, and `/health`.
 
 Stdlib only, after codebase-kg's `http_transport.py`. It replaces fastmcp and uvicorn at run
 time; `server.py` stays the source of the tool catalog (`catalog.py`) and of the in-process
@@ -8,6 +9,10 @@ test client.
 carrying `MCP-Protocol-Version: 2026-07-28` gets the stateless protocol (`server/discover`, no
 `initialize`); any other request gets the handshake era (`initialize`, then calls). A
 notification gets 202. GET and DELETE get 405, since the server opens no stream.
+
+`GET /panel` answers the document `ledger.py panel` prints, for the query's `waiting`,
+`detail`, `brief`, and `run`, and 409 unless the `X-Sentinel-Swarm-Repo` header names this
+server's repo.
 
 A POST to `/shutdown` stops the server when it has a shutdown callback and answers 404 when it
 has none.
@@ -28,11 +33,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Optional, cast
 
-from . import __version__, catalog, front
+from . import __version__, catalog, front, panel
 from .agentfiles import LEDGER_SERVER
 from .paths import same_path
 from .pool import CallError
-from .serve import HEALTH_PATH, HOOK_PATH, MCP_PATH, REPO_HEADER, SHUTDOWN_PATH
+from .serve import HEALTH_PATH, HOOK_PATH, MCP_PATH, PANEL_PATH, REPO_HEADER, SHUTDOWN_PATH
 
 MODERN_PROTOCOL = "2026-07-28"
 CLASSIC_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
@@ -249,12 +254,43 @@ class Handler(BaseHTTPRequestHandler):
         path = self._path()
         if path == HEALTH_PATH:
             self._json(200, self.srv.health)
+        elif path == PANEL_PATH and self.command == "GET":
+            self._panel()
         elif path == MCP_PATH or path.startswith(HOOK_PREFIX):
             self._refuse(405, {"Allow": "POST"})
         else:
             self._text(404, "Not Found")
 
     do_DELETE = do_PUT = do_PATCH = do_GET
+
+    def _panel(self) -> None:
+        root = self.srv.root
+        repo = urllib.parse.unquote(self.headers.get(REPO_HEADER, ""))
+        if not repo or not same_path(repo, root):
+            self._text(409, f"this server serves {root}")
+            return
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+
+        def one(name: str) -> str | None:
+            return (query.get(name) or [None])[0]
+
+        run = one("run")
+        try:
+            document = panel.document(
+                root,
+                int(run) if run is not None else None,
+                waiting=frozenset(query.get("waiting", [])),
+                detail=one("detail"),
+                brief=one("brief"),
+            )
+        except (OSError, ValueError) as exc:
+            self._text(500, f"the panel snapshot failed: {exc}")
+            return
+        self._send(
+            200,
+            dumps(document).encode("utf-8"),
+            headers={REPO_HEADER: urllib.parse.quote(str(root))},
+        )
 
     def _body(self) -> bytes:
         chunked = "chunked" in self.headers.get("transfer-encoding", "").lower()

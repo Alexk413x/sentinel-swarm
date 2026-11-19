@@ -57,6 +57,11 @@ Then fill in the test settings:
   repo with more than one test runner, such as `apps/web` and `packages/api`. Setup
   prints a block to paste when it finds several packages with a `test` script. It
   never edits the settings file.
+- `lint_command_by_path` and `build_command_by_path` do the same for lint and build:
+  a Coder lints a file with the command of the longest prefix that holds it, and a
+  full run builds with `build_command` and then with every `build_command_by_path`
+  command. Setup prints a block for each when several packages have a `lint` or
+  `build` script.
 - `allowed_skips` names the skips the environment causes on purpose, by text in the
   skip's location or reason. Every other skip fails its run and blocks every handoff
   and phase review. For pytest, add `-rs` to the command so the ledger can read the
@@ -140,7 +145,7 @@ It is safe to run again, and it prints what it changed and what it found:
   `swarm-coder.md`, from the plugin's templates. Each file sets its role's model,
   color, tools, and MCP servers. It sets no permission mode: each role starts in
   the mode `permission_mode.<role>` in `.claude/sentinel-swarm.local.md` names, else in
-  your own `permissions.defaultMode`, else in `bypassPermissions`, and setup prints the
+  your own `permissions.defaultMode`, and setup prints the
   mode each role starts in. Setup adds no MCP server
   beyond the template's. A session gets the a11y servers when the host has a11y
   installed.

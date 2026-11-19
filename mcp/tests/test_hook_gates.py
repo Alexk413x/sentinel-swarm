@@ -9,7 +9,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from helpers import bootstrap_module, make_host, settings_text
+from helpers import bootstrap_module, make_host, settings_text, spawn_coder
 
 from swarm_ledger import env, hooks, setup
 from swarm_ledger.db import write_tx
@@ -370,3 +370,57 @@ def test_the_shim_and_the_hooks_package_name_the_same_gating_events() -> None:
 
     assert hooks.GATING_EVENTS == shim.GATING_EVENTS
     assert hooks.GATING_EVENTS <= set(hooks.HANDLERS)
+
+
+def test_the_shell_gate_allows_every_lint_and_build_command_by_path(tmp_path: Path) -> None:
+    mapped = (
+        "lint_command_by_path:\n"
+        "  apps/web: npm --prefix apps/web run lint\n"
+        "  packages/api: npx eslint {target} --max-warnings 0\n"
+    )
+    built = "build_command_by_path:\n  apps/web: npm --prefix apps/web run build\n"
+    settings = settings_text(
+        test_command="pytest -q {target}",
+        swaps=[("lint_command_by_path:\n", mapped), ("build_command_by_path:\n", built)],
+    )
+    ledger = Ledger(make_host(tmp_path / "mapped", settings))
+    ctx = bootstrap_module(ledger)
+    coder = spawn_coder(
+        ledger, ctx, "coder-p1-module-1-mine", "packages/api/mine.ts", "packages/api/mine.test.ts"
+    )
+
+    def shell(command: str) -> dict | None:
+        data = {"agent_id": coder["agent_id"], "tool_input": {"command": command}}
+        return events.handle_pre_shell(ledger, data)
+
+    for command in (
+        "npm --prefix apps/web run lint",
+        "npm --prefix apps/web run build",
+        "npx eslint packages/api/mine.ts --max-warnings 0",
+        "npx eslint packages/api/mine.test.ts --max-warnings 0",
+    ):
+        assert shell(command) is None, command
+    for command in (
+        "npx eslint packages/api/other.ts --max-warnings 0",
+        "npx eslint . --max-warnings 0",
+        "npm --prefix apps/other run lint",
+    ):
+        assert shell(command) is not None, command
+
+
+def test_a_driver_may_run_every_build_command_and_no_lint_command(tmp_path: Path) -> None:
+    mapped = (
+        "lint_command_by_path:\n  apps/web: npm --prefix apps/web run lint\n",
+        "build_command_by_path:\n  apps/web: npm --prefix apps/web run build\n",
+    )
+    settings = settings_text(
+        test_command="pytest -q {target}",
+        build_command="npm run build",
+        swaps=[("lint_command_by_path:\n", mapped[0]), ("build_command_by_path:\n", mapped[1])],
+    )
+    ledger = Ledger(make_host(tmp_path / "mapped", settings))
+    assert events._allowed_templates(ledger, "driver") == [
+        "npm run build",
+        "npm --prefix apps/web run build",
+    ]
+    assert events._targeted_lints(ledger, "driver") == []

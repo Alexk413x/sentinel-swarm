@@ -191,20 +191,17 @@ def test_setup_reports_each_roles_starting_mode(repo: Path, config_dir: Path):
     assert not any(line.startswith("swarm-driver starts") for line in report.lines)
 
 
-def test_setup_reports_the_fallback_when_policy_disables_bypass(repo: Path, config_dir: Path):
-    _user_permissions(
-        config_dir,
-        {"disableBypassPermissionsMode": "disable"},
-    )
+def test_setup_reports_the_local_project_mode_over_the_users(repo: Path, config_dir: Path):
+    _user_permissions(config_dir, {"defaultMode": "default"})
+    local = repo / ".claude" / "settings.local.json"
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_text(json.dumps({"permissions": {"defaultMode": "auto"}}), encoding="utf-8")
 
     report = setup.run_setup(repo)
 
-    line = next(line for line in report.lines if line.startswith("swarm-oracle starts"))
-    assert line.startswith("swarm-oracle starts in acceptEdits:")
-    assert "disableBypassPermissionsMode" in line
-    assert any(
-        line.startswith("policy sets permissions.disableBypassPermissionsMode")
-        for line in report.lines
+    assert (
+        "swarm-oracle starts in auto: permissions.defaultMode in .claude/settings.local.json"
+        in report.lines
     )
 
 
@@ -1000,3 +997,80 @@ def test_setup_warns_about_a_shell_operator_in_a_path_command(repo: Path):
         line for line in report.lines if line.startswith("warning: test_command_by_path.apps/web")
     ]
     assert "shell operator" in line
+
+
+def test_setup_suggests_lint_and_build_commands_by_path_for_packages_with_those_scripts(
+    repo: Path,
+):
+    _package(repo, "apps/web", {"test": "vitest run", "lint": "eslint .", "build": "vite build"})
+    _package(repo, "apps/api", {"lint": "eslint .", "build": "tsc"})
+    _write_local_settings(repo, "notify: [os]\n")
+
+    report = setup.run_setup(repo)
+
+    [lint] = [line for line in report.lines if "lint_command_by_path" in line]
+    [build] = [line for line in report.lines if "build_command_by_path" in line]
+    assert yaml.safe_load(lint.split("local.md:\n", 1)[1]) == {
+        "lint_command_by_path": {
+            "apps/api": "npm --prefix apps/api run lint",
+            "apps/web": "npm --prefix apps/web run lint",
+        }
+    }
+    assert yaml.safe_load(build.split("local.md:\n", 1)[1]) == {
+        "build_command_by_path": {
+            "apps/api": "npm --prefix apps/api run build",
+            "apps/web": "npm --prefix apps/web run build",
+        }
+    }
+    assert _path_lines(report) == []
+
+
+def test_setup_names_the_package_manager_in_the_lint_and_build_suggestions(repo: Path):
+    _package(repo, "apps/web", {"lint": "eslint .", "build": "vite build"})
+    _package(repo, "apps/api", {"lint": "eslint .", "build": "tsc"})
+    (repo / "yarn.lock").write_text("", encoding="utf-8")
+
+    report = setup.run_setup(repo)
+
+    text = "\n".join(report.lines)
+    assert "yarn --cwd apps/web run lint" in text
+    assert "yarn --cwd apps/api run build" in text
+
+
+def test_setup_is_quiet_when_lint_and_build_command_by_path_name_every_package(repo: Path):
+    _package(repo, "apps/web", {"lint": "eslint .", "build": "vite build"})
+    _package(repo, "apps/api", {"lint": "eslint .", "build": "tsc"})
+    _write_local_settings(
+        repo,
+        "lint_command_by_path:\n  apps/web: a\n  apps/api: b\n"
+        "build_command_by_path:\n  apps/web: c\n  apps/api: d\n",
+    )
+
+    report = setup.run_setup(repo)
+
+    assert [line for line in report.lines if "_command_by_path in" in line] == []
+    assert [line for line in report.lines if "run one command for the whole repo" in line] == []
+
+
+def test_setup_reports_only_the_lint_prefixes_the_map_lacks(repo: Path):
+    _package(repo, "apps/web", {"lint": "eslint ."})
+    _package(repo, "apps/api", {"lint": "eslint ."})
+    _write_local_settings(repo, "lint_command_by_path:\n  apps/web: npx eslint apps/web\n")
+
+    [line] = [line for line in setup.run_setup(repo).lines if "lint_command_by_path in" in line]
+
+    assert "lacks apps/api" in line
+    assert "apps/web:" not in line
+
+
+def test_setup_warns_about_a_shell_operator_in_a_lint_or_build_path_command(repo: Path):
+    _write_local_settings(
+        repo,
+        "lint_command_by_path:\n  apps/web: cd apps/web && npm run lint\n"
+        "build_command_by_path:\n  apps/web: cd apps/web && npm run build\n",
+    )
+
+    lines = setup.run_setup(repo).lines
+
+    assert any(line.startswith("warning: lint_command_by_path.apps/web") for line in lines)
+    assert any(line.startswith("warning: build_command_by_path.apps/web") for line in lines)

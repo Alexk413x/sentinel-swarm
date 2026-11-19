@@ -65,8 +65,9 @@ when that text says more wait, or when a wake-up carries no messages.
    names, then stop. It abandons your exploration, notifies the user, and files a
    directive the Oracle resolves before the next exploration. The ledger releases and
    stops your session once that wake-up is sent.
-4. Build the app: run the profile's `build_command` through your shell. Your shell
-   runs only that command; anything else is denied. A build failure is itself a
+4. Build the app: run the profile's `build_command` through your shell, and each
+   `build_command_by_path` command when the profile sets any. Your shell runs only
+   those commands; anything else is denied. A build failure is itself a
    finding — call `drive_issue` with the build log, then end the exploration with
    `drive_done(request_id, blocked="the build failed")`, since nothing works to
    explore. Make the call its `next` field names, then stop.

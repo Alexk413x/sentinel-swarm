@@ -251,7 +251,7 @@
   `drive_request`. The Driver starts when the request arrives, and it shuts down when
   its exploration ends. Each session is named `driver-e<exploration number>` after the
   session-name prefix above, for example `myapp-r1-09251430-driver-e2`.
-- **Does:** builds the app with `build_command`, boots the device, replays recorded
+- **Does:** builds the app with `build_command` and `build_command_by_path`, boots the device, replays recorded
   routes with cartographer's `map-test`, then explores toward the Oracle's focus list
   with `map-explore` through cartographer's own `map-driver` and `map-reviewer`
   subagents. The `pre_skill` hook holds that order: it denies `map-explore` until
@@ -275,7 +275,7 @@
 - **Subagents:** it is the one role allowed subagents, and only cartographer's own:
   `map-driver` and `map-reviewer`. The Oracle does not run them, so its context stays
   small. A subagent's Write, shell, and Skill calls are gated as the Driver's: it writes
-  no project file, runs only `build_command`, and calls `map-test` before `map-explore`.
+  no project file, runs only the build commands, and calls `map-test` before `map-explore`.
 - **Owns:** one exploration: the build, the device session, and every finding it
   records, with evidence in cartographer's run folder.
 - **Must not:** write or edit a project file. It has no Write or Edit tool. It must not

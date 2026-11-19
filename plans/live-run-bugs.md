@@ -12,7 +12,7 @@ its run is live.
 | 2 | Setup accepts command templates the shell gate denies | Fixed on `fix/live-run-bugs` |
 | 3 | Resume after a reboot is refused | Fixed on `fix/live-run-bugs` |
 | 4 | A replaced Coder keeps raising alerts | Fixed on `fix/live-run-bugs` |
-| 5 | Run panel actions do nothing | Improved on `fix/live-run-bugs`; root cause not confirmed |
+| 5 | Run panel actions do nothing | Fixed on `fix/open-items`: an answer wakes the Oracle, failures show, the name opens a detail card; not yet seen live |
 | 6 | Stray-process findings name exited PIDs | Fixed on `fix/live-run-bugs` |
 | 7 | Pausing needs the Oracle | Fixed on `fix/live-run-bugs` |
 | 8 | Every Coder lints the whole app | Fixed on `fix/live-run-bugs` |
@@ -35,7 +35,7 @@ its run is live.
 | 28 | A parent waiting on working children is reported stuck or blocked | Fixed in 0.8.1 |
 | 17b | The phase gate refuses a settled file claimed with no `test_path` | Fixed in 0.8.4 |
 | 30 | Released sessions keep running | Fixed in 0.8.4 |
-| 31 | One test command for the whole repo | Fixed in 0.8.4 for tests; lint and build by path are open |
+| 31 | One test command for the whole repo | Fixed in 0.8.4 for tests; lint and build by path on `fix/open-items` |
 | 32 | Findings swamp the Oracle; false `needs_user`; unsent wake-ups | Fixed in 0.8.4 (the parked-resume TypeError in 0.8.1) |
 | 33 | `ledger.py resume` does not wake an idle Oracle | Fixed in 0.8.4 |
 | 34 | A brief or `file_deps` row stays bound to a superseded file | Fixed in 0.8.4 |
@@ -206,10 +206,10 @@ lint scope (8).
   (the shell-operator warning), `setup_skill`, the PRD documents 05, 08, 11, 13, and
   14, and this plan. The codebase-kg pre-commit hook flags the drift otherwise.
 
-## Open question
+## Resolved question
 
 - An automated security review flagged `mcp/src/swarm_ledger/permissions.py`: with no
-  `permission_mode.<role>` and no `defaultMode` in any settings file, a role starts in
-  `bypassPermissions`. It suggests falling back to `default` (or `acceptEdits` for the
-  Coder). This is the 0.7.1 release's behavior, not part of this branch; it needs a
-  decision.
+  `permission_mode.<role>` and no `defaultMode`, a role started in `bypassPermissions`.
+  Decided 2026-11-18: a role uses the mode the user has set, and the swarm passes no
+  mode of its own. See
+  "Permission mode" in `knowledge/prd/11-setup-and-settings.md`.
