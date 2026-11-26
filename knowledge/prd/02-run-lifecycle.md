@@ -779,8 +779,10 @@ user" in [04-agreements.md](04-agreements.md).
 
 ## Git in the host repo
 
-- The whole swarm works on the checked-out branch, in one working tree. It never
-  commits or pushes. The user commits at the end.
+- The whole swarm works on the checked-out branch, in one working tree. No role commits
+  or pushes: `pre_shell` refuses both. The ledger itself commits an approved phase's own
+  claimed files on the run branch (`commit_phases`, on by default), never on the base
+  branch. Nothing pushes; the user pushes, and commits whatever a phase commit left out.
 - `repo_check(fetch)` reports the branch, a clean tree, the dirty paths, the base
   branch (the `base_branch` setting, else `main`, else `master`), ahead and behind
   counts against the base and the upstream, `obvious_start`, and one line of `advice`.
