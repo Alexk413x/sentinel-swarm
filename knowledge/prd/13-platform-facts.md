@@ -110,8 +110,14 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   `stateless_http=True` in `mcp.run`. Restarted on the same port after its whole tree
   was killed, each answered a `Client` opened before the kill on its next call without
   error. (2026-09-25)
-- codebase-kg 0.8.0 declares its server as `${CLAUDE_PLUGIN_ROOT}/bin/kg-shim`, a
-  standard-library relay, not `uv run`. (2026-09-25)
+- codebase-kg 0.18.0 declares two servers: `codebase-kg` over HTTP, and
+  `codebase-kg-hooks`, a standard-library stdio relay started by
+  `${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg-hooks`. Its hooks are `mcp_tool` hooks on the
+  server name `plugin:codebase-kg:codebase-kg-hooks`. A `--strict-mcp-config` session
+  resolves them only when its `--mcp-config` names a server exactly that; the name
+  `codebase-kg-hooks` alone does not. On Windows the entry must name `kg-hooks.cmd`:
+  Claude Code runs the `.cmd` beside an extension-less path only for a plugin's own
+  server. (2026-11-26, from codebase-kg's 0.18.0 report and `strict_config.py`)
 - On Windows, `python3` on `PATH` can be the Microsoft Store stub, which only prints a
   hint. Setup writes `python` for MCP server commands on Windows. (noted 2026-09-21,
   not measured)
@@ -129,7 +135,7 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   conversation", an offline Remote Control entry, where it stays queued. (2026-10-27)
 - A session run with `--agent` loads the user's global `CLAUDE.md`, so a persona from
   it can appear in messages to the user. (2026-09-22)
-- On Windows, Python 3.12's `shutil.which` returns an extensionless file before its `.cmd` twin. A plugin that ships a POSIX launcher beside a `.cmd`, such as codebase-kg 0.8.0's `bin/kg-shim`, then fails with WinError 193. The shim prefers the PATHEXT variants. Verified 2026-09-25.
+- On Windows, Python 3.12's `shutil.which` returns an extensionless file before its `.cmd` twin. A plugin that ships a POSIX launcher beside a `.cmd`, such as codebase-kg's `mcp/launch/kg-shim`, then fails with WinError 193. The shim prefers the PATHEXT variants. Verified 2026-09-25.
 - A channel cannot wake a `--bg` session. A channel reaches a `--bg` session only through `--channels` with a plugin on the allowlist: Anthropic's list, or an organization's `allowedChannelPlugins` in managed settings. A Pro or Max user has no setting that adds a plugin to the allowlist. Verified 2026-09-25.
 - Claude Code 2.1.283 reads `--dangerously-load-development-channels` only in an interactive session, after the user accepts a dialog. A `--bg` or `-p` session discards it. Claude Code has no settings key or environment variable for development channels. Verified 2026-09-26.
 - `claude agents --json` lists interactive sessions too, with `kind: "interactive"`, `pid`, `sessionId`, `name`, and `status`, and no `id` or `state`. A `claude` started with a parent session's `CLAUDE_CODE_CHILD_SESSION` in its environment is left out of the list and saves no transcript. `claude --resume <id> "<message>"` continues the same session id interactively, but under a generated name unless `--name` is passed again. Verified live 2026-09-26.

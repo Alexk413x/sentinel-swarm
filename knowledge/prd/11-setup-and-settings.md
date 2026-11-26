@@ -146,7 +146,7 @@ commands from the detected stack, confirms codebase-kg, and builds the graph. Se
   an ordinary session in the host repo cannot run a role as a subagent. An exact-name
   `Agent(<name>)` rule does not block `claude --agent <name>`, so role launches still
   work. A `permissions.deny` that is not a list leaves the file unchanged.
-- Sets `post_edit_nudge: false` in `.claude/codebase-kg.local.md`, adding the key to
+- Sets `commit_check: false` in `.claude/codebase-kg.local.md`, adding the key to
   an existing file's frontmatter, or leaves the file alone when it already sets the
   key. See "The code graph" in
   [09-mcp-servers-and-code-graph.md](09-mcp-servers-and-code-graph.md).
