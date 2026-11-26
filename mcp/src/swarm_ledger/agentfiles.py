@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -37,6 +39,10 @@ DRIVER_OPTIONAL_SERVERS: dict[str, tuple[str, ...]] = {
 RELAY_ARGS = [".sentinel-swarm/hook.py", "mcp"]
 SCOPES = ("local", "project", "user")
 CODEBASE_KG_PLUGIN = "codebase-kg@alexk413x"
+# codebase-kg's hooks name this server exactly; under --strict-mcp-config a session that
+# lacks it runs none of codebase-kg's gates and prints a failure notice per hook call.
+KG_HOOK_RELAY = "plugin:codebase-kg:codebase-kg-hooks"
+KG_STRICT_CONFIG_MODULE = Path("mcp") / "src" / "codebase_kg" / "strict_config.py"
 _PLACEHOLDER = re.compile(r"\$\{([^}]*)\}")
 _OPTION_VALUE = re.compile(r"[0-9A-Za-z._-]{1,64}")
 # headersHelper runs in a shell with the plugin root inside double quotes; a root holding one of
@@ -237,6 +243,46 @@ def _direct(repo_root: Path, entry: Any) -> Any:
     return http_entry(repo_root, str(args[2]), str(args[3])) or entry
 
 
+def kg_hook_relay(repo_root: Path) -> dict[str, Any] | None:
+    """codebase-kg's hook relay entry from its own `strict-mcp-config` command.
+
+    None when the install has no such command (0.17.1 and older answer their hooks with
+    scripts), or when the command fails or prints no usable entry.
+    """
+    install = install_path(repo_root, CODEBASE_KG_PLUGIN)
+    if install is None:
+        return None
+    cli = install / "mcp" / "launch" / "kg_cli.py"
+    if not cli.is_file() or not (install / KG_STRICT_CONFIG_MODULE).is_file():
+        return None
+    port = _plugin_option(CODEBASE_KG_PLUGIN, install, "server_port")
+    if port is None:
+        return None
+    python = getattr(sys, "_base_executable", None) or sys.executable
+    try:
+        completed = subprocess.run(
+            [python, "-I", "-S", str(cli), "strict-mcp-config", "--port", port],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    try:
+        printed = json.loads(completed.stdout)
+    except ValueError:
+        return None
+    servers = printed.get("mcpServers") if isinstance(printed, dict) else None
+    relay = servers.get(KG_HOOK_RELAY) if isinstance(servers, dict) else None
+    if not isinstance(relay, dict) or not isinstance(relay.get("command"), str):
+        return None
+    return relay
+
+
 def _plugin_key(plugin_id: str, server: str) -> str:
     return f"plugin_{plugin_id.split('@', 1)[0]}_{server}"
 
@@ -372,6 +418,9 @@ def session_options(
             for name, entry in {**mcp_servers(agent_file), **extra}.items()
         },
     }
+    relay = kg_hook_relay(repo_root)
+    if relay is not None:
+        servers[KG_HOOK_RELAY] = relay
     config = {"mcpServers": servers}
     options = ["--agent", f"swarm-{role}"]
     if model:
