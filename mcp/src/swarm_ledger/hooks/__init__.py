@@ -64,7 +64,7 @@ def _is_locked(exc: Exception) -> bool:
     )
 
 
-def _attempt(event_name: str, handler, raw: str, root: Path | None) -> dict | None:
+def _attempt(event_name: str, handler, raw: str, root: Path | None, fallback: bool) -> dict | None:
     data = json.loads(raw) if raw.strip() else {}
     ledger = env.open_ledger(root)
     try:
@@ -74,6 +74,8 @@ def _attempt(event_name: str, handler, raw: str, root: Path | None) -> dict | No
                 use_listing=event_name in LISTING_EVENTS,
                 unpark=event_name not in CLOSING_EVENTS,
             )
+        if fallback and isinstance(data, dict):
+            events.record_fallback(ledger, data, event_name)
         return handler(ledger, data)
     finally:
         ledger.conn.close()
@@ -91,7 +93,9 @@ def _cannot_check(exc: Exception) -> dict:
     }
 
 
-def run_event(event_name: str, raw: str, root: Path | None = None) -> tuple[str, str]:
+def run_event(
+    event_name: str, raw: str, root: Path | None = None, fallback: bool = False
+) -> tuple[str, str]:
     handler = HANDLERS.get(event_name)
     if handler is None:
         return "", f"swarm_ledger.hooks: unknown event {event_name!r}\n"
@@ -102,11 +106,11 @@ def run_event(event_name: str, raw: str, root: Path | None = None) -> tuple[str,
     result: dict | None
     try:
         try:
-            result = _attempt(event_name, handler, raw, root)
+            result = _attempt(event_name, handler, raw, root, fallback)
         except Exception as exc:
             if event_name not in GATING_EVENTS or not _is_locked(exc):
                 raise
-            result = _attempt(event_name, handler, raw, root)
+            result = _attempt(event_name, handler, raw, root, False)
     except Exception as exc:
         answer = json.dumps(_cannot_check(exc)) if event_name in GATING_EVENTS else ""
         return answer, f"swarm_ledger.hooks {event_name}: {exc}\n"

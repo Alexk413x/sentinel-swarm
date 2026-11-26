@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 
 ROLES = ("oracle", "manager", "lead", "coder", "driver")
+HOOK_FALLBACK = "hook_fallback"
 ROLE_RANK = {"coder": 0, "lead": 1, "manager": 2, "oracle": 3}
 
 _CHILD_ROLES: dict[str, tuple[str, ...]] = {

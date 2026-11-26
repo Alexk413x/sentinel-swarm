@@ -2605,3 +2605,79 @@ def test_the_listener_prints_a_digest_directive_as_one_line(ledger: Ledger, now:
     [line] = lines
     assert line.startswith("Watchdog directive 1: Watchdog pass: 2 findings - stuck: coder-1")
     assert "- blocked: coder-2" in line and "\n" not in line
+
+
+def _hook_fallbacks(ledger: Ledger, agent_id: str, at: datetime, hooks: list[str]) -> None:
+    with write_tx(ledger.conn) as conn:
+        for hook in hooks:
+            conn.execute(
+                "INSERT INTO agent_events (agent_id, from_state, to_state, reason, at) "
+                "VALUES (?, 'working', 'hook_fallback', ?, ?)",
+                (agent_id, hook, watchdog.stamp(at)),
+            )
+
+
+def _unreachable(ledger: Ledger, claude: FakeClaude, now: datetime) -> list[watchdog.Finding]:
+    return [f for f in _scan(ledger, claude, now) if f.kind == "hook_unreachable"]
+
+
+def test_an_agent_whose_hooks_keep_falling_back_is_reported_to_its_parent(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _oracle_running(claude)
+    _agent(ledger, "sess-lead-1", "lead", "working", started=now, heartbeat=now)
+    claude.run("sess-lead-1")
+    _agent(
+        ledger, "sess-coder-1", "coder", "working", started=now, heartbeat=now, parent="sess-lead-1"
+    )
+    claude.run("sess-coder-1")
+    assert watchdog.HOOK_FALLBACK_LIMIT == 3
+
+    _hook_fallbacks(ledger, "sess-coder-1", now, ["pre_write", "post_any"])
+    assert _unreachable(ledger, claude, now + timedelta(seconds=5)) == []
+
+    _hook_fallbacks(ledger, "sess-coder-1", now, ["post_any"])
+    [finding] = _unreachable(ledger, claude, now + timedelta(seconds=5))
+
+    assert finding.name == "coder-1"
+    assert (
+        "3 of its hooks (post_any, pre_write) could not reach the ledger server" in finding.detail
+    )
+    assert finding.next_step.startswith('Wake its parent lead-1: SendMessage(to="host-r1-lead-1"')
+    assert _unreachable(ledger, claude, now + timedelta(seconds=31)) == []
+
+
+def test_fallback_events_of_two_agents_are_not_added_together(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _two_coders(ledger, now)
+    _oracle_running(claude)
+    _hook_fallbacks(ledger, "sess-coder-1", now, ["post_any", "post_any"])
+    _hook_fallbacks(ledger, "sess-coder-2", now, ["post_any", "post_any"])
+
+    assert _unreachable(ledger, claude, now) == []
+
+
+def test_the_oracles_own_fallbacks_name_the_server_check(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _run_id(ledger)
+    _oracle_running(claude)
+    _hook_fallbacks(ledger, ORACLE, now, ["stop", "post_any", "pre_ledger"])
+
+    [finding] = _unreachable(ledger, claude, now)
+
+    assert finding.agent_id == ORACLE
+    assert finding.next_step.startswith("Call ledger_info()")
+
+
+def test_a_hook_unreachable_finding_joins_the_digest(ledger: Ledger, now: datetime) -> None:
+    run_id = _two_coders(ledger, now)
+    findings = [_finding("sess-coder-1", "hook_unreachable"), _finding("sess-coder-2", "stuck")]
+
+    watchdog.record(ledger.conn, run_id, findings, now)
+
+    bodies = [r["body"] for r in ledger.conn.execute("SELECT body FROM directives")]
+    assert len(bodies) == 1
+    assert bodies[0].startswith("Watchdog pass: 2 findings")

@@ -184,6 +184,17 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   to stderr, and the answer is empty, which allows. The set of gating events lives in
   `swarm_ledger.hooks`; the shim template keeps its own copy, and a test holds the two
   equal. The ledger connection closes on every path.
+- A hook that runs outside the server is recorded. `mcp/launch/ledger.py hooks <event>`
+  is the fallback's entry: the shim runs it only when the server gave no answer. It calls
+  `run_event` with `fallback=True`, which writes an `agent_events` row with `to_state`
+  `hook_fallback` and the hook event as its reason, for the live agent of the hook's
+  `session_id`, before the handler runs. A subagent's call counts for its session's
+  agent. A session the ledger does not know records nothing, and so does a hook the
+  server answers. The retry after a locked database does not record a second row. The
+  watchdog reads these rows for `hook_unreachable`; see
+  [08-watchdog.md](08-watchdog.md). The marker is the entry point, not a field in the
+  hook input, so a host whose `.sentinel-swarm/hook.py` predates this rule records it too,
+  and a client cannot forge it through the server's hook route.
 - Before its handler runs, every hook from a session id the ledger does not know
   re-keys a resumed agent to that id when it matches a pending resume. See "Re-keying a
   resumed session" in [05-sessions.md](05-sessions.md).
