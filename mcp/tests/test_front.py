@@ -14,7 +14,13 @@ from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
 from swarm_ledger import auth, catalog, front, serve
-from swarm_ledger.http_front import MODERN_PROTOCOL, LedgerHttpServer
+from swarm_ledger.http_front import (
+    CLASSIC_VERSIONS,
+    MODERN_PROTOCOL,
+    SUPPORTED_VERSIONS,
+    LedgerHttpServer,
+    header_value,
+)
 from swarm_ledger.server import mcp
 
 
@@ -158,7 +164,8 @@ def _modern(method: str, params: dict[str, Any], name: str | None = None) -> tup
 def test_the_lean_front_speaks_the_stateless_protocol(host: Path, lean: int) -> None:
     status, reply = _rpc(lean, host, *_modern("server/discover", {}))
     assert status == 200
-    assert reply["result"]["supportedVersions"] == [MODERN_PROTOCOL]
+    assert reply["result"]["supportedVersions"] == SUPPORTED_VERSIONS
+    assert SUPPORTED_VERSIONS == [MODERN_PROTOCOL, *reversed(CLASSIC_VERSIONS)]
     status, reply = _rpc(lean, host, *_modern("tools/list", {}))
     assert {t["name"] for t in reply["result"]["tools"]} == set(catalog.TOOLS)
     body, headers = _modern(
@@ -168,6 +175,104 @@ def test_the_lean_front_speaks_the_stateless_protocol(host: Path, lean: int) -> 
     assert status == 200
     assert reply["result"]["structuredContent"] == {"path": "a", "owner": None}
     assert reply["result"]["resultType"] == "complete"
+
+
+_CALL = {"name": "who_owns", "arguments": {"path": "a"}}
+
+
+def _error(port: int, root: Path, body: dict, headers: dict) -> tuple[int, int]:
+    status, reply = _rpc(port, root, body, headers)
+    return status, reply["error"]["code"]
+
+
+def test_an_unserved_version_is_refused_before_any_other_check(host: Path, lean: int) -> None:
+    body, headers = _modern("tools/call", _CALL, "some_other_tool")
+    headers["MCP-Protocol-Version"] = "2027-01-01"
+    headers["Mcp-Method"] = "tools/list"
+    del body["params"]["_meta"]
+
+    status, reply = _rpc(lean, host, body, headers)
+
+    assert status == 400
+    assert reply["error"]["code"] == -32022
+    assert reply["error"]["data"] == {"supported": SUPPORTED_VERSIONS, "requested": "2027-01-01"}
+    _, discovered = _rpc(lean, host, *_modern("server/discover", {}))
+    assert discovered["result"]["supportedVersions"] == reply["error"]["data"]["supported"]
+
+
+@pytest.mark.parametrize("params", [None, {}, {"_meta": "x"}, {"_meta": {}}])
+def test_a_modern_request_without_the_envelope_is_invalid_params(
+    host: Path, lean: int, params: object
+) -> None:
+    body, headers = _modern("tools/list", {})
+    if params is None:
+        del body["params"]
+    else:
+        body["params"] = params
+
+    assert _error(lean, host, body, headers) == (400, -32602)
+
+
+def test_a_modern_request_missing_one_envelope_key_is_invalid_params(host: Path, lean: int) -> None:
+    for key in (
+        "io.modelcontextprotocol/protocolVersion",
+        "io.modelcontextprotocol/clientCapabilities",
+    ):
+        body, headers = _modern("tools/list", {})
+        del body["params"]["_meta"][key]
+        assert _error(lean, host, body, headers) == (400, -32602)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"Mcp-Method": None},
+        {"Mcp-Method": "tools/list"},
+        {"Mcp-Name": None},
+        {"Mcp-Name": "run_status"},
+        {"Mcp-Name": "who%5Fowns"},
+        {"Mcp-Name": "=?base64?not base64?="},
+        {"Mcp-Name": "=?base64?cnVuX3N0YXR1cw==?="},
+    ],
+)
+def test_a_header_that_disagrees_with_the_body_is_a_header_mismatch(
+    host: Path, lean: int, change: dict[str, str | None]
+) -> None:
+    body, headers = _modern("tools/call", _CALL, "who_owns")
+    for name, value in change.items():
+        if value is None:
+            del headers[name]
+        else:
+            headers[name] = value
+
+    assert _error(lean, host, body, headers) == (400, -32020)
+
+
+def test_a_version_header_that_disagrees_with_the_envelope_is_a_header_mismatch(
+    host: Path, lean: int
+) -> None:
+    body, headers = _modern("tools/list", {})
+    body["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"] = "2025-11-25"
+
+    assert _error(lean, host, body, headers) == (400, -32020)
+
+
+@pytest.mark.parametrize("sent", ["  who_owns 	", "=?base64?d2hvX293bnM=?="])
+def test_the_name_header_is_read_without_padding_and_from_its_base64_form(
+    host: Path, lean: int, sent: str
+) -> None:
+    status, reply = _rpc(lean, host, *_modern("tools/call", _CALL, sent))
+
+    assert status == 200
+    assert reply["result"]["structuredContent"] == {"path": "a", "owner": None}
+
+
+def test_header_value_decodes_only_the_exact_sentinel_form() -> None:
+    assert header_value(None) is None
+    assert header_value(" a b ") == "a b"
+    assert header_value("=?base64?w6k=?=") == "é"
+    assert header_value("=?BASE64?w6k=?=") == "=?BASE64?w6k=?="
+    assert header_value("=?base64?/w==?=") is None
 
 
 def test_the_lean_front_speaks_the_handshake_protocol(host: Path, lean: int) -> None:
