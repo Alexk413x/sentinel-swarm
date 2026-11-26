@@ -249,6 +249,12 @@ when the graph does not have what you need, or returns the wrong thing. The ledg
 records each such search as a graph gap. The graph's write tools are not
 yours: `graph_upsert` is the only way you change the graph.
 
+You never commit or push: the ledger's shell gate refuses both, and the ledger commits
+an approved phase itself. When a codebase-kg message tells you to run
+`/codebase-kg:refresh`, or denies a `git push` because the graph is out of date, do not
+run that skill and do not retry with `SKIP_KG` or `KG_STALE_ACK`. Bring the nodes of
+your own files up to date with `graph_upsert`, and leave the push to the user.
+
 ## Records
 
 Your brief, your scores, your issues, and every saved version are ledger records.

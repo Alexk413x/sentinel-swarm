@@ -297,22 +297,22 @@ def test_settings_local_with_a_non_list_deny_is_left_alone(repo: Path):
     assert any("permissions.deny is not a list" in line for line in report.lines)
 
 
-def test_setup_turns_off_the_codebase_kg_nudge(repo: Path):
+def test_setup_turns_off_the_codebase_kg_commit_check(repo: Path):
     path = repo / ".claude" / "codebase-kg.local.md"
 
     report = setup.run_setup(repo)
 
-    assert path.read_text(encoding="utf-8") == "---\npost_edit_nudge: false\n---\n"
-    assert any(line.startswith("set post_edit_nudge: false") for line in report.lines)
+    assert path.read_text(encoding="utf-8") == "---\ncommit_check: false\n---\n"
+    assert any(line.startswith("set commit_check: false") for line in report.lines)
     exclude = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8").splitlines()
     assert ".claude/codebase-kg.local.md" in exclude
 
     again = setup.run_setup(repo)
-    assert path.read_text(encoding="utf-8") == "---\npost_edit_nudge: false\n---\n"
-    assert any("post_edit_nudge is already set" in line for line in again.lines)
+    assert path.read_text(encoding="utf-8") == "---\ncommit_check: false\n---\n"
+    assert any("commit_check is already set" in line for line in again.lines)
 
 
-def test_setup_adds_the_nudge_key_to_existing_codebase_kg_settings(repo: Path):
+def test_setup_adds_the_commit_check_key_to_existing_codebase_kg_settings(repo: Path):
     path = repo / ".claude" / "codebase-kg.local.md"
     path.parent.mkdir(parents=True)
     path.write_text("---\nroot: app/src\n---\nnotes\n", encoding="utf-8")
@@ -320,18 +320,18 @@ def test_setup_adds_the_nudge_key_to_existing_codebase_kg_settings(repo: Path):
     setup.run_setup(repo)
 
     assert path.read_text(encoding="utf-8") == (
-        "---\npost_edit_nudge: false\nroot: app/src\n---\nnotes\n"
+        "---\ncommit_check: false\nroot: app/src\n---\nnotes\n"
     )
 
 
-def test_setup_keeps_a_codebase_kg_nudge_the_host_set(repo: Path):
+def test_setup_keeps_a_codebase_kg_commit_check_the_host_set(repo: Path):
     path = repo / ".claude" / "codebase-kg.local.md"
     path.parent.mkdir(parents=True)
-    path.write_text("---\npost_edit_nudge: true\n---\n", encoding="utf-8")
+    path.write_text("---\ncommit_check: true\n---\n", encoding="utf-8")
 
     setup.run_setup(repo)
 
-    assert path.read_text(encoding="utf-8") == "---\npost_edit_nudge: true\n---\n"
+    assert path.read_text(encoding="utf-8") == "---\ncommit_check: true\n---\n"
 
 
 def test_setup_prepends_frontmatter_to_codebase_kg_settings_without_it(repo: Path):
@@ -341,7 +341,7 @@ def test_setup_prepends_frontmatter_to_codebase_kg_settings_without_it(repo: Pat
 
     setup.run_setup(repo)
 
-    assert path.read_text(encoding="utf-8") == "---\npost_edit_nudge: false\n---\nplain notes\n"
+    assert path.read_text(encoding="utf-8") == "---\ncommit_check: false\n---\nplain notes\n"
 
 
 def test_invalid_settings_local_is_left_alone(repo: Path):

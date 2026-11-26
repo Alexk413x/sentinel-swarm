@@ -336,6 +336,13 @@ node that spans files; a Lead for nodes that span files of its module or files n
 module claims; the Oracle for nodes on files no module claims. A node description holds
 at most 240 characters, codebase-kg's cap, and `graph_upsert` refuses a longer one.
 
+No role commits or pushes. The ledger's shell gate refuses both, and the ledger commits
+an approved phase itself. codebase-kg's own gates run in every role session: its search
+gate denies a search of mapped code until a graph query has run, and its push gate
+denies a `git push` while a mapped file is stale. A role never runs
+`/codebase-kg:refresh` and never retries a push with `SKIP_KG` or `KG_STALE_ACK`; it
+brings its nodes up to date with `graph_upsert`, and the user pushes.
+
 ## Steering a live run from an ordinary session
 
 An ordinary session has no ledger tools. To pass the user's instruction to a live

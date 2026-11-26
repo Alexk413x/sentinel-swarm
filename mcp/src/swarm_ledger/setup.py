@@ -315,10 +315,10 @@ def merge_settings_local(repo: Path, report: SetupReport) -> None:
     report.add(f"set worktree.bgIsolation to none and denied swarm roles as subagents in {shown}")
 
 
-def quiet_codebase_kg_nudge(repo: Path, report: SetupReport) -> None:
+def quiet_codebase_kg_commit_check(repo: Path, report: SetupReport) -> None:
     path = repo / KG_SETTINGS_PATH
     shown = KG_SETTINGS_PATH.as_posix()
-    block = "---\npost_edit_nudge: false\n---\n"
+    block = "---\ncommit_check: false\n---\n"
     text = path.read_text(encoding="utf-8") if path.is_file() else None
     if text is None:
         write_text(path, block)
@@ -329,14 +329,14 @@ def quiet_codebase_kg_nudge(repo: Path, report: SetupReport) -> None:
             head = None
         if head is None:
             write_text(path, block + text)
-        elif "post_edit_nudge" in key_blocks(head):
-            report.add(f"unchanged {shown}: post_edit_nudge is already set")
+        elif "commit_check" in key_blocks(head):
+            report.add(f"unchanged {shown}: commit_check is already set")
             return
         else:
             first = text.index("\n") + 1
-            write_text(path, text[:first] + "post_edit_nudge: false\n" + text[first:])
+            write_text(path, text[:first] + "commit_check: false\n" + text[first:])
     report.add(
-        f"set post_edit_nudge: false in {shown} (the host's own sessions lose the nudge too)"
+        f"set commit_check: false in {shown} (the host's own sessions lose the commit check too)"
     )
 
 
@@ -731,7 +731,7 @@ def run_setup(repo: Path, time_full_run: bool = False) -> SetupReport:
     write_role_files(repo, report)
     write_shim(repo, report)
     merge_settings_local(repo, report)
-    quiet_codebase_kg_nudge(repo, report)
+    quiet_codebase_kg_commit_check(repo, report)
     ensure_excludes(repo, report)
     report_permission_modes(repo, report)
     check_command_operators(repo, report)
