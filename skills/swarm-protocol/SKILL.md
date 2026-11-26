@@ -343,6 +343,11 @@ denies a `git push` while a mapped file is stale. A role never runs
 `/codebase-kg:refresh` and never retries a push with `SKIP_KG` or `KG_STALE_ACK`; it
 brings its nodes up to date with `graph_upsert`, and the user pushes.
 
+No role answers an MCP elicitation. When an MCP server's tool asks the user a question
+in a role session, sentinel-swarm declines it, and the tool returns what its server
+makes of a decline. Ask through the ledger instead: `message_post` to your parent, or
+`user_ask(question)` for the Oracle.
+
 ## Steering a live run from an ordinary session
 
 An ordinary session has no ledger tools. To pass the user's instruction to a live

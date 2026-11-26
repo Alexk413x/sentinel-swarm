@@ -69,6 +69,13 @@ Each fact was verified on the date shown, on Windows 11 unless noted.
   (2026-09-22)
 - The Write tool cannot write into `.claude/`, even with `acceptEdits`. (2026-09-22)
 - A `PreToolUse` hook's `updatedInput` rewrites a plugin MCP tool's input. (2026-09-21)
+- A mod's `classic.Elicitation` hook that returns `block` makes Claude Code 2.1.332
+  answer the MCP server's `elicitation/create` with `{"action": "decline"}`. The block
+  text is shown to no one. With no hook, a `claude -p` session answers
+  `{"action": "cancel"}`. The mod API's result for this event holds only `block`,
+  `preventContinuation` and `stopReason`, so a mod cannot accept or supply content.
+  Claude Code declares `elicitation: {form, url}` in `initialize` in a headless session
+  too. (2026-11-26)
 - The `Stop` hook input carries `stop_hook_active`, true when the stop follows a block
   by a Stop hook. The ledger's stop hook relies on it to avoid a block loop.
   (relied on since 2026-09-21)

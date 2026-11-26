@@ -120,6 +120,31 @@
   The text of that `SendMessage` is not checked, so it can carry direction past a
   Manager.
 
+## Proposals not built
+
+These follow the hook failure and elicitation work of 2026-11-26. Each waits on the
+condition it names.
+
+- **Lost hooks.** `hook_unreachable` counts only hooks whose fallback reached the
+  database. When the fallback fails too (no Python, a broken install), a gating event
+  denies and `stuck` reports the agent later, and every other event is lost with no
+  record. Proposal: the mod counts failed hooks in `$.state` and sends the count and the
+  last reason with its next post that succeeds, and the watchdog compares the newest
+  tool call in an agent's transcript with its `last_heartbeat_at`. Wait for live
+  `hook_fallback` numbers before building either.
+- **A server that is down.** The watchdog runs in the ledger server, so nothing reports
+  a server that is gone, and a hook fallback does not start one. Proposal: the
+  launcher path starts the server with `serve.ensure_server` when a run is active and
+  no server answers; the restarted server's watchdog then reads the `hook_fallback`
+  rows. Owner decision: it changes the rule that a hook never starts a server.
+- **Questions up the chain as ledger records.** A `decision_request`,
+  `decision_answer`, `decision_wait` set modeled on the held permission requests: the
+  ledger names the answerer (the asker's parent, the Oracle for a Manager, the user for
+  the Oracle), refuses an answer from the asker, and answers refused on a timeout or a
+  released answerer. Not built: a Coder that needs a change in another file has
+  `cr_open`, and a review before a stop has the Stop hook's ledger rules. Build it when
+  a question appears that the existing tools do not carry.
+
 ## Needs implementation
 
 Each item below is marked **(needs implementation)** in its document.

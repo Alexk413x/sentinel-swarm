@@ -37,6 +37,7 @@ a command hook in a role file; the matcher is the tool name the hook filters on.
 | `PostToolUse` | `SendMessage\|PushNotification\|Monitor\|Write\|Edit\|MultiEdit\|NotebookEdit` | `post_any` | all |
 | `PostToolUse` | all, posted without waiting | `post_activity` | all |
 | `PostToolUse` | `Bash\|PowerShell` | `post_shell` | Coder |
+| `Elicitation` | all | none: the mod refuses it itself | all |
 | `PreCompact` | all | `pre_compact` | all |
 | `Stop` | all | `stop` | all |
 | `SessionEnd` | all | `session_end` | all |
@@ -140,6 +141,23 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   `post_shell` for a Coder's shell; `classic.PreCompact` and `classic.SessionEnd`
   post theirs. A failed post here allows, as a failed shim does. Every payload
   carries `sentinel_swarm_transport: "mod"`.
+- **MCP elicitations.** The mod's `classic.Elicitation` hook blocks every elicitation an
+  MCP server raises in a swarm role session, and posts nothing to the ledger. No user
+  sits at a role session, and no agent approves its own request. In any other session
+  the hook returns `next(e)`, so the user gets the dialog as without the plugin; its
+  `.catch` does the same. Live on Claude Code 2.1.332 (2026-11-26), with a test server
+  whose tool raises a form elicitation and returns the answer: in a `swarm-coder`
+  session with the mod, the server received `{"action": "decline"}`, and the debug log
+  read "Elicitation resolved by hook: action=decline". The asking tool then returned
+  whatever its server makes of a decline. The same role session without the mod, and a
+  session with the mod and no role, both received `{"action": "cancel"}`, Claude Code's
+  own answer in a session with no user. The block's reason text reaches neither the
+  model nor the server, so the agent learns the rule from the `swarm-protocol` skill:
+  it asks its parent with `message_post`, and the Oracle asks the user with `user_ask`.
+  A mod hook for this event can only block: its result carries no accept and no
+  content, so the mod cannot pass an answer from the ledger back to the server. A role
+  calls only the tools its role file lists, so a server's tool that elicits is out of
+  reach unless the role file names it.
 - **Held permission prompts.** The mod's `tool.check` hook holds a call that Claude Code
   would ask the person about, posts `permission_request`, and long-polls
   `permission_wait` until the run panel answers it or `permission_hold_seconds` pass.

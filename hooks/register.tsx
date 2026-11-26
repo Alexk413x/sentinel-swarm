@@ -92,6 +92,9 @@ const PRE_TOOL_GATES: readonly {
   { tool: LEDGER_TOOL, event: 'pre_ledger' },
 ]
 const sessionRef = { plugin: 'sentinel-swarm', key: 'session' } as const
+const ELICITATION_REFUSED =
+  'sentinel-swarm refuses an MCP elicitation in a swarm role session: no user answers at this session, and no agent ' +
+  'approves its own request. Ask through the ledger instead: message_post to your parent, or user_ask(question) for the Oracle.'
 
 let session: SentinelSwarmSession | null | undefined
 const sending = new Set<number>()
@@ -190,6 +193,11 @@ export const register: Register = on => {
       void pay($, s)
     }
     return next(e)
+  }).catch(($, e, next) => next(e))
+
+  on('classic.Elicitation', async ($, e, next) => {
+    const s = await active($)
+    return s === null ? next(e) : { block: ELICITATION_REFUSED }
   }).catch(($, e, next) => next(e))
 
   on('classic.PreCompact', async ($, e, next) => {

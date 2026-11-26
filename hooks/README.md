@@ -81,6 +81,7 @@ The per-event behavior lives in `mcp/src/swarm_ledger/hooks/events.py`, as funct
 | `PostToolUse` | `SendMessage\|PushNotification\|Monitor\|Write\|Edit\|MultiEdit\|NotebookEdit` | `post_any` | all |
 | `PostToolUse` | all, posted without waiting | `post_activity`, which skips the tools `post_any` covers | all |
 | `PostToolUse` | `Bash\|PowerShell` | `post_shell` | coder |
+| `Elicitation` | all | none: the mod refuses it itself | all |
 | `PreCompact` | all | `pre_compact` | all |
 | `Stop` | all | `stop` | all |
 | `SessionEnd` | all | `session_end` | all |
