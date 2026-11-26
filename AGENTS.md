@@ -56,7 +56,8 @@ report, setup, and testing. The code graph maps every document, so codebase-kg's
   clone.
 - `plans/` — plans for work not built yet, such as `a11y-relay-smoke-test.md`.
 - `.github/workflows/` — `ci.yml`, the backup checks, and `release.yml`, which tags
-  `sentinel-swarm--v<version>` and force-pushes the `release` branch: `main` without
+  `sentinel-swarm--v<version>` and force-pushes the `release` branch only when `main` carries a
+  version that has no tag, so a merge that keeps the version releases nothing: `main` without
   `.claude`, `AGENTS.md`, `.gitattributes`, `.githooks`, `.github`, `.gitignore`, `evals`,
   `knowledge`, `plans`, `scripts`, `hooks/register.test.ts`, `mcp/tests`, and
   `mcp/src/swarm_ledger/server.py` (the fastmcp server, a dev dependency that only the
