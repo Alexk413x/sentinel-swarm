@@ -2,6 +2,37 @@
 
 All notable changes to the `sentinel-swarm` plugin.
 
+## [0.9.0] — 2026-11-26 — codebase-kg 0.18 gates in role sessions, MCP 2026-07-28 checks, hook failure reports
+
+### Upgrading
+
+- Run `/sentinel-swarm:setup` again in each host repo. It writes `commit_check: false` for
+  codebase-kg and the updated Coder role file.
+- The next launch replaces a ledger server left from 0.8.5.
+- codebase-kg 0.18.0 or later is needed for codebase-kg's gates in role sessions. Older
+  versions keep working as before.
+
+### Added
+
+- Every role session gets codebase-kg's hook relay (`plugin:codebase-kg:codebase-kg-hooks`),
+  taken from codebase-kg's own `strict-mcp-config` command. Without it a role session on
+  codebase-kg 0.18 ran no search gate and printed a failure notice on every tool call.
+- Watchdog finding `hook_unreachable`: an agent whose hooks reach the ledger only through the
+  fallback three times in one interval is reported to its parent, or to the Oracle.
+- A swarm role session refuses an MCP elicitation. No user answers at that session, and no
+  agent approves its own request. A session that is not a swarm role is unchanged.
+
+### Changed
+
+- Setup writes `commit_check: false` to `.claude/codebase-kg.local.md` in place of
+  `post_edit_nudge: false`, which codebase-kg 0.18 no longer reads. Roles update the graph
+  with `graph_upsert` and do not run `/codebase-kg:refresh`.
+- The ledger's HTTP front refuses an unserved MCP version (-32022) before every other check,
+  and `server/discover` and that error list the same versions.
+- The front accepts `Mcp-Method` and `Mcp-Name` values with surrounding spaces, and decodes
+  the Base64 form of `Mcp-Name`. A percent-encoded name is refused.
+- The vendored git hooks pin codebase-kg 0.18.1.
+
 ## [0.8.5] — 2026-11-18 — the user's permission mode, lint and build by path, panel fixes
 
 ### Upgrading a live run

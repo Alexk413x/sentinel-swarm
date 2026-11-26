@@ -371,6 +371,124 @@ def test_session_options_keep_the_relay_for_an_unresolved_placeholder(
     assert _servers(host)["codebase-kg"]["args"][:2] == [".sentinel-swarm/hook.py", "mcp"]
 
 
+_RELAY = "plugin:codebase-kg:codebase-kg-hooks"
+_KG_CLI = """import json, sys
+if sys.argv[1:2] != ["strict-mcp-config"]:
+    sys.exit("usage: kg_cli.py build|query")
+@BODY@
+"""
+_KG_CLI_PRINTS = """print(json.dumps({"mcpServers": {
+    "codebase-kg": {"type": "http", "url": "http://127.0.0.1:1/mcp"},
+    "plugin:codebase-kg:codebase-kg-hooks": {
+        "command": "kg-hooks.cmd", "args": [],
+        "env": {"CLAUDE_PLUGIN_OPTION_SERVER_PORT": sys.argv[3]},
+    },
+}}))"""
+
+
+def _kg_cli(install: Path, body: str = _KG_CLI_PRINTS, module: bool = True) -> None:
+    launch = install / "mcp" / "launch"
+    launch.mkdir(parents=True)
+    (launch / "kg_cli.py").write_text(_KG_CLI.replace("@BODY@", body), "utf-8")
+    if module:
+        package = install / "mcp" / "src" / "codebase_kg"
+        package.mkdir(parents=True)
+        (package / "strict_config.py").write_text("", "utf-8")
+
+
+@pytest.mark.parametrize("role", ["oracle", "manager", "lead", "coder", "driver"])
+def test_session_options_pass_the_codebase_kg_hook_relay_to_every_role(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str
+) -> None:
+    host = tmp_path / "host"
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    install = _kg_install(tmp_path, port_default=47900)
+    _kg_cli(install)
+    _kg_registry(config_dir, install)
+    _write(host, role, _CODER.replace("swarm-coder", f"swarm-{role}"))
+
+    options = session_options(host, role, None, "http://127.0.0.1:1/mcp")
+    servers = json.loads(options[options.index("--mcp-config") + 1])["mcpServers"]
+
+    assert servers[_RELAY] == {
+        "command": "kg-hooks.cmd",
+        "args": [],
+        "env": {"CLAUDE_PLUGIN_OPTION_SERVER_PORT": "47900"},
+    }
+    assert servers["codebase-kg"] == {
+        "type": "http",
+        "url": "http://127.0.0.1:47900/mcp",
+        "headersHelper": f'py -3 "{install}/mcp/launch/kg_headers.py"',
+    }
+    assert _RELAY not in options[options.index("--allowedTools") + 1]
+
+
+def test_session_options_skip_the_hook_relay_for_a_codebase_kg_without_the_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = tmp_path / "host"
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    install = _kg_install(tmp_path)
+    _kg_cli(install, module=False)
+    _kg_registry(config_dir, install)
+    _write(host, "coder", _CODER)
+
+    def no_process(*args: object, **kwargs: object) -> None:
+        raise AssertionError("an install without strict_config.py starts no process")
+
+    monkeypatch.setattr(agentfiles.subprocess, "run", no_process)
+
+    assert set(_servers(host)) == {"swarm-ledger", "codebase-kg"}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "sys.exit(2)",
+        "print('not json')",
+        "print(json.dumps({'mcpServers': {'codebase-kg-hooks': {'command': 'x'}}}))",
+        "print(json.dumps({'mcpServers': {'plugin:codebase-kg:codebase-kg-hooks': 'x'}}))",
+    ],
+)
+def test_session_options_skip_the_hook_relay_when_the_command_gives_no_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str
+) -> None:
+    host = tmp_path / "host"
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    install = _kg_install(tmp_path)
+    _kg_cli(install, body)
+    _kg_registry(config_dir, install)
+    _write(host, "coder", _CODER)
+
+    assert set(_servers(host)) == {"swarm-ledger", "codebase-kg"}
+
+
+def test_session_options_skip_the_hook_relay_for_an_unsafe_port_setting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = tmp_path / "host"
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    install = _kg_install(tmp_path)
+    _kg_cli(install)
+    _kg_registry(config_dir, install)
+    _write(host, "coder", _CODER)
+    (config_dir / "settings.json").write_text(
+        json.dumps(
+            {
+                "enabledPlugins": {"codebase-kg@alexk413x": True},
+                "pluginConfigs": {"codebase-kg@alexk413x": {"options": {"server_port": "1; calc"}}},
+            }
+        ),
+        "utf-8",
+    )
+
+    assert _RELAY not in _servers(host)
+
+
 _HELPER = (
     'command -v py >/dev/null 2>&1 && py -3 "${CLAUDE_PLUGIN_ROOT}/mcp/launch/@SCRIPT@" '
     '|| python3 "${CLAUDE_PLUGIN_ROOT}/mcp/launch/@SCRIPT@" '

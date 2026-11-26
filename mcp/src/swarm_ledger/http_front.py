@@ -7,8 +7,9 @@ test client.
 
 `/mcp` speaks both MCP eras on single POSTs with JSON replies and no sessions: a request
 carrying `MCP-Protocol-Version: 2026-07-28` gets the stateless protocol (`server/discover`, no
-`initialize`); any other request gets the handshake era (`initialize`, then calls). A
-notification gets 202. GET and DELETE get 405, since the server opens no stream.
+`initialize`); a request with no version header or a handshake-era one gets the handshake
+era (`initialize`, then calls); any other version gets -32022. A notification gets 202.
+GET and DELETE get 405, since the server opens no stream.
 
 `GET /panel` answers the document `ledger.py panel` prints, for the query's `waiting`,
 `detail`, `brief`, and `run`, and 409 unless the `X-Sentinel-Swarm-Repo` header names this
@@ -23,6 +24,8 @@ on every route but `/health`, a missing or wrong bearer token gets 403.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
 import json
 import socket
@@ -41,6 +44,7 @@ from .serve import HEALTH_PATH, HOOK_PATH, MCP_PATH, PANEL_PATH, REPO_HEADER, SH
 
 MODERN_PROTOCOL = "2026-07-28"
 CLASSIC_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
+SUPPORTED_VERSIONS = [MODERN_PROTOCOL, *reversed(CLASSIC_VERSIONS)]
 VERSION_KEY = "io.modelcontextprotocol/protocolVersion"
 CAPABILITIES_KEY = "io.modelcontextprotocol/clientCapabilities"
 SERVER_INFO_KEY = "io.modelcontextprotocol/serverInfo"
@@ -65,6 +69,7 @@ NOT_ONE_MESSAGE = "Body must be a single JSON-RPC request or notification object
 MAX_BODY = 8 * 1024 * 1024
 KEEPALIVE_TIMEOUT = 60.0
 HOOK_PREFIX = HOOK_PATH + "/"
+BASE64_OPEN, BASE64_CLOSE = "=?base64?", "?="
 
 Refusal = Callable[[Optional[str], dict[str, str], str], Optional[str]]
 
@@ -104,6 +109,20 @@ def call_tool(name: Any, raw_args: Any) -> dict[str, Any]:
     except CallError as exc:
         return error_result(str(exc))
     return text_result(name, value)
+
+
+def header_value(raw: str | None) -> str | None:
+    """A request header's value with the spec's Base64 sentinel form decoded; None if unusable."""
+    if raw is None:
+        return None
+    value = raw.strip(" 	")
+    if not (value.startswith(BASE64_OPEN) and value.endswith(BASE64_CLOSE)):
+        return value
+    encoded = value[len(BASE64_OPEN) : -len(BASE64_CLOSE)]
+    try:
+        return base64.b64decode(encoded, validate=True).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError):
+        return None
 
 
 def _add_instructions(result: dict[str, Any]) -> None:
@@ -413,6 +432,14 @@ class Handler(BaseHTTPRequestHandler):
                     request_id, HEADER_MISMATCH, f"{name} header appears more than once"
                 )
                 return
+        if version != MODERN_PROTOCOL:
+            self._rpc_error(
+                request_id,
+                UNSUPPORTED_VERSION,
+                "Unsupported protocol version",
+                {"supported": SUPPORTED_VERSIONS, "requested": version},
+            )
+            return
         params = msg.get("params")
         meta = params.get("_meta") if isinstance(params, dict) else None
         if (
@@ -437,7 +464,7 @@ class Handler(BaseHTTPRequestHandler):
                 "protocol version",
             )
             return
-        if self.headers.get("mcp-method") != method:
+        if header_value(self.headers.get("mcp-method")) != method:
             self._rpc_error(
                 request_id,
                 HEADER_MISMATCH,
@@ -447,20 +474,12 @@ class Handler(BaseHTTPRequestHandler):
         if (
             method == "tools/call"
             and params.get("name") is not None
-            and urllib.parse.unquote(self.headers.get("mcp-name") or "") != params.get("name")
+            and header_value(self.headers.get("mcp-name")) != params.get("name")
         ):
             self._rpc_error(
                 request_id,
                 HEADER_MISMATCH,
                 "mcp-name header does not match the request body's 'name' parameter",
-            )
-            return
-        if version != MODERN_PROTOCOL:
-            self._rpc_error(
-                request_id,
-                UNSUPPORTED_VERSION,
-                "Unsupported protocol version",
-                {"supported": [MODERN_PROTOCOL, *CLASSIC_VERSIONS], "requested": version},
             )
             return
         result = self._dispatch(method, params)
@@ -476,7 +495,7 @@ class Handler(BaseHTTPRequestHandler):
         if method == "server/discover":
             result = {
                 **LISTED,
-                "supportedVersions": [MODERN_PROTOCOL],
+                "supportedVersions": SUPPORTED_VERSIONS,
                 "capabilities": {"tools": {"listChanged": False}},
             }
             _add_instructions(result)

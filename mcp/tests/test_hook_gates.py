@@ -4,8 +4,10 @@ session's agent, and a gating hook that crashes."""
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
@@ -225,6 +227,61 @@ def test_run_event_does_not_adopt_a_session_for_a_subagent_call(
     )
 
     assert adopted == ["main"]
+
+
+def _fallback_events(host: Path) -> list[tuple[str, str]]:
+    ledger = env.open_ledger(host)
+    try:
+        rows = ledger.conn.execute(
+            "SELECT agent_id, reason FROM agent_events WHERE to_state = 'hook_fallback' "
+            "ORDER BY event_id"
+        ).fetchall()
+    finally:
+        ledger.conn.close()
+    return [(row["agent_id"], row["reason"]) for row in rows]
+
+
+def test_a_hook_run_outside_the_server_records_a_fallback_event_for_a_live_agent(
+    host: Path,
+) -> None:
+    ledger = env.open_ledger(host)
+    ledger.run_start(prd="Build X", session_id="main")
+    ledger.conn.close()
+    payload = json.dumps({"session_id": "main", "tool_name": "Read"})
+
+    run_event("post_activity", payload, host)
+    assert _fallback_events(host) == []
+
+    run_event("post_activity", payload, host, fallback=True)
+    run_event(
+        "pre_shell",
+        json.dumps({"session_id": "main", "agent_id": "sub", "tool_name": "Bash"}),
+        host,
+        fallback=True,
+    )
+    run_event("post_activity", json.dumps({"session_id": "stranger"}), host, fallback=True)
+
+    assert _fallback_events(host) == [("main", "post_activity"), ("main", "pre_shell")]
+
+
+def test_the_launcher_entry_runs_every_hook_as_a_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from swarm_ledger.hooks import __main__ as entry
+
+    seen: list[tuple] = []
+
+    def fake(event_name: str, raw: str, root: object = None, fallback: bool = False):
+        seen.append((event_name, raw, fallback))
+        return "", ""
+
+    monkeypatch.setattr(entry, "run_event", fake)
+    monkeypatch.setattr(sys, "argv", ["hooks", "stop"])
+    monkeypatch.setattr(sys, "stdin", io.StringIO("{}"))
+
+    entry.main()
+
+    assert seen == [("stop", "{}", True)]
 
 
 # -- 3. a crashed gate retries once on a locked database, then denies -------------------------

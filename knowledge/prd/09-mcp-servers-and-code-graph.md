@@ -4,6 +4,9 @@
 
 - Every role has `swarm-ledger` and `codebase-kg`. Every session starts with
   `--strict-mcp-config`, so no server loads that its config does not list.
+- Every role's config also names codebase-kg's hook relay,
+  `plugin:codebase-kg:codebase-kg-hooks`, when the installed codebase-kg is 0.18.0 or
+  later. See "codebase-kg's hooks in a role session".
 - `swarm-ledger` is an HTTP entry with the repo's ledger token as a static
   `Authorization: Bearer` header. See "Access" and "The token" in
   [06-ledger-server.md](06-ledger-server.md).
@@ -75,16 +78,11 @@
   keeps the shim. codebase-kg 0.12.0 and later serves HTTP on one server per machine
   and resolves each session's graph from its roots. Verified live on 2026-10-07: a
   `--strict-mcp-config` session with codebase-kg's `headersHelper` called `kg_search`.
-- codebase-kg 0.8.0 and later names its relay, `bin/kg-shim`, in its `.mcp.json`. The
-  relay is one small process that connects to one codebase-kg server per machine and
-  server build: the plugin version plus a digest of its Python files. Its handshake
-  sends the session's working folder and any explicit graph path (the relay's first
-  argument, else `CODEBASE_KG_PATH`), and the shared server resolves each tool call's
-  graph from that connection, so every session reads its own host's
-  `knowledge/code_graph.db`. When the shared server cannot be reached within
-  `CODEBASE_KG_SHARED_TIMEOUT` seconds (default 10), the relay starts a private server
-  for that session. Verified in codebase-kg 0.8.0's `shim.py`, `daemon.py`, and
-  `server.py` on 2026-09-25, and in 0.8.2's `shim.py` on 2026-09-27.
+- codebase-kg 0.18.0 declares two servers in `mcp/claude.mcp.json`: `codebase-kg`, the
+  HTTP entry for the one shared server per machine, and `codebase-kg-hooks`, a stdio
+  relay that lists no tools and answers the plugin's hooks. Its launchers are
+  `mcp/launch/kg-shim` and `mcp/launch/kg-hooks`, each with a `.cmd` twin for Windows.
+  Read in the installed 0.18.0 on 2026-11-26.
 - The accessibility-tools plugins share themselves the same way from their AP-21
   release. Each names a relay in its `.mcp.json`. The relay connects to one server per machine
   and server build, and falls back to a private stdio server when it cannot reach the
@@ -102,6 +100,39 @@
   codebase-kg's `pyproject.toml` (`requires-python = ">=3.10"` in 0.14.0), when that
   file declares any dependency (codebase-kg is standard library only since 0.12.0), or
   when `mcp/src/codebase_kg/edits.py` is missing.
+
+## codebase-kg's hooks in a role session
+
+- codebase-kg 0.18.0 answers its hooks (the search gate, the push gate, the commit check,
+  and the allow for its graph write tools) through its second MCP server. The hooks name
+  that server `plugin:codebase-kg:codebase-kg-hooks`. A plugin's hooks load in a
+  `--strict-mcp-config` session and its servers do not, so a role session that lacks a
+  server of exactly that name runs none of those gates, and Claude Code prints a failure
+  notice for every hook call.
+- `session_options` adds that server to every role's `--mcp-config`. The entry comes from
+  codebase-kg's own command, `<install>/mcp/launch/kg_cli.py strict-mcp-config --port
+  <port>`, run on the base interpreter with `-I -S`: `agentfiles.kg_hook_relay` takes
+  the `plugin:codebase-kg:codebase-kg-hooks` key of the printed `mcpServers`. The port is
+  the user's `server_port` option, else the manifest's default, by the rule for
+  `${user_config.<key>}` in "Plugin servers".
+- The entry is left out when the install has no `mcp/src/codebase_kg/strict_config.py`
+  (0.17.1 and older answer their hooks with scripts and need no server), when the port
+  option is not a plain integer, and when the command fails or prints no such entry. No
+  process starts in the first two cases.
+- The relay lists no tools, so nothing joins `--allowedTools`.
+- The `codebase-kg` HTTP entry keeps its `headersHelper`. A strict session that passes
+  the HTTP entry without it makes Claude Code record the server as needing
+  authentication, and later strict sessions skip it.
+- The search gate counts graph queries per session in the codebase-kg server. `SKIP_KG`
+  does not open it; `search_gate: off` in the host's `.claude/codebase-kg.local.md` does.
+- **A role never pushes or commits.** `pre_shell` refuses `git commit` and `git push`
+  for every role, and the ledger makes the phase commit itself, outside any session's
+  shell. codebase-kg's push gate denies a `git push` while a mapped file is stale, and
+  turns a `SKIP_KG=1` or `KG_STALE_ACK=<n>` prefix into a permission prompt that a
+  session with no user cannot pass. A role that meets either message does not run
+  `/codebase-kg:refresh` and does not retry with a skip prefix: it brings its nodes up to
+  date with `graph_upsert`, and the user pushes. The Coder's template and the
+  `swarm-protocol` skill say so.
 
 ## The code graph
 
@@ -142,8 +173,9 @@ find what exists while many agents change the code at once. The graph file,
   in "Plugin detection" in [11-setup-and-settings.md](11-setup-and-settings.md): the
   plugin must be enabled in settings, and the folder is the install `agentfiles.install_path`
   picks. `SENTINEL_SWARM_KG_ROOT` overrides it.
-- Setup sets `post_edit_nudge: false` in the host's `.claude/codebase-kg.local.md`, so
-  codebase-kg's edit hook does not send a Coder to `/codebase-kg:refresh`.
+- Setup sets `commit_check: false` in the host's `.claude/codebase-kg.local.md`, so
+  codebase-kg's commit check does not send a role to `/codebase-kg:refresh`, which no
+  role may run. The host's own sessions lose the commit check too.
 - A node that anchors on several files is updated through the Lead, once the Coders
   of those files have handed up. Each file is one of its module's or one no module
   claims. A node on one of its module's files, with or without its test file, belongs to

@@ -15,7 +15,7 @@ from . import memory, notify, pauses, permission, procs, rekey, sessions, testru
 from .capacity import WAITING_FOR_MEMORY
 from .clock import parse_stamp, stamp, utcnow
 from .db import write_tx
-from .identity import ROLES, LedgerError
+from .identity import HOOK_FALLBACK, ROLES, LedgerError
 from .queries import (
     USER_DIRECTIVE_SOURCES,
     latest_live_oracle,
@@ -55,6 +55,7 @@ _MEMBER_ROLES = ("manager", "lead", "coder")
 _WINDOW_1M = 1_000_000
 IDLE_STALL = timedelta(minutes=2)
 DRIVER_UNSENT_AFTER = timedelta(minutes=2)
+HOOK_FALLBACK_LIMIT = 3
 _WINDOW_HAIKU = 200_000
 _TAIL_BLOCK = 256 * 1024
 DRIVER_CHECKIN_INTERVAL = timedelta(minutes=30)
@@ -154,6 +155,7 @@ def scan(
     findings += _unmanaged_phase_findings(conn, run["run_id"], agents)
     findings += _unread_directive_findings(conn, run["run_id"], agents, now, settings)
     findings += _stray_process_findings(conn, run["run_id"], now)
+    findings += _hook_fallback_findings(conn, agents, by_session, now, settings)
 
     stalled = _stalled(conn, run, agents, by_session, now)
     if stalled is not None:
@@ -483,6 +485,52 @@ def _unsent_findings(
                 "wake_unsent",
                 f"{row['from_name']} has owed it a wake-up for {_minutes(now - owed)} minutes: "
                 f"{pointer}",
+                step,
+            )
+        )
+    return findings
+
+
+def _hook_fallback_findings(
+    conn: sqlite3.Connection,
+    agents: list[dict],
+    by_session: dict[str, dict],
+    now: datetime,
+    settings: WatchdogSettings,
+) -> list[Finding]:
+    since = stamp(now - timedelta(seconds=settings.interval_seconds))
+    by_id = {a["agent_id"]: a for a in agents}
+    findings: list[Finding] = []
+    for agent in agents:
+        hooks = [
+            row["reason"]
+            for row in conn.execute(
+                "SELECT reason FROM agent_events WHERE agent_id = ? AND to_state = ? AND at >= ? "
+                "ORDER BY event_id",
+                (agent["agent_id"], HOOK_FALLBACK, since),
+            )
+        ]
+        if len(hooks) < HOOK_FALLBACK_LIMIT:
+            continue
+        parent = by_id.get(agent["parent_agent_id"])
+        if parent is None:
+            step = (
+                "Call ledger_info() to confirm the ledger server answers. When the finding "
+                "comes back, tell the user with user_ask that this session's hooks do not "
+                "reach the ledger server."
+            )
+        else:
+            step = (
+                f"Wake its parent {parent['name']}: {_wake_call(parent, by_session)}. The parent "
+                "checks that it still makes progress, and replaces it when it does not."
+            )
+        findings.append(
+            _finding(
+                agent,
+                "hook_unreachable",
+                f"{len(hooks)} of its hooks ({', '.join(sorted(set(hooks)))}) could not reach "
+                f"the ledger server in the last {settings.interval_seconds} seconds and ran "
+                "through the fallback",
                 step,
             )
         )

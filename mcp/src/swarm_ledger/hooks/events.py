@@ -16,6 +16,7 @@ from ..agentfiles import CODEBASE_KG_PLUGIN, plugin_installed
 from ..clock import parse_stamp, utcnow
 from ..db import ensure_git_exclude, write_tx
 from ..identity import (
+    HOOK_FALLBACK,
     IDENTITY_FREE_TOOLS,
     PRE_BIND_TOOLS,
     ROLES,
@@ -93,6 +94,16 @@ def _swarm_caller(ledger: Ledger, caller_id: str | None) -> dict | None:
     if row is None or row["role"] not in ROLES:
         return None
     return dict(row)
+
+
+def record_fallback(ledger: Ledger, data: dict, event_name: str) -> None:
+    caller = _swarm_caller(ledger, data.get("session_id"))
+    if caller is None:
+        return
+    ledger.conn.execute(
+        "INSERT INTO agent_events (agent_id, from_state, to_state, reason) VALUES (?, ?, ?, ?)",
+        (caller["agent_id"], caller["state"], HOOK_FALLBACK, event_name),
+    )
 
 
 def _data_caller(ledger: Ledger, data: dict) -> dict | None:

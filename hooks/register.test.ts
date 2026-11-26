@@ -86,6 +86,40 @@ describe('which sessions the mod acts in', () => {
   })
 })
 
+describe('an MCP elicitation', () => {
+  const ASKED = { mcp_server_name: 'other', message: 'Approve?', mode: 'form', requested_schema: {} } as never
+
+  test('is refused in a swarm role session, with the ledger tools named', async ($, on) => {
+    const w = world(on)
+    const shown: string[] = []
+    on('classic.Elicitation', (_$, e) => {
+      shown.push(e.message)
+      return {}
+    })
+    await start($)
+    const posted = w.posts.length
+    const result = await $.classic.Elicitation(ASKED)
+    expect(result.block).toContain('sentinel-swarm refuses an MCP elicitation')
+    expect(result.block).toContain('message_post')
+    expect(shown).toEqual([])
+    expect(w.posts.length).toBe(posted)
+  })
+
+  test('reaches the user in a session that is not a swarm role', async ($, on) => {
+    const w = world(on)
+    const shown: string[] = []
+    on('classic.Elicitation', (_$, e) => {
+      shown.push(e.message)
+      return {}
+    })
+    await start($, 'general-purpose', 'sess-user')
+    const result = await $.classic.Elicitation(ASKED)
+    expect(result.block).toBeUndefined()
+    expect(shown).toEqual(['Approve?'])
+    expect(w.posts).toEqual([])
+  })
+})
+
 describe('a later SessionStart', () => {
   test('without an agent_type does not switch the gates off in an adopted session', async ($, on) => {
     const w = world(on, { answers: { pre_write: DENY('no') } })

@@ -126,9 +126,29 @@
 - MCP on `/mcp`: each request is one POST with a JSON reply; the server keeps no MCP
   session and opens no stream, so GET and DELETE get 405. A request carrying
   `MCP-Protocol-Version: 2026-07-28` gets the stateless protocol (`server/discover`,
-  no `initialize`), with the header checks codebase-kg's front makes. Any other request
-  gets the handshake protocol (`initialize`, `notifications/initialized`, then calls).
-  Both answer `tools/list` and `tools/call` from the same catalog.
+  no `initialize`). A request with no version header, or with one of the handshake
+  versions (`2024-11-05`, `2025-03-26`, `2025-06-18`, `2025-11-25`), gets the handshake
+  protocol (`initialize`, `notifications/initialized`, then calls). Both answer
+  `tools/list` and `tools/call` from the same catalog.
+- The checks on a request with any other version header, in order. Each refusal is HTTP
+  400 with a JSON-RPC error:
+  1. `MCP-Protocol-Version`, `Mcp-Method` or `Mcp-Name` sent more than once: -32020.
+  2. A version the front does not serve: -32022, with `data.supported` and
+     `data.requested`. This comes before the envelope and header checks, so a client
+     learns the versions to retry with whatever else its request lacks.
+  3. `params._meta` missing, or without the protocol version or client capabilities
+     key: -32602.
+  4. The version header differs from the envelope's version, `Mcp-Method` is missing or
+     differs from the body's method, or, on `tools/call`, `Mcp-Name` is missing or
+     differs from `params.name`: -32020. A header value is read without its leading
+     and trailing spaces and tabs, and a value in the Base64 form
+     `=?base64?<value>?=` is decoded first. One that does not decode is a mismatch.
+- `server/discover` lists the same versions in `supportedVersions` as the -32022 error
+  lists in `data.supported`: `2026-07-28`, then the four handshake versions, newest
+  first. The front serves each of them on a single POST with no session.
+- `tools/list` answers `ttlMs: 0` and `cacheScope: private`. The catalog changes only
+  with the plugin version, but a server of a new version replaces the old one on the
+  same port, and a client that cached the list would keep the old tools.
 - The tool catalog: `catalog.json` holds the `tools/list` result exactly as the fastmcp
   registrations in `server.py` list it, plus the argument schema pydantic checks where
   a tool shows a richer one (`ratings`, `applicable`, `targeted`), and the tools that
