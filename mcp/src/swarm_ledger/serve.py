@@ -253,21 +253,37 @@ def _replace_stale(
     _stop_server(info, health, repo_root)
 
 
-def _answering(repo_root: Path) -> tuple[dict[str, Any], dict[str, Any]] | None:
+def answering(repo_root: Path) -> tuple[dict[str, Any], dict[str, Any]] | None:
     info = read_server_info(repo_root)
     health = _probe(info, repo_root) if info is not None else None
     return None if info is None or health is None else (info, health)
 
 
 def _current_url(repo_root: Path, replace_active: bool = False) -> str | None:
-    answering = _answering(repo_root)
-    if answering is None:
+    found = answering(repo_root)
+    if found is None:
         return None
-    info, health = answering
+    info, health = found
     if _is_current(health):
         return str(info["url"])
     _replace_stale(repo_root, info, health, replace_active)
     return None
+
+
+def spawn_server(root: Path) -> subprocess.Popen:
+    log_path = records_dir(root) / LOG_FILE
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [base_python(), "-I", "-S", str(LAUNCHER), "serve", "--repo", str(root)]
+    with log_path.open("ab") as log:
+        return subprocess.Popen(
+            command,
+            cwd=root,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=log,
+            creationflags=hidden_console_flags(new_process_group=True),
+            start_new_session=sys.platform != "win32",
+        )
 
 
 def ensure_server(
@@ -278,25 +294,14 @@ def ensure_server(
     if url is not None:
         return url
 
+    process = spawn_server(root)
     log_path = records_dir(root) / LOG_FILE
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    command = [base_python(), "-I", "-S", str(LAUNCHER), "serve", "--repo", str(root)]
-    with log_path.open("ab") as log:
-        process = subprocess.Popen(
-            command,
-            cwd=root,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=log,
-            creationflags=hidden_console_flags(new_process_group=True),
-            start_new_session=sys.platform != "win32",
-        )
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        answering = _answering(root)
-        if answering is not None and _is_current(answering[1]):
-            return str(answering[0]["url"])
+        found = answering(root)
+        if found is not None and _is_current(found[1]):
+            return str(found[0]["url"])
         exit_code = process.poll()
         if exit_code is not None and exit_code != 0:
             raise LedgerError(

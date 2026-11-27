@@ -132,11 +132,12 @@ condition it names.
   last reason with its next post that succeeds, and the watchdog compares the newest
   tool call in an agent's transcript with its `last_heartbeat_at`. Wait for live
   `hook_fallback` numbers before building either.
-- **A server that is down.** The watchdog runs in the ledger server, so nothing reports
-  a server that is gone, and a hook fallback does not start one. Proposal: the
-  launcher path starts the server with `serve.ensure_server` when a run is active and
-  no server answers; the restarted server's watchdog then reads the `hook_fallback`
-  rows. Owner decision: it changes the rule that a hook never starts a server.
+- **A server that stays down.** A hook's fallback restarts a dead server at most three
+  times per run. The watchdog runs in the server, so nothing reports a server that is
+  down after the third restart, during a paused run, or when the fallback itself cannot
+  run (no Python, a broken install). Proposal: the mod's panel poll shows a server that
+  does not answer `/panel` for an active run. Wait for a live run that spends the limit
+  before building it.
 - **Questions up the chain as ledger records.** A `decision_request`,
   `decision_answer`, `decision_wait` set modeled on the held permission requests: the
   ledger names the answerer (the asker's parent, the Oracle for a Manager, the user for
