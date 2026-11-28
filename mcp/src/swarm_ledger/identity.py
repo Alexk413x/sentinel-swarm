@@ -7,6 +7,9 @@ from dataclasses import dataclass
 
 ROLES = ("oracle", "manager", "lead", "coder", "driver")
 HOOK_FALLBACK = "hook_fallback"
+SERVER_RESTART = "server_restart"
+SERVER_RESTART_LIMIT = 3
+SERVER_RESTART_COOLDOWN_S = 60
 ROLE_RANK = {"coder": 0, "lead": 1, "manager": 2, "oracle": 3}
 
 _CHILD_ROLES: dict[str, tuple[str, ...]] = {

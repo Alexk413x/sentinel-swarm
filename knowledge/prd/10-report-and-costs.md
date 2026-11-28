@@ -49,6 +49,9 @@ Sections:
   asked (kept even after a later `directive_resolve` changes the outcome) and each
   reply it received through `reply_to`; then every row of the `notifications` table,
   with its kind, message, and time.
+- Ledger server restarts: how many of the `SERVER_RESTART_LIMIT` (3) restarts the run
+  used, then each `server_restart` event with its time, the agent whose hook restarted
+  the server, the hook event, and its number. The section is empty for a run with none.
 - Final test run: the last `full`-scope `tests_run` that is no longer running, with
   passed, failed, skipped, and exit code, or a note that none was recorded; and, when
   the run built, a line with the build command, its state, and its exit code.

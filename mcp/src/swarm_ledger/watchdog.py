@@ -15,7 +15,14 @@ from . import memory, notify, pauses, permission, procs, rekey, sessions, testru
 from .capacity import WAITING_FOR_MEMORY
 from .clock import parse_stamp, stamp, utcnow
 from .db import write_tx
-from .identity import HOOK_FALLBACK, ROLES, LedgerError
+from .identity import (
+    HOOK_FALLBACK,
+    ROLES,
+    SERVER_RESTART,
+    SERVER_RESTART_COOLDOWN_S,
+    SERVER_RESTART_LIMIT,
+    LedgerError,
+)
 from .queries import (
     USER_DIRECTIVE_SOURCES,
     latest_live_oracle,
@@ -45,6 +52,8 @@ NAMED_KINDS = frozenset({"crashed"})
 # change would otherwise file a second directive.
 IDLE_KINDS = frozenset({"stuck", "blocked"})
 CRASH_REOPEN = timedelta(minutes=30)
+# A finding that a new fact changes is filed again: its detail lists every restart of the agent.
+REFILED_KINDS = frozenset({"server_restarted"})
 # A released session can take a moment to exit after claude stop returns.
 STRAY_GRACE = timedelta(minutes=1)
 WAKE_EVERY = timedelta(minutes=5)
@@ -156,6 +165,7 @@ def scan(
     findings += _unread_directive_findings(conn, run["run_id"], agents, now, settings)
     findings += _stray_process_findings(conn, run["run_id"], now)
     findings += _hook_fallback_findings(conn, agents, by_session, now, settings)
+    findings += _server_restart_findings(conn, run["run_id"], now, settings)
 
     stalled = _stalled(conn, run, agents, by_session, now)
     if stalled is not None:
@@ -532,6 +542,54 @@ def _hook_fallback_findings(
                 f"the ledger server in the last {settings.interval_seconds} seconds and ran "
                 "through the fallback",
                 step,
+            )
+        )
+    return findings
+
+
+def _server_restart_findings(
+    conn: sqlite3.Connection, run_id: int, now: datetime, settings: WatchdogSettings
+) -> list[Finding]:
+    # A restart is reported while it is younger than this: the restarted server's first pass
+    # comes one interval after the server starts, and the server needs up to the cooldown to
+    # start. The window has an end so the finding clears and does not block run_finish.
+    since = stamp(
+        now - timedelta(seconds=SERVER_RESTART_COOLDOWN_S + 2 * settings.interval_seconds)
+    )
+    by_agent: dict[str, list[tuple[int, sqlite3.Row]]] = {}
+    for number, row in enumerate(
+        conn.execute(
+            "SELECT e.agent_id, e.reason, e.at FROM agent_events e "
+            "JOIN agents a ON a.agent_id = e.agent_id WHERE a.run_id = ? AND e.to_state = ? "
+            "ORDER BY e.event_id",
+            (run_id, SERVER_RESTART),
+        ),
+        start=1,
+    ):
+        by_agent.setdefault(row["agent_id"], []).append((number, row))
+    total = sum(len(restarts) for restarts in by_agent.values())
+    findings: list[Finding] = []
+    for agent_id, restarts in by_agent.items():
+        if not any(row["at"] >= since for _, row in restarts):
+            continue
+        agent = conn.execute("SELECT * FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
+        if agent is None:
+            continue
+        parts = [
+            f"a {row['reason']} hook of this agent restarted it at {row['at']} "
+            f"(restart {number} of {SERVER_RESTART_LIMIT} for this run)"
+            for number, row in restarts
+        ]
+        detail = "the ledger server was down; " + "; ".join(parts)
+        if total >= SERVER_RESTART_LIMIT:
+            detail += "; the next server failure will not be restarted"
+        findings.append(
+            _finding(
+                dict(agent),
+                "server_restarted",
+                detail,
+                "Call ledger_info() to confirm the ledger server answers. When it does, tell "
+                "the user with user_ask that the server went down and was restarted.",
             )
         )
     return findings
@@ -1376,8 +1434,11 @@ def record(
                         "agent_id = ? WHERE finding_id = ?",
                         (finding.kind, finding.detail, at, finding.agent_id, finding_id),
                     )
-                if row["reported_at"] is not None and (
-                    not reopened or _directive_open(conn, row["directive_id"])
+                refiled = finding.kind in REFILED_KINDS and row["detail"] != finding.detail
+                if (
+                    row["reported_at"] is not None
+                    and not refiled
+                    and (not reopened or _directive_open(conn, row["directive_id"]))
                 ):
                     continue
             due.append((finding, finding_id))

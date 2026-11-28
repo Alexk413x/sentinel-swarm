@@ -187,7 +187,10 @@
   thread and connection, never on a hook worker, so a session held for up to 25 seconds
   per poll does not hold up other sessions' gates. See "Answering a permission prompt
   in the panel" in [17-run-panel.md](17-run-panel.md).
-- Lifetime: the launcher starts the server before the Oracle. It exits after
+- Lifetime: the launcher starts the server before the Oracle. During an active run, a
+  hook's fallback starts it again when it is down, at most three times per run; see "The
+  fallback restarts a ledger server that is down" in
+  [07-hooks-and-enforcement.md](07-hooks-and-enforcement.md). It exits after
   `run_finish`, and after `idle_exit_minutes` with no active run, or a paused run, and
   no session of the run running. A ledger tool call restarts the idle clock. A failed
   `claude agents --json` counts as no session running.

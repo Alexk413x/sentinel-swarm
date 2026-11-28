@@ -276,6 +276,7 @@ def test_the_launcher_entry_runs_every_hook_as_a_fallback(
         return "", ""
 
     monkeypatch.setattr(entry, "run_event", fake)
+    monkeypatch.setattr(entry.restart, "restart_server", lambda root, event, raw: False)
     monkeypatch.setattr(sys, "argv", ["hooks", "stop"])
     monkeypatch.setattr(sys, "stdin", io.StringIO("{}"))
 

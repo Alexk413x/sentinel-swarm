@@ -2681,3 +2681,92 @@ def test_a_hook_unreachable_finding_joins_the_digest(ledger: Ledger, now: dateti
     bodies = [r["body"] for r in ledger.conn.execute("SELECT body FROM directives")]
     assert len(bodies) == 1
     assert bodies[0].startswith("Watchdog pass: 2 findings")
+
+
+def _server_restarts(ledger: Ledger, agent_id: str, at: datetime, hooks: list[str]) -> None:
+    with write_tx(ledger.conn) as conn:
+        for hook in hooks:
+            conn.execute(
+                "INSERT INTO agent_events (agent_id, from_state, to_state, reason, at) "
+                "VALUES (?, 'working', 'server_restart', ?, ?)",
+                (agent_id, hook, watchdog.stamp(at)),
+            )
+
+
+def _restarted(ledger: Ledger, claude: FakeClaude, now: datetime) -> list[watchdog.Finding]:
+    return [f for f in _scan(ledger, claude, now) if f.kind == "server_restarted"]
+
+
+def test_a_restarted_server_reports_the_restart_on_its_first_pass(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _two_coders(ledger, now)
+    _oracle_running(claude)
+    assert _restarted(ledger, claude, now) == []
+
+    _server_restarts(ledger, "sess-coder-1", now, ["pre_write"])
+    first_pass = now + timedelta(seconds=watchdog.SERVER_RESTART_COOLDOWN_S + 30)
+    [finding] = _restarted(ledger, claude, first_pass)
+
+    assert finding.name == "coder-1"
+    assert finding.detail == (
+        "the ledger server was down; a pre_write hook of this agent restarted it at "
+        f"{watchdog.stamp(now)} (restart 1 of 3 for this run)"
+    )
+    assert finding.next_step.startswith("Call ledger_info() to confirm the ledger server answers")
+    assert "user_ask" in finding.next_step
+
+
+def test_a_restart_finding_ends_so_it_does_not_stand_forever(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _two_coders(ledger, now)
+    _oracle_running(claude)
+    _server_restarts(ledger, "sess-coder-1", now, ["pre_write"])
+    window = watchdog.SERVER_RESTART_COOLDOWN_S + 2 * WatchdogSettings().interval_seconds
+
+    assert len(_restarted(ledger, claude, now + timedelta(seconds=window - 1))) == 1
+    assert _restarted(ledger, claude, now + timedelta(seconds=window + 1)) == []
+
+
+def test_the_last_allowed_restart_says_the_next_failure_is_not_restarted(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    _two_coders(ledger, now)
+    _oracle_running(claude)
+    _server_restarts(ledger, "sess-coder-1", now - timedelta(hours=2), ["post_any"])
+    _server_restarts(ledger, "sess-coder-2", now - timedelta(hours=1), ["stop"])
+    _server_restarts(ledger, "sess-coder-1", now, ["pre_shell"])
+
+    [finding] = _restarted(ledger, claude, now)
+
+    assert finding.name == "coder-1"
+    assert "(restart 1 of 3 for this run)" in finding.detail
+    assert "a pre_shell hook of this agent restarted it" in finding.detail
+    assert "(restart 3 of 3 for this run)" in finding.detail
+    assert "restart 2 of 3" not in finding.detail
+    assert finding.detail.endswith("the next server failure will not be restarted")
+
+
+def test_a_restart_finding_is_filed_once_and_again_only_for_another_restart(
+    ledger: Ledger, claude: FakeClaude, now: datetime
+) -> None:
+    run_id = _two_coders(ledger, now)
+    _oracle_running(claude)
+    _server_restarts(ledger, "sess-coder-1", now, ["pre_write"])
+
+    def directives() -> int:
+        return ledger.conn.execute("SELECT COUNT(*) FROM directives").fetchone()[0]
+
+    def a_pass(at: datetime) -> None:
+        watchdog.record(ledger.conn, run_id, _restarted(ledger, claude, at), at)
+
+    a_pass(now)
+    a_pass(now + timedelta(seconds=30))
+    assert directives() == 1
+
+    again = now + timedelta(seconds=watchdog.SERVER_RESTART_COOLDOWN_S + 1)
+    _server_restarts(ledger, "sess-coder-1", again, ["post_any"])
+    a_pass(again)
+    a_pass(again + timedelta(seconds=30))
+    assert directives() == 2

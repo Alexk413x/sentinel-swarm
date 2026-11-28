@@ -259,3 +259,41 @@ def test_report_measures_lists_role_time_totals_and_cost_per_phase(ledger: Ledge
     assert "### Cost per phase" in report
     assert "- Phase p1-phase-1: $1.50" in report
     assert "- Oracle (run total): $" in report
+
+
+def _insert_restart(ledger: Ledger, agent_id: str, hook: str, at: str) -> None:
+    with write_tx(ledger.conn) as conn:
+        conn.execute(
+            "INSERT INTO agent_events (agent_id, from_state, to_state, reason, at) "
+            "VALUES (?, 'working', 'server_restart', ?, ?)",
+            (agent_id, hook, at),
+        )
+
+
+def _restart_section(report: str) -> list[str]:
+    section = report.split("## Ledger server restarts", 1)[1].split("## Final test run")[0]
+    return [line for line in section.splitlines() if line]
+
+
+def test_report_lists_each_ledger_server_restart_against_the_limit(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+    _insert_agent(ledger, "sess-coder", "coder-1", "coder", run_id=ctx["run_id"])
+    _insert_restart(ledger, "sess-coder", "pre_write", "2026-11-26T10:00:00Z")
+    _insert_restart(ledger, ctx["oracle_id"], "stop", "2026-11-26T11:00:00Z")
+
+    lines = _restart_section(ledger.write_report(ctx["run_id"])["text"])
+
+    assert lines[0] == "- 2 of 3 restarts used"
+    assert lines[1] == (
+        "- 2026-11-26T10:00:00Z: a pre_write hook of coder-1 restarted the ledger server "
+        "(restart 1 of 3)"
+    )
+    assert lines[2].startswith("- 2026-11-26T11:00:00Z: a stop hook of ")
+    assert lines[2].endswith("restarted the ledger server (restart 2 of 3)")
+    assert len(lines) == 3
+
+
+def test_report_server_restart_section_is_empty_for_a_run_with_none(ledger: Ledger) -> None:
+    ctx = bootstrap_module(ledger)
+
+    assert _restart_section(ledger.write_report(ctx["run_id"])["text"]) == []

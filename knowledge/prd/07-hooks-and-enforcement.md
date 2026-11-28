@@ -213,6 +213,31 @@ costs the server's own time plus a few milliseconds; the shim's process costs ab
   [08-watchdog.md](08-watchdog.md). The marker is the entry point, not a field in the
   hook input, so a host whose `.sentinel-swarm/hook.py` predates this rule records it too,
   and a client cannot forge it through the server's hook route.
+- The fallback restarts a ledger server that is down. The fallback's entry,
+  `mcp/launch/ledger.py hooks <event>`, calls `hooks.restart.restart_server` after it
+  wrote and flushed the hook's answer, so no answer depends on the restart: a gate
+  checks the call against the database and answers exactly as it does with the server
+  up, a gate that cannot check still denies, and a restart that fails writes one line
+  to stderr and changes nothing else. `run_event` and the server's hook route never
+  restart a server. The entry restarts only when all four hold, checked in this order:
+  1. The hook's `session_id` is a live agent of the ledger and that agent's run is
+     `active`. A subagent's call counts for its session's agent. A paused, finished or
+     closed run, and a session the ledger does not know, restart nothing.
+  2. The run has fewer than `SERVER_RESTART_LIMIT` (3) restart records.
+  3. No restart record of the run is younger than `SERVER_RESTART_COOLDOWN_S` (60
+     seconds), so hooks that fall back together from several agents spend one attempt.
+  4. No server answers `/health` for this repo. A server that answers is never
+     restarted or replaced by a hook, whatever version it reports.
+
+  The entry then records the attempt and starts the server with `serve.spawn_server`,
+  the detached start `ensure_server` uses, and does not wait for it to answer. The
+  record is an `agent_events` row for the calling agent with `to_state`
+  `server_restart` and the hook event as its reason. One `BEGIN IMMEDIATE` transaction
+  checks rules 2 and 3 again and writes the row, so two fallbacks that run together
+  cannot both claim an attempt. The row is committed before the start, so an attempt
+  whose start fails still counts and the limit bounds every loop. The watchdog reports
+  the record as `server_restarted` (see [08-watchdog.md](08-watchdog.md)) and the run
+  report lists it (see [10-report-and-costs.md](10-report-and-costs.md)).
 - Before its handler runs, every hook from a session id the ledger does not know
   re-keys a resumed agent to that id when it matches a pending resume. See "Re-keying a
   resumed session" in [05-sessions.md](05-sessions.md).

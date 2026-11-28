@@ -8,7 +8,7 @@ from . import graph
 from .clock import parse_stamp, utcnow
 from .db import dict_rows, ledger_path
 from .host import LedgerHost
-from .identity import ROLES, require_run, resolve
+from .identity import ROLES, SERVER_RESTART, SERVER_RESTART_LIMIT, require_run, resolve
 from .metrics import agent_cost
 from .review import agent_name, agent_names, build_summary, fix_briefs, latest_lead_review
 
@@ -156,6 +156,7 @@ class ReportMixin(LedgerHost):
             self._report_stale_files(run_id),
             self._report_directives(run_id),
             self._report_notifications(run_id),
+            self._report_server_restarts(run_id, name_of),
             self._report_final_test_run(run_id),
             self._report_stage_times(phases, agents),
             self._report_returns_per_file(run_id),
@@ -616,6 +617,28 @@ class ReportMixin(LedgerHost):
                     (run_id,),
                 )
             )
+        )
+        lines.append("")
+        return lines
+
+    def _report_server_restarts(
+        self, run_id: int, name_of: Callable[[str | None], str]
+    ) -> list[str]:
+        restarts = dict_rows(
+            self.conn.execute(
+                "SELECT e.agent_id, e.reason, e.at FROM agent_events e "
+                "JOIN agents a ON a.agent_id = e.agent_id WHERE a.run_id = ? AND e.to_state = ? "
+                "ORDER BY e.event_id",
+                (run_id, SERVER_RESTART),
+            )
+        )
+        lines = ["## Ledger server restarts"]
+        if restarts:
+            lines.append(f"- {len(restarts)} of {SERVER_RESTART_LIMIT} restarts used")
+        lines.extend(
+            f"- {r['at']}: a {r['reason']} hook of {name_of(r['agent_id'])} restarted the "
+            f"ledger server (restart {number} of {SERVER_RESTART_LIMIT})"
+            for number, r in enumerate(restarts, start=1)
         )
         lines.append("")
         return lines
