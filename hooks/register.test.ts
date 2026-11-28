@@ -4,7 +4,11 @@ import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 import { ALLOWED_REASON, DENIED_REASON, agentFacts, attention, dimmed, directiveLine, flatten, holdForPanel, mark, parseWaiting, startHint, stepLines, taskDetail } from './panel'
 import type { PanelAgent, PanelDirective, PanelPermission, PanelRequest, PanelRunView, PanelSessionWait, PanelSnapshot, PanelTask } from '../types'
 
-const CWD = 'C:/host'
+// The test engine resolves a path on the host system before the fs handlers below receive it:
+// '/host' gains the current drive on Windows, and a drive-letter path is relative elsewhere.
+// So the fake root has no drive, and the handlers compare paths without one.
+const CWD = '/host'
+const hostPath = (path: string) => path.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
 const TOKEN = 'a'.repeat(40)
 const RAN_OK = { stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
 
@@ -25,7 +29,7 @@ function world(on: On, options: Options = {}) {
   const ledger: Record<string, unknown>[] = []
   const clock = mock.clock(on, { now: 1_000 })
   on('fs.read', (_$, e) => {
-    const path = e.path.replace(/\\/g, '/')
+    const path = hostPath(e.path)
     if (path === `${CWD}/.sentinel-swarm/server.json`) return { value: JSON.stringify({ port: 47999 }) }
     if (path === `${CWD}/.sentinel-swarm/http-token`) return { value: `${TOKEN}\n` }
     throw new Error(`ENOENT: ${e.path}`)
@@ -155,7 +159,7 @@ describe('the ledger server endpoint', () => {
     const urls: string[] = []
     let port = 47999
     on('fs.read', (_$, e) => {
-      const path = e.path.replace(/\\/g, '/')
+      const path = hostPath(e.path)
       reads.push(path)
       if (path === `${CWD}/.sentinel-swarm/server.json`) return { value: JSON.stringify({ port }) }
       if (path === `${CWD}/.sentinel-swarm/http-token`) return { value: `${TOKEN}\n` }
@@ -691,7 +695,7 @@ describe('the swarm status tool', () => {
   function server(on: On, health: { status: number; body: unknown } | null) {
     const urls: string[] = []
     on('fs.read', (_$, e) => {
-      if (e.path.replace(/\\/g, '/') === `${CWD}/.sentinel-swarm/server.json`) return { value: JSON.stringify({ port: 47999 }) }
+      if (hostPath(e.path) === `${CWD}/.sentinel-swarm/server.json`) return { value: JSON.stringify({ port: 47999 }) }
       throw new Error(`ENOENT: ${e.path}`)
     })
     on('http.fetch', (_$, e) => {
@@ -708,7 +712,7 @@ describe('the swarm status tool', () => {
   }
 
   test('a ledger server that answers for the repo means a run is active', async ($, on) => {
-    const urls = server(on, { status: 200, body: { name: 'swarm-ledger', repo_root: 'C:\\host\\', pid: 1 } })
+    const urls = server(on, { status: 200, body: { name: 'swarm-ledger', repo_root: '\\host\\', pid: 1 } })
     expect(await status($, CWD)).toEqual({ running: true, repo: CWD })
     expect(urls).toEqual(['http://127.0.0.1:47999/health'])
   })
@@ -1245,7 +1249,7 @@ describe('the panel draws what waits on you', () => {
     on('ui.panes', () => ({ value: [] }))
     on('ui.toast', () => ({ value: undefined }))
     on('fs.read', (_$, e) => {
-      const path = e.path.replace(/\\/g, '/')
+      const path = hostPath(e.path)
       if (path === SERVER_FILE) return { value: JSON.stringify({ port: 47999 }) }
       if (path === TOKEN_FILE) return { value: `${TOKEN}\n` }
       throw new Error(`ENOENT: ${e.path}`)
