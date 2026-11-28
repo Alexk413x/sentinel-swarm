@@ -131,12 +131,8 @@ def _add_instructions(result: dict[str, Any]) -> None:
 
 
 def _shared(method: str, params: dict[str, Any], listed: dict[str, Any]) -> dict[str, Any] | None:
-    if method == "ping":
-        return {}
     if method == "tools/list":
         return {"tools": catalog.CATALOG["tools"], **listed}
-    if method in EMPTY_LISTS:
-        return {EMPTY_LISTS[method]: [], **listed}
     if method == "tools/call":
         return call_tool(params.get("name"), params.get("arguments"))
     return None
@@ -157,6 +153,10 @@ def classic(msg: dict[str, Any]) -> dict[str, Any] | None:
             "serverInfo": SERVER_INFO,
         }
         _add_instructions(result)
+    elif method == "ping":
+        result = {}
+    elif method in EMPTY_LISTS:
+        result = {EMPTY_LISTS[method]: []}
     else:
         result = _shared(method, params, {})
     if result is None:
