@@ -275,6 +275,38 @@ def test_header_value_decodes_only_the_exact_sentinel_form() -> None:
     assert header_value("=?base64?/w==?=") is None
 
 
+def test_ping_is_answered_only_on_the_handshake_protocol(host: Path, lean: int) -> None:
+    status, reply = _rpc(lean, host, *_modern("ping", {}))
+    assert status == 404
+    assert reply["error"]["code"] == -32601
+
+    ping = {"jsonrpc": "2.0", "id": 3, "method": "ping"}
+    status, reply = _rpc(lean, host, ping, {"MCP-Protocol-Version": "2025-11-25"})
+    assert (status, reply["result"]) == (200, {})
+
+
+@pytest.mark.parametrize(
+    ("method", "key"),
+    [
+        ("prompts/list", "prompts"),
+        ("resources/list", "resources"),
+        ("resources/templates/list", "resourceTemplates"),
+    ],
+)
+def test_a_list_of_an_undeclared_capability_is_answered_only_on_the_handshake_protocol(
+    host: Path, lean: int, method: str, key: str
+) -> None:
+    status, reply = _rpc(lean, host, *_modern(method, {}))
+    assert status == 404
+    assert reply["error"]["code"] == -32601
+    _, discovered = _rpc(lean, host, *_modern("server/discover", {}))
+    assert set(discovered["result"]["capabilities"]) == {"tools"}
+
+    listing = {"jsonrpc": "2.0", "id": 4, "method": method}
+    status, reply = _rpc(lean, host, listing, {"MCP-Protocol-Version": "2025-11-25"})
+    assert (status, reply["result"]) == (200, {key: []})
+
+
 def test_the_lean_front_speaks_the_handshake_protocol(host: Path, lean: int) -> None:
     init = {
         "jsonrpc": "2.0",

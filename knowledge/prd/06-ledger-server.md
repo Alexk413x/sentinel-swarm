@@ -130,6 +130,11 @@
   versions (`2024-11-05`, `2025-03-26`, `2025-06-18`, `2025-11-25`), gets the handshake
   protocol (`initialize`, `notifications/initialized`, then calls). Both answer
   `tools/list` and `tools/call` from the same catalog.
+- The handshake protocol also answers `ping`, and answers `prompts/list`,
+  `resources/list` and `resources/templates/list` with an empty list. The stateless
+  protocol answers none of the four: each gets -32601 with HTTP 404. The 2026-07-28
+  revision has no `ping`, and the server declares only the `tools` capability, so a
+  client has no reason to list prompts or resources.
 - The checks on a request with any other version header, in order. Each refusal is HTTP
   400 with a JSON-RPC error:
   1. `MCP-Protocol-Version`, `Mcp-Method` or `Mcp-Name` sent more than once: -32020.
